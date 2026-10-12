@@ -7,6 +7,7 @@
 #include "lookup_table_index_bits.hpp"
 #include "signed_round_bounds.hpp"
 #include "static_table_bounds.hpp"
+#include "gat_witness_numerics.hpp"
 
 #include <cuda_runtime.h>
 
@@ -21,6 +22,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <list>
 #include <limits>
 #include <map>
 #include <numeric>
@@ -44,6 +46,17 @@ namespace {
 
 using u64 = std::uint64_t;
 using i64 = std::int64_t;
+using witness_numerics::BigNum;
+using witness_numerics::FieldInverseCache;
+using witness_numerics::aggregate_field_products;
+using witness_numerics::concat_head_aggregates;
+using witness_numerics::field_encode;
+using witness_numerics::field_from_i64;
+using witness_numerics::field_inverse;
+using witness_numerics::fill_field_attention;
+using witness_numerics::make_round_div_witness;
+using witness_numerics::scalar_modulus;
+using witness_numerics::scalar_modulus_decimal;
 
 constexpr u64 kMaxStaticTableRows = 1ULL << 27;
 constexpr u64 kMaxLedgerFamilies = 4096;
@@ -659,28 +672,6 @@ Matrix make_matrix(u64 rows, u64 cols) {
     return matrix;
 }
 
-Matrix concat_columns(const std::vector<Matrix> &matrices) {
-    if (matrices.empty()) fail("cannot concatenate empty matrix family");
-    const u64 rows = matrices.front().rows;
-    u64 cols = 0;
-    for (const auto &matrix : matrices) {
-        if (matrix.rows != rows) fail("concat row mismatch");
-        if (matrix.cols > std::numeric_limits<u64>::max() - cols) fail("concat column count overflows native width");
-        cols += matrix.cols;
-    }
-    Matrix output = make_matrix(rows, cols);
-    u64 offset = 0;
-    for (const auto &matrix : matrices) {
-        for (u64 row = 0; row < rows; ++row) {
-            std::copy(matrix.values.begin() + static_cast<std::ptrdiff_t>(row * matrix.cols),
-                      matrix.values.begin() + static_cast<std::ptrdiff_t>((row + 1) * matrix.cols),
-                      output.values.begin() + static_cast<std::ptrdiff_t>(row * cols + offset));
-        }
-        offset += matrix.cols;
-    }
-    return output;
-}
-
 const ModelTensor &model_tensor(const ModelBundle &model, const std::string &name) {
     const auto iterator = model.tensors.find(name);
     if (iterator == model.tensors.end()) fail("checkpoint tensor missing: " + name);
@@ -779,192 +770,6 @@ Matrix matmul_gpu(const Matrix &left, const Matrix &right, const std::string &na
     }
 }
 
-class BigNum {
-  public:
-    BigNum() : value_(BN_new()) {
-        if (!value_) fail("BN_new failed");
-        BN_zero(value_);
-    }
-    BigNum(const BigNum &) = delete;
-    BigNum &operator=(const BigNum &) = delete;
-    BigNum(BigNum &&other) noexcept : value_(other.value_) { other.value_ = nullptr; }
-    BigNum &operator=(BigNum &&other) noexcept {
-        if (this != &other) {
-            if (value_) BN_free(value_);
-            value_ = other.value_;
-            other.value_ = nullptr;
-        }
-        return *this;
-    }
-    ~BigNum() {
-        if (value_) BN_free(value_);
-    }
-    BIGNUM *get() { return value_; }
-    const BIGNUM *get() const { return value_; }
-    BIGNUM **address() { return &value_; }
-
-  private:
-    BIGNUM *value_;
-};
-
-const BIGNUM *scalar_modulus() {
-    static BIGNUM *modulus = [] {
-        BIGNUM *result = nullptr;
-        if (BN_hex2bn(&result, "73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001") == 0) { fail("BN_hex2bn failed for scalar modulus"); }
-        return result;
-    }();
-    return modulus;
-}
-
-std::string scalar_modulus_decimal() {
-    char *decimal = BN_bn2dec(scalar_modulus());
-    if (!decimal) fail("BN_bn2dec failed for scalar modulus");
-    const std::string result(decimal);
-    OPENSSL_free(decimal);
-    return result;
-}
-
-BigNum field_from_i64(i64 value, BN_CTX *context) {
-    BigNum result;
-    const std::string decimal = std::to_string(value);
-    if (BN_dec2bn(result.address(), decimal.c_str()) == 0) fail("BN_dec2bn failed");
-    if (!BN_nnmod(result.get(), result.get(), scalar_modulus(), context)) fail("BN_nnmod failed");
-    return result;
-}
-
-FieldValue field_encode(const BIGNUM *input) {
-    if (BN_num_bytes(input) > 32) fail("field encoding exceeds 256 bits");
-    std::array<std::uint8_t, 32> big_endian{};
-    const int size = BN_bn2binpad(input, big_endian.data(), static_cast<int>(big_endian.size()));
-    if (size != static_cast<int>(big_endian.size())) fail("BN_bn2binpad failed");
-    FieldValue output;
-    for (std::size_t i = 0; i < output.bytes.size(); ++i) output.bytes[i] = big_endian[output.bytes.size() - i - 1];
-    return output;
-}
-
-BigNum field_inverse(i64 value, BN_CTX *context) {
-    BigNum base = field_from_i64(value, context);
-    if (BN_is_zero(base.get())) fail("zero denominator in attention relation");
-    BigNum result;
-    if (!BN_mod_inverse(result.get(), base.get(), scalar_modulus(), context)) fail("field inverse failed");
-    return result;
-}
-
-struct FieldInverseCache {
-    explicit FieldInverseCache(std::size_t nodes) : by_node(nodes) {}
-    std::vector<std::optional<BigNum>> by_node;
-};
-
-FieldInverseCache fill_field_attention(HiddenHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
-    FieldInverseCache inverses(graph.nodes);
-    BN_CTX *context = BN_CTX_new();
-    if (!context) fail("BN_CTX_new failed");
-    head.inverse_field.resize(graph.edges);
-    head.alpha_field.resize(graph.edges);
-    try {
-        for (u64 edge = edge_begin; edge < edge_end; ++edge) {
-            const u64 node = graph.dst[edge];
-            if (!inverses.by_node[node]) inverses.by_node[node].emplace(field_inverse(denominator_by_node[node], context));
-            const BigNum &inverse = *inverses.by_node[node];
-            BigNum exponent = field_from_i64(head.exp_weight[edge], context);
-            BigNum alpha;
-            if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
-            head.inverse_field[edge] = field_encode(inverse.get());
-            head.alpha_field[edge] = field_encode(alpha.get());
-        }
-    } catch (...) {
-        BN_CTX_free(context);
-        throw;
-    }
-    BN_CTX_free(context);
-    return inverses;
-}
-
-FieldInverseCache fill_field_attention(OutputHeadTrace &head, const Graph &graph, u64 edge_begin, u64 edge_end, const std::vector<i64> &denominator_by_node) {
-    FieldInverseCache inverses(graph.nodes);
-    BN_CTX *context = BN_CTX_new();
-    if (!context) fail("BN_CTX_new failed");
-    head.inverse_field.resize(graph.edges);
-    head.alpha_field.resize(graph.edges);
-    try {
-        for (u64 edge = edge_begin; edge < edge_end; ++edge) {
-            const u64 node = graph.dst[edge];
-            if (!inverses.by_node[node]) inverses.by_node[node].emplace(field_inverse(denominator_by_node[node], context));
-            const BigNum &inverse = *inverses.by_node[node];
-            BigNum exponent = field_from_i64(head.exp_weight[edge], context);
-            BigNum alpha;
-            if (!BN_mod_mul(alpha.get(), exponent.get(), inverse.get(), scalar_modulus(), context)) fail("field alpha multiplication failed");
-            head.inverse_field[edge] = field_encode(inverse.get());
-            head.alpha_field[edge] = field_encode(alpha.get());
-        }
-    } catch (...) {
-        BN_CTX_free(context);
-        throw;
-    }
-    BN_CTX_free(context);
-    return inverses;
-}
-
-SignedRoundDivWitness make_round_div_witness(const Matrix &numerator, const std::vector<i64> &denominator, u64 numerator_scale, u64 denominator_scale,
-                                             const Matrix &expected, const std::string &name) {
-    if (numerator.rows != expected.rows || numerator.cols != expected.cols || denominator.size() != numerator.rows || numerator_scale == 0 ||
-        denominator_scale == 0) {
-        fail("SignedRoundDiv shape/scale mismatch in " + name);
-    }
-    const auto auxiliary_start = std::chrono::steady_clock::now();
-    SignedRoundDivWitness witness;
-    witness.rows = numerator.rows;
-    witness.cols = numerator.cols;
-    const std::size_t count = numerator.values.size();
-    witness.sigma.assign(count, 0);
-    witness.z.assign(count, 0);
-    witness.a.assign(count, 0);
-    witness.q.assign(count, 0);
-    witness.r.assign(count, 0);
-    witness.delta.assign(count, 0);
-    witness.divisor.assign(count, 0);
-    witness.a_inverse.assign(count, FieldValue{});
-    witness.divisor_inverse.assign(count, FieldValue{});
-    BN_CTX *context = BN_CTX_new();
-    if (!context) fail("BN_CTX_new failed for " + name);
-    try {
-        for (u64 row = 0; row < numerator.rows; ++row) {
-            const i64 d = checked_i128(static_cast<__int128>(denominator[row]) * denominator_scale, name + ".divisor");
-            if (d <= 0) fail("SignedRoundDiv divisor is not positive in " + name);
-            BigNum divisor_inverse = field_inverse(d, context);
-            for (u64 col = 0; col < numerator.cols; ++col) {
-                const std::size_t index = static_cast<std::size_t>(row * numerator.cols + col);
-                const i64 x = checked_i128(static_cast<__int128>(numerator.at(row, col)) * numerator_scale, name + ".dividend");
-                const i64 y = expected.at(row, col);
-                const __int128 abs_x = x < 0 ? -static_cast<__int128>(x) : static_cast<__int128>(x);
-                const __int128 abs_y = y < 0 ? -static_cast<__int128>(y) : static_cast<__int128>(y);
-                const __int128 remainder = 2 * abs_x + d - 2 * static_cast<__int128>(d) * abs_y;
-                const __int128 slack = 2 * static_cast<__int128>(d) - 1 - remainder;
-                if (remainder < 0 || slack < 0) fail("invalid nearest-ties-away witness in " + name);
-                witness.sigma[index] = static_cast<std::uint8_t>(x < 0 ? 1U : 0U);
-                witness.z[index] = static_cast<std::uint8_t>(x == 0 ? 1U : 0U);
-                witness.a[index] = checked_i128(abs_x, name + ".a");
-                witness.q[index] = checked_i128(abs_y, name + ".q");
-                witness.r[index] = checked_i128(remainder, name + ".r");
-                witness.delta[index] = checked_i128(slack, name + ".delta");
-                witness.divisor[index] = d;
-                witness.divisor_inverse[index] = field_encode(divisor_inverse.get());
-                if (witness.a[index] != 0) {
-                    BigNum inverse = field_inverse(witness.a[index], context);
-                    witness.a_inverse[index] = field_encode(inverse.get());
-                }
-            }
-        }
-    } catch (...) {
-        BN_CTX_free(context);
-        throw;
-    }
-    BN_CTX_free(context);
-    witness.proof_auxiliary_construction_seconds =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - auxiliary_start).count();
-    return witness;
-}
-
 std::vector<i64> attention_scores(const Matrix &projected, const Matrix &src_kernel, const Matrix &dst_kernel, const Graph &graph, std::vector<i64> *e_src,
                                   std::vector<i64> *e_dst, std::vector<i64> *score, const std::string &name) {
     if (src_kernel.rows != projected.cols || dst_kernel.rows != projected.cols || src_kernel.cols != 1 || dst_kernel.cols != 1)
@@ -1039,50 +844,18 @@ void aggregate_head(const Config &config, const Graph &graph, const StaticTables
 
     BN_CTX *field_context = BN_CTX_new();
     if (!field_context) fail("BN_CTX_new failed for aggregate field");
+    try {
+        aggregate_field_products(graph, projected, denominator_by_node, output->alpha_field, output->aggregate_num,
+                                output->product_alpha_h_prime_field, output->aggregate_pre_field,
+                                output->consistency_residual_field, field_context, name);
+    } catch (...) {
+        BN_CTX_free(field_context);
+        throw;
+    }
     for (u64 node = 0; node < graph.nodes; ++node) {
-        if (node + 1 >= graph.node_edge_ptr.size()) {
-            BN_CTX_free(field_context);
-            fail("edge pointer does not cover destination node");
-        }
-        if (!inverse_cache.by_node[node]) {
-            BN_CTX_free(field_context);
-            fail("zero denominator in attention relation");
-        }
-        const BigNum &inverse = *inverse_cache.by_node[node];
+        if (node + 1 >= graph.node_edge_ptr.size()) fail("edge pointer does not cover destination node");
+        if (!inverse_cache.by_node[node]) fail("zero denominator in attention relation");
         for (u64 dim = 0; dim < projected.cols; ++dim) {
-            BigNum value;
-            BN_zero(value.get());
-            BigNum integer_value;
-            BN_zero(integer_value.get());
-            for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
-                if (graph.dst[edge] != node) {
-                    BN_CTX_free(field_context);
-                    fail("edge pointer/destination mismatch");
-                }
-                BigNum weight = field_from_i64(output->exp_weight[edge], field_context);
-                BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
-                BigNum alpha;
-                BigNum product;
-                BigNum integer_product;
-                if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_mul(integer_product.get(), weight.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(integer_value.get(), integer_value.get(), integer_product.get(), scalar_modulus(), field_context)) {
-                    BN_CTX_free(field_context);
-                    fail("aggregate field arithmetic failed");
-                }
-                output->product_alpha_h_prime_field.values[static_cast<std::size_t>(edge * projected.cols + dim)] = field_encode(product.get());
-            }
-            output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] = field_encode(value.get());
-            BigNum rhs;
-            BigNum residual;
-            if (!BN_mod_mul(rhs.get(), field_from_i64(denominator_by_node[node], field_context).get(), value.get(), scalar_modulus(), field_context) ||
-                !BN_mod_sub(residual.get(), rhs.get(), integer_value.get(), scalar_modulus(), field_context)) {
-                BN_CTX_free(field_context);
-                fail("aggregate consistency field arithmetic failed");
-            }
-            output->consistency_residual_field.values[static_cast<std::size_t>(node * projected.cols + dim)] = field_encode(residual.get());
             const i64 denom = denominator_by_node[node];
             output->aggregate_pre.at(node, dim) = round_div(checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * aggregate_pre_scale,
                                                                          name + ".aggregate_scaled"),
@@ -1150,51 +923,18 @@ void aggregate_output_head(const Config &config, const Graph &graph, const Stati
 
     BN_CTX *field_context = BN_CTX_new();
     if (!field_context) fail("BN_CTX_new failed for output aggregate field");
+    try {
+        aggregate_field_products(graph, projected, denominator_by_node, output->alpha_field, output->aggregate_num,
+                                output->product_alpha_y_prime_field, output->aggregate_pre_field,
+                                output->consistency_residual_field, field_context, name);
+    } catch (...) {
+        BN_CTX_free(field_context);
+        throw;
+    }
     for (u64 node = 0; node < graph.nodes; ++node) {
-        if (node + 1 >= graph.node_edge_ptr.size()) {
-            BN_CTX_free(field_context);
-            fail("edge pointer does not cover output destination node");
-        }
-        if (!inverse_cache.by_node[node]) {
-            BN_CTX_free(field_context);
-            fail("zero denominator in attention relation");
-        }
-        const BigNum &inverse = *inverse_cache.by_node[node];
+        if (node + 1 >= graph.node_edge_ptr.size()) fail("edge pointer does not cover output destination node");
+        if (!inverse_cache.by_node[node]) fail("zero denominator in attention relation");
         for (u64 dim = 0; dim < projected.cols; ++dim) {
-            BigNum value;
-            BN_zero(value.get());
-            BigNum integer_value;
-            BN_zero(integer_value.get());
-            for (u64 edge = graph.node_edge_ptr[node]; edge < graph.node_edge_ptr[node + 1]; ++edge) {
-                if (graph.dst[edge] != node) {
-                    BN_CTX_free(field_context);
-                    fail("output edge pointer/destination mismatch");
-                }
-                BigNum weight = field_from_i64(output->exp_weight[edge], field_context);
-                BigNum source = field_from_i64(projected.at(graph.src[edge], dim), field_context);
-                BigNum alpha;
-                BigNum product;
-                BigNum integer_product;
-                if (!BN_mod_mul(alpha.get(), weight.get(), inverse.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_mul(product.get(), alpha.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_mul(integer_product.get(), weight.get(), source.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(value.get(), value.get(), product.get(), scalar_modulus(), field_context) ||
-                    !BN_mod_add(integer_value.get(), integer_value.get(), integer_product.get(), scalar_modulus(), field_context)) {
-                    BN_CTX_free(field_context);
-                    fail("output aggregate field arithmetic failed");
-                }
-                output->product_alpha_y_prime_field.values[static_cast<std::size_t>(edge * projected.cols + dim)] = field_encode(product.get());
-            }
-            output->aggregate_pre_field.values[static_cast<std::size_t>(node * projected.cols + dim)] = field_encode(value.get());
-            BigNum rhs;
-            BigNum residual;
-            BigNum denominator = field_from_i64(denominator_by_node[node], field_context);
-            if (!BN_mod_mul(rhs.get(), denominator.get(), value.get(), scalar_modulus(), field_context) ||
-                !BN_mod_sub(residual.get(), rhs.get(), integer_value.get(), scalar_modulus(), field_context)) {
-                BN_CTX_free(field_context);
-                fail("output aggregate consistency field arithmetic failed");
-            }
-            output->consistency_residual_field.values[static_cast<std::size_t>(node * projected.cols + dim)] = field_encode(residual.get());
             output->aggregate_pre.at(node, dim) = round_div(checked_i128(static_cast<__int128>(output->aggregate_num.at(node, dim)) * output_pre_scale,
                                                                          name + ".aggregate_scaled"),
                                                             checked_i128(static_cast<__int128>(denominator_by_node[node]) * h_prime_scale,
@@ -1219,39 +959,36 @@ GatTrace run_forward(const Config &config, const Graph &graph, const ModelBundle
     // match the actual vector storage instead of an unspecified growth path.
     trace.hidden_layers.reserve(config.architecture.hidden_dims.size());
     trace.output_heads.reserve(static_cast<std::size_t>(config.architecture.output_heads));
-    trace.first_input = graph.feature_values;
-    Matrix current = graph.feature_values;
+    const Matrix *current = &graph.feature_values;
     for (u64 layer = 0; layer < config.architecture.hidden_dims.size(); ++layer) {
         HiddenLayerTrace layer_trace;
         layer_trace.heads.reserve(static_cast<std::size_t>(config.architecture.hidden_heads.at(layer)));
-        layer_trace.input = current;
-        std::vector<Matrix> head_outputs;
+        const Matrix &current_input = *current;
+        layer_trace.input = current_input;
         const u64 head_count = config.architecture.hidden_heads.at(layer);
-        head_outputs.reserve(static_cast<std::size_t>(head_count));
         const u64 head_dim = config.architecture.hidden_dims.at(layer);
-        const u64 in_dim = current.cols;
+        const u64 in_dim = current_input.cols;
         for (u64 head = 0; head < head_count; ++head) {
             const std::string prefix = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
             const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", config.quantization.hidden_weight.at(layer).at(head));
-            const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection") : matmul_cpu(current, weight, prefix + ".projection");
+            const Matrix projected = gpu_projection ? matmul_gpu(current_input, weight, prefix + ".projection") : matmul_cpu(current_input, weight, prefix + ".projection");
             const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", config.quantization.hidden_attention_src.at(layer).at(head));
             const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", config.quantization.hidden_attention_dst.at(layer).at(head));
             HiddenHeadTrace head_trace;
             attention_scores(projected, src_kernel, dst_kernel, graph, &head_trace.e_src, &head_trace.e_dst, &head_trace.score, prefix + ".attention");
             aggregate_head(config, graph, tables, projected, head_trace.score, config.quantization.hidden_h_prime.at(layer).at(head),
                            config.quantization.hidden_aggregate_pre.at(layer), &head_trace, prefix);
-            head_outputs.push_back(head_trace.aggregate);
             layer_trace.heads.push_back(std::move(head_trace));
         }
-        layer_trace.concat = concat_columns(head_outputs);
-        current = layer_trace.concat;
-        if (current.cols != head_count * head_dim || in_dim == 0) fail("hidden layer shape invariant failed");
+        layer_trace.concat = concat_head_aggregates(layer_trace.heads, graph.nodes, head_dim);
+        if (layer_trace.concat.cols != head_count * head_dim || in_dim == 0) fail("hidden layer shape invariant failed");
         trace.hidden_layers.push_back(std::move(layer_trace));
+        current = &trace.hidden_layers.back().concat;
     }
     for (u64 head = 0; head < config.architecture.output_heads; ++head) {
         const std::string prefix = "output/head" + std::to_string(head);
         const Matrix weight = quantized_tensor_matrix(model, prefix + "/seq/kernel", config.quantization.output_weight.at(head));
-        const Matrix projected = gpu_projection ? matmul_gpu(current, weight, prefix + ".projection") : matmul_cpu(current, weight, prefix + ".projection");
+        const Matrix projected = gpu_projection ? matmul_gpu(*current, weight, prefix + ".projection") : matmul_cpu(*current, weight, prefix + ".projection");
         const Matrix src_kernel = quantized_tensor_matrix(model, prefix + "/attn_src/kernel", config.quantization.output_attention_src.at(head));
         const Matrix dst_kernel = quantized_tensor_matrix(model, prefix + "/attn_dst/kernel", config.quantization.output_attention_dst.at(head));
         OutputHeadTrace head_trace;
@@ -3647,10 +3384,28 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         const auto write_field = [&](std::ofstream &stream, const FieldValue &value) {
             append_bytes(stream, reinterpret_cast<const char *>(value.bytes.data()), value.bytes.size());
         };
+        constexpr std::size_t kInverseCacheCapacity = 4096U;
+        using InverseCacheEntry = std::pair<FieldValue, std::list<U128>::iterator>;
+        std::map<U128, InverseCacheEntry> inverse_cache;
+        std::list<U128> inverse_lru;
         const auto inverse_for = [&](U128 delta, BN_CTX *context) {
             if (delta == 0U) return FieldValue{};
-            if (delta <= static_cast<U128>(std::numeric_limits<i64>::max())) return field_encode(field_inverse(static_cast<i64>(delta), context).get());
-            fail("sorted lookup delta exceeds native inverse input bound: " + operation);
+            if (delta > static_cast<U128>(std::numeric_limits<i64>::max()))
+                fail("sorted lookup delta exceeds native inverse input bound: " + operation);
+            const auto cached = inverse_cache.find(delta);
+            if (cached != inverse_cache.end()) {
+                inverse_lru.splice(inverse_lru.begin(), inverse_lru, cached->second.second);
+                return cached->second.first;
+            }
+            const FieldValue result = field_encode(field_inverse(static_cast<i64>(delta), context).get());
+            inverse_lru.push_front(delta);
+            inverse_cache.emplace(delta, InverseCacheEntry{result, inverse_lru.begin()});
+            if (inverse_cache.size() > kInverseCacheCapacity) {
+                const U128 evicted = inverse_lru.back();
+                inverse_lru.pop_back();
+                inverse_cache.erase(evicted);
+            }
+            return result;
         };
         const auto write_record = [&](std::ofstream &stream, U128 key, U128 delta, U128 x, U128 y, u64 prefix, std::uint8_t active, std::uint8_t marker,
                                       std::uint8_t source, BN_CTX *context) {
@@ -4146,6 +3901,11 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         tensor.visibility = family.visibility == "public" ? 1U : (family.id.find("/model/") != std::string::npos ? 2U : 3U);
         tensor.domain_size = checked_native_domain_u32(native_shape_product(family.padded_shape, family.id + ".domain"), family.id + ".domain");
         if (family.id == "public_Y") {
+            const std::uint64_t maximum_size_t_elements =
+                static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max() / sizeof(NativeFrWire));
+            if (tensor.domain_size > maximum_size_t_elements || tensor.domain_size > tensor.values.max_size())
+                fail("BLOCKED: public_Y padded witness does not fit addressable vector capacity");
+            tensor.values.reserve(static_cast<std::size_t>(tensor.domain_size));
             std::string storage_error;
             for (std::uint64_t offset = 0U; offset < tensor.domain_size; offset += (1U << 18U)) { std::vector<NativeFrWire> block; const auto count = checked_native_domain_u32(std::min<std::uint64_t>(1U << 18U, tensor.domain_size - offset), family.id + ".public_Y.block"); if (!found->second->read_padded(family.logical_shape, family.padded_shape, offset, count, block, &storage_error)) fail(storage_error); tensor.values.insert(tensor.values.end(), block.begin(), block.end()); }
         } else { tensor.storage = found->second; tensor.logical_shape = family.logical_shape; tensor.padded_shape = family.padded_shape; }
@@ -5066,6 +4826,45 @@ int admit(const Config &config) {
             private_family_storage_upper_bytes += logical_elements * 32U + 24U;
         }
     }
+    const auto admission_padded_axis = [](u64 value) {
+        if (value == 0U || value > kMaxNativeDomain)
+            fail("native admission padded shape axis is outside the canonical domain");
+        u64 padded = 1U;
+        while (padded < value) padded <<= 1U;
+        return padded;
+    };
+    const auto public_y_family = std::find_if(relation.tensor_families.begin(), relation.tensor_families.end(),
+                                              [](const TensorFamily &family) { return family.id == "public_Y"; });
+    if (public_y_family == relation.tensor_families.end() || public_y_family->visibility != "public" ||
+        public_y_family->logical_shape != std::vector<u64>{graph.nodes, config.architecture.classes} ||
+        public_y_family->padded_shape.size() != 2U ||
+        public_y_family->padded_shape[0] != admission_padded_axis(graph.nodes) ||
+        public_y_family->padded_shape[1] != admission_padded_axis(config.architecture.classes))
+        fail("native admission public_Y padded shape differs from the authenticated graph/output shape");
+    const std::uint64_t native_public_y_padded_domain_elements =
+        checked_shape_product(public_y_family->padded_shape, "public_Y.padded");
+
+    std::uint64_t native_static_table_raw_i64_capacity_elements = 0U;
+    std::uint64_t native_static_table_padded_field_elements = 0U;
+    const auto add_static_table_capacity = [&](const std::string &id, const std::vector<i64> &raw,
+                                               u64 padded_domain) {
+        const auto family = std::find_if(relation.tensor_families.begin(), relation.tensor_families.end(),
+                                         [&](const TensorFamily &candidate) { return candidate.id == id; });
+        if (family == relation.tensor_families.end() || family->visibility != "public" || raw.empty() ||
+            raw.capacity() < raw.size() || family->logical_shape != std::vector<u64>{raw.size()} ||
+            family->padded_shape != std::vector<u64>{padded_domain} || padded_domain == 0U ||
+            padded_domain != admission_padded_axis(static_cast<u64>(raw.size())))
+            fail("native admission authenticated static-table shape/capacity mismatch: " + id);
+        const auto raw_capacity = static_cast<u64>(raw.capacity());
+        if (raw_capacity > std::numeric_limits<u64>::max() - native_static_table_raw_i64_capacity_elements ||
+            padded_domain > std::numeric_limits<u64>::max() - native_static_table_padded_field_elements)
+            fail("native admission static-table resident element count overflows");
+        native_static_table_raw_i64_capacity_elements += raw_capacity;
+        native_static_table_padded_field_elements += padded_domain;
+    };
+    add_static_table_capacity("static_lrelu", tables.lrelu, tables.lrelu_padded_domain);
+    add_static_table_capacity("static_elu", tables.elu, tables.elu_padded_domain);
+    add_static_table_capacity("static_exp", tables.exp, tables.exp_padded_domain);
     constexpr std::string_view sorted_roles = "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
     std::uint64_t sorted_lookup_scratch_upper_bytes = 0U;
     std::uint64_t maximum_sorted_lookup_scratch_bytes = 0U;
@@ -5150,6 +4949,9 @@ int admit(const Config &config) {
               << ",\"native_sorted_lookup_proof_body_max_bytes\":" << plan_metrics.sorted_lookup_proof_body_max_bytes
               << ",\"native_relation_proof_sections_wire_bytes_upper_bound\":" << plan_metrics.relation_proof_sections_wire_bytes_upper_bound
               << ",\"native_proof_wire_bytes_upper_bound\":" << plan_metrics.proof_wire_bytes_upper_bound
+              << ",\"native_public_y_padded_domain_elements\":" << native_public_y_padded_domain_elements
+              << ",\"native_static_table_raw_i64_capacity_elements\":" << native_static_table_raw_i64_capacity_elements
+              << ",\"native_static_table_padded_field_elements\":" << native_static_table_padded_field_elements
               << ",\"native_commitment_section_wire_bytes_upper_bound\":" << plan_metrics.commitment_section_wire_bytes_upper_bound
               << ",\"native_operation_descriptor_resident_bytes_upper_bound\":" << plan_metrics.operation_descriptor_resident_bytes_upper_bound
               << ",\"relation_plan_text_bytes\":" << relation_plan_text_bytes

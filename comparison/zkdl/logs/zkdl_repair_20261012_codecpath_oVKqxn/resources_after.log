@@ -1,0 +1,10 @@
+captured_at=2026-10-12T01:43:03+08:00
+MemTotal:       127601388 kB
+MemAvailable:   61675152 kB
+SwapTotal:      16777212 kB
+SwapFree:       16217716 kB
+cgroup=0::/user.slice/user-1002.slice/session-123.scope
+memory.max=max
+memory.high=max
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  3.7T  2.0T  1.6T  57% /

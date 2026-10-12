@@ -1,0 +1,382 @@
+/usr/local/cuda/bin/nvcc -arch=sm_121 -Xcompiler=-O2 -std=c++17 -DZKDL_USE_BLST_G1_CODEC -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcrypto -I. tests/cpu_ipa_optimized_check.cu third_party/blst/libblst.a -o tests/cpu_ipa_optimized_check
+tests/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 8 - 1; i >= 0; i--){
+                          ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+tests/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 12 - 1; i >= 0; i--){
+                           ^
+
+tests/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+                        __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+                                       ^
+
+tests/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 8 - 1; i >= 0; i--){
+                          ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+tests/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 12 - 1; i >= 0; i--){
+                           ^
+
+tests/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+                        __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+                                       ^
+
+timeout 120s ./tests/cpu_ipa_optimized_check
+cpu_ipa_optimized_check status=PASS generators=8192 padded=16384 rounds=14 lr_oracle_terms=8192
+/usr/local/cuda/bin/nvcc -arch=sm_121 -std=c++17 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcrypto -I. -Igat_adapter tests/authenticated_sorted_lookup_descriptor_check.cu -o tests/authenticated_sorted_lookup_descriptor_check
+./bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 8 - 1; i >= 0; i--){
+                          ^
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+./bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+    for(char i = 12 - 1; i >= 0; i--){
+                           ^
+
+./bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+                        __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+                                       ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(17): error: "<unnamed>::byte" is ambiguous
+  void append_legacy_index_map(std::vector<byte>& out,
+                                           ^
+
+/usr/include/c++/13/bits/ptr_traits.h(168): error: class "std::__replace_first_arg<<error-type> *, const <error-type>>" has no member "type"
+        __rebind, _Ptr, _Up>::type;
+                              ^
+          detected during:
+            instantiation of type "std::__ptr_traits_impl<_Ptr, _Elt>::rebind<const <error-type>> [with _Ptr=<error-type> *, _Elt=std::__undefined]" at line 124 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc>::_Ptr<_Func, _Tp, <unnamed>> [with _Alloc=std::allocator<<error-type>>, _Func=std::__allocator_traits_base::__c_pointer, _Tp=const <error-type>, <unnamed>=void]" at line 157 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=std::allocator<<error-type>>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=std::allocator<<error-type>>, <unnamed>=<error-type>]" at line 88 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/ptr_traits.h(168): error: class "std::__replace_first_arg<<error-type> *, void>" has no member "type"
+        __rebind, _Ptr, _Up>::type;
+                              ^
+          detected during:
+            instantiation of type "std::__ptr_traits_impl<_Ptr, _Elt>::rebind<void> [with _Ptr=<error-type> *, _Elt=std::__undefined]" at line 124 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc>::_Ptr<_Func, _Tp, <unnamed>> [with _Alloc=std::allocator<<error-type>>, _Func=std::__allocator_traits_base::__v_pointer, _Tp=void, <unnamed>=void]" at line 165 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=std::allocator<<error-type>>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=std::allocator<<error-type>>, <unnamed>=<error-type>]" at line 88 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/ptr_traits.h(168): error: class "std::__replace_first_arg<<error-type> *, const void>" has no member "type"
+        __rebind, _Ptr, _Up>::type;
+                              ^
+          detected during:
+            instantiation of type "std::__ptr_traits_impl<_Ptr, _Elt>::rebind<const void> [with _Ptr=<error-type> *, _Elt=std::__undefined]" at line 124 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc>::_Ptr<_Func, _Tp, <unnamed>> [with _Alloc=std::allocator<<error-type>>, _Func=std::__allocator_traits_base::__cv_pointer, _Tp=const void, <unnamed>=void]" at line 173 of /usr/include/c++/13/bits/alloc_traits.h
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=std::allocator<<error-type>>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=std::allocator<<error-type>>, <unnamed>=<error-type>]" at line 88 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(57): error: class "std::__replace_first_arg<std::allocator<<error-type>>, <error-type>>" has no member "type"
+     typename __replace_first_arg<_Tp, typename _Tp::value_type>::type,
+                                                                  ^
+          detected during:
+            instantiation of class "std::__allocator_traits_base::__rebind<_Tp, _Up, <unnamed>> [with _Tp=std::allocator<<error-type>>, _Up=<error-type>, <unnamed>=void]" at line 95
+            instantiation of type "std::__alloc_rebind<std::allocator<<error-type>>, <error-type>>" at line 228
+            instantiation of type "std::allocator_traits<_Alloc>::rebind_alloc<<error-type>> [with _Alloc=std::allocator<<error-type>>]" at line 126 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>>::rebind<_Tp> [with _Alloc=std::allocator<<error-type>>, <unnamed>=<error-type>, _Tp=<error-type>]" at line 88 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(95): error: class "std::__allocator_traits_base::__rebind<std::allocator<<error-type>>, <error-type>, void>" has no member "type"
+        = typename __allocator_traits_base::template __rebind<_Alloc, _Up>::type;
+                                                                            ^
+          detected during:
+            instantiation of type "std::__alloc_rebind<std::allocator<<error-type>>, <error-type>>" at line 228
+            instantiation of type "std::allocator_traits<_Alloc>::rebind_alloc<<error-type>> [with _Alloc=std::allocator<<error-type>>]" at line 126 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>>::rebind<_Tp> [with _Alloc=std::allocator<<error-type>>, <unnamed>=<error-type>, _Tp=<error-type>]" at line 88 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/ext/alloc_traits.h(44): error: a class or namespace qualified name is required
+  template<typename _Alloc, typename = typename _Alloc::value_type>
+                                                ^
+          detected during:
+            processing of template argument list for "__gnu_cxx::__alloc_traits" based on template argument <<error-type>> at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/ext/alloc_traits.h(44): error: expected a ","
+  template<typename _Alloc, typename = typename _Alloc::value_type>
+                                                      ^
+          detected during:
+            processing of template argument list for "__gnu_cxx::__alloc_traits" based on template argument <<error-type>> at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(110): error: a class or namespace qualified name is required
+        typedef typename _Alloc::value_type value_type;
+                         ^
+          detected during:
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=<error-type>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(110): error: global-scope qualifier (leading "::") is not allowed
+        typedef typename _Alloc::value_type value_type;
+                               ^
+          detected during:
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=<error-type>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(110): error: expected a ";"
+        typedef typename _Alloc::value_type value_type;
+                                            ^
+          detected during:
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=<error-type>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(117): error: identifier "value_type" is undefined
+        using pointer = __detected_or_t<value_type*, __pointer, _Alloc>;
+                                        ^
+          detected during:
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=<error-type>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/alloc_traits.h(157): error: expected a ">"
+        using const_pointer = typename _Ptr<__c_pointer, const value_type>::type;
+                                                               ^
+          detected during:
+            instantiation of class "std::allocator_traits<_Alloc> [with _Alloc=<error-type>]" at line 47 of /usr/include/c++/13/ext/alloc_traits.h
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/ext/alloc_traits.h(53): error: class "std::allocator_traits<<error-type>>" has no member "value_type"
+      typedef typename _Base_type::value_type value_type;
+                                   ^
+          detected during:
+            instantiation of class "__gnu_cxx::__alloc_traits<_Alloc, <unnamed>> [with _Alloc=<error-type>, <unnamed>=<error-type>]" at line 89 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_vector.h(134): error: not a class or struct name
+   : public _Tp_alloc_type, public _Vector_impl_data
+            ^
+          detected during:
+            instantiation of class "std::_Vector_base<_Tp, _Alloc>::_Vector_impl [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 374
+            instantiation of class "std::_Vector_base<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 428
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/ext/alloc_traits.h(44): error: a class or namespace qualified name is required
+  template<typename _Alloc, typename = typename _Alloc::value_type>
+                                                ^
+          detected during:
+            processing of template argument list for "__gnu_cxx::__alloc_traits" based on template argument <<error-type>> at line 450 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/ext/alloc_traits.h(44): error: expected a ","
+  template<typename _Alloc, typename = typename _Alloc::value_type>
+                                                      ^
+          detected during:
+            processing of template argument list for "__gnu_cxx::__alloc_traits" based on template argument <<error-type>> at line 450 of /usr/include/c++/13/bits/stl_vector.h
+            instantiation of class "std::vector<_Tp, _Alloc> [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" at line 19 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(23): error: "<unnamed>::byte" is ambiguous
+  void append_legacy_operation(std::vector<byte>& out,
+                                           ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(74): error: "<unnamed>::byte" is ambiguous
+  std::vector<byte> legacy_serialize_small_proof(const Proof& proof) {
+              ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(78): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> out;
+                  ^
+
+/usr/include/c++/13/bits/stl_iterator.h(1062): error: class "std::iterator_traits<<error-type> *>" has no member "iterator_category"
+        typedef typename __traits_type::iterator_category iterator_category;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type> *, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1063): error: class "std::iterator_traits<<error-type> *>" has no member "value_type"
+        typedef typename __traits_type::value_type value_type;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type> *, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1064): error: class "std::iterator_traits<<error-type> *>" has no member "difference_type"
+        typedef typename __traits_type::difference_type difference_type;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type> *, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1065): error: class "std::iterator_traits<<error-type> *>" has no member "reference"
+        typedef typename __traits_type::reference reference;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type> *, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1066): error: class "std::iterator_traits<<error-type> *>" has no member "pointer"
+        typedef typename __traits_type::pointer pointer;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type> *, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1062): error: class "std::iterator_traits<<error-type>>" has no member "iterator_category"
+        typedef typename __traits_type::iterator_category iterator_category;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type>, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1063): error: class "std::iterator_traits<<error-type>>" has no member "value_type"
+        typedef typename __traits_type::value_type value_type;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type>, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1064): error: class "std::iterator_traits<<error-type>>" has no member "difference_type"
+        typedef typename __traits_type::difference_type difference_type;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type>, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1065): error: class "std::iterator_traits<<error-type>>" has no member "reference"
+        typedef typename __traits_type::reference reference;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type>, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+/usr/include/c++/13/bits/stl_iterator.h(1066): error: class "std::iterator_traits<<error-type>>" has no member "pointer"
+        typedef typename __traits_type::pointer pointer;
+                                        ^
+          detected during instantiation of class "__gnu_cxx::__normal_iterator<_Iterator, _Container> [with _Iterator=<error-type>, _Container=std::vector<<error-type>, std::allocator<<error-type>>>]" at line 79 of tests/authenticated_sorted_lookup_descriptor_check.cu
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(90): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> public_binding;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(92): error: a reference of type "std::vector<zkdl::byte, std::allocator<zkdl::byte>> &" (aka "std::vector<unsigned char, std::allocator<unsigned char>> &") (not const-qualified) cannot be initialized with a value of type "std::vector<<error-type>, std::allocator<<error-type>>>"
+                                            public_binding);
+                                            ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(94): error: no instance of overloaded function "std::vector<_Tp, _Alloc>::insert [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" matches the argument list
+            argument types are: (__gnu_cxx::__normal_iterator<<error-type> *, std::vector<<error-type>, std::allocator<<error-type>>>>, __gnu_cxx::__normal_iterator<<error-type> *, std::vector<<error-type>, std::allocator<<error-type>>>>, __gnu_cxx::__normal_iterator<<error-type> *, std::vector<<error-type>, std::allocator<<error-type>>>>)
+            object type is: std::vector<<error-type>, std::allocator<<error-type>>>
+      out.insert(out.end(), public_binding.begin(), public_binding.end());
+          ^
+/usr/include/c++/13/bits/stl_vector.h(1482): note #3327-D: candidate function template "std::vector<_Tp, _Alloc>::insert(__gnu_cxx::__normal_iterator<<error-type>, std::vector<<error-type>, std::allocator<<error-type>>>>, _InputIterator, _InputIterator) [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" failed deduction
+   insert(const_iterator __position, _InputIterator __first,
+   ^
+/usr/include/c++/13/bits/stl_vector.h(1437): note #3326-D: function "std::vector<_Tp, _Alloc>::insert(std::vector<_Tp, _Alloc>::const_iterator, std::vector<_Tp, _Alloc>::size_type, const std::vector<_Tp, _Alloc>::value_type &) [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" does not match because argument #2 does not match parameter
+        insert(const_iterator __position, size_type __n, const value_type& __x)
+        ^
+/usr/include/c++/13/bits/stl_vector.h(1411): note #3322-D: number of parameters of function "std::vector<_Tp, _Alloc>::insert(std::vector<_Tp, _Alloc>::const_iterator, std::initializer_list<std::vector<_Tp, _Alloc>::value_type>) [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" does not match the call
+        insert(const_iterator __position, initializer_list<value_type> __l)
+        ^
+/usr/include/c++/13/bits/stl_vector.h(1393): note #3322-D: number of parameters of function "std::vector<_Tp, _Alloc>::insert(std::vector<_Tp, _Alloc>::const_iterator, std::vector<_Tp, _Alloc>::value_type &&) [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" does not match the call
+        insert(const_iterator __position, value_type&& __x)
+        ^
+/usr/include/c++/13/bits/stl_vector.h(1362): note #3322-D: number of parameters of function "std::vector<_Tp, _Alloc>::insert(std::vector<_Tp, _Alloc>::const_iterator, const std::vector<_Tp, _Alloc>::value_type &) [with _Tp=<error-type>, _Alloc=std::allocator<<error-type>>]" does not match the call
+        insert(const_iterator __position, const value_type& __x);
+        ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(150): error: "<unnamed>::byte" is ambiguous
+      const std::vector<byte> legacy = legacy_serialize_small_proof(fixture);
+                        ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(151): error: "<unnamed>::byte" is ambiguous
+      const std::vector<byte> current = fixture.serialize();
+                        ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(151): error: no suitable user-defined conversion from "std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "std::vector<unsigned char, std::allocator<unsigned char>>") to "const std::vector<<error-type>, std::allocator<<error-type>>>" exists
+      const std::vector<byte> current = fixture.serialize();
+                                        ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(155): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> bounded;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(158): error: no instance of constructor "zkdl::BoundedWireWriter::BoundedWireWriter" matches the argument list
+            argument types are: (std::vector<<error-type>, std::allocator<<error-type>>>, unsigned int)
+      zkdl::BoundedWireWriter writer(bounded, 3U);
+                                     ^
+./proof.cuh(247): note #3322-D: number of parameters of function "zkdl::BoundedWireWriter::BoundedWireWriter(const zkdl::BoundedWireWriter &)" does not match the call
+  class BoundedWireWriter {
+        ^
+./proof.cuh(247): note #3322-D: number of parameters of function "zkdl::BoundedWireWriter::BoundedWireWriter(zkdl::BoundedWireWriter &&)" does not match the call
+  class BoundedWireWriter {
+        ^
+./proof.cuh(250): note #3326-D: function "zkdl::BoundedWireWriter::BoundedWireWriter(std::vector<zkdl::byte, std::allocator<zkdl::byte>> &, uint64_t)" does not match because argument #1 does not match parameter
+      BoundedWireWriter(std::vector<byte>& out, std::uint64_t limit)
+      ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(254): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> strict_operation_wire;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(259): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(read_operation_strict(strict_operation_wire,
+                                    ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(269): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> current_wire, legacy_wire;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(273): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+                  zkdl::sha256(current_wire) == zkdl::sha256(legacy_wire),
+                               ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(273): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+                  zkdl::sha256(current_wire) == zkdl::sha256(legacy_wire),
+                                                             ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(276): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> encoded_identity;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(282): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(read_index_map_exact(encoded_identity, offset, kLargeMap,
+                                   ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(287): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> reencoded_identity;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(292): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> encoded_explicit;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(298): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(read_index_map_exact(encoded_explicit, offset, kLargeMap,
+                                   ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(303): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> reencoded_explicit;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(308): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> truncated = encoded_identity;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(311): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(!read_index_map_exact(truncated, offset, kLargeMap, decoded_identity),
+                                    ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(314): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(!read_index_map_exact(encoded_identity, offset, kLargeMap - 1U,
+                                    ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(317): error: "<unnamed>::byte" is ambiguous
+      std::vector<byte> over_domain;
+                  ^
+
+tests/authenticated_sorted_lookup_descriptor_check.cu(320): error: no suitable user-defined conversion from "std::vector<<error-type>, std::allocator<<error-type>>>" to "const std::vector<zkdl::byte, std::allocator<zkdl::byte>>" (aka "const std::vector<unsigned char, std::allocator<unsigned char>>") exists
+      require(!read_index_map_exact(over_domain, offset,
+                                    ^
+
+54 errors detected in the compilation of "tests/authenticated_sorted_lookup_descriptor_check.cu".
+make: *** [Makefile:99: tests/authenticated_sorted_lookup_descriptor_check] Error 2

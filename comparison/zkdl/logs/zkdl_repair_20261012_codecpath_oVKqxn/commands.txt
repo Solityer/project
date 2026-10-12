@@ -1,0 +1,2 @@
+logdir=logs/zkdl_repair_20261012_codecpath_oVKqxn
+make -j1 sorted-lookup-descriptor-check tests/segmented_lookup_fixture

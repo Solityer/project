@@ -1,0 +1,90 @@
+2026-10-12T01:26:29+0800 /usr/local/cuda/bin/nvcc -arch=sm_121 -Xcompiler=-O2 -std=c++17 -DZKDL_USE_BLST_G1_CODEC -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcrypto -I. -Igat_adapter gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu third_party/blst/libblst.a -o gat_runner
+2026-10-12T01:26:31+0800 gat_adapter/gat_runner.cu(3335): warning #177-D: variable "u128_decimal_local" was declared but never referenced
+2026-10-12T01:26:31+0800           const auto u128_decimal_local = [](U128 value) {
+2026-10-12T01:26:31+0800                      ^
+2026-10-12T01:26:31+0800 
+2026-10-12T01:26:31+0800 Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+2026-10-12T01:26:31+0800 
+2026-10-12T01:26:31+0800 gat_adapter/gat_runner.cu(592): warning #177-D: function "zkdl_gat::<unnamed>::json_objects" was declared but never referenced
+2026-10-12T01:26:31+0800   std::vector<std::string> json_objects(const std::string &text, const std::string &key, u64 maximum_objects = kMaxLedgerFamilies) {
+2026-10-12T01:26:31+0800                            ^
+2026-10-12T01:26:31+0800 
+2026-10-12T01:26:31+0800 gat_adapter/gat_runner.cu(629): warning #177-D: function "zkdl_gat::<unnamed>::json_bool_value" was declared but never referenced
+2026-10-12T01:26:31+0800   bool json_bool_value(const std::string &text, const std::string &key) { return parse_bool(json_scalar(text, key), "JSON " + key); }
+2026-10-12T01:26:31+0800        ^
+2026-10-12T01:26:31+0800 
+2026-10-12T01:26:46+0800 gat_adapter/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:26:46+0800     for(char i = 8 - 1; i >= 0; i--){
+2026-10-12T01:26:46+0800                           ^
+2026-10-12T01:26:46+0800 
+2026-10-12T01:26:46+0800 Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+2026-10-12T01:26:46+0800 
+2026-10-12T01:26:46+0800 gat_adapter/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:26:46+0800     for(char i = 12 - 1; i >= 0; i--){
+2026-10-12T01:26:46+0800                            ^
+2026-10-12T01:26:46+0800 
+2026-10-12T01:26:46+0800 gat_adapter/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+2026-10-12T01:26:46+0800                         __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+2026-10-12T01:26:46+0800                                        ^
+2026-10-12T01:26:46+0800 
+2026-10-12T01:26:48+0800 gat_adapter/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:26:48+0800     for(char i = 8 - 1; i >= 0; i--){
+2026-10-12T01:26:48+0800                           ^
+2026-10-12T01:26:48+0800 
+2026-10-12T01:26:48+0800 Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+2026-10-12T01:26:48+0800 
+2026-10-12T01:26:48+0800 gat_adapter/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:26:48+0800     for(char i = 12 - 1; i >= 0; i--){
+2026-10-12T01:26:48+0800                            ^
+2026-10-12T01:26:48+0800 
+2026-10-12T01:26:48+0800 gat_adapter/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+2026-10-12T01:26:48+0800                         __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+2026-10-12T01:26:48+0800                                        ^
+2026-10-12T01:26:48+0800 
+2026-10-12T01:26:49+0800 gat_adapter/gat_native_core.cu(231): warning #177-D: function "zkdl_gat::<unnamed>::file_digest" was declared but never referenced
+2026-10-12T01:26:49+0800   bool file_digest(const std::filesystem::path &path, std::array<zkdl::byte, 32> &digest, std::string *error) {
+2026-10-12T01:26:49+0800        ^
+2026-10-12T01:26:49+0800 
+2026-10-12T01:26:49+0800 gat_adapter/gat_native_core.cu(259): warning #177-D: function "zkdl_gat::<unnamed>::contains" was declared but never referenced
+2026-10-12T01:26:49+0800   bool contains(const std::vector<zkdl::byte> &bytes, const std::string &needle) {
+2026-10-12T01:26:49+0800        ^
+2026-10-12T01:26:49+0800 
+2026-10-12T01:26:49+0800 gat_adapter/gat_native_core.cu(264): warning #177-D: function "zkdl_gat::<unnamed>::manifest_string_field" was declared but never referenced
+2026-10-12T01:26:49+0800   bool manifest_string_field(const std::vector<zkdl::byte> &bytes, const std::string &key, std::string &value) {
+2026-10-12T01:26:49+0800        ^
+2026-10-12T01:26:49+0800 
+2026-10-12T01:26:49+0800 gat_adapter/gat_native_core.cu(756): warning #177-D: function "zkdl_gat::<unnamed>::ceil_log2" was declared but never referenced
+2026-10-12T01:26:49+0800   std::uint32_t ceil_log2(std::size_t value) {
+2026-10-12T01:26:49+0800                 ^
+2026-10-12T01:26:49+0800 
+2026-10-12T01:29:31+0800 /usr/local/cuda/bin/nvcc -arch=sm_121 -std=c++17 -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcrypto -I. -Igat_adapter tests/sumcheck_round_oracle_check.cu -o tests/sumcheck_round_oracle_check
+2026-10-12T01:29:32+0800 tests/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:29:32+0800     for(char i = 8 - 1; i >= 0; i--){
+2026-10-12T01:29:32+0800                           ^
+2026-10-12T01:29:32+0800 
+2026-10-12T01:29:32+0800 Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+2026-10-12T01:29:32+0800 
+2026-10-12T01:29:32+0800 tests/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:29:32+0800     for(char i = 12 - 1; i >= 0; i--){
+2026-10-12T01:29:32+0800                            ^
+2026-10-12T01:29:32+0800 
+2026-10-12T01:29:32+0800 tests/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+2026-10-12T01:29:32+0800                         __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+2026-10-12T01:29:32+0800                                        ^
+2026-10-12T01:29:32+0800 
+2026-10-12T01:29:33+0800 tests/../bls12-381.cuh(308): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:29:33+0800     for(char i = 8 - 1; i >= 0; i--){
+2026-10-12T01:29:33+0800                           ^
+2026-10-12T01:29:33+0800 
+2026-10-12T01:29:33+0800 Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+2026-10-12T01:29:33+0800 
+2026-10-12T01:29:33+0800 tests/../bls12-381.cuh(732): warning #186-D: pointless comparison of unsigned integer with zero
+2026-10-12T01:29:33+0800     for(char i = 12 - 1; i >= 0; i--){
+2026-10-12T01:29:33+0800                            ^
+2026-10-12T01:29:33+0800 
+2026-10-12T01:29:33+0800 tests/../bls12-381.cuh(1167): warning #1835-D: attribute "__shared__" does not apply here
+2026-10-12T01:29:33+0800                         __attribute__((shared)) blstrs__scalar__Scalar* u_arg,
+2026-10-12T01:29:33+0800                                        ^
+2026-10-12T01:29:33+0800 
+2026-10-12T01:32:13+0800 timeout 60s ./tests/sumcheck_round_oracle_check
+2026-10-12T01:33:13+0800 make: *** [Makefile:121: sumcheck-round-oracle-check] Error 124

@@ -313,7 +313,6 @@ struct OutputHeadTrace {
 };
 
 struct GatTrace {
-    Matrix first_input;
     std::vector<HiddenLayerTrace> hidden_layers;
     std::vector<OutputHeadTrace> output_heads;
     Matrix output_sum;

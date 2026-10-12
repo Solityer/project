@@ -310,7 +310,7 @@ bool reject(NativeProofResult *result, std::string *error, const std::string &me
     return false;
 }
 
-bool resource_admission(const Config &config, const NativeRelationWitness &witness, bool require_model_blinders, std::string *error) {
+bool resource_admission(const Config &config, NativeRelationWitness &witness, bool require_model_blinders, std::string *error) {
     AuthenticatedSrsResource srs;
     if (!load_authenticated_srs(config, &srs, error)) return false;
     if (!witness.srs_authenticated || witness.srs_digest != srs.manifest_digest || witness.generators.size() != srs.generators.size() ||
@@ -406,6 +406,10 @@ bool resource_admission(const Config &config, const NativeRelationWitness &witne
         if (error) *error = "BLOCKED: supplied IPA H/U differs from authenticated H.bin/U.bin";
         return false;
     }
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(witness.ipa_generators), witness.ipa_blinding_generator,
+            witness.ipa_u_generator, witness.authenticated_ipa_basis, error))
+        return false;
     AuthenticatedModelRegistry registry;
     if (!load_authenticated_model_registry(config, srs, &registry, error)) return false;
     const std::filesystem::path supplied_registry = std::filesystem::absolute(witness.registry_path).lexically_normal();
@@ -418,13 +422,14 @@ bool resource_admission(const Config &config, const NativeRelationWitness &witne
     std::set<std::string> supplied_ids;
     std::uint32_t supplied_generator_count = 0U;
     try {
-        supplied_generator_count = checked_native_u32(witness.ipa_generators.size(), "supplied IPA generator count");
+        supplied_generator_count = checked_native_u32(witness.authenticated_ipa_basis.size(), "supplied IPA generator count");
     } catch (const std::runtime_error &exception) {
         if (error) *error = exception.what();
         return false;
     }
-    const auto authenticated_basis_digest = zkdl::cpu_ipa_basis_digest(witness.ipa_generators, witness.ipa_blinding_generator, witness.ipa_u_generator,
-                                                                       zkdl::cpu_ipa_padded_size(supplied_generator_count));
+    const auto authenticated_basis_digest = zkdl::cpu_ipa_basis_digest(
+        witness.authenticated_ipa_basis, supplied_generator_count,
+        zkdl::cpu_ipa_padded_size(supplied_generator_count));
     for (const auto &expected : registry.model_commitments) {
         const auto found = std::find_if(witness.registered_model_commitments.begin(), witness.registered_model_commitments.end(),
                                         [&](const relation::CommitmentWire &actual) { return actual.tensor_id == expected.tensor_id; });
@@ -457,9 +462,11 @@ bool resource_admission(const Config &config, const NativeRelationWitness &witne
             if (error && error->empty()) *error = "BLOCKED: model registry segment layout is not covered by authenticated SRS";
             return false;
         }
-        const std::vector<zkdl::CpuG1Point> frame_generators(witness.ipa_generators.begin(), witness.ipa_generators.begin() + expected.segment_size);
-        const auto authenticated_frame_digest = zkdl::cpu_ipa_basis_digest(frame_generators, witness.ipa_blinding_generator, witness.ipa_u_generator,
-                                                                           zkdl::cpu_ipa_padded_size(expected.segment_size));
+        const auto authenticated_frame_digest = zkdl::cpu_ipa_basis_digest(
+            witness.authenticated_ipa_basis,
+            checked_native_u32(expected.segment_size, "model segment generator count"),
+            zkdl::cpu_ipa_padded_size(checked_native_u32(
+                expected.segment_size, "model segment generator count")));
         for (std::size_t segment_index = 0U; segment_index < expected.segment_commitments.size(); ++segment_index) {
             const auto &declared = expected.segment_commitments[segment_index];
             const std::uint64_t expected_offset = static_cast<std::uint64_t>(segment_index) * expected.segment_size;
@@ -602,8 +609,8 @@ void add_ref(relation::OperationDescriptor &operation, const std::string &ref) {
 
 bool add_fac_binding_spec(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
                           const std::map<std::string, std::uint32_t> &domains, std::uint32_t view_outer_domain, std::uint32_t canonical_outer_domain,
-                          std::uint32_t view_feature_domain, std::uint32_t canonical_feature_domain, std::vector<std::uint32_t> source_outer_index,
-                          std::vector<std::uint32_t> source_feature_index, std::vector<std::uint8_t> selector_active, std::string *error) {
+                          std::uint32_t view_feature_domain, std::uint32_t canonical_feature_domain, relation::IndexMapU32 source_outer_index,
+                          relation::IndexMapU32 source_feature_index, std::vector<std::uint8_t> selector_active, std::string *error) {
     if (view_ref.empty() || canonical_ref.empty() || view_ref == canonical_ref) return true;
     const auto view = domains.find(view_ref);
     const auto canonical = domains.find(canonical_ref);
@@ -656,12 +663,8 @@ bool add_fac_binding(relation::OperationDescriptor &operation, const std::string
     }
     return add_fac_binding_spec(
         operation, view_ref, canonical_ref, domains, view->second, canonical->second, 1U, 1U,
-        [&]() {
-            std::vector<std::uint32_t> values(view->second);
-            for (std::uint32_t i = 0U; i < view->second; ++i) values[i] = i;
-            return values;
-        }(),
-        {0U}, std::vector<std::uint8_t>(view->second, 1U), error);
+        relation::IndexMapU32::identity(view->second),
+        relation::IndexMapU32::identity(1U), std::vector<std::uint8_t>(view->second, 1U), error);
 }
 
 void sort_fac_bindings(relation::OperationDescriptor &operation) {
@@ -899,17 +902,19 @@ bool fac_axes(const std::map<std::string, const TensorFamily *> &families, const
 }
 
 bool fac_logical_outer_mask(const TensorFamily &family, std::uint32_t outer_domain, bool source_zero,
-                            std::vector<std::uint32_t> &outer_map, std::vector<std::uint8_t> &active,
+                            relation::IndexMapU32 &outer_map, std::vector<std::uint8_t> &active,
                             std::string *error) {
     if (family.logical_shape.empty() || family.padded_shape.empty() || family.logical_shape.size() != family.padded_shape.size() ||
         family.padded_shape.front() != outer_domain || family.logical_shape.front() == 0U || family.logical_shape.front() > outer_domain) {
         if (error) *error = "BLOCKED: FAC4DNN logical outer selector shape is not authenticated: " + family.id;
         return false;
     }
-    outer_map.assign(outer_domain, 0U);
+    const bool full_identity = !source_zero && family.logical_shape.front() == outer_domain;
+    if (full_identity) outer_map.set_identity(outer_domain);
+    else outer_map.assign(outer_domain, 0U);
     active.assign(outer_domain, 0U);
     for (std::uint32_t row = 0U; row < family.logical_shape.front(); ++row) {
-        if (!source_zero) outer_map[row] = row;
+        if (!source_zero && !full_identity) outer_map[row] = row;
         active[row] = 1U;
     }
     return true;
@@ -926,15 +931,10 @@ bool add_fac_identity_from_families(relation::OperationDescriptor &operation, co
         if (error) *error = "BLOCKED: FAC4DNN identity map has incompatible family axes: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer);
-    for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
     return add_fac_binding_spec(
-        operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
-        [&]() {
-            std::vector<std::uint32_t> feature_map(view_feature);
-            for (std::uint32_t index = 0U; index < view_feature; ++index) feature_map[index] = index;
-            return feature_map;
-        }(),
+        operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature,
+        relation::IndexMapU32::identity(view_outer),
+        relation::IndexMapU32::identity(view_feature),
         std::vector<std::uint8_t>(view_outer, 1U), error);
 }
 
@@ -999,7 +999,7 @@ bool add_fac_feature_broadcast(relation::OperationDescriptor &operation, const s
         if (error) *error = "BLOCKED: FAC4DNN scalar-feature view must contain every padded feature lane: " + view_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map;
+    relation::IndexMapU32 outer_map;
     std::vector<std::uint8_t> active;
     if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
@@ -1023,7 +1023,7 @@ bool add_fac_selector_column(relation::OperationDescriptor &operation, const std
         if (error) *error = "BLOCKED: FAC4DNN selector-column logical outer rows are not aligned: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map;
+    relation::IndexMapU32 outer_map;
     std::vector<std::uint8_t> active;
     if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
     // These are auxiliary operation views with a full padded feature axis.
@@ -1093,7 +1093,7 @@ bool add_fac_feature_block(relation::OperationDescriptor &operation, const std::
         for (std::uint32_t index = 0U; index < view_feature; ++index)
             feature_map[index] = checked_native_u32(block_start + index, canonical_ref + "/feature-map", error, true);
     }
-    std::vector<std::uint32_t> outer_map;
+    relation::IndexMapU32 outer_map;
     std::vector<std::uint8_t> active;
     if (!fac_logical_outer_mask(*view_family, view_outer, false, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
@@ -1118,7 +1118,7 @@ bool add_fac_scalar_broadcast(relation::OperationDescriptor &operation, const st
         if (error) *error = "BLOCKED: FAC4DNN scalar broadcast logical shape is not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map;
+    relation::IndexMapU32 outer_map;
     std::vector<std::uint8_t> active;
     if (!fac_logical_outer_mask(*view_family, view_outer, true, outer_map, active, error)) return false;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature,
@@ -1138,13 +1138,11 @@ bool add_fac_vector_broadcast(relation::OperationDescriptor &operation, const st
         if (error) *error = "BLOCKED: FAC4DNN vector broadcast axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map;
+    relation::IndexMapU32 outer_map;
     std::vector<std::uint8_t> active;
     if (!fac_logical_outer_mask(*view_family, view_outer, true, outer_map, active, error)) return false;
-    std::vector<std::uint32_t> feature_map(view_feature);
-    for (std::uint32_t index = 0U; index < view_feature; ++index) feature_map[index] = index;
     return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, 1U, view_feature, view_feature, std::move(outer_map),
-                                std::move(feature_map), std::move(active), error);
+                                relation::IndexMapU32::identity(view_feature), std::move(active), error);
 }
 
 bool add_fac_feature_column(relation::OperationDescriptor &operation, const std::string &view_ref, const std::string &canonical_ref,
@@ -1157,9 +1155,8 @@ bool add_fac_feature_column(relation::OperationDescriptor &operation, const std:
         if (error) *error = "BLOCKED: FAC4DNN feature-column axes are not canonical: " + view_ref + " -> " + canonical_ref;
         return false;
     }
-    std::vector<std::uint32_t> outer_map(view_outer);
-    for (std::uint32_t index = 0U; index < view_outer; ++index) outer_map[index] = index;
-    return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature, std::move(outer_map),
+    return add_fac_binding_spec(operation, view_ref, canonical_ref, domains, view_outer, canonical_outer, view_feature, canonical_feature,
+                                relation::IndexMapU32::identity(view_outer),
                                 {column}, std::vector<std::uint8_t>(view_outer, 1U), error);
 }
 
@@ -2949,7 +2946,7 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
                 tensor_id, 3U, provider, context.ipa_generators, context.ipa_blinding_generator,
                 context.ipa_u_generator, blinder, relation_statement, wire, material,
                 error, &commitment_crypto_seconds, descriptor.segment_size,
-                &segment_progress);
+                &segment_progress, &context.ipa_generators);
             if (!commitment_built) return false;
             const auto point_conversion_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point commitment = zkdl::cpu_g1_from_native(wire.commitment);
@@ -3259,9 +3256,9 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
         }
     }
     context.generators = witness.generators;
-    context.ipa_generators = witness.ipa_generators;
-    context.ipa_blinding_generator = witness.ipa_blinding_generator;
-    context.ipa_u_generator = witness.ipa_u_generator;
+    context.ipa_generators = witness.authenticated_ipa_basis;
+    context.ipa_blinding_generator = witness.authenticated_ipa_basis.h();
+    context.ipa_u_generator = witness.authenticated_ipa_basis.u();
     if (!sorted_lookup_build_prover_context(*request.config, *request.tables, *request.relation, *request.statement, context.statement, witness, context,
                                             error, &timing.sorted_lookup_outer_commitment_wall_seconds,
                                             &timing.sorted_lookup_outer_commitment_file_io_seconds))
@@ -3269,7 +3266,10 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
     context.registered_model_commitments = witness.registered_model_commitments;
     context.hiding_commitment_records = witness.hiding_commitment_records;
     context.blinding_scalars = witness.blinding_scalars;
-    for (const auto &tensor : context.tensors) if (tensor.visibility == 1U && !tensor.values.empty()) context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto &tensor : context.tensors)
+        if (tensor.visibility == 1U && !tensor.values.empty() &&
+            tensor.id != "public_Y")
+            context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto &descriptor : context.tensor_descriptors) {
         if (graph_public_descriptor_id(descriptor.id)) {
             relation::SegmentedTensorProvider provider;
@@ -3418,9 +3418,9 @@ bool context_from_verify(const NativeVerifyRequest &request, relation::VerifierC
         }
     }
     context.generators = supplied.generators;
-    context.ipa_generators = supplied.ipa_generators;
-    context.ipa_blinding_generator = supplied.ipa_blinding_generator;
-    context.ipa_u_generator = supplied.ipa_u_generator;
+    context.ipa_generators = supplied.authenticated_ipa_basis;
+    context.ipa_blinding_generator = supplied.authenticated_ipa_basis.h();
+    context.ipa_u_generator = supplied.authenticated_ipa_basis.u();
     if (!supplied.sorted_lookup_providers.empty()) {
         if (error) *error = "BLOCKED: independent verifier context carries private sorted-lookup scratch";
         return false;
@@ -3428,7 +3428,9 @@ bool context_from_verify(const NativeVerifyRequest &request, relation::VerifierC
     if (!sorted_lookup_build_verifier_context(*request.tables, *request.relation, *request.statement, context.operations, context, error)) return false;
     context.registered_model_commitments = supplied.registered_model_commitments;
     context.hiding_commitment_records = supplied.hiding_commitment_records;
-    for (const auto &tensor : supplied.tensors) if (!tensor.values.empty()) context.public_tensor_values.emplace(tensor.id, tensor.values);
+    for (const auto &tensor : supplied.tensors)
+        if (!tensor.values.empty() && tensor.id != "public_Y")
+            context.public_tensor_values.emplace(tensor.id, tensor.values);
     for (const auto &descriptor : context.tensor_descriptors) {
         if (graph_public_descriptor_id(descriptor.id)) {
             relation::SegmentedTensorProvider provider;
@@ -4260,10 +4262,8 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     std::uint64_t public_y_openings = 0U, public_output_values = 0U;
     if (!checked_mul_wire(public_y_opening, public_y_segments, public_y_openings,
                           "public_Y segmented opening") ||
-        !checked_mul_wire(graph.nodes, config.architecture.classes,
-                          public_output_values, "public_Y logical value count") ||
-        !checked_mul_wire(public_output_values, 32U, public_output_values,
-                          "public_Y canonical field bytes") ||
+        !checked_mul_wire(public_y_domain, 32U, public_output_values,
+                          "public_Y padded canonical field bytes") ||
         !checked_add_wire(public_output_values, 8U, public_output_values,
                           "public_Y field vector framing")) return false;
     std::uint64_t proof_bytes = 8U + 268U; // GATR header/version + RelationStatement fixed fields.
@@ -4286,9 +4286,11 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     // The formal native request contains no caller-supplied operation vector.
     // The canonical context owns one nested backing set until each completed
     // descriptor moves into its reserved Proof::operations slot.  Measure the
-    // actual recursive capacities, retain both top-level header arrays, and
-    // reserve 2x nested capacity for allocator/growth headroom rather than
-    // inventing simultaneous copies of the serialized map payload.
+    // actual recursive capacities and retain both top-level header arrays.
+    // Nested backing gets 2x allocator/growth headroom.  Verification compares
+    // expected and received descriptor bytes concurrently, so reserve two
+    // maximum descriptor wires; the comparison scope ends before transcript
+    // absorption creates its separate one-wire temporary.
     std::uint64_t descriptor_backing_capacity_bytes = 0U;
     const auto add_descriptor_capacity = [&](std::uint64_t count,
                                               std::uint64_t element_size,
@@ -4383,6 +4385,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     }
     std::uint64_t context_header_bytes = 0U, proof_header_bytes = 0U;
     std::uint64_t descriptor_backing_reserve = 0U;
+    std::uint64_t descriptor_compare_wire_bytes = 0U;
     if (!checked_mul_wire(operations.capacity(), sizeof(relation::OperationDescriptor),
                           context_header_bytes, "context operation header capacity") ||
         !checked_mul_wire(operations.size(), sizeof(relation::OperationProof),
@@ -4392,6 +4395,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         !checked_mul_wire(descriptor_backing_capacity_bytes, 2U,
                           descriptor_backing_reserve,
                           "descriptor backing allocator reserve") ||
+        !checked_mul_wire(metrics->operation_descriptor_max_bytes, 2U,
+                          descriptor_compare_wire_bytes,
+                          "expected/actual descriptor comparison buffers") ||
         !checked_add_wire(context_header_bytes, proof_header_bytes,
                           metrics->operation_descriptor_resident_bytes_upper_bound,
                           "descriptor context/proof headers") ||
@@ -4400,9 +4406,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                           metrics->operation_descriptor_resident_bytes_upper_bound,
                           "descriptor backing and allocator reserve") ||
         !checked_add_wire(metrics->operation_descriptor_resident_bytes_upper_bound,
-                          metrics->operation_descriptor_max_bytes,
+                          descriptor_compare_wire_bytes,
                           metrics->operation_descriptor_resident_bytes_upper_bound,
-                          "per-operation descriptor absorb temporary")) return false;
+                          "expected/actual descriptor comparison buffers")) return false;
 
     // Typed source payload for the one GatTrace held by produce().  These
     // formulas follow the owning vectors in HiddenHeadTrace,

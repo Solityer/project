@@ -432,6 +432,201 @@ def _graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
     return {"schema": "zkdl_canonical_graph_set_v1", "datasets": datasets}
 
 
+def _checked_capacity_product(left: int, right: int, label: str) -> int:
+    maximum = (1 << 64) - 1
+    if (type(left) is not int or type(right) is not int or left < 0 or right < 0 or
+            (right != 0 and left > maximum // right)):
+        raise PhaseError(f"native capacity {label} overflows u64")
+    return left * right
+
+
+def _checked_capacity_sum(*values: int, label: str) -> int:
+    maximum = (1 << 64) - 1
+    total = 0
+    for value in values:
+        if type(value) is not int or value < 0 or value > maximum - total:
+            raise PhaseError(f"native capacity {label} overflows u64")
+        total += value
+    return total
+
+
+def _native_public_payload_bounds(admission: dict[str, Any], nodes: int, classes: int,
+                                  proof_bytes: int, operation_descriptor_bytes: int) -> dict[str, int]:
+    """Derive resident Y and authenticated static-table payloads from native typed counts."""
+    maximum = (1 << 64) - 1
+    typed_counts = (
+        "native_public_y_padded_domain_elements",
+        "native_static_table_raw_i64_capacity_elements",
+        "native_static_table_padded_field_elements",
+    )
+    counts: dict[str, int] = {}
+    for field in typed_counts:
+        value = admission.get(field)
+        if type(value) is not int or value <= 0 or value > maximum:
+            raise PhaseError(f"native admission lacks a positive source-typed metric {field}")
+        counts[field] = value
+    if type(nodes) is not int or type(classes) is not int or nodes <= 0 or classes <= 0:
+        raise PhaseError("native capacity public_Y logical shape is invalid")
+    if nodes > (1 << 30) or classes > (1 << 30):
+        raise PhaseError("native capacity public_Y logical shape exceeds the native domain")
+    padded_nodes = 1 << (nodes - 1).bit_length()
+    padded_classes = 1 << (classes - 1).bit_length()
+    expected_domain = _checked_capacity_product(padded_nodes, padded_classes, "public_Y padded domain")
+    public_y_domain = counts["native_public_y_padded_domain_elements"]
+    if expected_domain > (1 << 30) or public_y_domain != expected_domain:
+        raise PhaseError("native admission public_Y padded domain differs from the authenticated logical shape")
+    if (type(proof_bytes) is not int or type(operation_descriptor_bytes) is not int or
+            proof_bytes <= 0 or operation_descriptor_bytes < 0 or
+            proof_bytes > maximum or operation_descriptor_bytes > maximum):
+        raise PhaseError("native capacity proof/descriptor wire counts are invalid")
+
+    public_y_field_bytes = _checked_capacity_product(public_y_domain, 32, "public_Y field bytes")
+    # The encoded field vector contributes its u64 element count; append_statement
+    # adds a second u64 byte-length frame around that encoded vector.
+    public_y_wire_bytes = _checked_capacity_sum(public_y_field_bytes, 16, label="public_Y proof wire bytes")
+    non_public_y_wire_and_descriptor = _checked_capacity_sum(
+        operation_descriptor_bytes, public_y_wire_bytes, label="public_Y/descriptor proof wire bytes")
+    if non_public_y_wire_and_descriptor > proof_bytes:
+        raise PhaseError("native proof wire bound is smaller than its descriptor/public_Y sections")
+    other_proof_wire_bytes = proof_bytes - non_public_y_wire_and_descriptor
+    other_proof_object_and_wire_bytes = _checked_capacity_sum(
+        _checked_capacity_product(other_proof_wire_bytes, 4, "non-public_Y proof object/wire bound"),
+        operation_descriptor_bytes, label="non-public_Y proof object/wire bound")
+
+    prove_public_y_live = _checked_capacity_sum(
+        _checked_capacity_product(public_y_field_bytes, 5, "prover public_Y live copies"),
+        32, label="prover public_Y live copies")
+    verify_public_y_live = _checked_capacity_sum(
+        _checked_capacity_product(public_y_field_bytes, 6, "verifier public_Y live copies"),
+        40, label="verifier public_Y live copies")
+    logical_output_elements = _checked_capacity_product(nodes, classes, "public_Y logical matrix elements")
+    verify_public_y_matrix_bytes = _checked_capacity_product(
+        logical_output_elements, 8, "verifier logical public_Y matrix bytes")
+    verify_public_y_live = _checked_capacity_sum(
+        verify_public_y_live, verify_public_y_matrix_bytes,
+        label="verifier public_Y live copies and logical matrix")
+
+    static_table_raw_i64_bytes = _checked_capacity_product(
+        counts["native_static_table_raw_i64_capacity_elements"], 8,
+        "raw static-table resident bytes")
+    static_table_padded_field_bytes = _checked_capacity_product(
+        counts["native_static_table_padded_field_elements"], 32,
+        "padded static-table resident bytes")
+    public_y_witness_block_bytes = _checked_capacity_product(
+        min(public_y_domain, 1 << 18), 32, "public_Y witness read block bytes")
+    public_y_witness_materialize_live = _checked_capacity_sum(
+        public_y_field_bytes, public_y_witness_block_bytes,
+        label="public_Y witness materialization")
+    # Statement construction pads a temporary Fr vector and then encodes the
+    # padded vector while the trace and source Matrix remain resident. The
+    # encoder output is another 32P-byte vector plus its u64 element count.
+    public_y_digest_live = _checked_capacity_sum(
+        _checked_capacity_product(public_y_field_bytes, 2, "public_Y statement digest buffers"),
+        8, label="public_Y statement digest buffers")
+    public_y_witness_live = max(public_y_witness_materialize_live, public_y_digest_live)
+
+    body_fields = (
+        "native_hidden_matmul_body_max_bytes",
+        "native_sparse_route_body_max_bytes",
+        "native_fac_line8_body_max_bytes",
+        "native_constraint_body_max_bytes",
+        "native_padding_record_body_max_bytes",
+        "native_sumcheck_body_max_bytes",
+        "native_terminal_relation_body_max_bytes",
+        "native_sorted_lookup_relation_body_max_bytes",
+        "native_sorted_lookup_proof_body_max_bytes",
+    )
+    bodies: dict[str, int] = {}
+    for field in body_fields:
+        value = admission.get(field)
+        if type(value) is not int or value <= 0 or value > maximum:
+            raise PhaseError(f"native admission lacks a positive source-typed body bound {field}")
+        bodies[field] = value
+    hidden_body = bodies["native_hidden_matmul_body_max_bytes"]
+    route_body = bodies["native_sparse_route_body_max_bytes"]
+    fac_body = bodies["native_fac_line8_body_max_bytes"]
+    constraint_body = bodies["native_constraint_body_max_bytes"]
+    padding_body = bodies["native_padding_record_body_max_bytes"]
+    sumcheck_body = bodies["native_sumcheck_body_max_bytes"]
+    terminal_body = bodies["native_terminal_relation_body_max_bytes"]
+    lookup_relation_body = bodies["native_sorted_lookup_relation_body_max_bytes"]
+    lookup_proof_body = bodies["native_sorted_lookup_proof_body_max_bytes"]
+    child_capacity_peak = _checked_capacity_sum(
+        _checked_capacity_product(sumcheck_body, 2, "nested sumcheck capacity"),
+        _checked_capacity_product(terminal_body, 2, "nested terminal capacity"),
+        label="nested sumcheck/terminal capacities")
+    constraint_record_body = _checked_capacity_sum(
+        constraint_body, 4, label="constraint BCH2 record body")
+    padding_serializer_peak = _checked_capacity_sum(
+        _checked_capacity_product(padding_body, 2, "padding-record vector capacity"),
+        _checked_capacity_product(constraint_record_body, 2, "padding relation vector capacity"),
+        child_capacity_peak, label="padding serialization scratch")
+    operation_batch_peak = _checked_capacity_sum(
+        _checked_capacity_product(constraint_record_body, 2, "operation constraint vector capacity"),
+        child_capacity_peak, label="operation constraint serialization scratch")
+    lookup_relation_build_peak = _checked_capacity_sum(
+        _checked_capacity_product(lookup_proof_body, 2, "sorted-lookup outer vector capacity"),
+        _checked_capacity_product(lookup_relation_body, 2, "sorted-lookup relation vector capacity"),
+        child_capacity_peak, label="sorted-lookup relation serialization scratch")
+    # On a growth-triggering insert, the old and new outer buffers coexist.
+    # With a doubling vector growth bound their combined capacities are at
+    # most 3x the final body size; the encoded relation remains live too.
+    lookup_outer_append_peak = _checked_capacity_sum(
+        _checked_capacity_product(lookup_proof_body, 3, "sorted-lookup outer reallocation"),
+        _checked_capacity_product(lookup_relation_body, 2, "sorted-lookup encoded relation capacity"),
+        label="sorted-lookup outer append scratch")
+    proof_serialization_scratch_peak = max(
+        padding_serializer_peak, operation_batch_peak,
+        lookup_relation_build_peak, lookup_outer_append_peak)
+    lookup_parse_peak = _checked_capacity_sum(
+        _checked_capacity_product(lookup_proof_body, 2, "sorted-lookup parser body copy"),
+        _checked_capacity_product(lookup_relation_body, 2, "sorted-lookup parser relation copy"),
+        child_capacity_peak, label="sorted-lookup parse scratch")
+    padding_parse_peak = padding_serializer_peak
+    relation_transcript_peak = _checked_capacity_sum(
+        _checked_capacity_product(lookup_relation_body, 2, "sorted-lookup transcript relation vector"),
+        child_capacity_peak, label="sorted-lookup transcript scratch")
+    opaque_verify_candidates = (
+        _checked_capacity_sum(
+            _checked_capacity_product(hidden_body, 8, "hidden opaque typed-proof capacity"),
+            _checked_capacity_product(sumcheck_body, 2, "hidden opaque sumcheck capacity"),
+            8192, label="hidden opaque verify scratch"),
+        _checked_capacity_sum(
+            _checked_capacity_product(route_body, 8, "route opaque typed-proof capacity"),
+            _checked_capacity_product(sumcheck_body, 2, "route opaque sumcheck capacity"),
+            8192, label="route opaque verify scratch"),
+        _checked_capacity_sum(
+            _checked_capacity_product(fac_body, 8, "FAC opaque typed-proof capacity"),
+            _checked_capacity_product(route_body, 2, "FAC route relation capacity"),
+            _checked_capacity_product(sumcheck_body, 2, "FAC opaque sumcheck capacity"),
+            8192, label="FAC opaque verify scratch"),
+        _checked_capacity_sum(
+            _checked_capacity_product(constraint_record_body, 8, "constraint opaque typed-proof capacity"),
+            _checked_capacity_product(sumcheck_body, 2, "constraint opaque sumcheck capacity"),
+            _checked_capacity_product(terminal_body, 2, "constraint opaque terminal capacity"),
+            label="constraint opaque verify scratch"),
+    )
+    opaque_operation_verify_peak = max(opaque_verify_candidates)
+    verifier_nested_scratch_peak = max(
+        lookup_parse_peak, padding_parse_peak, relation_transcript_peak,
+        child_capacity_peak, opaque_operation_verify_peak)
+    return {
+        "public_y_field_bytes": public_y_field_bytes,
+        "public_y_proof_wire_bytes": public_y_wire_bytes,
+        "other_proof_object_and_wire_bytes": other_proof_object_and_wire_bytes,
+        "public_y_prove_live_bytes": prove_public_y_live,
+        "public_y_verify_live_bytes": verify_public_y_live,
+        "public_y_witness_live_bytes": public_y_witness_live,
+        "public_y_statement_digest_live_bytes": public_y_digest_live,
+        "static_table_raw_i64_bytes": static_table_raw_i64_bytes,
+        "static_table_padded_field_bytes": static_table_padded_field_bytes,
+        "operation_constraint_serialization_scratch_bytes": operation_batch_peak,
+        "proof_nested_serialization_scratch_bytes": proof_serialization_scratch_peak,
+        "verify_nested_proof_scratch_bytes": verifier_nested_scratch_peak,
+        "verify_opaque_typedproof_scratch_bytes": opaque_operation_verify_peak,
+    }
+
+
 def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any],
                        native: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
     # Sizes and typed source payloads come from the production native
@@ -499,6 +694,9 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "native_sorted_lookup_proof_body_max_bytes",
             "native_relation_proof_sections_wire_bytes_upper_bound",
             "native_proof_wire_bytes_upper_bound",
+            "native_public_y_padded_domain_elements",
+            "native_static_table_raw_i64_capacity_elements",
+            "native_static_table_padded_field_elements",
             "native_commitment_section_wire_bytes_upper_bound",
             "native_operation_descriptor_resident_bytes_upper_bound",
             "native_trace_i64_payload_bytes",
@@ -535,6 +733,8 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         input_shape = audit["input_shape"]
         features = int(input_shape["features"])
         classes = int(input_shape["classes"])
+        public_payload = _native_public_payload_bounds(
+            admission, nodes, classes, proof_bytes, operation_descriptor_bytes)
         max_merge_rows = int(admission["maximum_sorted_lookup_merge_logical_rows"])
         model_segments = int(admission["model_commitment_segment_count"])
         model_elements = int(admission["model_parameter_elements"])
@@ -561,14 +761,18 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
 
         graph_memory = (nodes * features * 8 + edges * 8 + nodes * 48 +
                         (graphs + 1) * 16 + (nodes + 1) * 8)
-        trace_payload = (int(admission["native_trace_i64_payload_bytes"]) +
-                         int(admission["native_trace_field_payload_bytes"]) +
-                         int(admission["native_trace_u8_payload_bytes"]) +
-                         int(admission["native_trace_object_metadata_bytes"]))
+        trace_payload = _checked_capacity_sum(
+            int(admission["native_trace_i64_payload_bytes"]),
+            int(admission["native_trace_field_payload_bytes"]),
+            int(admission["native_trace_u8_payload_bytes"]),
+            int(admission["native_trace_object_metadata_bytes"]),
+            label="native trace payload")
         forward_peak = int(admission["native_trace_forward_live_peak_bytes_upper_bound"])
         segmented_sumcheck_scratch = int(admission["native_segmented_sumcheck_live_peak_bytes_upper_bound"])
         descriptor_resident = int(admission["native_operation_descriptor_resident_bytes_upper_bound"])
-        sorting_workspace = max_merge_rows * 256 + 8 * mib
+        sorting_workspace = _checked_capacity_sum(
+            _checked_capacity_product(max_merge_rows, 256, "sorted lookup workspace"),
+            8 * mib, label="sorted lookup workspace")
         # CPU G1 MSM uses BLST Pippenger in fixed 16,384-point chunks.  The
         # affine-point array, scalar-pointer array, and BLST scratch are
         # source-bounded by cpu_g1_msm_workspace_bound_bytes(); the native
@@ -583,20 +787,48 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         # descriptor backing capacity, context/proof headers, allocator reserve,
         # and the per-operation absorb temporary are accounted separately;
         # retain exactly one serialized descriptor copy here.
-        proof_object_and_wire = (proof_bytes - operation_descriptor_bytes) * 4 + operation_descriptor_bytes
-        srs_memory = srs_bytes * 4
-        model_and_graph = graph_memory + model_elements * 8
+        proof_object_and_wire = public_payload["other_proof_object_and_wire_bytes"]
+        srs_memory = _checked_capacity_product(srs_bytes, 4, "materialized SRS memory")
+        model_and_graph = _checked_capacity_sum(
+            graph_memory,
+            _checked_capacity_product(model_elements, 8, "model parameter memory"),
+            public_payload["static_table_raw_i64_bytes"],
+            label="model/graph/raw static tables")
+        prove_and_serialize_public_material = _checked_capacity_sum(
+            public_payload["public_y_prove_live_bytes"],
+            public_payload["static_table_padded_field_bytes"],
+            label="prover/serializer public material")
+        verify_public_material = _checked_capacity_sum(
+            public_payload["public_y_verify_live_bytes"],
+            public_payload["static_table_padded_field_bytes"],
+            public_payload["verify_nested_proof_scratch_bytes"],
+            label="verifier public material and nested proof buffers")
+        prove_public_material = _checked_capacity_sum(
+            prove_and_serialize_public_material,
+            public_payload["proof_nested_serialization_scratch_bytes"],
+            label="prover public material and nested serializer buffers")
+        witness_public_materialization_peak = _checked_capacity_sum(
+            model_and_graph, trace_payload, public_payload["public_y_witness_live_bytes"],
+            label="public_Y witness materialization phase")
         native_phase_peak_bytes = {
-            "forward": model_and_graph + forward_peak,
-            "sorted_lookup": model_and_graph + trace_payload + sorting_workspace + descriptor_resident,
-            "prove": (model_and_graph + descriptor_resident + segmented_sumcheck_scratch +
-                      sorting_workspace + proof_object_and_wire + srs_memory +
-                      cpu_g1_msm_workspace + 256 * mib),
-            "serialize": (model_and_graph + descriptor_resident +
-                          proof_object_and_wire + srs_memory + 256 * mib),
-            "fresh_independent_verify": (model_and_graph + descriptor_resident +
-                                          proof_object_and_wire + srs_memory +
-                                          cpu_g1_msm_workspace + 256 * mib),
+            "forward": _checked_capacity_sum(
+                model_and_graph, forward_peak, label="forward phase peak"),
+            "sorted_lookup": _checked_capacity_sum(
+                model_and_graph, trace_payload, sorting_workspace, descriptor_resident,
+                label="sorted lookup phase peak"),
+            "prove": _checked_capacity_sum(
+                model_and_graph, descriptor_resident, segmented_sumcheck_scratch,
+                sorting_workspace, proof_object_and_wire, prove_public_material, srs_memory,
+                cpu_g1_msm_workspace, 256 * mib, label="prove phase peak"),
+            "serialize": _checked_capacity_sum(
+                model_and_graph, descriptor_resident, proof_object_and_wire,
+                prove_public_material, srs_memory, 256 * mib,
+                label="serialization phase peak"),
+            "fresh_independent_verify": _checked_capacity_sum(
+                model_and_graph, descriptor_resident, proof_object_and_wire,
+                verify_public_material, srs_memory, cpu_g1_msm_workspace, 256 * mib,
+                label="independent verification phase peak"),
+            "public_y_witness_materialization": witness_public_materialization_peak,
         }
         # Native setup materializes one 48-byte G1 wire per G/H/U point in
         # std::set<Wire>, then uses two 1024-point blst batches.  The 512-byte
@@ -615,7 +847,8 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             registration_bytes + sidecar_bytes + manifest_bytes + 256 * mib
         )
         setup_peak = max(setup_generation_peak, setup_decode_registration_peak)
-        witness_peak = max(native_phase_peak_bytes["forward"], native_phase_peak_bytes["sorted_lookup"])
+        witness_peak = max(native_phase_peak_bytes["forward"], native_phase_peak_bytes["sorted_lookup"],
+                           native_phase_peak_bytes["public_y_witness_materialization"])
         # Tensor commitments are constructed inside the native relation prove
         # call; its complete live-memory envelope is therefore also the
         # source-derived commitment-phase upper bound.
@@ -643,6 +876,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "srs_materialized_bytes_upper_bound": srs_bytes,
             "native_route_source_domain": route_source_domain,
             "native_route_selector_factor_elements": route_factor_elements,
+            "native_payload_live_bounds_bytes": public_payload,
             "phase_peak_bytes": {
                 **native_phase_peak_bytes,
                 "setup_native_srs_generation": setup_generation_peak,

@@ -216,9 +216,13 @@ bool relation_artifact_roundtrip(const std::vector<zkdl::CpuG1Point> &generators
     prover.tensors.push_back(TensorWitness{"public_Y", 1U, 8U, public_values});
     prover.operations = {operation};
     prover.generators = generators;
-    prover.ipa_generators = generators;
     prover.ipa_blinding_generator = h;
     prover.ipa_u_generator = u;
+    std::vector<zkdl::CpuG1Point> prover_ipa_generators = generators;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(prover_ipa_generators), h, u, prover.ipa_generators,
+            error))
+        return fixture_fail("prover-ipa-basis", "cannot authenticate prover IPA basis", error);
     Proof proof;
     std::cerr << "segmented_fixture stage=prove status=START reason=CPU native tiny relation\n";
     if (!prove(prover, proof, error)) return fixture_fail("prove", "CPU native tiny relation rejected", error);
@@ -244,9 +248,13 @@ bool relation_artifact_roundtrip(const std::vector<zkdl::CpuG1Point> &generators
     verifier.tensor_ids = {"public_Y"};
     verifier.tensor_visibility.emplace("public_Y", 1U);
     verifier.generators = generators;
-    verifier.ipa_generators = generators;
     verifier.ipa_blinding_generator = h;
     verifier.ipa_u_generator = u;
+    std::vector<zkdl::CpuG1Point> verifier_ipa_generators = generators;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(verifier_ipa_generators), h, u, verifier.ipa_generators,
+            error))
+        return fixture_fail("verifier-ipa-basis", "cannot authenticate verifier IPA basis", error);
     std::cerr << "segmented_fixture stage=independent-verify status=START reason=fresh verifier context\n";
     if (!verify(decoded, verifier, error)) return fixture_fail("independent-verify", "fresh verifier rejected valid artifact", error);
     fixture_pass("independent-verify", "fresh verifier accepted serialized artifact");

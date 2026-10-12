@@ -39,6 +39,7 @@ struct NativeRelationWitness {
     std::vector<zkdl::CpuG1Point> generators;
 
     std::vector<zkdl::CpuG1Point> ipa_generators;
+    zkdl::CpuIpaBasisContext authenticated_ipa_basis;
     zkdl::CpuG1Point ipa_blinding_generator;
     zkdl::CpuG1Point ipa_u_generator;
     std::string registry_path;

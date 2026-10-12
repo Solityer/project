@@ -1,0 +1,8 @@
+baseline-local-build: make advanced to the next goal, so recipe/dependencies returned rc=0; observed build interval 01:26:29 to 01:29:31 +0800 (~182 s, timestamp resolution 1 s).
+sumcheck-round-oracle-check compile: compile recipe completed and execution recipe began; rc=0; observed interval 01:29:31 to 01:32:13 +0800 (~162 s, timestamp resolution 1 s).
+sumcheck-round-oracle-check run: timeout 60s ./tests/sumcheck_round_oracle_check; timeout returned 124 at exactly 60 s; no PASS/FAIL marker or test output.
+overall requested make invocation: rc=2, elapsed 403731 ms; stopped at sumcheck-round-oracle-check.
+sorted-lookup-descriptor-check: not reached.
+tests/segmented_lookup_fixture: not reached (no compile or execution).
+tests/test_native_payload_capacity.py: not reached.
+py_compile scripts/formal_phase.py: not reached.

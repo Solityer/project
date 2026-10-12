@@ -1,0 +1,12 @@
+.....
+----------------------------------------------------------------------
+Ran 5 tests in 0.001s
+
+OK
+
+TEST_RC=0
+TEST_ELAPSED_MS=143
+
+COMMAND=python3 -m py_compile scripts/formal_phase.py
+PYCOMPILE_RC=0
+PYCOMPILE_ELAPSED_MS=92

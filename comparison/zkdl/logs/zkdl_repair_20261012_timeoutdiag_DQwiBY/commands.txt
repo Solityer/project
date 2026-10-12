@@ -1,0 +1,2 @@
+logdir=logs/zkdl_repair_20261012_timeoutdiag_DQwiBY
+make -j1 sumcheck-round-oracle-check

@@ -1,0 +1,3 @@
+make -j1 baseline-local-build sumcheck-round-oracle-check sorted-lookup-descriptor-check tests/segmented_lookup_fixture
+timeout 60s python3 tests/test_native_payload_capacity.py
+python3 -m py_compile scripts/formal_phase.py

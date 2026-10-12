@@ -41,7 +41,7 @@ segmented-shared-srs-check: tests/segmented_lookup_fixture
 	timeout 1800s ./tests/segmented_lookup_fixture --authenticated-srs-config "$(SRS_CONFIG)"
 
 sorted-lookup-descriptor-check: tests/authenticated_sorted_lookup_descriptor_check
-	./tests/authenticated_sorted_lookup_descriptor_check
+	timeout 60s ./tests/authenticated_sorted_lookup_descriptor_check
 
 sorted-lookup-prefix-cache-check: tests/sorted_lookup_prefix_cache_check
 	timeout 60s ./tests/sorted_lookup_prefix_cache_check
@@ -95,8 +95,8 @@ tests/output_stream_failure_check: tests/output_stream_failure_check.cpp gat_ada
 tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	 timeout 600s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter tests/segmented_lookup_fixture.cu $(BLST_LIBRARY) -o $@
 
-tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_lookup_descriptor_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
-	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
+tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_lookup_descriptor_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 tests/sorted_lookup_prefix_cache_check: tests/sorted_lookup_prefix_cache_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	timeout 300s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
@@ -116,5 +116,28 @@ tests/pointwise_algebra_check: tests/pointwise_algebra_check.cu zkrelation-proof
 $(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh gat_adapter/output_stream.hpp gat_adapter/checkpoint_manifest_json.hpp gat_adapter/integer_bound_ledger.hpp gat_adapter/lookup_table_index_bits.hpp gat_adapter/signed_round_bounds.hpp gat_adapter/static_table_bounds.hpp cpu-backend.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) $(BLST_LIBRARY) -o $@
 
+.PHONY: sumcheck-round-oracle-check
+sumcheck-round-oracle-check: tests/sumcheck_round_oracle_check
+	timeout 60s ./tests/sumcheck_round_oracle_check
+
+tests/sumcheck_round_oracle_check: tests/sumcheck_round_oracle_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
+
 clean:
 	rm -f $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET) tests/core_smoke
+
+.PHONY: witness-numerics-check
+witness-numerics-check: tests/gat_witness_numerics_check
+	timeout 60s ./tests/gat_witness_numerics_check
+
+tests/gat_witness_numerics_check: tests/gat_witness_numerics_check.cpp gat_adapter/gat_witness_numerics.hpp gat_adapter/gat_adapter.hpp
+	$(CXX) -O2 -std=c++17 -I. $< -lcrypto -o $@
+
+$(GAT_TARGET): gat_adapter/gat_witness_numerics.hpp
+
+.PHONY: cpu-ipa-optimized-check
+cpu-ipa-optimized-check: tests/cpu_ipa_optimized_check
+	timeout 120s ./tests/cpu_ipa_optimized_check
+
+tests/cpu_ipa_optimized_check: tests/cpu_ipa_optimized_check.cu cpu-backend.cuh proof.cuh g1-wire.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. $< $(BLST_LIBRARY) -o $@

@@ -1,0 +1,97 @@
+started_utc=2026-10-11T16:46:27Z
+command=make -B -j1 baseline-local-build witness-numerics-check cpu-ipa-optimized-check sorted-lookup-descriptor-check tests/segmented_lookup_fixture
+cwd=/home/pzh/project/comparison/zkdl
+
+[cpu]
+Architecture:                            aarch64
+CPU op-mode(s):                          64-bit
+Byte Order:                              Little Endian
+CPU(s):                                  20
+On-line CPU(s) list:                     0-19
+Vendor ID:                               ARM
+Model name:                              Cortex-X925
+Model:                                   1
+Thread(s) per core:                      1
+Core(s) per socket:                      10
+Socket(s):                               1
+Stepping:                                r0p1
+Frequency boost:                         disabled
+CPU(s) scaling MHz:                      100%
+CPU max MHz:                             3900.0000
+CPU min MHz:                             1378.0000
+BogoMIPS:                                2000.00
+Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh bti ecv afp wfxt
+Model name:                              Cortex-A725
+Model:                                   1
+
+[ram-swap]
+MemTotal:       127601388 kB
+MemAvailable:   104450584 kB
+SwapTotal:      16777212 kB
+SwapFree:       16768200 kB
+
+[cgroup-memory]
+
+[disk]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  3.7T  2.0T  1.6T  57% /
+
+[disk-bytes]
+Filesystem         1B-blocks          Used     Available Use% Mounted on
+/dev/nvme0n1p2 4031871553536 2153646657536 1673384022016  57% /
+make_exit_code=2
+finished_utc=2026-10-11T16:46:51Z
+
+[incremental-run]
+started_utc=2026-10-11T16:48:37Z
+command=make -j1 baseline-local-build witness-numerics-check cpu-ipa-optimized-check sorted-lookup-descriptor-check tests/segmented_lookup_fixture
+
+[ram-swap-at-incremental-start]
+MemTotal:       127601388 kB
+MemAvailable:   79276988 kB
+SwapTotal:      16777212 kB
+SwapFree:       16768200 kB
+
+[cgroup-memory-at-incremental-start]
+
+[disk-at-incremental-start]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  3.7T  2.0T  1.6T  57% /
+Filesystem         1B-blocks          Used     Available Use% Mounted on
+/dev/nvme0n1p2 4031871553536 2153652822016 1673377857536  57% /
+incremental_make_exit_code=2
+incremental_finished_utc=2026-10-11T16:51:55Z
+
+[remaining-original-batch]
+started_utc=2026-10-11T16:52:39Z
+command=make -j1 cpu-ipa-optimized-check sorted-lookup-descriptor-check tests/segmented_lookup_fixture
+
+[ram-swap-at-start]
+MemTotal:       127601388 kB
+MemAvailable:   63264700 kB
+SwapTotal:      16777212 kB
+SwapFree:       16768200 kB
+
+[disk-at-start]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  3.7T  2.0T  1.6T  57% /
+remaining_make_exit_code=2
+remaining_finished_utc=2026-10-11T16:54:51Z
+
+[final-remaining-stages]
+started_utc=2026-10-11T16:55:54Z
+stage1=make -j1 tests/authenticated_sorted_lookup_descriptor_check
+stage2=timeout 60s make -j1 sorted-lookup-descriptor-check
+stage3=make -j1 tests/segmented_lookup_fixture (compile only)
+
+[ram-swap-at-start]
+MemTotal:       127601388 kB
+MemAvailable:   55212576 kB
+SwapTotal:      16777212 kB
+SwapFree:       16768200 kB
+
+[disk-at-start]
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/nvme0n1p2  3.7T  2.0T  1.6T  57% /
+final_remaining_exit_code=2
+final_remaining_finished_utc=2026-10-11T16:58:18Z

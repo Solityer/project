@@ -18,6 +18,15 @@
 
 #include <mutex>
 #include <memory>
+#include <atomic>
+#include <condition_variable>
+#include <exception>
+#include <functional>
+#include <map>
+#include <queue>
+#include <thread>
+#include <type_traits>
+#include <utility>
 
 namespace zkdl {
 
@@ -492,6 +501,164 @@ inline CpuG1Point cpu_g1_sum_portable(const std::vector<CpuG1Point>& points,
 static constexpr size_t kCpuG1MsmChunkPoints = 1U << 14U;
 static constexpr size_t kCpuG1MsmProfileBytes = 16U * 1024U * 1024U;
 
+inline unsigned cpu_parallel_worker_count() {
+    const unsigned hardware = std::thread::hardware_concurrency();
+    if (hardware < 2U) return 0U;
+    // Keep one core for the calling thread and cap the pool for predictable
+    // host-memory and scheduling costs on larger machines.
+    return std::min(19U, hardware - 1U);
+}
+
+class CpuBoundedThreadPool {
+public:
+    CpuBoundedThreadPool() {
+        const unsigned count = cpu_parallel_worker_count();
+        workers_.reserve(count);
+        try {
+            for (unsigned index = 0U; index < count; ++index)
+                workers_.emplace_back([this] { worker_loop(); });
+        } catch (...) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                stopping_ = true;
+            }
+            available_.notify_all();
+            for (auto& worker : workers_)
+                if (worker.joinable()) worker.join();
+            workers_.clear();
+            stopping_ = false;
+        }
+    }
+
+    CpuBoundedThreadPool(const CpuBoundedThreadPool&) = delete;
+    CpuBoundedThreadPool& operator=(const CpuBoundedThreadPool&) = delete;
+
+    ~CpuBoundedThreadPool() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopping_ = true;
+        }
+        available_.notify_all();
+        for (auto& worker : workers_)
+            if (worker.joinable()) worker.join();
+    }
+
+    std::size_t size() const noexcept { return workers_.size(); }
+
+    void submit(std::function<void()> task) {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopping_) throw std::runtime_error("CPU proof worker pool is stopping");
+            tasks_.push(std::move(task));
+        }
+        available_.notify_one();
+    }
+
+private:
+    void worker_loop() {
+        for (;;) {
+            std::function<void()> task;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                available_.wait(lock, [&] { return stopping_ || !tasks_.empty(); });
+                if (stopping_ && tasks_.empty()) return;
+                task = std::move(tasks_.front());
+                tasks_.pop();
+            }
+            try { task(); } catch (...) { /* task wrappers own exception reporting */ }
+        }
+    }
+
+    std::mutex mutex_;
+    std::condition_variable available_;
+    std::queue<std::function<void()>> tasks_;
+    std::vector<std::thread> workers_;
+    bool stopping_ = false;
+};
+
+inline CpuBoundedThreadPool& cpu_bounded_thread_pool() {
+    static CpuBoundedThreadPool pool;
+    return pool;
+}
+
+inline bool& cpu_in_parallel_worker() {
+    static thread_local bool in_worker = false;
+    return in_worker;
+}
+
+template <typename Function>
+inline void cpu_parallel_for(std::size_t count, std::size_t grain,
+                             Function&& function) {
+    constexpr std::size_t kParallelThreshold = 4096U;
+    if (count < kParallelThreshold || grain == 0U || cpu_in_parallel_worker()) {
+        for (std::size_t index = 0U; index < count; ++index) function(index);
+        return;
+    }
+    CpuBoundedThreadPool& pool = cpu_bounded_thread_pool();
+    const std::size_t background_workers = pool.size();
+    if (background_workers == 0U) {
+        for (std::size_t index = 0U; index < count; ++index) function(index);
+        return;
+    }
+    struct Group {
+        std::atomic<std::size_t> next{0U};
+        std::atomic<std::size_t> remaining{0U};
+        std::atomic<bool> cancelled{false};
+        std::mutex mutex;
+        std::condition_variable completed;
+        std::exception_ptr first_error;
+    };
+    auto group = std::make_shared<Group>();
+    auto callable = std::make_shared<typename std::decay<Function>::type>(
+        std::forward<Function>(function));
+    group->remaining.store(background_workers + 1U, std::memory_order_relaxed);
+    const auto run = [group, callable, count, grain] {
+        const bool previous_worker_state = cpu_in_parallel_worker();
+        cpu_in_parallel_worker() = true;
+        try {
+            while (!group->cancelled.load(std::memory_order_relaxed)) {
+                const std::size_t begin = group->next.fetch_add(grain, std::memory_order_relaxed);
+                if (begin >= count) break;
+                const std::size_t end = std::min(count, begin + grain);
+                for (std::size_t index = begin; index < end; ++index) {
+                    if (group->cancelled.load(std::memory_order_relaxed)) break;
+                    (*callable)(index);
+                }
+            }
+        } catch (...) {
+            group->cancelled.store(true, std::memory_order_relaxed);
+            std::lock_guard<std::mutex> lock(group->mutex);
+            if (!group->first_error) group->first_error = std::current_exception();
+        }
+        cpu_in_parallel_worker() = previous_worker_state;
+        if (group->remaining.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+            std::lock_guard<std::mutex> lock(group->mutex);
+            group->completed.notify_one();
+        }
+    };
+
+    std::size_t submitted = 0U;
+    try {
+        for (; submitted < background_workers; ++submitted) pool.submit(run);
+    } catch (...) {
+        group->cancelled.store(true, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(group->mutex);
+            if (!group->first_error) group->first_error = std::current_exception();
+        }
+        const std::size_t not_submitted = background_workers - submitted;
+        group->remaining.fetch_sub(not_submitted, std::memory_order_acq_rel);
+    }
+    run();
+    {
+        std::unique_lock<std::mutex> lock(group->mutex);
+        group->completed.wait(lock, [&] {
+            return group->remaining.load(std::memory_order_acquire) == 0U;
+        });
+        if (group->first_error) std::rethrow_exception(group->first_error);
+    }
+}
+
 inline size_t cpu_g1_msm_workspace_bound_bytes() {
 #if defined(ZKDL_USE_BLST_G1_CODEC)
     const size_t scratch_bytes =
@@ -508,11 +675,12 @@ inline size_t cpu_g1_msm_workspace_bound_bytes() {
 #endif
 }
 
-inline CpuG1Point cpu_g1_sum(const std::vector<CpuG1Point>& points,
-                             const std::vector<FrWire>& scalars) {
-    if (points.size() != scalars.size()) throw std::invalid_argument("G1 MSM shape mismatch");
+inline CpuG1Point cpu_g1_sum(const CpuG1Point* points, const FrWire* scalars,
+                             size_t count) {
+    if (count != 0U && (points == nullptr || scalars == nullptr))
+        throw std::invalid_argument("G1 MSM has null input");
 #if defined(ZKDL_USE_BLST_G1_CODEC)
-    if (points.empty()) return CpuG1Point::zero();
+    if (count == 0U) return CpuG1Point::zero();
     if (cpu_g1_msm_workspace_bound_bytes() > kCpuG1MsmProfileBytes) {
         throw std::runtime_error("BLST G1 MSM exceeds its source-bound workspace profile");
     }
@@ -529,9 +697,9 @@ inline CpuG1Point cpu_g1_sum(const std::vector<CpuG1Point>& points,
     std::unique_ptr<zkdl_blst::limb_t[]> scratch(
         new zkdl_blst::limb_t[scratch_bytes / sizeof(zkdl_blst::limb_t)]);
     const zkdl_blst::blst_p1_affine* affine_sources[2] = {affine.get(), nullptr};
-    for (size_t offset = 0U; offset < points.size();) {
-        const size_t count = std::min(kCpuG1MsmChunkPoints, points.size() - offset);
-        for (size_t i = 0U; i < count; ++i) {
+    for (size_t offset = 0U; offset < count;) {
+        const size_t chunk_count = std::min(kCpuG1MsmChunkPoints, count - offset);
+        for (size_t i = 0U; i < chunk_count; ++i) {
             if (!fr_canonical(scalars[offset + i])) {
                 throw std::invalid_argument("non-canonical G1 MSM scalar");
             }
@@ -541,20 +709,26 @@ inline CpuG1Point cpu_g1_sum(const std::vector<CpuG1Point>& points,
         }
         zkdl_blst::blst_p1 partial{};
         zkdl_blst::blst_p1s_mult_pippenger(
-            &partial, affine_sources, count, scalar_ptrs.get(), sizeof(FrWire) * 8U,
+            &partial, affine_sources, chunk_count, scalar_ptrs.get(), sizeof(FrWire) * 8U,
             scratch.get());
         result = cpu_g1_add(result, cpu_g1_from_blst(partial));
-        offset += count;
+        offset += chunk_count;
     }
     return result;
 #else
     CpuG1Point result = CpuG1Point::zero();
-    for (size_t i = 0; i < points.size(); ++i) {
+    for (size_t i = 0; i < count; ++i) {
         if (!fr_canonical(scalars[i])) throw std::invalid_argument("non-canonical G1 MSM scalar");
         result = cpu_g1_add(result, cpu_g1_mul_portable(points[i], scalars[i]));
     }
     return result;
 #endif
+}
+
+inline CpuG1Point cpu_g1_sum(const std::vector<CpuG1Point>& points,
+                             const std::vector<FrWire>& scalars) {
+    if (points.size() != scalars.size()) throw std::invalid_argument("G1 MSM shape mismatch");
+    return cpu_g1_sum(points.data(), scalars.data(), points.size());
 }
 
 inline CpuG1Point cpu_opening_commitment_eval(const std::vector<CpuG1Point>& generators,
@@ -743,6 +917,16 @@ inline FrWire cpu_ipa_inner_product(const std::vector<FrWire>& left,
     return result;
 }
 
+inline FrWire cpu_ipa_inner_product(const FrWire* left, const FrWire* right,
+                                    std::size_t count) {
+    if (count != 0U && (left == nullptr || right == nullptr))
+        throw std::invalid_argument("IPA inner-product has null input");
+    FrWire result{};
+    for (std::size_t index = 0U; index < count; ++index)
+        result = fr_add(result, fr_mul(left[index], right[index]));
+    return result;
+}
+
 inline std::vector<FrWire> cpu_ipa_mle_weights(const std::vector<FrWire>& point) {
     if (point.size() >= 31U) throw std::invalid_argument("IPA point dimension exceeds baseline cap");
     std::vector<FrWire> weights(size_t(1) << point.size());
@@ -826,6 +1010,172 @@ inline bool cpu_pedersen_basis_valid(const std::vector<CpuG1Point>& generators,
      * published only after the complete strict validation above. */
     cpu_pedersen_basis_cache_store(cache_key, sha256(canonical_encoding));
     return true;
+}
+
+class CpuIpaBasisContext {
+private:
+    struct Data {
+        std::vector<CpuG1Point> generators;
+        CpuG1Point h;
+        CpuG1Point u;
+        std::uint32_t padded_size = 0U;
+        std::array<byte, 32U> full_digest{};
+        mutable std::mutex digest_mutex;
+        mutable std::map<std::pair<std::uint32_t, std::uint32_t>,
+                         std::array<byte, 32U>> prefix_digests;
+    };
+
+    explicit CpuIpaBasisContext(std::shared_ptr<const Data> data)
+        : data_(std::move(data)) {}
+
+public:
+    CpuIpaBasisContext() = default;
+
+    // Only this strict factory can create a live receipt. Callers transfer
+    // ownership of the decoded request basis; the receipt then holds the
+    // immutable vectors and H/U used by all proof or verification openings.
+    static bool authenticate(std::vector<CpuG1Point>&& generators,
+                             const CpuG1Point& h, const CpuG1Point& u,
+                             CpuIpaBasisContext& result,
+                             std::string* error = nullptr) {
+        result = CpuIpaBasisContext{};
+        if (generators.empty() || generators.size() > (1U << 19U) ||
+            h.is_zero() || u.is_zero() || cpu_g1_equal(h, u)) {
+            if (error) *error = "IPA basis context shape or H/U independence is invalid";
+            return false;
+        }
+        std::uint32_t padded_size = 0U;
+        try {
+            padded_size = cpu_ipa_padded_size(
+                static_cast<std::uint32_t>(generators.size()));
+        } catch (const std::exception& exception) {
+            if (error) *error = exception.what();
+            return false;
+        }
+        auto data = std::make_shared<Data>();
+        data->generators = std::move(generators);
+        data->h = h;
+        data->u = u;
+        data->padded_size = padded_size;
+        std::array<byte, 48U> encoded_h{};
+        std::array<byte, 48U> encoded_u{};
+        if (!cpu_pedersen_strict_g1(data->h, error, &encoded_h) ||
+            !cpu_pedersen_strict_g1(data->u, error, &encoded_u)) return false;
+        std::vector<byte> canonical_encoding;
+        canonical_encoding.reserve(8U + data->generators.size() * 48U + 96U);
+        append_u32(canonical_encoding,
+                   static_cast<std::uint32_t>(data->generators.size()));
+        append_u32(canonical_encoding, data->padded_size);
+        std::array<byte, 48U> encoded_point{};
+        for (const auto& generator : data->generators) {
+            if (generator.is_zero() ||
+                !cpu_pedersen_strict_g1(generator, error, &encoded_point)) {
+                if (error && error->empty())
+                    *error = "IPA basis context contains an invalid point";
+                return false;
+            }
+            if (cpu_g1_equal(generator, data->h) ||
+                cpu_g1_equal(generator, data->u)) {
+                if (error) *error = "IPA basis context reuses H/U";
+                return false;
+            }
+            canonical_encoding.insert(canonical_encoding.end(),
+                                      encoded_point.begin(), encoded_point.end());
+        }
+        canonical_encoding.insert(canonical_encoding.end(), encoded_h.begin(),
+                                  encoded_h.end());
+        canonical_encoding.insert(canonical_encoding.end(), encoded_u.begin(),
+                                  encoded_u.end());
+        data->full_digest = sha256(canonical_encoding);
+        data->prefix_digests.emplace(
+            std::make_pair(static_cast<std::uint32_t>(data->generators.size()),
+                           data->padded_size), data->full_digest);
+        result = CpuIpaBasisContext(std::move(data));
+        return true;
+    }
+
+    bool valid() const noexcept { return static_cast<bool>(data_); }
+    std::size_t size() const noexcept { return data_ ? data_->generators.size() : 0U; }
+    bool empty() const noexcept { return size() == 0U; }
+    const std::vector<CpuG1Point>& generators() const noexcept {
+        static const std::vector<CpuG1Point> empty_generators;
+        return data_ ? data_->generators : empty_generators;
+    }
+    const CpuG1Point& h() const noexcept {
+        static const CpuG1Point zero = CpuG1Point::zero();
+        return data_ ? data_->h : zero;
+    }
+    const CpuG1Point& u() const noexcept {
+        static const CpuG1Point zero = CpuG1Point::zero();
+        return data_ ? data_->u : zero;
+    }
+    std::vector<CpuG1Point>::const_iterator begin() const noexcept {
+        return generators().cbegin();
+    }
+    std::vector<CpuG1Point>::const_iterator end() const noexcept {
+        return generators().cend();
+    }
+    const CpuG1Point& operator[](std::size_t index) const {
+        return generators().at(index);
+    }
+    operator const std::vector<CpuG1Point>&() const noexcept { return generators(); }
+
+    bool owns_exact_generators(const std::vector<CpuG1Point>& generators,
+                               const CpuG1Point& h,
+                               const CpuG1Point& u) const noexcept {
+        return data_ && &generators == &data_->generators &&
+               cpu_g1_equal(h, data_->h) && cpu_g1_equal(u, data_->u);
+    }
+
+    bool validates_prefix(std::uint32_t expected_size, const CpuG1Point& h,
+                          const CpuG1Point& u) const noexcept {
+        return data_ && expected_size != 0U && expected_size <= data_->generators.size() &&
+               cpu_g1_equal(h, data_->h) && cpu_g1_equal(u, data_->u);
+    }
+
+    std::array<byte, 32U> digest_for(std::uint32_t generator_size,
+                                     std::uint32_t padded_size) const {
+        if (!data_ || generator_size == 0U || generator_size > data_->generators.size() ||
+            cpu_ipa_padded_size(generator_size) != padded_size)
+            throw std::invalid_argument("IPA basis context digest shape mismatch");
+        const auto key = std::make_pair(generator_size, padded_size);
+        {
+            std::lock_guard<std::mutex> lock(data_->digest_mutex);
+            const auto found = data_->prefix_digests.find(key);
+            if (found != data_->prefix_digests.end()) return found->second;
+        }
+        std::vector<byte> encoded;
+        encoded.reserve(8U + static_cast<std::size_t>(generator_size) * 48U + 96U);
+        append_u32(encoded, generator_size);
+        append_u32(encoded, padded_size);
+        for (std::uint32_t index = 0U; index < generator_size; ++index)
+            append_g1(encoded, cpu_g1_to_native(data_->generators[index]));
+        append_g1(encoded, cpu_g1_to_native(data_->h));
+        append_g1(encoded, cpu_g1_to_native(data_->u));
+        const std::array<byte, 32U> digest = sha256(encoded);
+        std::lock_guard<std::mutex> lock(data_->digest_mutex);
+        return data_->prefix_digests.emplace(key, digest).first->second;
+    }
+
+private:
+    std::shared_ptr<const Data> data_;
+};
+
+inline bool cpu_pedersen_basis_valid(const CpuIpaBasisContext& basis,
+                                     const CpuG1Point& h, const CpuG1Point& u,
+                                     std::uint32_t expected_size,
+                                     std::string* error = nullptr) {
+    if (!basis.validates_prefix(expected_size, h, u)) {
+        if (error) *error = "authenticated IPA basis context does not match requested prefix/H/U";
+        return false;
+    }
+    return true;
+}
+
+inline std::array<byte, 32U> cpu_ipa_basis_digest(
+    const CpuIpaBasisContext& basis, std::uint32_t generator_size,
+    std::uint32_t padded_size) {
+    return basis.digest_for(generator_size, padded_size);
 }
 
 inline bool cpu_pedersen_context_equal(const PedersenProofContext& left,
@@ -1388,12 +1738,27 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     const std::vector<FrWire>& point, const CpuG1Point& blinding_generator,
     const CpuG1Point& u_generator, const FrWire& randomness,
     const FrWire& tau_blinder, const CpuG1Point& expected_tau,
-    const CpuIpaOpeningMetadata& metadata, bool public_evaluation) {
-    if (point.size() >= 31U || generators.empty() || generators.size() != values.size() ||
-        generators.size() != (size_t(1U) << point.size()) ||
+    const CpuIpaOpeningMetadata& metadata, bool public_evaluation,
+    const CpuG1Point* checked_xi = nullptr,
+    const CpuIpaBasisContext* authenticated_basis = nullptr,
+    std::uint32_t requested_generator_size = 0U) {
+    const std::size_t generator_count = requested_generator_size == 0U
+        ? generators.size() : requested_generator_size;
+    if (point.size() >= 31U || generators.empty() || generator_count == 0U ||
+        generator_count > generators.size() || generator_count != values.size() ||
+        generator_count != (size_t(1U) << point.size()) ||
         !fr_canonical(randomness) || !fr_canonical(tau_blinder) ||
         !cpu_ipa_v3_metadata_valid(metadata))
         throw std::invalid_argument("Hyrax v3 opening shape/metadata is invalid");
+    if (authenticated_basis != nullptr &&
+        (!authenticated_basis->owns_exact_generators(generators, blinding_generator,
+                                                       u_generator) ||
+         !authenticated_basis->validates_prefix(
+             static_cast<std::uint32_t>(generator_count), blinding_generator,
+             u_generator)))
+        throw std::invalid_argument("Hyrax v3 authenticated basis context mismatch");
+    if (authenticated_basis == nullptr && generator_count != generators.size())
+        throw std::invalid_argument("Hyrax v3 raw basis API cannot use an unauthenticated prefix");
     for (const auto& value : values)
         if (!fr_canonical(value)) throw std::invalid_argument("Hyrax v3 value is not canonical");
     for (const auto& coordinate : point)
@@ -1410,7 +1775,7 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
 
     HyraxOpeningProverResult result;
     HyraxOpeningProofV3& opening = result.proof;
-    const std::uint32_t generator_size = static_cast<std::uint32_t>(generators.size());
+    const std::uint32_t generator_size = static_cast<std::uint32_t>(generator_count);
     const std::uint32_t padded_size = cpu_ipa_padded_size(generator_size);
     opening.commitment_index = metadata.commitment_index;
     opening.evaluation_commitment_index = metadata.evaluation_commitment_index;
@@ -1425,14 +1790,18 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     for (const auto& coordinate : metadata.outer_point) opening.outer_point.push_back(fr_value(coordinate));
     opening.blinding_generator = cpu_g1_to_native(blinding_generator);
     opening.u_generator = cpu_g1_to_native(u_generator);
-    opening.basis_digest = cpu_ipa_basis_digest(generators, blinding_generator,
-                                                u_generator, padded_size);
+    opening.basis_digest = authenticated_basis != nullptr
+        ? cpu_ipa_basis_digest(*authenticated_basis, generator_size, padded_size)
+        : cpu_ipa_basis_digest(generators, blinding_generator,
+                               u_generator, padded_size);
     opening.descriptor_digest = metadata.descriptor_digest;
     opening.registry_digest = metadata.registry_digest;
     opening.srs_digest = metadata.srs_digest;
 
-    const CpuG1Point xi = cpu_g1_add(cpu_g1_sum(generators, values),
-                                     cpu_g1_mul(blinding_generator, randomness));
+    const CpuG1Point xi = checked_xi != nullptr
+        ? *checked_xi
+        : cpu_g1_add(cpu_g1_sum(generators.data(), values.data(), generator_count),
+                     cpu_g1_mul(blinding_generator, randomness));
     const FrWire evaluation = cpu_ipa_inner_product(values, cpu_ipa_mle_weights(point));
     result.tau_blinder = public_evaluation ? FrWire{} : tau_blinder;
     const CpuG1Point tau = cpu_g1_add(
@@ -1445,7 +1814,7 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
 
     std::vector<CpuG1Point> current_generators(padded_size, CpuG1Point::zero());
     std::vector<FrWire> current_a(padded_size), current_b(padded_size);
-    for (std::size_t i = 0U; i < generators.size(); ++i) {
+    for (std::size_t i = 0U; i < generator_count; ++i) {
         current_generators[i] = generators[i];
         current_a[i] = values[i];
     }
@@ -1459,16 +1828,16 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     cpu_hyrax_v3_absorb_header(transcript, opening);
     while (current_generators.size() > 1U) {
         const std::size_t half = current_generators.size() / 2U;
-        CpuG1Point left = CpuG1Point::zero();
-        CpuG1Point right = CpuG1Point::zero();
-        for (std::size_t i = 0U; i < half; ++i) {
-            left = cpu_g1_add(left, cpu_g1_mul(current_generators[half + i], current_a[i]));
-            left = cpu_g1_add(left, cpu_g1_mul(u_generator,
-                                               fr_mul(current_a[i], current_b[half + i])));
-            right = cpu_g1_add(right, cpu_g1_mul(current_generators[i], current_a[half + i]));
-            right = cpu_g1_add(right, cpu_g1_mul(u_generator,
-                                                 fr_mul(current_a[half + i], current_b[i])));
-        }
+        CpuG1Point left = cpu_g1_sum(current_generators.data() + half,
+                                     current_a.data(), half);
+        left = cpu_g1_add(left, cpu_g1_mul(
+            u_generator, cpu_ipa_inner_product(
+                current_a.data(), current_b.data() + half, half)));
+        CpuG1Point right = cpu_g1_sum(current_generators.data(),
+                                      current_a.data() + half, half);
+        right = cpu_g1_add(right, cpu_g1_mul(
+            u_generator, cpu_ipa_inner_product(
+                current_a.data() + half, current_b.data(), half)));
         const FrWire r_left = cpu_fresh_csprng_scalar();
         const FrWire r_right = cpu_fresh_csprng_scalar();
         left = cpu_g1_add(left, cpu_g1_mul(blinding_generator, r_left));
@@ -1489,7 +1858,7 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
                                         fr_mul(inverse_sq, r_right)));
         std::vector<CpuG1Point> next_generators(half);
         std::vector<FrWire> next_a(half), next_b(half);
-        for (std::size_t i = 0U; i < half; ++i) {
+        cpu_parallel_for(half, 128U, [&](std::size_t i) {
             next_a[i] = fr_add(fr_mul(current_a[i], challenge),
                                fr_mul(current_a[half + i], inverse));
             next_b[i] = fr_add(fr_mul(current_b[i], inverse),
@@ -1497,7 +1866,7 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
             next_generators[i] = cpu_g1_add(
                 cpu_g1_mul(current_generators[i], inverse),
                 cpu_g1_mul(current_generators[half + i], challenge));
-        }
+        });
         current_a.swap(next_a);
         current_b.swap(next_b);
         current_generators.swap(next_generators);
@@ -1550,6 +1919,32 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3(
     return cpu_open_hyrax_v3_impl(generators, values, point, blinding_generator,
                                   u_generator, randomness, tau_blinder, expected_tau,
                                   metadata, false);
+}
+
+inline HyraxOpeningProverResult cpu_open_hyrax_v3_with_checked_xi(
+    const std::vector<CpuG1Point>& generators, const std::vector<FrWire>& values,
+    const std::vector<FrWire>& point, const CpuG1Point& blinding_generator,
+    const CpuG1Point& u_generator, const FrWire& randomness,
+    const FrWire& tau_blinder, const CpuG1Point& expected_tau,
+    const CpuIpaOpeningMetadata& metadata, const CpuG1Point& checked_xi) {
+    return cpu_open_hyrax_v3_impl(generators, values, point, blinding_generator,
+                                  u_generator, randomness, tau_blinder, expected_tau,
+                                  metadata, false, &checked_xi);
+}
+
+inline HyraxOpeningProverResult cpu_open_hyrax_v3_authenticated(
+    const CpuIpaBasisContext& basis, const std::vector<FrWire>& values,
+    const std::vector<FrWire>& point, const FrWire& randomness,
+    const FrWire& tau_blinder, const CpuG1Point& expected_tau,
+    const CpuIpaOpeningMetadata& metadata, const CpuG1Point& checked_xi) {
+    if (!basis.valid() || values.size() > basis.size() ||
+        values.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::invalid_argument("Hyrax v3 authenticated basis context is unavailable");
+    const auto& generators = basis.generators();
+    return cpu_open_hyrax_v3_impl(
+        generators, values, point, basis.h(), basis.u(), randomness,
+        tau_blinder, expected_tau, metadata, false, &checked_xi, &basis,
+        static_cast<std::uint32_t>(values.size()));
 }
 
 /* The pre-F3a private signature is retained only as a compile-time seam for
@@ -1607,7 +2002,9 @@ inline bool cpu_verify_hyrax_v3_impl(
     const std::vector<CpuG1Point>& generators, const std::vector<FrWire>& expected_point,
     const CpuG1Point& blinding_generator, const CpuG1Point& u_generator,
     const CpuIpaOpeningMetadata& expected_metadata, const FrWire* public_evaluation,
-    std::string* error) {
+    std::string* error,
+    const CpuIpaBasisContext* authenticated_basis = nullptr,
+    std::uint32_t requested_generator_size = 0U) {
     if (!hyrax_opening_v3_shape_valid(opening, error)) return false;
     if (public_evaluation != nullptr && !fr_canonical(*public_evaluation)) {
         if (error) *error = "Hyrax v3 public evaluation is not canonical";
@@ -1631,9 +2028,12 @@ inline bool cpu_verify_hyrax_v3_impl(
         if (error) *error = "Hyrax v3 public evaluation/tau mismatch";
         return false;
     }
+    const std::size_t generator_count = requested_generator_size == 0U
+        ? generators.size() : requested_generator_size;
     if (expected_point.size() >= 31U || generators.empty() ||
-        generators.size() != (size_t(1U) << expected_point.size()) ||
-        opening.generator_size != generators.size() ||
+        generator_count == 0U || generator_count > generators.size() ||
+        generator_count != (size_t(1U) << expected_point.size()) ||
+        opening.generator_size != generator_count ||
         opening.inner_point.size() != expected_point.size() ||
         !cpu_g1_equal(cpu_g1_from_native(opening.xi), expected_xi) ||
         !cpu_g1_equal(cpu_g1_from_native(opening.tau), expected_tau) ||
@@ -1654,6 +2054,19 @@ inline bool cpu_verify_hyrax_v3_impl(
         if (error) *error = "Hyrax v3 statement/basis metadata mismatch";
         return false;
     }
+    if (authenticated_basis != nullptr &&
+        (!authenticated_basis->owns_exact_generators(generators, blinding_generator,
+                                                       u_generator) ||
+         !authenticated_basis->validates_prefix(
+             static_cast<std::uint32_t>(generator_count), blinding_generator,
+             u_generator))) {
+        if (error) *error = "Hyrax v3 authenticated basis context mismatch";
+        return false;
+    }
+    if (authenticated_basis == nullptr && generator_count != generators.size()) {
+        if (error) *error = "Hyrax v3 raw basis API cannot use an unauthenticated prefix";
+        return false;
+    }
     for (std::size_t i = 0U; i < expected_point.size(); ++i)
         if (fr_compare(fr_wire(opening.inner_point[i]), expected_point[i]) != 0) {
             if (error) *error = "Hyrax v3 inner point metadata mismatch";
@@ -1665,14 +2078,16 @@ inline bool cpu_verify_hyrax_v3_impl(
             return false;
         }
     const std::uint32_t padded_size = cpu_ipa_padded_size(opening.generator_size);
+    const std::array<byte, 32U> expected_basis_digest = authenticated_basis != nullptr
+        ? cpu_ipa_basis_digest(*authenticated_basis,
+                               static_cast<std::uint32_t>(generator_count), padded_size)
+        : cpu_ipa_basis_digest(generators, blinding_generator,
+                               u_generator, padded_size);
     if (opening.padded_generator_size != padded_size ||
-        opening.basis_digest != cpu_ipa_basis_digest(generators, blinding_generator,
-                                                     u_generator, padded_size)) {
+        opening.basis_digest != expected_basis_digest) {
         if (error) *error = "Hyrax v3 generator basis is not authenticated";
         return false;
     }
-    std::vector<CpuG1Point> current_generators(padded_size, CpuG1Point::zero());
-    for (std::size_t i = 0U; i < generators.size(); ++i) current_generators[i] = generators[i];
     std::vector<FrWire> current_b(padded_size);
     const std::vector<FrWire> weights = cpu_ipa_mle_weights(expected_point);
     std::copy(weights.begin(), weights.end(), current_b.begin());
@@ -1692,32 +2107,48 @@ inline bool cpu_verify_hyrax_v3_impl(
         if (error) *error = "Hyrax v3 round count does not match padded basis";
         return false;
     }
+    std::vector<FrWire> fold_challenges;
+    std::vector<FrWire> fold_inverses;
+    fold_challenges.reserve(fold_count);
+    fold_inverses.reserve(fold_count);
     for (std::size_t round = 0U; round < fold_count; ++round) {
         const G1Jacobian_t& left_native = opening.rounds[2U * round];
         const G1Jacobian_t& right_native = opening.rounds[2U * round + 1U];
         cpu_hyrax_v3_absorb_round(transcript, left_native, right_native);
         const FrWire challenge = cpu_ipa_nonzero_challenge(transcript, "hyrax.v3.fold.challenge");
         const FrWire inverse = cpu_fr_inv(challenge);
+        fold_challenges.push_back(challenge);
+        fold_inverses.push_back(inverse);
         const FrWire challenge_sq = fr_mul(challenge, challenge);
         const FrWire inverse_sq = fr_mul(inverse, inverse);
         current_upsilon = cpu_g1_add(current_upsilon,
                                      cpu_g1_mul(cpu_g1_from_native(left_native), challenge_sq));
         current_upsilon = cpu_g1_add(current_upsilon,
                                      cpu_g1_mul(cpu_g1_from_native(right_native), inverse_sq));
-        const std::size_t half = current_generators.size() / 2U;
-        std::vector<CpuG1Point> next_generators(half);
+        const std::size_t half = current_b.size() / 2U;
         std::vector<FrWire> next_b(half);
         for (std::size_t i = 0U; i < half; ++i) {
             next_b[i] = fr_add(fr_mul(current_b[i], inverse),
                                fr_mul(current_b[half + i], challenge));
-            next_generators[i] = cpu_g1_add(
-                cpu_g1_mul(current_generators[i], inverse),
-                cpu_g1_mul(current_generators[half + i], challenge));
         }
         current_b.swap(next_b);
-        current_generators.swap(next_generators);
     }
-    const CpuG1Point g_hat = current_generators[0];
+    std::vector<FrWire> generator_weights(1U, fr_from_u32(1U));
+    for (std::size_t round = fold_count; round-- > 0U;) {
+        const std::size_t half = generator_weights.size();
+        std::vector<FrWire> expanded(2U * half);
+        for (std::size_t index = 0U; index < half; ++index) {
+            expanded[index] = fr_mul(fold_inverses[round], generator_weights[index]);
+            expanded[half + index] = fr_mul(fold_challenges[round], generator_weights[index]);
+        }
+        generator_weights.swap(expanded);
+    }
+    if (generator_weights.size() != padded_size) {
+        if (error) *error = "Hyrax v3 folded generator coefficient shape mismatch";
+        return false;
+    }
+    const CpuG1Point g_hat = cpu_g1_sum(
+        generators.data(), generator_weights.data(), generator_count);
     const FrWire b_hat = current_b[0];
     if (fr_compare(b_hat, FrWire{}) == 0) {
         if (error) *error = "BLOCKED: Hyrax v3 terminal weight is zero";
@@ -1753,6 +2184,22 @@ inline bool cpu_verify_hyrax_v3(
     return cpu_verify_hyrax_v3_impl(opening, expected_xi, expected_tau, generators,
                                     expected_point, blinding_generator, u_generator,
                                     expected_metadata, nullptr, error);
+}
+
+inline bool cpu_verify_hyrax_v3_authenticated(
+    const HyraxOpeningProofV3& opening, const CpuG1Point& expected_xi,
+    const CpuG1Point& expected_tau, const CpuIpaBasisContext& basis,
+    const std::vector<FrWire>& expected_point,
+    const CpuIpaOpeningMetadata& expected_metadata,
+    std::string* error = nullptr) {
+    if (!basis.valid()) {
+        if (error) *error = "Hyrax v3 authenticated basis context is unavailable";
+        return false;
+    }
+    return cpu_verify_hyrax_v3_impl(
+        opening, expected_xi, expected_tau, basis.generators(), expected_point,
+        basis.h(), basis.u(), expected_metadata, nullptr, error, &basis,
+        opening.generator_size);
 }
 
 inline bool cpu_verify_hyrax_v3_public(

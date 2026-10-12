@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <set>
 #include <utility>
+#include <iterator>
 
 /*
  * The original zkDL example kept Sumcheck values in an ephemeral vector and
@@ -216,6 +217,62 @@ inline FrWire fr_modulus_minus_two() {
     return out;
 }
 
+class WireEndTag {};
+
+// The count pass and fixed-capacity pass use the same append helpers as the
+// ordinary vector codec.  Both fail before an unrepresentable/over-limit
+// write can trigger vector growth.
+class WireSizeCounter {
+public:
+    using EndTag = WireEndTag;
+    EndTag end() const noexcept { return {}; }
+    std::uint64_t size() const noexcept { return size_; }
+    void push_back(byte) { add(1U); }
+    void reserve(std::uint64_t) const noexcept {}
+    void add(std::uint64_t bytes) {
+        if (bytes > std::numeric_limits<std::uint64_t>::max() - size_)
+            throw std::overflow_error("proof wire size overflows uint64");
+        size_ += bytes;
+    }
+    template <typename Iterator>
+    void insert(EndTag, Iterator first, Iterator last) {
+        const auto distance = std::distance(first, last);
+        if (distance < 0) throw std::overflow_error("negative proof wire range");
+        add(static_cast<std::uint64_t>(distance));
+    }
+private:
+    std::uint64_t size_ = 0U;
+};
+
+class BoundedWireWriter {
+public:
+    using EndTag = WireEndTag;
+    BoundedWireWriter(std::vector<byte>& out, std::uint64_t limit)
+        : out_(out), limit_(limit) {}
+    EndTag end() const noexcept { return {}; }
+    std::size_t size() const noexcept { return out_.size(); }
+    void reserve(std::uint64_t) const noexcept {}
+    void push_back(byte value) {
+        ensure(1U);
+        out_.push_back(value);
+    }
+    template <typename Iterator>
+    void insert(EndTag, Iterator first, Iterator last) {
+        const auto distance = std::distance(first, last);
+        if (distance < 0) throw std::overflow_error("negative proof wire range");
+        const auto count = static_cast<std::uint64_t>(distance);
+        ensure(count);
+        out_.insert(out_.end(), first, last);
+    }
+private:
+    void ensure(std::uint64_t bytes) const {
+        if (out_.size() > limit_ || bytes > limit_ - out_.size())
+            throw std::length_error("proof wire serializer exceeded its counted size");
+    }
+    std::vector<byte>& out_;
+    std::uint64_t limit_;
+};
+
 inline void append_u32(std::vector<byte>& out, std::uint32_t value) {
     out.push_back(static_cast<byte>(value));
     out.push_back(static_cast<byte>(value >> 8));
@@ -223,7 +280,21 @@ inline void append_u32(std::vector<byte>& out, std::uint32_t value) {
     out.push_back(static_cast<byte>(value >> 24));
 }
 
+template <typename Output>
+inline void append_u32(Output& out, std::uint32_t value) {
+    out.push_back(static_cast<byte>(value));
+    out.push_back(static_cast<byte>(value >> 8));
+    out.push_back(static_cast<byte>(value >> 16));
+    out.push_back(static_cast<byte>(value >> 24));
+}
+
 inline void append_u64(std::vector<byte>& out, std::uint64_t value) {
+    append_u32(out, static_cast<std::uint32_t>(value));
+    append_u32(out, static_cast<std::uint32_t>(value >> 32));
+}
+
+template <typename Output>
+inline void append_u64(Output& out, std::uint64_t value) {
     append_u32(out, static_cast<std::uint32_t>(value));
     append_u32(out, static_cast<std::uint32_t>(value >> 32));
 }
@@ -246,6 +317,12 @@ inline bool read_u64(const std::vector<byte>& in, size_t& offset, std::uint64_t&
 }
 
 inline void append_fr(std::vector<byte>& out, const Fr_t& value) {
+    const FrWire wire = fr_wire(value);
+    for (size_t i = 0; i < wire.size(); ++i) append_u32(out, wire[i]);
+}
+
+template <typename Output>
+inline void append_fr(Output& out, const Fr_t& value) {
     const FrWire wire = fr_wire(value);
     for (size_t i = 0; i < wire.size(); ++i) append_u32(out, wire[i]);
 }
@@ -424,6 +501,12 @@ inline void append_string(std::vector<byte>& out, const std::string& value) {
     out.insert(out.end(), value.begin(), value.end());
 }
 
+template <typename Output>
+inline void append_string(Output& out, const std::string& value) {
+    append_u64(out, static_cast<std::uint64_t>(value.size()));
+    out.insert(out.end(), value.begin(), value.end());
+}
+
 inline bool read_string(const std::vector<byte>& in, size_t& offset, std::string& value,
                         size_t max_size = (1U << 20)) {
     std::uint64_t length = 0;
@@ -489,6 +572,22 @@ inline void append_g1(std::vector<byte>& out, const G1Jacobian_t& point) {
     out.insert(out.end(), encoded.begin(), encoded.end());
 }
 
+template <typename Output>
+inline void append_g1(Output& out, const G1Jacobian_t& point) {
+    std::array<byte, 48U> encoded{};
+    std::string error;
+    if (!zkdl_g1_wire::encode(point, encoded, &error))
+        throw std::invalid_argument(error.empty() ? "invalid G1 point" : error);
+    out.insert(out.end(), encoded.begin(), encoded.end());
+}
+
+inline void append_g1(WireSizeCounter& out, const G1Jacobian_t&) {
+    // A compressed G1 wire point is always exactly 48 bytes.  Point validity
+    // is still checked by the actual bounded emission pass, avoiding a second
+    // curve compression for every commitment in the count pass.
+    out.add(48U);
+}
+
 inline bool read_g1(const std::vector<byte>& in, size_t& offset, G1Jacobian_t& point) {
     if (offset > in.size() || in.size() - offset < 48U) return false;
     std::array<byte, 48U> encoded{};
@@ -537,7 +636,8 @@ struct EvaluationOpeningProof {
 // wrappers while making it explicit that no legacy P/A/B opening is accepted.
 using IpaOpeningProof = EvaluationOpeningProof;
 
-inline void serialize_opening(const EvaluationOpeningProof& opening, std::vector<byte>& out) {
+template <typename Output>
+inline void serialize_opening(const EvaluationOpeningProof& opening, Output& out) {
     out.push_back('I'); out.push_back('P'); out.push_back('A'); out.push_back('1');
     append_u32(out, EvaluationOpeningProof::kVersion);
     append_u32(out, opening.commitment_index);
@@ -717,8 +817,9 @@ struct HyraxOpeningProofV3 {
 inline bool hyrax_opening_v3_shape_valid(const HyraxOpeningProofV3& opening,
                                          std::string* error = nullptr);
 
+template <typename Output>
 inline void serialize_hyrax_opening_v3(const HyraxOpeningProofV3& opening,
-                                       std::vector<byte>& out) {
+                                       Output& out) {
     std::string shape_error;
     if (!hyrax_opening_v3_shape_valid(opening, &shape_error))
         throw std::invalid_argument(shape_error.empty() ? "invalid Hyrax v3 opening" : shape_error);
