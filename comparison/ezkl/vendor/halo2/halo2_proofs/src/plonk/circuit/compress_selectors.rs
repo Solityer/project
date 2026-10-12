@@ -252,6 +252,93 @@ where
 /// Selector compression over packed activation columns. The ordering,
 /// greedy grouping, degree checks, and selector replacement expressions are
 /// the same as `process`; only the row-set representation changes.
+fn selector_combinations(
+    degrees: &[usize],
+    max_degree: usize,
+    mut conflicts: impl FnMut(usize, usize) -> bool,
+) -> Vec<Vec<usize>> {
+    let mut combinations = Vec::new();
+    let simple: Vec<usize> = degrees
+        .iter()
+        .enumerate()
+        .filter_map(|(selector, degree)| (*degree != 0).then_some(selector))
+        .collect();
+
+    // Complex and unused selectors are kept as independent columns, in their
+    // original order, just as in Halo2's standard compression routine.
+    for (selector, degree) in degrees.iter().enumerate() {
+        if *degree == 0 {
+            combinations.push(vec![selector]);
+        }
+    }
+    if simple.is_empty() {
+        return combinations;
+    }
+
+    let mut exclusion_matrix = (0..simple.len())
+        .map(|i| vec![false; i])
+        .collect::<Vec<_>>();
+    for (i, selector) in simple.iter().copied().enumerate() {
+        for (j, other_selector) in simple.iter().copied().enumerate().take(i) {
+            exclusion_matrix[i][j] = conflicts(selector, other_selector);
+        }
+    }
+
+    let mut added = vec![false; simple.len()];
+    for i in 0..simple.len() {
+        if added[i] {
+            continue;
+        }
+        added[i] = true;
+        let first_selector = simple[i];
+        assert!(degrees[first_selector] <= max_degree);
+        let mut degree = degrees[first_selector] - 1;
+        let mut combination = vec![first_selector];
+        let mut combination_indices = vec![i];
+
+        'try_selectors: for j in (i + 1)..simple.len() {
+            let selector = simple[j];
+            if degree + combination.len() == max_degree {
+                break 'try_selectors;
+            }
+            if added[j] {
+                continue 'try_selectors;
+            }
+            for &member in &combination_indices {
+                if exclusion_matrix[j][member] {
+                    continue 'try_selectors;
+                }
+            }
+            assert!(degrees[selector] <= max_degree);
+            let new_degree = std::cmp::max(degree, degrees[selector] - 1);
+            if new_degree + combination.len() + 1 > max_degree {
+                continue 'try_selectors;
+            }
+            degree = new_degree;
+            combination.push(selector);
+            combination_indices.push(j);
+            added[j] = true;
+        }
+        combinations.push(combination);
+    }
+
+    combinations
+}
+
+/// Count the exact columns that the packed compression routine will produce,
+/// using the same greedy grouping and degree checks as key generation.
+pub(crate) fn count_selector_combinations(
+    selectors: &[super::SelectorActivationSet],
+    degrees: &[usize],
+    max_degree: usize,
+) -> usize {
+    assert_eq!(selectors.len(), degrees.len());
+    selector_combinations(degrees, max_degree, |left, right| {
+        selectors[left].has_intersection(&selectors[right])
+    })
+    .len()
+}
+
 pub(crate) fn process_bitmaps<F: Field, E>(
     selectors: &[SelectorBitmap],
     degrees: &[usize],
@@ -268,89 +355,17 @@ where
     let n = selectors[0].len();
     assert!(selectors.iter().all(|selector| selector.len() == n));
 
+    let combinations = selector_combinations(degrees, max_degree, |left, right| {
+        selectors[left].has_intersection(&selectors[right])
+    });
+    let combination_count = combinations.len();
     let mut selector_assignments = Vec::with_capacity(selectors.len());
-    let mut combination_count = 0usize;
-
-    // Complex or unused selectors cannot participate in simple-selector
-    // packing. Preserve the original selector order and give each one its own
-    // fixed column exactly as the uncompressed algorithm does.
-    for (selector, degree) in degrees.iter().enumerate() {
-        if *degree == 0 {
-            selector_assignments.push(PackedSelectorAssignment {
-                selector,
-                combination_index: combination_count,
-                root_value: 1,
-                expression: allocate_fixed_column(),
-            });
-            combination_count = combination_count
-                .checked_add(1)
-                .expect("selector combination count overflow");
-        }
-    }
-
-    let simple: Vec<usize> = degrees
-        .iter()
-        .enumerate()
-        .filter_map(|(selector, degree)| (*degree != 0).then_some(selector))
-        .collect();
-
-    // The conflict matrix is deliberately only selector-sized. Activation
-    // rows remain bit-packed, so checking a selector pair does not materialize
-    // either N-element boolean vector.
-    let mut exclusion_matrix = (0..simple.len())
-        .map(|i| vec![false; i])
-        .collect::<Vec<_>>();
-    for (i, selector) in simple.iter().copied().enumerate() {
-        for (j, other_selector) in simple.iter().copied().enumerate().take(i) {
-            if selectors[selector].has_intersection(&selectors[other_selector]) {
-                exclusion_matrix[i][j] = true;
-            }
-        }
-    }
-
-    let mut added = vec![false; simple.len()];
-    for i in 0..simple.len() {
-        if added[i] {
-            continue;
-        }
-        added[i] = true;
-        let first_selector = simple[i];
-        let mut degree = degrees[first_selector] - 1;
-        let mut combination = vec![(i, first_selector)];
-        let mut combination_indices = vec![i];
-
-        'try_selectors: for j in (i + 1)..simple.len() {
-            let selector = simple[j];
-            if degree + combination.len() == max_degree {
-                break 'try_selectors;
-            }
-            if added[j] {
-                continue 'try_selectors;
-            }
-            for &member in &combination_indices {
-                if exclusion_matrix[j][member] {
-                    continue 'try_selectors;
-                }
-            }
-            let new_degree = std::cmp::max(degree, degrees[selector] - 1);
-            if new_degree + combination.len() + 1 > max_degree {
-                continue 'try_selectors;
-            }
-            degree = new_degree;
-            combination.push((j, selector));
-            combination_indices.push(j);
-            added[j] = true;
-        }
-
-        let combination_index = combination_count;
-        combination_count = combination_count
-            .checked_add(1)
-            .expect("selector combination count overflow");
+    for (combination_index, combination) in combinations.into_iter().enumerate() {
         let query = allocate_fixed_column();
         let combination_len = combination.len();
         let mut assigned_root = F::ONE;
         let mut root_value = 1u64;
-        for (_, selector) in combination {
+        for selector in combination {
             assert!(root_value <= max_degree as u64);
             let mut expression = query.clone();
             let mut root = F::ONE;

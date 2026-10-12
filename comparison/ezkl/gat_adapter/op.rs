@@ -1308,38 +1308,33 @@ impl GatOp {
         }
         let edge_chunk_rows = (MAX_GAT_EDGE_CHUNK_CELLS / channels).max(1);
         let mut score_values = Vec::with_capacity(graph.e);
+        let mut source_node_score = layouts::einsum(config, region, &[projected, attention_src], "ij,j->i")?;
+        let mut destination_node_score = layouts::einsum(config, region, &[projected, attention_dst], "ij,j->i")?;
+        source_node_score.set_scale(self.spec.scales.s_delta);
+        destination_node_score.set_scale(self.spec.scales.s_delta);
+        source_node_score.reshape(&[graph.n, 1])?;
+        destination_node_score.reshape(&[graph.n, 1])?;
         let mut source_gather_ms = 0.0;
         let mut destination_gather_ms = 0.0;
         let mut score_chunk_count = 0usize;
-        println!(
-            "EZKL_NATIVE_PHASE START stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} max_chunk_cells={}",
-            graph.n, graph.e, channels, projected.len(), MAX_GAT_EDGE_CHUNK_CELLS,
-        );
-        println!(
-            "EZKL_NATIVE_PHASE START stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} max_chunk_cells={}",
-            graph.n, graph.e, channels, projected.len(), MAX_GAT_EDGE_CHUNK_CELLS,
-        );
+        println!("EZKL_NATIVE_PHASE START stage=graph_gather direction=source_score nodes={} edges={} channels={} input_values={} node_scores={} max_chunk_cells={}", graph.n, graph.e, channels, projected.len(), source_node_score.len(), MAX_GAT_EDGE_CHUNK_CELLS);
+        println!("EZKL_NATIVE_PHASE START stage=graph_gather direction=destination_score nodes={} edges={} channels={} input_values={} node_scores={} max_chunk_cells={}", graph.n, graph.e, channels, projected.len(), destination_node_score.len(), MAX_GAT_EDGE_CHUNK_CELLS);
         for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
             let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
             {
                 let source_rows = graph.src.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT source topology does not cover an edge chunk".into()))?;
                 let gather_started = std::time::Instant::now();
-                let mut src_values = Self::fixed_route_rows(projected, source_rows, channels)?;
+                let src_score = Self::fixed_route_rows(&source_node_score, source_rows, 1)?;
                 source_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
-                src_values.set_scale(projected_scale);
 
                 let destination_rows = graph.dst.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT destination topology does not cover an edge chunk".into()))?;
                 let gather_started = std::time::Instant::now();
-                let mut dst_values = Self::fixed_route_rows(projected, destination_rows, channels)?;
+                let dst_score = Self::fixed_route_rows(&destination_node_score, destination_rows, 1)?;
                 destination_gather_ms += gather_started.elapsed().as_secs_f64() * 1000.0;
-                dst_values.set_scale(projected_scale);
 
-                let mut src_score = layouts::einsum(config, region, &[&src_values, attention_src], "ij,j->i")?;
-                let mut dst_score = layouts::einsum(config, region, &[&dst_values, attention_dst], "ij,j->i")?;
-                src_score.set_scale(self.spec.scales.s_delta);
-                dst_score.set_scale(self.spec.scales.s_delta);
                 let mut score_chunk = layouts::pairwise(config, region, &[&src_score, &dst_score], BaseOp::Add)?;
                 score_chunk.set_scale(self.spec.scales.s_delta);
+                score_chunk.reshape(&[chunk_end - chunk_start])?;
                 Self::range_check_bounded(
                     config,
                     region,
@@ -1364,26 +1359,10 @@ impl GatOp {
             }
             score_chunk_count += 1;
         }
-        println!(
-            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-            graph.e.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?,
-            score_chunk_count,
-            source_gather_ms,
-        );
-        println!(
-            "EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}",
-            graph.n,
-            graph.e,
-            channels,
-            projected.len(),
-            graph.e.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?,
-            score_chunk_count,
-            destination_gather_ms,
-        );
+        println!("EZKL_NATIVE_PHASE DONE stage=graph_gather direction=source_score nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}", graph.n, graph.e, channels, projected.len(), graph.e, score_chunk_count, source_gather_ms);
+        println!("EZKL_NATIVE_PHASE DONE stage=graph_gather direction=destination_score nodes={} edges={} channels={} input_values={} output_values={} chunks={} elapsed_ms={:.3}", graph.n, graph.e, channels, projected.len(), graph.e, score_chunk_count, destination_gather_ms);
+        drop(source_node_score);
+        drop(destination_node_score);
         let mut score: ValTensor<Fp> = Tensor::new(Some(&score_values), &[graph.e])?.into();
         drop(score_values);
         score.set_scale(self.spec.scales.s_delta);

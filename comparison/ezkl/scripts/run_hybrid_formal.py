@@ -710,10 +710,22 @@ def check_output_paths(output_root: Path, matrix: Path) -> None:
                 abort(f"formal output path is not a regular directory: {path}")
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _write_session_record(path: Path, document: dict[str, object]) -> None:
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temp.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    with temp.open("w", encoding="utf-8") as stream:
+        stream.write(json.dumps(document, indent=2, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temp, path)
+    _fsync_directory(path.parent)
 
 
 def _load_resume_identity(session_file: Path) -> dict[str, object]:
@@ -922,7 +934,7 @@ def begin_formal_session(output_root: Path, matrix: Path, resume_session_id: str
 
 
 def archive_prior_outputs(output_root: Path, matrix: Path, session_id: str, session_file: Path) -> None:
-    """Move old active outputs only after all prerequisite admissions pass."""
+    """Archive prior outputs after the first dataset passes its exact capacity gate."""
     document = json.loads(session_file.read_text())
     if document.get("outputs_archived_for_session") is True:
         return
@@ -935,25 +947,41 @@ def archive_prior_outputs(output_root: Path, matrix: Path, session_id: str, sess
     archive_root = output_root / ".incomplete" / session_id / "previous"
     archive_root.mkdir(parents=True, exist_ok=True)
     archived_value = document.get("archived_previous_outputs", [])
-    archived: list[str] = list(archived_value) if isinstance(archived_value, list) and all(isinstance(value, str) for value in archived_value) else []
+    if not isinstance(archived_value, list) or any(not isinstance(value, str) for value in archived_value):
+        abort("formal prior-output archive receipt is malformed")
+    archived: list[str] = list(archived_value)
     for dataset in DATASETS:
         old_output = output_root / dataset
+        destination = archive_root / "datasets" / dataset
+        if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+            abort(f"archived prior output is not a regular directory: {destination}")
+        if old_output.exists() and destination.exists():
+            abort(f"archive already contains a conflicting prior output: {destination}")
         if old_output.exists():
-            destination = archive_root / "datasets" / dataset
-            if destination.exists() or destination.is_symlink():
-                abort(f"archive already contains a conflicting prior output: {destination}")
             destination.parent.mkdir(parents=True, exist_ok=True)
             old_output.rename(destination)
-            archived.append(str(destination.relative_to(ROOT)))
+            _fsync_directory(old_output.parent)
+            _fsync_directory(destination.parent)
             print(f"[ezkl-formal] archived prior result directory: {old_output} -> {destination}", flush=True)
+        if destination.exists() and str(destination.relative_to(ROOT)) not in archived:
+            archived.append(str(destination.relative_to(ROOT)))
+            document["archived_previous_outputs"] = archived
+            _write_session_record(session_file, document)
+    matrix_archive = archive_root / "matrix" / matrix.name
+    if matrix_archive.is_symlink() or (matrix_archive.exists() and not matrix_archive.is_file()):
+        abort(f"archived prior matrix is not a regular file: {matrix_archive}")
+    if matrix.exists() and matrix_archive.exists():
+        abort(f"archive already contains a conflicting prior matrix: {matrix_archive}")
     if matrix.exists():
-        matrix_archive = archive_root / "matrix" / matrix.name
-        if matrix_archive.exists() or matrix_archive.is_symlink():
-            abort(f"archive already contains a conflicting prior matrix: {matrix_archive}")
         matrix_archive.parent.mkdir(parents=True, exist_ok=True)
         matrix.rename(matrix_archive)
+        _fsync_directory(matrix.parent)
+        _fsync_directory(matrix_archive.parent)
+    if matrix_archive.exists() and str(matrix_archive.relative_to(ROOT)) not in archived:
         archived.append(str(matrix_archive.relative_to(ROOT)))
         print(f"[ezkl-formal] archived prior active matrix: {matrix} -> {matrix_archive}", flush=True)
+        document["archived_previous_outputs"] = archived
+        _write_session_record(session_file, document)
     document["archived_previous_outputs"] = archived
     document["archived_at_utc"] = datetime.now(timezone.utc).isoformat()
     document["outputs_archived_for_session"] = True
@@ -1055,6 +1083,7 @@ def native_admit_all_datasets(
     baseline_root: Path = ROOT,
     command_runner: Callable[[list[str], str], None] | None = None,
     reuse_receipt: object = None,
+    receipt_callback: Callable[[str, dict[str, object]], None] | None = None,
 ) -> dict[str, dict[str, object]]:
     if not datasets or len(set(datasets)) != len(datasets) or any(dataset not in DATASETS for dataset in datasets):
         abort("native admission dataset selection is empty, duplicated, or unsupported")
@@ -1074,16 +1103,14 @@ def native_admit_all_datasets(
             abort(f"{label} is outside the native admission baseline: {path}")
 
     admission_root = output_root / ".sessions" / session_id / "admission"
-    reuse = reuse_receipt is not None
-    if reuse:
-        if not isinstance(reuse_receipt, dict) or set(reuse_receipt) != set(datasets):
-            abort("saved native admission receipt is incomplete or malformed")
-        if admission_root.is_symlink() or not admission_root.is_dir():
-            abort("saved native admissions are missing or symlinked")
-    else:
-        if admission_root.exists() or admission_root.is_symlink():
-            _quarantine_session_path(admission_root, output_root, session_id, "admission")
-        admission_root.mkdir(parents=True, exist_ok=False)
+    if reuse_receipt is not None and (
+        not isinstance(reuse_receipt, dict)
+        or any(dataset not in DATASETS or not isinstance(value, dict) for dataset, value in reuse_receipt.items())
+    ):
+        abort("saved native admission receipt map is malformed")
+    if admission_root.is_symlink() or (admission_root.exists() and not admission_root.is_dir()):
+        abort("native admission session directory is missing or symlinked")
+    admission_root.mkdir(parents=True, exist_ok=True)
     admissions: dict[str, dict[str, object]] = {}
     expected_keys = {
         "schema_version",
@@ -1132,8 +1159,9 @@ def native_admit_all_datasets(
     }
     for dataset in datasets:
         admission_dir = admission_root / dataset
+        prior = reuse_receipt.get(dataset) if isinstance(reuse_receipt, dict) else None
+        reuse = prior is not None
         if reuse:
-            prior = reuse_receipt[dataset]
             expected_dir = str(admission_dir.relative_to(baseline_root))
             if (
                 not isinstance(prior, dict)
@@ -1146,6 +1174,8 @@ def native_admit_all_datasets(
             ):
                 abort(f"{dataset} saved native admission identity is malformed")
         else:
+            if admission_dir.exists() or admission_dir.is_symlink():
+                _quarantine_session_path(admission_dir, output_root, session_id, f"{dataset}-admission")
             admission_dir.mkdir()
             command = [
                 cli_path(binary, "binary"),
@@ -1168,14 +1198,14 @@ def native_admit_all_datasets(
             else:
                 command_runner(command, label)
         admission_path = admission_dir / "admission.json"
-        if reuse and sha256(admission_path) != reuse_receipt[dataset]["sha256"]:
+        if reuse and sha256(admission_path) != prior["sha256"]:
             abort(f"{dataset} saved native admission digest changed; refusing to reuse it")
         admission = load_json(admission_path, f"{dataset} native admission")
         if not isinstance(admission, dict) or set(admission) != expected_keys:
             abort(f"{dataset} native admission JSON has an incompatible schema")
         _validate_native_admission_domain(dataset, admission, native_srs_max_logrows)
         if (
-            admission["schema_version"] != 5
+            admission["schema_version"] != 6
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
         ):
@@ -1276,13 +1306,15 @@ def native_admit_all_datasets(
             "cuda_free_bytes_at_admission",
             "cuda_total_memory_bytes",
             "selector_activation_bitmap_bytes",
+            "selector_activation_storage_bytes",
+            "selector_activation_storage_kind",
             "fixed_polynomial_read_mode",
             "fixed_polynomial_read_chunk_fields_upper",
             "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v5":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v6":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
@@ -1427,9 +1459,18 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission lookup dependency/query counts do not match chunked arguments")
         _validate_native_shplonk_shape(dataset, memory, cs, admission["domain_size"])
         expected_bitmap = cs["num_selectors"] * ((admission["domain_size"] + 7) // 8)
+        selector_storage = memory["selector_activation_storage_bytes"]
+        selector_storage_min = cs["num_selectors"] * 8
+        selector_storage_max = 2 * expected_bitmap + cs["num_selectors"] * 64
         read_chunk_fields = memory["fixed_polynomial_read_chunk_fields_upper"]
         if (
             memory["selector_activation_bitmap_bytes"] != expected_bitmap
+            or isinstance(selector_storage, bool)
+            or not isinstance(selector_storage, int)
+            or selector_storage < selector_storage_min
+            or selector_storage > selector_storage_max
+            or selector_storage > sys.maxsize
+            or memory["selector_activation_storage_kind"] != "rle_bitmap_hybrid_v1"
             or memory["fixed_polynomial_read_mode"] != "streamed_one_polynomial_chunked_v1"
             or read_chunk_fields != 16 * 1024
             or memory["fixed_polynomial_read_raw_chunk_bytes_upper"] != read_chunk_fields * memory["size_of_fr_bytes"]
@@ -1445,7 +1486,7 @@ def native_admit_all_datasets(
             or any(isinstance(phase, bool) or not isinstance(phase, int) or phase < 0 for phase in phase_ids)
         ):
             abort(f"{dataset} native admission advice phase layout is malformed")
-        admissions[dataset] = {
+        admission_receipt = {
             "path": str(admission_path.relative_to(baseline_root)),
             "sha256": sha256(admission_path),
             "prepared_dir": str(admission_dir.relative_to(baseline_root)),
@@ -1458,6 +1499,9 @@ def native_admit_all_datasets(
             "native_memory_model": memory,
             "relation_identity": relation_identity,
         }
+        admissions[dataset] = admission_receipt
+        if receipt_callback is not None:
+            receipt_callback(dataset, admission_receipt)
         print(
             f"[ezkl-formal] native relation admission PASS: {dataset} k={admission['logrows']} "
             f"N={admission['domain_size']} advice={cs['num_advice_columns']} "
@@ -2062,6 +2106,7 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     if degree < 2:
         abort("EZKL native admission has invalid quotient degree for the local capacity gate")
     selectors = int(memory["selector_activation_bitmap_bytes"])
+    selector_census_storage = int(memory["selector_activation_storage_bytes"])
     read_scratch = int(memory["fixed_polynomial_read_heap_scratch_bytes_upper"])
     for label, number in (
         ("Fr", fr),
@@ -2433,6 +2478,7 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         "quotient_piece_bytes": quotient_coefficients * fr,
         "host_known_bytes": host_known,
         "selector_activation_bitmap_bytes": selectors,
+        "admission_census_selector_storage_bytes": selector_census_storage,
         "selector_dense_field_vector_bytes": n * fr,
         "keygen_option_fr_vector_bytes": n * option_fr,
         "batch_invert_entry_bytes": batch_invert_entry,
@@ -2734,8 +2780,9 @@ def _admit_local_capacity(
     active_datasets: set[str] | None = None,
     setup_required_datasets: set[str] | None = None,
     pending_finalize_datasets: set[str] | None = None,
+    workspace_receipt: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, dict[str, int]], dict[str, object]]:
-    receipt = _build_native_cub_workspace_query(session_dir, session_id, runtime_identity, selected_device, build_environment, gpu_identity)
+    receipt = workspace_receipt or _build_native_cub_workspace_query(session_dir, session_id, runtime_identity, selected_device, build_environment, gpu_identity)
     receipt = _validate_native_cub_workspace_receipt(receipt, session_dir, selected_device, gpu_identity, session_id)
     query = receipt["query"]
     if not isinstance(query, dict):
@@ -2785,7 +2832,7 @@ def _admit_local_capacity(
                 dataset_requirements,
                 output_root=output_root,
                 remaining_known_disk_bytes=initial_disk_required,
-                phase="initial_five_dataset_admission",
+                phase="dataset_capacity_admission",
                 device_sample=initial_sample,
                 workspace_query=query,
                 disk_budget_components=initial_disk_components,
@@ -2918,6 +2965,8 @@ def _setup_reuse_receipt(output: Path, dataset: str, session_id: str, resume_ide
 def write_setup_reuse_receipt(
     output: Path, dataset: str, session_id: str, resume_identity: dict[str, object], admission: dict[str, object]
 ) -> str:
+    for name in _SETUP_REUSE_FILES:
+        _fsync_regular_file(output / name, f"{dataset} setup artifact {name}")
     receipt = _setup_reuse_receipt(output, dataset, session_id, resume_identity, admission)
     receipt_path = output / "setup_receipt.json"
     _write_session_record(receipt_path, receipt)
@@ -2982,6 +3031,80 @@ def validate_completed_cell(output: Path, session_id: str) -> bool:
     return True
 
 
+def _fsync_regular_file(path: Path, label: str) -> None:
+    if path.is_symlink() or not path.is_file():
+        abort(f"durable formal checkpoint requires a regular {label}: {path}")
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _completed_cell_checkpoint(output: Path, dataset: str, session_id: str, session_file: Path) -> bool:
+    result_path = output / "result.json"
+    if output.is_symlink() or not output.is_dir():
+        abort(f"completed formal dataset output is not a regular directory: {output}")
+    checkpoint_map = load_json(session_file, "formal session record").get("completed_cells", {})
+    if not isinstance(checkpoint_map, dict) or any(name not in DATASETS for name in checkpoint_map):
+        abort("formal completed-cell checkpoint map is malformed")
+    existing = checkpoint_map.get(dataset)
+    if existing is not None:
+        expected_fields = {"schema", "dataset", "session_id", "status", "result_sha256", "proof_sha256", "checkpointed_at_utc"}
+        if (
+            not isinstance(existing, dict)
+            or set(existing) != expected_fields
+            or existing.get("schema") != "ezkl.formal-cell-checkpoint.v1"
+            or existing.get("dataset") != dataset
+            or existing.get("session_id") != session_id
+            or existing.get("status") != "VERIFY_OK"
+            or any(not isinstance(existing.get(name), str) or re.fullmatch(r"[0-9a-f]{64}", existing[name]) is None for name in ("result_sha256", "proof_sha256"))
+            or not isinstance(existing.get("checkpointed_at_utc"), str)
+            or not existing["checkpointed_at_utc"]
+        ):
+            abort(f"{dataset} durable result checkpoint is malformed")
+        if result_path.is_symlink() or not result_path.is_file() or sha256(result_path) != existing["result_sha256"]:
+            abort(f"{dataset} result changed after its durable session checkpoint")
+    if not validate_completed_cell(output, session_id):
+        if existing is not None:
+            abort(f"{dataset} durable result checkpoint no longer validates")
+        return False
+    result = load_json(result_path, f"{dataset} completed formal result")
+    proof_path = local_path(result.get("proof_path"), f"{dataset} completed proof")
+    proof_sha256 = result.get("proof_sha256")
+    if (
+        proof_path.is_symlink()
+        or not proof_path.is_file()
+        or not isinstance(proof_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", proof_sha256) is None
+        or sha256(proof_path) != proof_sha256
+        or (existing is not None and existing["proof_sha256"] != proof_sha256)
+    ):
+        abort(f"{dataset} completed result does not bind a regular proof artifact")
+    if existing is None:
+        _fsync_regular_file(proof_path, "proof artifact")
+        _fsync_regular_file(result_path, "result artifact")
+        directory_fd = os.open(output, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        checkpoint_map[dataset] = {
+            "schema": "ezkl.formal-cell-checkpoint.v1",
+            "dataset": dataset,
+            "session_id": session_id,
+            "status": "VERIFY_OK",
+            "result_sha256": sha256(result_path),
+            "proof_sha256": proof_sha256,
+            "checkpointed_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        document = load_json(session_file, "formal session record")
+        document["completed_cells"] = checkpoint_map
+        _write_session_record(session_file, document)
+        print(f"[ezkl-formal] durable VERIFIED result checkpoint: {dataset}", flush=True)
+    return True
+
+
 def quarantine_partial_production(output: Path, output_root: Path, session_id: str, dataset: str) -> None:
     derived = [output / name for name in _POST_SETUP_FILES]
     logs = output / "logs"
@@ -3001,6 +3124,57 @@ def quarantine_partial_production(output: Path, output_root: Path, session_id: s
 
 def _set_stage(session_file: Path, stage: str) -> None:
     update_session_record(session_file, status="RUNNING", stage=stage)
+
+
+def _persist_native_admission_receipt(session_file: Path, dataset: str, receipt: dict[str, object]) -> None:
+    document = load_json(session_file, "formal session record")
+    receipts = document.setdefault("native_admissions", {})
+    if not isinstance(receipts, dict) or any(name not in DATASETS for name in receipts):
+        abort("formal native admission receipt map is malformed")
+    previous = receipts.get(dataset)
+    if previous is not None and previous != receipt:
+        abort(f"{dataset} native admission receipt cannot be replaced within this session")
+    receipts[dataset] = receipt
+    _write_session_record(session_file, document)
+
+
+def _persist_dataset_capacity_profile(session_file: Path, profile: dict[str, object]) -> None:
+    document = load_json(session_file, "formal session record")
+    current = document.get("local_capacity_profile")
+    if current is None:
+        current = {
+            "schema": profile["schema"],
+            "coverage": profile["coverage"],
+            "native_cub_workspace_query_sha256": profile["native_cub_workspace_query_sha256"],
+            "session_id": profile["session_id"],
+            "selected_device_uuid": profile["selected_device_uuid"],
+            "device_workspace_peak_bytes": profile["device_workspace_peak_bytes"],
+            "integrated_device": profile["integrated_device"],
+            "datasets": {},
+            "source_srs_copy_size_bytes": profile["source_srs_copy_size_bytes"],
+            "pending_finalize_datasets": [],
+            "initial_checks": [],
+        }
+    if not isinstance(current, dict) or current.get("session_id") != profile.get("session_id") or current.get(
+        "native_cub_workspace_query_sha256"
+    ) != profile.get("native_cub_workspace_query_sha256"):
+        abort("formal local capacity profile changed its session or native workspace identity")
+    datasets = current.get("datasets")
+    initial_checks = current.get("initial_checks")
+    if not isinstance(datasets, dict) or not isinstance(initial_checks, list):
+        abort("formal local capacity profile is malformed")
+    for dataset, requirement in profile["datasets"].items():
+        previous = datasets.get(dataset)
+        if previous is not None and previous != requirement:
+            abort(f"{dataset} native capacity requirement changed within this session")
+        datasets[dataset] = requirement
+    current["pending_finalize_datasets"] = list(profile["pending_finalize_datasets"])
+    current["source_srs_copy_size_bytes"] = profile["source_srs_copy_size_bytes"]
+    current["initial_checks"] = [check for check in initial_checks if check.get("dataset") not in profile["datasets"]]
+    current["initial_checks"].extend(profile["initial_checks"])
+    document["local_capacity_profile"] = current
+    document.setdefault("capacity_checks", []).extend(profile["initial_checks"])
+    _write_session_record(session_file, document)
 
 
 def _preflight_dataset_configs() -> dict[str, dict[str, str]]:
@@ -3060,10 +3234,14 @@ def _authenticate_or_provision_srs(python: str, *, allow_provision: bool) -> dic
     return srs_manifest
 
 
-def _formal_dataset_command_plan(binary: Path, srs: Path, output_root: Path, admissions: dict[str, dict[str, object]]) -> list[dict[str, object]]:
+def _formal_dataset_command_plan(
+    binary: Path, srs: Path, output_root: Path, admissions: dict[str, dict[str, object]], datasets: tuple[str, ...] = DATASETS
+) -> list[dict[str, object]]:
     """Build the exact baseline-local setup/producer/prove command sequence."""
     plan: list[dict[str, object]] = []
-    for dataset in DATASETS:
+    if not datasets or len(set(datasets)) != len(datasets) or any(dataset not in DATASETS for dataset in datasets):
+        abort("formal command-plan dataset selection is empty, duplicated, or unsupported")
+    for dataset in datasets:
         output = output_root / dataset
         admission_dir = local_path(str(admissions[dataset]["prepared_dir"]), f"{dataset} admitted circuit directory")
         setup = [
@@ -3371,117 +3549,132 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["resume_identity"] = resume_identity
     _write_session_record(session_file, session_document)
 
-    _set_stage(session_file, "five_dataset_native_relation_capacity_admission")
-    saved_admissions: object = None
-    if args.resume_session is not None:
-        previous = json.loads(session_file.read_text())
-        saved_admissions = previous.get("native_admissions")
-    admissions = native_admit_all_datasets(
-        binary,
-        srs,
-        output_root,
-        session_id,
-        selected_device,
-        reuse_receipt=saved_admissions,
-    )
-    session_document = json.loads(session_file.read_text())
-    session_document["native_admissions"] = admissions
-    _write_session_record(session_file, session_document)
+    session_document = load_json(session_file, "formal session record")
+    saved_admissions = session_document.get("native_admissions", {})
+    if not isinstance(saved_admissions, dict) or any(name not in DATASETS or not isinstance(value, dict) for name, value in saved_admissions.items()):
+        abort("formal native admission receipt map is malformed")
+    saved_anchors = session_document.get("setup_reuse_receipts", {})
+    if not isinstance(saved_anchors, dict) or any(name not in DATASETS for name in saved_anchors):
+        abort("formal setup receipt anchor map is malformed")
+    checkpoint_map = session_document.get("completed_cells", {})
+    if not isinstance(checkpoint_map, dict) or any(name not in DATASETS for name in checkpoint_map):
+        abort("formal completed-cell checkpoint map is malformed")
+    archived_value = session_document.get("outputs_archived_for_session", False)
+    if not isinstance(archived_value, bool):
+        abort("formal output archive state is malformed")
     completed_datasets: set[str] = set()
-    setup_reused_datasets: set[str] = set()
-    setup_receipt_anchors: dict[str, object] = {}
-    if args.resume_session is not None:
-        resume_document = load_json(session_file, "resume session record")
-        saved_anchors = resume_document.get("setup_reuse_receipts", {}) if isinstance(resume_document, dict) else None
-        if not isinstance(saved_anchors, dict) or any(name not in DATASETS for name in saved_anchors):
-            abort("resume setup receipt anchor map is malformed")
-        setup_receipt_anchors = saved_anchors
+    if args.resume_session is not None and archived_value:
         for dataset in DATASETS:
             output = output_root / dataset
             if output.is_symlink():
                 abort(f"resume output directory must not be a symlink: {output}")
-            if output.is_dir() and validate_completed_cell(output, session_id):
+            if dataset in checkpoint_map and not output.is_dir():
+                abort(f"{dataset} durable result checkpoint has no active dataset directory")
+            if output.is_dir() and _completed_cell_checkpoint(output, dataset, session_id, session_file):
                 completed_datasets.add(dataset)
-                continue
-            if output.is_dir() and validate_setup_reuse_receipt(
-                output,
-                dataset,
-                session_id,
-                resume_identity,
-                admissions[dataset],
-                setup_receipt_anchors.get(dataset),
-            ):
-                setup_reused_datasets.add(dataset)
-    active_datasets = set(DATASETS) - completed_datasets
-    setup_required_datasets = active_datasets - setup_reused_datasets
-    _set_stage(session_file, "session_bound_icicle_capacity_query")
     session_dir = output_root / ".sessions" / session_id
-    capacity_dir = session_dir / "capacity"
-    if capacity_dir.exists() or capacity_dir.is_symlink():
-        _quarantine_session_path(capacity_dir, output_root, session_id, "capacity")
-    cub_receipt, capacity_requirements, capacity_profile = _admit_local_capacity(
-        admissions,
-        output_root=output_root,
-        session_dir=session_dir,
-        session_id=session_id,
-        runtime_identity=runtime_identity,
-        selected_device=selected_device,
-        build_environment=build_environment,
-        gpu_identity=gpu_identity,
-        srs_copy_size_bytes=srs_copy_size_bytes,
-        active_datasets=active_datasets,
-        setup_required_datasets=setup_required_datasets,
-        pending_finalize_datasets=active_datasets,
-    )
-    session_document = json.loads(session_file.read_text())
-    session_document["native_admissions"] = admissions
-    session_document["native_cub_workspace_receipt"] = cub_receipt
-    session_document["local_capacity_profile"] = capacity_profile
-    session_document["capacity_checks"] = list(capacity_profile["initial_checks"])
+    session_document = load_json(session_file, "formal session record")
+    workspace_receipt_value = session_document.get("native_cub_workspace_receipt")
+    if workspace_receipt_value is not None and not isinstance(workspace_receipt_value, dict):
+        abort("saved native CUB workspace receipt is malformed")
+    workspace_receipt = workspace_receipt_value if isinstance(workspace_receipt_value, dict) else None
+    if workspace_receipt is not None:
+        workspace_receipt = _validate_native_cub_workspace_receipt(workspace_receipt, session_dir, selected_device, gpu_identity, session_id)
     session_document["resource_manifest_sha256"] = resource_manifest_hash()
     session_document["srs_manifest_sha256"] = sha256(SRS_MANIFEST)
     session_document["source_tree_sha256"] = source_tree_hash()
     session_document["binary_sha256"] = sha256(binary)
     _write_session_record(session_file, session_document)
-    cub_receipt = _validate_native_cub_workspace_receipt(cub_receipt, session_dir, selected_device, gpu_identity, session_id)
-    archive_prior_outputs(output_root, matrix, session_id, session_file)
 
-    for dataset_index, item in enumerate(_formal_dataset_command_plan(binary, srs, output_root, admissions)):
-        dataset = str(item["dataset"])
-        output = output_root / dataset
-        if args.resume_session is not None and output.exists() and output.is_symlink():
-            abort(f"resume output directory must not be a symlink: {output}")
+    for dataset_index, dataset in enumerate(DATASETS):
         if dataset in completed_datasets:
             print(f"[ezkl-formal] reuse completed {dataset} cell after independent result/artifact validation", flush=True)
             continue
-
-        setup_reused = dataset in setup_reused_datasets
-        if setup_reused:
-            quarantine_partial_production(output, output_root, session_id, dataset)
-        elif args.resume_session is not None and (output.exists() or output.is_symlink()):
-            _quarantine_session_path(output, output_root, session_id, f"{dataset}-partial-cell")
-
-        _set_stage(session_file, f"{dataset}_setup_prove_verify")
+        output = output_root / dataset
+        _set_stage(session_file, f"{dataset}_native_relation_admission")
+        admissions = native_admit_all_datasets(
+            binary,
+            srs,
+            output_root,
+            session_id,
+            selected_device,
+            datasets=(dataset,),
+            reuse_receipt=saved_admissions,
+            receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
+        )
+        admission = admissions[dataset]
+        saved_admissions[dataset] = admission
+        session_document = load_json(session_file, "formal session record")
+        archived_value = session_document.get("outputs_archived_for_session", False)
+        if not isinstance(archived_value, bool):
+            abort("formal output archive state is malformed")
+        setup_reused = False
+        if archived_value and (output.is_symlink() or (output.exists() and not output.is_dir())):
+            abort(f"resume output directory must be a regular directory: {output}")
+        if args.resume_session is not None and archived_value and output.exists():
+            setup_reused = validate_setup_reuse_receipt(
+                output,
+                dataset,
+                session_id,
+                resume_identity,
+                admission,
+                saved_anchors.get(dataset),
+            )
+        _set_stage(session_file, f"{dataset}_capacity_admission")
+        if workspace_receipt is None:
+            capacity_dir = session_dir / "capacity"
+            if capacity_dir.exists() or capacity_dir.is_symlink():
+                _quarantine_session_path(capacity_dir, output_root, session_id, "capacity")
+        cub_receipt, capacity_requirements, capacity_profile = _admit_local_capacity(
+            {dataset: admission},
+            output_root=output_root,
+            session_dir=session_dir,
+            session_id=session_id,
+            runtime_identity=runtime_identity,
+            selected_device=selected_device,
+            build_environment=build_environment,
+            gpu_identity=gpu_identity,
+            srs_copy_size_bytes=srs_copy_size_bytes,
+            active_datasets={dataset},
+            setup_required_datasets=set() if setup_reused else {dataset},
+            pending_finalize_datasets={dataset},
+            workspace_receipt=workspace_receipt,
+        )
+        workspace_receipt = _validate_native_cub_workspace_receipt(cub_receipt, session_dir, selected_device, gpu_identity, session_id)
+        session_document = load_json(session_file, "formal session record")
+        session_document["native_cub_workspace_receipt"] = workspace_receipt
+        _write_session_record(session_file, session_document)
+        _persist_dataset_capacity_profile(session_file, capacity_profile)
+        session_document = load_json(session_file, "formal session record")
+        archived_value = session_document.get("outputs_archived_for_session", False)
+        if not archived_value:
+            archive_prior_outputs(output_root, matrix, session_id, session_file)
+        output = output_root / dataset
+        if output.is_symlink():
+            abort(f"formal output directory must not be a symlink: {output}")
+        if output.exists() and not output.is_dir():
+            abort(f"formal output path is not a regular directory: {output}")
+        if output.is_dir():
+            if setup_reused:
+                quarantine_partial_production(output, output_root, session_id, dataset)
+            else:
+                _quarantine_session_path(output, output_root, session_id, f"{dataset}-partial-cell")
+        item = _formal_dataset_command_plan(binary, srs, output_root, admissions, datasets=(dataset,))[0]
         if not setup_reused:
             setup_disk_required = _remaining_setup_disk_bytes(
                 capacity_requirements,
                 dataset_index,
                 include_current_transient=True,
-                setup_required_datasets=setup_required_datasets,
+                setup_required_datasets={dataset},
             )
             setup_key_bytes = _remaining_setup_disk_bytes(
                 capacity_requirements,
                 dataset_index,
                 include_current_transient=False,
-                setup_required_datasets=setup_required_datasets,
-            )
-            setup_srs_budget = _remaining_srs_copy_disk_budget(
-                srs_copy_size_bytes,
-                dataset_index,
-                pending_finalize_datasets=active_datasets,
+                setup_required_datasets={dataset},
             )
             setup_disk_components = _disk_budget_components(
-                pending_srs=setup_srs_budget,
+                pending_srs=_remaining_srs_copy_disk_budget(srs_copy_size_bytes, dataset_index, pending_finalize_datasets={dataset}),
                 setup_key_artifact_upper_bytes=setup_key_bytes,
                 setup_mapped_peak_bytes=setup_disk_required - setup_key_bytes,
             )
@@ -3491,7 +3684,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 output_root=output_root,
                 remaining_known_disk_bytes=int(setup_disk_components["total_required_bytes"]),
                 phase="setup",
-                receipt=cub_receipt,
+                receipt=workspace_receipt,
                 session_dir=session_dir,
                 session_id=session_id,
                 selected_device=selected_device,
@@ -3499,42 +3692,31 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 build_environment=build_environment,
                 disk_budget_components=setup_disk_components,
             )
-            session_document = json.loads(session_file.read_text())
+            session_document = load_json(session_file, "formal session record")
             session_document.setdefault("capacity_checks", []).append(setup_check)
             _write_session_record(session_file, session_document)
             output = prepare_output_dir(output_root, dataset)
+            _set_stage(session_file, f"{dataset}_setup")
             setup_ms = run(item["setup"], f"{dataset} native setup", gpu=NATIVE_FORMAL_BACKEND == "gpu")
             (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
-            setup_receipt_sha256 = write_setup_reuse_receipt(output, dataset, session_id, resume_identity, admissions[dataset])
+            setup_receipt_sha256 = write_setup_reuse_receipt(output, dataset, session_id, resume_identity, admission)
             anchor_setup_reuse_receipt(session_file, dataset, setup_receipt_sha256)
         else:
             print(f"[ezkl-formal] reuse validated {dataset} native setup receipt and keys", flush=True)
         invoke_python_entrypoint(
             "produce_public_statement", item["producer"], f"{dataset} independent public statement/Y producer", context=context, session_id=session_id
         )
-        proof_srs_budget = _remaining_srs_copy_disk_budget(
-            srs_copy_size_bytes,
-            dataset_index,
-            pending_finalize_datasets=active_datasets,
-        )
         proof_disk_components = _disk_budget_components(
-            pending_srs=proof_srs_budget,
-            setup_key_artifact_upper_bytes=_remaining_setup_disk_bytes(
-                capacity_requirements,
-                dataset_index + 1,
-                include_current_transient=False,
-                setup_required_datasets=setup_required_datasets,
-            ),
+            pending_srs=_remaining_srs_copy_disk_budget(srs_copy_size_bytes, dataset_index, pending_finalize_datasets={dataset}),
             proof_spill_known_bytes=capacity_requirements[dataset]["proof_spill_known_bytes"],
         )
-        proof_disk_required = int(proof_disk_components["total_required_bytes"])
         prove_check = _recheck_local_phase_capacity(
             dataset,
             capacity_requirements[dataset],
             output_root=output_root,
-            remaining_known_disk_bytes=proof_disk_required,
+            remaining_known_disk_bytes=int(proof_disk_components["total_required_bytes"]),
             phase="witness_prove_verify",
-            receipt=cub_receipt,
+            receipt=workspace_receipt,
             session_dir=session_dir,
             session_id=session_id,
             selected_device=selected_device,
@@ -3542,31 +3724,54 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             build_environment=build_environment,
             disk_budget_components=proof_disk_components,
         )
-        session_document = json.loads(session_file.read_text())
-        session_document.setdefault("capacity_checks", []).append(prove_check)
         prepare_budget = _native_prepare_budget(
-            capacity_requirements[dataset], initial_available_bytes=int(prove_check["host_available_bytes"]), workspace_query=cub_receipt["query"]
+            capacity_requirements[dataset], initial_available_bytes=int(prove_check["host_available_bytes"]), workspace_query=workspace_receipt["query"]
         )
         prove_check["native_prepare_budget"] = prepare_budget
-        session_document.setdefault("capacity_checks", [])[-1] = prove_check
+        session_document = load_json(session_file, "formal session record")
+        session_document.setdefault("capacity_checks", []).append(prove_check)
         _write_session_record(session_file, session_document)
-        cardinality_bounds = admissions[dataset]["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
+        cardinality_bounds = admission["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
         taskcap_env, device_headroom_env, cardinality_env = _validated_native_prepare_exports(
             prepare_budget,
             cardinality_bounds,
-            domain_size=int(admissions[dataset]["domain_size"]),
-            expected_lookup_groups=int(admissions[dataset]["constraint_system"]["num_unique_lookup_table_expression_groups"]),
+            domain_size=int(admission["domain_size"]),
+            expected_lookup_groups=int(admission["constraint_system"]["num_unique_lookup_table_expression_groups"]),
         )
         os.environ["EZKL_NATIVE_PREPARE_BUDGET_BYTES"] = taskcap_env
         os.environ["EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES"] = device_headroom_env
         os.environ["EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"] = cardinality_env
         try:
+            _set_stage(session_file, f"{dataset}_witness_prove_independent_verify")
             invoke_python_entrypoint(
                 "run_single_dataset", item["single"], f"{dataset} final/witness/prove/independent verify", context=context, session_id=session_id
             )
         finally:
             for name in ("EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"):
                 os.environ.pop(name, None)
+        if not _completed_cell_checkpoint(output, dataset, session_id, session_file):
+            abort(f"{dataset} did not produce an independently verified formal result")
+        completed_datasets.add(dataset)
+
+    final_document = load_json(session_file, "formal session record")
+    final_checkpoints = final_document.get("completed_cells", {})
+    if not isinstance(final_checkpoints, dict):
+        abort("formal completed-cell checkpoint map is malformed before collection")
+    for dataset in DATASETS:
+        output = output_root / dataset
+        result_path = output / "result.json"
+        checkpoint = final_checkpoints.get(dataset)
+        if (
+            output.is_symlink()
+            or not output.is_dir()
+            or result_path.is_symlink()
+            or not result_path.is_file()
+            or not isinstance(checkpoint, dict)
+            or checkpoint.get("session_id") != session_id
+            or checkpoint.get("status") != "VERIFY_OK"
+            or checkpoint.get("result_sha256") != sha256(result_path)
+        ):
+            abort(f"formal run has no independently verified durable result for {dataset}")
 
     _set_stage(session_file, "collect_five_results")
     try:

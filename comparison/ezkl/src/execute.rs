@@ -2632,6 +2632,7 @@ fn gat_prepare_admission(
     let selector_activation_bitmap_bytes = u128::from(cs.num_selectors() as u64)
         .checked_mul((u128::from(1u64 << logrows) + 7) / 8)
         .ok_or_else(|| "selector activation bitmap byte count overflow".to_string())?;
+    let selector_activation_storage_bytes = shape_census.selector_activation_storage_bytes;
     let fixed_polynomial_read_chunk_fields_upper = 16 * 1024usize;
     let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
     let fixed_polynomial_read_raw_chunk_bytes_upper =
@@ -2642,7 +2643,7 @@ fn gat_prepare_admission(
         fixed_polynomial_read_raw_chunk_bytes_upper
             + fixed_polynomial_read_decoded_chunk_bytes_upper;
     println!(
-        "EZKL_NATIVE_PHASE DONE stage=count_compressed_selector_columns dataset={} elapsed_ms={:.3} selectors={} selector_fixed_columns={} fixed_post_compression={} copy_calls={} successor_entries_upper={} activation_bitmap_bytes={}",
+        "EZKL_NATIVE_PHASE DONE stage=count_compressed_selector_columns dataset={} elapsed_ms={:.3} selectors={} selector_fixed_columns={} fixed_post_compression={} copy_calls={} successor_entries_upper={} activation_bitmap_bytes={} activation_storage_bytes={} activation_storage_kind=rle_bitmap_hybrid_v1",
         loaded.dataset,
         selector_count_started.elapsed().as_secs_f64() * 1000.0,
         cs.num_selectors(),
@@ -2651,6 +2652,7 @@ fn gat_prepare_admission(
         shape_census.permutation_copy_call_count,
         permutation_successor_entry_count_upper,
         selector_activation_bitmap_bytes,
+        selector_activation_storage_bytes,
     );
     let scalar_columns = cs.num_fixed_columns() + cs.num_advice_columns() + cs.num_instance_columns();
     let scalar_domain_bytes = u128::from(domain_size)
@@ -2753,7 +2755,7 @@ fn gat_prepare_admission(
     >();
     let shplonk_rotation_set_count = shplonk_shape.rotation_set_commitment_counts.len();
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-memory-model-v5",
+        "schema": "ezkl-halo2-memory-model-v6",
         "native_target_arch": std::env::consts::ARCH,
         "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
@@ -2820,6 +2822,8 @@ fn gat_prepare_admission(
         "cuda_free_bytes_at_admission": device_capacity.1,
         "cuda_total_memory_bytes": device_capacity.2,
         "selector_activation_bitmap_bytes": selector_activation_bitmap_bytes,
+        "selector_activation_storage_bytes": selector_activation_storage_bytes,
+        "selector_activation_storage_kind": "rle_bitmap_hybrid_v1",
         "fixed_polynomial_read_mode": "streamed_one_polynomial_chunked_v1",
         "fixed_polynomial_read_chunk_fields_upper": fixed_polynomial_read_chunk_fields_upper,
         "fixed_polynomial_read_raw_chunk_bytes_upper": fixed_polynomial_read_raw_chunk_bytes_upper,
@@ -2845,7 +2849,7 @@ fn gat_prepare_admission(
     let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 5,
+        "schema_version": 6,
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2956,7 +2960,7 @@ fn load_native_admission_circuit(
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(5)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(6)
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -3076,7 +3080,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-memory-model-v5")
+        != Some("ezkl-halo2-memory-model-v6")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
     {
@@ -3092,6 +3096,35 @@ fn load_native_admission_circuit(
     let expected_selector_bitmap_bytes = (current_cs.num_selectors() as u128)
         .checked_mul((n + 7) / 8)
         .ok_or_else(|| "native admission selector bitmap size overflow".to_string())?;
+    let selector_activation_storage_bytes = memory_model
+        .get("selector_activation_storage_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| "native admission selector activation storage size is missing or invalid".to_string())?;
+    if memory_model
+        .get("selector_activation_storage_kind")
+        .and_then(JsonValue::as_str)
+        != Some("rle_bitmap_hybrid_v1")
+    {
+        return Err("native admission selector activation storage representation is unsupported".into());
+    }
+    // The census holds at most one dense bitmap per selector, plus one
+    // selector's old RLE backing while converting it, and the selector-set
+    // descriptors. Keep this independent receipt check deliberately
+    // conservative; the measured high-water value remains the admitted input.
+    let max_selector_activation_storage_bytes = expected_selector_bitmap_bytes
+        .checked_mul(2)
+        .and_then(|bytes| {
+            bytes.checked_add((current_cs.num_selectors() as u128).checked_mul(64)?)
+        })
+        .ok_or_else(|| "native admission selector activation storage bound overflow".to_string())?;
+    let min_selector_activation_storage_bytes = (current_cs.num_selectors() as u128)
+        .checked_mul(std::mem::size_of::<u64>() as u128)
+        .ok_or_else(|| "native admission selector activation descriptor bound overflow".to_string())?;
+    if u128::from(selector_activation_storage_bytes) < min_selector_activation_storage_bytes
+        || u128::from(selector_activation_storage_bytes) > max_selector_activation_storage_bytes
+    {
+        return Err("native admission selector activation storage bytes are outside the supported census bound".into());
+    }
     let chunk_fields = 16 * 1024usize;
     let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
     let raw_chunk_bytes = chunk_fields * serialized_fr_bytes;

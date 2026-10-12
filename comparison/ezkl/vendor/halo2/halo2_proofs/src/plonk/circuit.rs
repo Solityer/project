@@ -157,6 +157,190 @@ impl SelectorBitmap {
             }
         }
     }
+
+    pub(crate) fn storage_bytes(&self) -> usize {
+        self.bytes.capacity()
+    }
+
+    pub(crate) fn set_range(&mut self, start: usize, end: usize, value: u64) -> std::io::Result<()> {
+        if self.bits_per_value != 1 || start > end || end > self.len || value > 1 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector activation range is invalid"));
+        }
+        if start == end || value == 0 {
+            return Ok(());
+        }
+        let first_byte = start / 8;
+        let last_byte = (end - 1) / 8;
+        if first_byte == last_byte {
+            let lower = start % 8;
+            let upper = (end - 1) % 8 + 1;
+            let mask = ((1u16 << upper) - 1) as u8 & !((1u16 << lower) - 1) as u8;
+            self.bytes[first_byte] |= mask;
+            return Ok(());
+        }
+        self.bytes[first_byte] |= u8::MAX << (start % 8);
+        self.bytes[first_byte + 1..last_byte].fill(u8::MAX);
+        let last_bits = end % 8;
+        self.bytes[last_byte] |= if last_bits == 0 {
+            u8::MAX
+        } else {
+            ((1u16 << last_bits) - 1) as u8
+        };
+        Ok(())
+    }
+
+    pub(crate) fn any_set_in_range(&self, start: usize, end: usize) -> bool {
+        assert_eq!(self.bits_per_value, 1);
+        assert!(start <= end && end <= self.len);
+        if start == end {
+            return false;
+        }
+        let first_byte = start / 8;
+        let last_byte = (end - 1) / 8;
+        if first_byte == last_byte {
+            let lower = start % 8;
+            let upper = (end - 1) % 8 + 1;
+            let mask = ((1u16 << upper) - 1) as u8 & !((1u16 << lower) - 1) as u8;
+            return self.bytes[first_byte] & mask != 0;
+        }
+        if self.bytes[first_byte] & (u8::MAX << (start % 8)) != 0 {
+            return true;
+        }
+        if self.bytes[first_byte + 1..last_byte].iter().any(|byte| *byte != 0) {
+            return true;
+        }
+        let last_bits = end % 8;
+        (self.bytes[last_byte]
+            & if last_bits == 0 {
+                u8::MAX
+            } else {
+                ((1u16 << last_bits) - 1) as u8
+            })
+            != 0
+    }
+}
+
+/// Row activations collected by the selector-only native shape census. Runs
+/// keep regular gate regions compact; scattered activations fall back to the
+/// same packed bitmap used by native selector compression.
+#[derive(Clone, Debug)]
+pub(crate) enum SelectorActivationSet {
+    Runs { len: usize, rows: Vec<std::ops::Range<usize>> },
+    Bitmap(SelectorBitmap),
+}
+
+pub(crate) struct SelectorActivationInsert {
+    pub(crate) activated: bool,
+    pub(crate) storage_bytes: usize,
+    pub(crate) peak_storage_bytes: usize,
+}
+
+impl SelectorActivationSet {
+    pub(crate) fn zeroed(len: usize) -> Self {
+        Self::Runs { len, rows: Vec::new() }
+    }
+
+    pub(crate) fn storage_bytes(&self) -> usize {
+        match self {
+            Self::Runs { rows, .. } => rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>(),
+            Self::Bitmap(bitmap) => bitmap.storage_bytes(),
+        }
+    }
+
+    pub(crate) fn insert(&mut self, row: usize) -> std::io::Result<SelectorActivationInsert> {
+        match self {
+            Self::Bitmap(bitmap) => {
+                if row >= bitmap.len() {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector activation row is out of bounds"));
+                }
+                let activated = bitmap.value(row) == 0;
+                if activated {
+                    bitmap.set_value(row, 1)?;
+                }
+                let storage_bytes = bitmap.storage_bytes();
+                Ok(SelectorActivationInsert { activated, storage_bytes, peak_storage_bytes: storage_bytes })
+            }
+            Self::Runs { len, rows } => {
+                if row >= *len {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector activation row is out of bounds"));
+                }
+                let old_storage_bytes = rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
+                // Runs are half-open. Treat `row == run.end` as a new
+                // activation that may coalesce with the previous run.
+                let index = rows.partition_point(|run| run.end <= row);
+                if index < rows.len() && rows[index].start <= row {
+                    return Ok(SelectorActivationInsert { activated: false, storage_bytes: old_storage_bytes, peak_storage_bytes: old_storage_bytes });
+                }
+                let next_row = row.checked_add(1).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector activation row overflow"))?;
+                let joins_previous = index > 0 && rows[index - 1].end == row;
+                let joins_next = index < rows.len() && rows[index].start == next_row;
+                let mut growth_peak_bytes = old_storage_bytes;
+                if !joins_previous && !joins_next {
+                    let next_run_count = rows.len().checked_add(1).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run count overflow"))?;
+                    let next_run_bytes = next_run_count.checked_mul(std::mem::size_of::<std::ops::Range<usize>>()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector activation storage overflow"))?;
+                    if next_run_bytes >= dense_storage_bytes_for(*len)? {
+                        let mut bitmap = SelectorBitmap::zeroed(*len, 1)?;
+                        for run in rows.iter() {
+                            bitmap.set_range(run.start, run.end, 1)?;
+                        }
+                        bitmap.set_value(row, 1)?;
+                        let bitmap_storage_bytes = bitmap.storage_bytes();
+                        growth_peak_bytes = old_storage_bytes.checked_add(bitmap_storage_bytes).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector bitmap conversion size overflow"))?;
+                        *self = Self::Bitmap(bitmap);
+                        return Ok(SelectorActivationInsert { activated: true, storage_bytes: bitmap_storage_bytes, peak_storage_bytes: growth_peak_bytes });
+                    }
+                    let old_capacity_bytes = rows.capacity()
+                        * std::mem::size_of::<std::ops::Range<usize>>();
+                    rows.try_reserve_exact(1).map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+                    let new_capacity_bytes = rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
+                    if rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>()
+                        != old_capacity_bytes
+                    {
+                        growth_peak_bytes = old_capacity_bytes
+                            .checked_add(new_capacity_bytes)
+                            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector activation storage overflow"))?;
+                    }
+                }
+                match (joins_previous, joins_next) {
+                    (true, true) => {
+                        rows[index - 1].end = rows[index].end;
+                        rows.remove(index);
+                    }
+                    (true, false) => rows[index - 1].end = next_row,
+                    (false, true) => rows[index].start = row,
+                    (false, false) => rows.insert(index, row..next_row),
+                }
+                let run_storage_bytes = rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
+                let peak_storage_bytes = growth_peak_bytes.max(run_storage_bytes);
+                Ok(SelectorActivationInsert { activated: true, storage_bytes: run_storage_bytes, peak_storage_bytes })
+            }
+        }
+    }
+
+    pub(crate) fn has_intersection(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bitmap(left), Self::Bitmap(right)) => left.has_intersection(right),
+            (Self::Runs { rows: left, .. }, Self::Runs { rows: right, .. }) => {
+                let (mut left_index, mut right_index) = (0, 0);
+                while left_index < left.len() && right_index < right.len() {
+                    if left[left_index].start < right[right_index].end && right[right_index].start < left[left_index].end {
+                        return true;
+                    }
+                    if left[left_index].end <= right[right_index].start {
+                        left_index += 1;
+                    } else {
+                        right_index += 1;
+                    }
+                }
+                false
+            }
+            (Self::Bitmap(bitmap), Self::Runs { rows, .. }) | (Self::Runs { rows, .. }, Self::Bitmap(bitmap)) => rows.iter().any(|run| bitmap.any_set_in_range(run.start, run.end)),
+        }
+    }
+}
+
+fn dense_storage_bytes_for(len: usize) -> std::io::Result<usize> {
+    len.checked_add(7).map(|bits| bits / 8).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector bitmap size overflow"))
 }
 
 /// A column type
@@ -2391,6 +2575,23 @@ impl<F: Field> ConstraintSystem<F> {
             .collect::<Vec<_>>();
         self.replace_selectors_with_fixed(&selector_replacements);
         (self, combination_count, assignments)
+    }
+
+    /// Count compressed selector columns from the exact row sets captured by
+    /// selector-only synthesis without allocating compression expressions or
+    /// fixed-column assignments.
+    pub(crate) fn count_selector_activation_combinations(
+        &self,
+        selectors: &[SelectorActivationSet],
+    ) -> usize {
+        assert_eq!(selectors.len(), self.num_selectors);
+        let mut degrees = vec![0; selectors.len()];
+        for expression in self.gates.iter().flat_map(|gate| gate.polys.iter()) {
+            if let Some(selector) = expression.extract_simple_selector() {
+                degrees[selector.0] = max(degrees[selector.0], expression.degree());
+            }
+        }
+        compress_selectors::count_selector_combinations(selectors, &degrees, self.degree())
     }
 
     /// Replace selectors with one fixed column per selector while retaining

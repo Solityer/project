@@ -8,7 +8,7 @@ use group::Curve;
 use super::{
     circuit::{
         Advice, Any, Assignment, Circuit, Column, ConstraintSystem, Fixed, FloorPlanner, Instance,
-        PackedSelectorAssignment, Selector, SelectorBitmap,
+        PackedSelectorAssignment, Selector, SelectorActivationSet, SelectorBitmap,
     },
     evaluation::Evaluator,
     permutation, Assigned, Challenge, Error, LagrangeCoeff, Polynomial, ProvingKey, VerifyingKey,
@@ -218,6 +218,11 @@ impl<F: Field> Assignment<F> for Assembly<F> {
 pub struct NativeShapeCensus {
     /// Number of fixed columns emitted by native selector compression.
     pub selector_fixed_column_count: usize,
+    /// High-water bytes used by activation row-set backing during this census.
+    /// Includes the outer selector-set vector and transient old/new storage
+    /// while a selector changes from runs to a packed bitmap; excludes allocator
+    /// metadata and the separately tracked counters.
+    pub selector_activation_storage_bytes: u64,
     /// Number of copy callbacks made by the real circuit floor planner.
     pub permutation_copy_call_count: u64,
     /// Exact enabled-row count for every virtual selector, in selector-index order.
@@ -249,14 +254,26 @@ where
     let usable_end = n
         .checked_sub(cs.blinding_factors() + 1)
         .ok_or_else(|| Error::not_enough_rows_available(k))?;
-    let selectors = (0..cs.num_selectors)
-        .map(|_| SelectorBitmap::zeroed(n, 1).map_err(Error::NativeStorage))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut selectors = Vec::new();
+    selectors
+        .try_reserve_exact(cs.num_selectors)
+        .map_err(|error| Error::NativeStorage(std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)))?;
+    selectors.extend((0..cs.num_selectors).map(|_| SelectorActivationSet::zeroed(n)));
+    let selector_activation_container_bytes = selectors
+        .capacity()
+        .checked_mul(std::mem::size_of::<SelectorActivationSet>())
+        .ok_or(Error::BoundsFailure)?;
+    let selector_activation_initial_bytes = selectors.iter().try_fold(
+        selector_activation_container_bytes,
+        |total, selector| total.checked_add(selector.storage_bytes()).ok_or(Error::BoundsFailure),
+    )?;
     let mut assembly = SelectorOnlyAssembly {
         k,
         fixed_columns: cs.num_fixed_columns,
         permutation_columns: cs.permutation.columns.clone(),
         selectors,
+        selector_activation_storage_current_bytes: selector_activation_initial_bytes,
+        selector_activation_storage_peak_bytes: selector_activation_initial_bytes,
         selector_activation_counts: vec![0; cs.num_selectors],
         fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
         usable_rows: 0..usable_end,
@@ -271,8 +288,14 @@ where
         cs.constants.clone(),
     )?;
 
+    let selector_fixed_column_count =
+        cs.count_selector_activation_combinations(&assembly.selectors);
     Ok(NativeShapeCensus {
-        selector_fixed_column_count: cs.compress_selector_bitmaps(&assembly.selectors).1,
+        selector_fixed_column_count,
+        selector_activation_storage_bytes: u64::try_from(
+            assembly.selector_activation_storage_peak_bytes,
+        )
+        .map_err(|_| Error::BoundsFailure)?,
         permutation_copy_call_count: assembly.permutation_copy_call_count,
         selector_activation_counts: assembly.selector_activation_counts,
         fixed_value_assignment_counts: assembly.fixed_value_assignment_counts,
@@ -300,7 +323,9 @@ struct SelectorOnlyAssembly<F: Field> {
     k: u32,
     fixed_columns: usize,
     permutation_columns: Vec<Column<Any>>,
-    selectors: Vec<SelectorBitmap>,
+    selectors: Vec<SelectorActivationSet>,
+    selector_activation_storage_current_bytes: usize,
+    selector_activation_storage_peak_bytes: usize,
     selector_activation_counts: Vec<u64>,
     fixed_value_assignment_counts: Vec<u64>,
     usable_rows: Range<usize>,
@@ -327,13 +352,27 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
             return Err(Error::not_enough_rows_available(self.k));
         }
         let selector_index = selector.0;
-        let bitmap = self
+        let activations = self
             .selectors
             .get_mut(selector_index)
             .ok_or(Error::BoundsFailure)?;
-        let was_enabled = bitmap.value(row) != 0;
-        bitmap.set_value(row, 1).map_err(Error::NativeStorage)?;
-        if !was_enabled {
+        let old_storage_bytes = activations.storage_bytes();
+        let inserted = activations.insert(row).map_err(Error::NativeStorage)?;
+        let base_bytes = self
+            .selector_activation_storage_current_bytes
+            .checked_sub(old_storage_bytes)
+            .ok_or(Error::BoundsFailure)?;
+        self.selector_activation_storage_current_bytes = base_bytes
+            .checked_add(inserted.storage_bytes)
+            .ok_or(Error::BoundsFailure)?;
+        let insertion_peak_bytes = base_bytes
+            .checked_add(inserted.peak_storage_bytes)
+            .ok_or(Error::BoundsFailure)?;
+        self.selector_activation_storage_peak_bytes = self
+            .selector_activation_storage_peak_bytes
+            .max(insertion_peak_bytes)
+            .max(self.selector_activation_storage_current_bytes);
+        if inserted.activated {
             let count = self
                 .selector_activation_counts
                 .get_mut(selector_index)
