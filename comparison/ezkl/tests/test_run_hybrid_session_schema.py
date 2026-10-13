@@ -28,9 +28,12 @@ from run_hybrid_formal import (  # noqa: E402
     _native_capacity_requirements,
     _main,
     _native_prepare_budget,
+    _require_formal_dataset_completion,
     _pending_srs_copy_disk_budget,
     _recheck_local_phase_capacity,
     _remaining_setup_disk_bytes,
+    _run_dataset_cells,
+    _set_stage,
     _validate_cub_workspace_query,
     _validate_native_cub_workspace_receipt,
 )
@@ -580,6 +583,90 @@ class LocalFormalEntryTest(unittest.TestCase):
             self.assertEqual(recovered["status"], "INTERRUPTED")
             self.assertEqual(recovered["stage"], "citeseer_setup_prove_verify")
             self.assertIn("released the baseline lock", recovered["error"])
+
+    def test_dataset_failures_continue_persist_and_retry_without_losing_history(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ezkl-dataset-retry-") as temporary:
+            root = Path(temporary)
+            session_file = root / "session.json"
+            session_file.write_text(json.dumps({
+                "status": "RUNNING",
+                "stage": "preflight_complete",
+                "dataset_failures": {},
+                "dataset_failure_history": {},
+            }) + "\n", encoding="utf-8")
+            completed: set[str] = set()
+            failures: dict[str, dict[str, object]] = {}
+            history: dict[str, list[dict[str, object]]] = {}
+            attempts: list[str] = []
+
+            def first_attempt(_index: int, dataset: str) -> None:
+                attempts.append(dataset)
+                stage = f"{dataset}_native_relation_admission" if dataset == "cora" else f"{dataset}_setup"
+                _set_stage(session_file, stage, active_dataset=dataset)
+                if dataset == "cora":
+                    raise formal_common.ContractError("admission failed\nfull native diagnostic")
+                if dataset == "pubmed":
+                    raise OSError("setup disk failure with detail")
+
+            log_paths = lambda dataset: [f".sessions/test/logs/{dataset}/native_admission.log"]
+            _run_dataset_cells(DATASETS, completed, failures, history, session_file, first_attempt, log_paths)
+            self.assertEqual(attempts, list(DATASETS))
+            self.assertEqual(completed, {"citeseer", "ppi", "ogbn_arxiv"})
+            self.assertEqual(set(failures), {"cora", "pubmed"})
+            self.assertEqual(failures["cora"]["stage"], "cora_native_relation_admission")
+            self.assertEqual(failures["cora"]["exception_type"], "ContractError")
+            self.assertEqual(failures["cora"]["error"], "admission failed\nfull native diagnostic")
+            self.assertIn("ContractError: admission failed", failures["cora"]["traceback"])
+            self.assertEqual(failures["cora"]["log_paths"], log_paths("cora"))
+            self.assertEqual(failures["pubmed"]["stage"], "pubmed_setup")
+            self.assertEqual(failures["pubmed"]["exception_type"], "OSError")
+            self.assertIn("setup disk failure with detail", failures["pubmed"]["error"])
+            self.assertEqual(set(history), {"cora", "pubmed"})
+            self.assertEqual(len(history["cora"]), 1)
+            self.assertEqual(len(history["pubmed"]), 1)
+            saved = json.loads(session_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved["dataset_failures"], failures)
+            self.assertEqual(saved["dataset_failure_history"], history)
+            with self.assertRaisesRegex(formal_common.ContractError, "skipping five-result collection"):
+                _require_formal_dataset_completion(DATASETS, completed, failures)
+
+            retry_attempts: list[str] = []
+
+            def retry(_index: int, dataset: str) -> None:
+                retry_attempts.append(dataset)
+                _set_stage(session_file, f"{dataset}_witness_prove_independent_verify", active_dataset=dataset)
+
+            _run_dataset_cells(DATASETS, completed, failures, history, session_file, retry, log_paths)
+            self.assertEqual(retry_attempts, ["cora", "pubmed"])
+            self.assertEqual(completed, set(DATASETS))
+            self.assertEqual(failures, {})
+            self.assertEqual(len(history["cora"]), 1)
+            self.assertEqual(len(history["pubmed"]), 1)
+            self.assertEqual(json.loads(session_file.read_text(encoding="utf-8"))["dataset_failure_history"], history)
+            _require_formal_dataset_completion(DATASETS, completed, failures)
+
+            interrupted_file = root / "interrupted.json"
+            interrupted_file.write_text(json.dumps({"status": "RUNNING", "stage": "preflight_complete"}) + "\n", encoding="utf-8")
+            interrupted_attempts: list[str] = []
+
+            def interrupted_attempt(_index: int, dataset: str) -> None:
+                interrupted_attempts.append(dataset)
+                _set_stage(interrupted_file, f"{dataset}_setup", active_dataset=dataset)
+                raise KeyboardInterrupt()
+
+            with self.assertRaises(KeyboardInterrupt):
+                _run_dataset_cells(
+                    DATASETS,
+                    set(),
+                    {},
+                    {},
+                    interrupted_file,
+                    interrupted_attempt,
+                )
+            self.assertEqual(interrupted_attempts, [DATASETS[0]])
+            interrupted = json.loads(interrupted_file.read_text(encoding="utf-8"))
+            self.assertNotIn("dataset_failures", interrupted)
+
 
     def test_formal_command_plan_covers_five_datasets_in_order(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ezkl-command-plan-") as temp:

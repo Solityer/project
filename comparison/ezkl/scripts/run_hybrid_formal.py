@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -215,7 +216,7 @@ def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | N
             abort(f"formal command log path is not a regular file: {log_path}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_stream = log_path.open("a", encoding="utf-8")
-        print(f"[ezkl-formal] independent build log: {log_path}", flush=True)
+        print(f"[ezkl-formal] command output log: {log_path}", flush=True)
     env = os.environ.copy()
     for key in ("ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256", "CUDA_ARCH"):
         env.pop(key, None)
@@ -3761,8 +3762,128 @@ def quarantine_partial_production(output: Path, output_root: Path, session_id: s
     print(f"[ezkl-formal] quarantined partial {dataset} producer/final/proof outputs while preserving verified setup", flush=True)
 
 
-def _set_stage(session_file: Path, stage: str) -> None:
-    update_session_record(session_file, status="RUNNING", stage=stage)
+def _set_stage(session_file: Path, stage: str, *, active_dataset: str | None = None) -> None:
+    document = load_json(session_file, "formal session record")
+    document["status"] = "RUNNING"
+    document["stage"] = stage
+    document["updated_at_utc"] = datetime.now(timezone.utc).isoformat()
+    if active_dataset is None:
+        document.pop("active_dataset", None)
+    else:
+        document["active_dataset"] = active_dataset
+    _write_session_record(session_file, document)
+
+
+def _run_dataset_cells(
+    datasets: tuple[str, ...],
+    completed_datasets: set[str],
+    dataset_failures: dict[str, dict[str, object]],
+    dataset_failure_history: dict[str, list[dict[str, object]]],
+    session_file: Path,
+    execute_cell: Callable[[int, str], None],
+    log_paths_for_dataset: Callable[[str], list[str]] | None = None,
+) -> None:
+    stale_failures = completed_datasets.intersection(dataset_failures)
+    if stale_failures:
+        for dataset in stale_failures:
+            dataset_failures.pop(dataset, None)
+        document = load_json(session_file, "formal session record")
+        document["dataset_failures"] = dataset_failures
+        document["dataset_failure_history"] = dataset_failure_history
+        _write_session_record(session_file, document)
+    for dataset_index, dataset in enumerate(datasets):
+        if dataset in completed_datasets:
+            print(f"[ezkl-formal] reuse completed {dataset} cell after independent result/artifact validation", flush=True)
+            continue
+        try:
+            execute_cell(dataset_index, dataset)
+        except Exception as exc:
+            document = load_json(session_file, "formal session record")
+            stage = document.get("stage")
+            if document.get("active_dataset") != dataset or not isinstance(stage, str):
+                stage = f"{dataset}_unknown"
+            failure = {
+                "stage": stage,
+                "exception_type": type(exc).__name__,
+                "error": str(exc),
+                "traceback": traceback.format_exc(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "log_paths": log_paths_for_dataset(dataset) if log_paths_for_dataset is not None else [],
+            }
+            dataset_failures[dataset] = failure
+            dataset_failure_history.setdefault(dataset, []).append(failure)
+            document["dataset_failures"] = dataset_failures
+            document["dataset_failure_history"] = dataset_failure_history
+            _write_session_record(session_file, document)
+            print(f"[ezkl-formal] dataset failure recorded dataset={dataset} stage={failure['stage']} type={type(exc).__name__}: {exc}", flush=True)
+        else:
+            completed_datasets.add(dataset)
+            if dataset in dataset_failures:
+                dataset_failures.pop(dataset)
+                document = load_json(session_file, "formal session record")
+                document["dataset_failures"] = dataset_failures
+                document["dataset_failure_history"] = dataset_failure_history
+                _write_session_record(session_file, document)
+
+
+def _dataset_failure_log_paths(output_root: Path, session_dir: Path, dataset: str) -> list[str]:
+    """Return stable session logs and any existing phase logs for a failed cell."""
+    candidates = [
+        session_dir / "logs" / dataset / "native_admission.log",
+        session_dir / "logs" / dataset / "native_setup.log",
+    ]
+    output_logs = output_root / dataset / "logs"
+    if output_logs.is_dir() and not output_logs.is_symlink():
+        for name in ("setup.log", "witness.log", "prove.log", "verify.log"):
+            candidates.append(output_logs / name)
+    paths = [path for path in candidates if path.is_file() and not path.is_symlink()]
+    return [path.relative_to(output_root).as_posix() for path in paths]
+
+
+def _load_dataset_failure_state(
+    document: dict[str, object], datasets: tuple[str, ...]
+) -> tuple[dict[str, dict[str, object]], dict[str, list[dict[str, object]]]]:
+    required_fields = ("stage", "exception_type", "error", "timestamp")
+
+    def valid_record(record: object) -> bool:
+        if not isinstance(record, dict):
+            return False
+        if any(not isinstance(record.get(field), str) for field in required_fields):
+            return False
+        if not record.get("stage") or not record.get("exception_type") or not record.get("timestamp"):
+            return False
+        if "traceback" in record and not isinstance(record["traceback"], str):
+            return False
+        log_paths = record.get("log_paths", [])
+        return isinstance(log_paths, list) and all(isinstance(path, str) and path for path in log_paths)
+
+    failures_value = document.get("dataset_failures", {})
+    if not isinstance(failures_value, dict) or any(
+        name not in datasets or not valid_record(record) for name, record in failures_value.items()
+    ):
+        abort("formal per-dataset failure record map is malformed")
+    history_value = document.get("dataset_failure_history", {})
+    if not isinstance(history_value, dict) or any(
+        name not in datasets
+        or not isinstance(records, list)
+        or any(not valid_record(record) for record in records)
+        for name, records in history_value.items()
+    ):
+        abort("formal per-dataset failure history is malformed")
+    failures = {name: dict(record) for name, record in failures_value.items()}
+    history = {name: [dict(record) for record in records] for name, records in history_value.items()}
+    return failures, history
+
+
+def _require_formal_dataset_completion(
+    datasets: tuple[str, ...], completed_datasets: set[str], dataset_failures: dict[str, dict[str, object]]
+) -> None:
+    if dataset_failures:
+        failure_summary = "; ".join(f"{dataset} [{record['stage']}] {record['exception_type']}: {record['error']}" for dataset, record in sorted(dataset_failures.items()))
+        abort(f"formal dataset cells failed; skipping five-result collection and final validation: {failure_summary}")
+    missing = [dataset for dataset in datasets if dataset not in completed_datasets]
+    if missing:
+        abort(f"formal dataset cells are incomplete; skipping five-result collection and final validation: {', '.join(missing)}")
 
 
 def _persist_native_admission_receipt(session_file: Path, dataset: str, receipt: dict[str, object]) -> None:
@@ -4200,6 +4321,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     checkpoint_map = session_document.get("completed_cells", {})
     if not isinstance(checkpoint_map, dict) or any(name not in DATASETS for name in checkpoint_map):
         abort("formal completed-cell checkpoint map is malformed")
+    dataset_failures, dataset_failure_history = _load_dataset_failure_state(session_document, DATASETS)
     archived_value = session_document.get("outputs_archived_for_session", False)
     if not isinstance(archived_value, bool):
         abort("formal output archive state is malformed")
@@ -4227,12 +4349,11 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["binary_sha256"] = sha256(binary)
     _write_session_record(session_file, session_document)
 
-    for dataset_index, dataset in enumerate(DATASETS):
-        if dataset in completed_datasets:
-            print(f"[ezkl-formal] reuse completed {dataset} cell after independent result/artifact validation", flush=True)
-            continue
+    def execute_cell(dataset_index: int, dataset: str) -> None:
+        nonlocal workspace_receipt
+        dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
-        _set_stage(session_file, f"{dataset}_native_relation_admission")
+        _set_stage(session_file, f"{dataset}_native_relation_admission", active_dataset=dataset)
         admissions = native_admit_all_datasets(
             binary,
             srs,
@@ -4242,6 +4363,12 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             datasets=(dataset,),
             reuse_receipt=saved_admissions,
             receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
+            command_runner=lambda command, label: run(
+                command,
+                label,
+                gpu=True,
+                log_path=dataset_log_dir / "native_admission.log",
+            ),
         )
         admission = admissions[dataset]
         saved_admissions[dataset] = admission
@@ -4261,7 +4388,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 admission,
                 saved_anchors.get(dataset),
             )
-        _set_stage(session_file, f"{dataset}_capacity_admission")
+        _set_stage(session_file, f"{dataset}_capacity_admission", active_dataset=dataset)
         if workspace_receipt is None:
             capacity_dir = session_dir / "capacity"
             if capacity_dir.exists() or capacity_dir.is_symlink():
@@ -4347,8 +4474,13 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 setup_check=setup_check,
                 workspace_query=workspace_receipt["query"],
             )
-            _set_stage(session_file, f"{dataset}_setup")
-            setup_ms = run(item["setup"], f"{dataset} native setup", gpu=NATIVE_FORMAL_BACKEND == "gpu")
+            _set_stage(session_file, f"{dataset}_setup", active_dataset=dataset)
+            setup_ms = run(
+                item["setup"],
+                f"{dataset} native setup",
+                gpu=NATIVE_FORMAL_BACKEND == "gpu",
+                log_path=dataset_log_dir / "native_setup.log",
+            )
             (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
             setup_receipt_sha256 = write_setup_reuse_receipt(output, dataset, session_id, resume_identity, admission)
             anchor_setup_reuse_receipt(session_file, dataset, setup_receipt_sha256)
@@ -4436,7 +4568,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         os.environ["EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES"] = device_headroom_env
         os.environ["EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"] = cardinality_env
         try:
-            _set_stage(session_file, f"{dataset}_witness_prove_independent_verify")
+            _set_stage(session_file, f"{dataset}_witness_prove_independent_verify", active_dataset=dataset)
             invoke_python_entrypoint(
                 "run_single_dataset", item["single"], f"{dataset} final/witness/prove/independent verify", context=context, session_id=session_id
             )
@@ -4445,7 +4577,17 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 os.environ.pop(name, None)
         if not _completed_cell_checkpoint(output, dataset, session_id, session_file):
             abort(f"{dataset} did not produce an independently verified formal result")
-        completed_datasets.add(dataset)
+
+    _run_dataset_cells(
+        DATASETS,
+        completed_datasets,
+        dataset_failures,
+        dataset_failure_history,
+        session_file,
+        execute_cell,
+        log_paths_for_dataset=lambda dataset: _dataset_failure_log_paths(output_root, session_dir, dataset),
+    )
+    _require_formal_dataset_completion(DATASETS, completed_datasets, dataset_failures)
 
     final_document = load_json(session_file, "formal session record")
     final_checkpoints = final_document.get("completed_cells", {})

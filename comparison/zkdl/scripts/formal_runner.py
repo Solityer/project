@@ -24,6 +24,7 @@ DATASETS = formal_phase.DATASETS
 SESSION_RE = re.compile(r"formal_([0-9a-f]{32})\Z")
 OWNER_TOKEN_ENV = "ZKDL_FORMAL_OWNER_TOKEN"
 LOCK_FD_ENV = "ZKDL_FORMAL_LOCK_FD"
+DETACHED_LAUNCH_ENV = "ZKDL_DETACHED_LAUNCH_DIR"
 
 
 class RunnerError(RuntimeError):
@@ -60,6 +61,52 @@ def _write_json(path: Path, document: dict[str, Any]) -> None:
     finally:
         if temporary.exists() and not temporary.is_symlink():
             temporary.unlink()
+
+
+def _write_detached_session_link(session: Path, session_id: str) -> None:
+    raw = os.environ.get(DETACHED_LAUNCH_ENV)
+    if not raw:
+        return
+    launch_dir = Path(raw)
+    if not launch_dir.is_absolute() or launch_dir.is_symlink() or not launch_dir.is_dir():
+        raise RunnerError("detached launch directory identity is missing or unsafe")
+    resolved = launch_dir.resolve(strict=True)
+    if resolved.parent != (ROOT / "runs").resolve(strict=True) or not resolved.name.startswith("launch_"):
+        raise RunnerError("detached launch directory is outside baseline-local runs")
+    pid = os.getpid()
+    _write_json(resolved / "formal_session.json", {
+        "schema": "zkdl_detached_formal_session_v1", "launch_id": resolved.name,
+        "launch_dir": str(resolved), "session_id": session_id,
+        "session_dir": str(session.resolve(strict=True)), "runner_pid": pid,
+        "runner_start_ticks": str(formal_phase._proc_start_ticks(pid)),
+        "runner_process_group_id": os.getpgrp(), "runner_session_id": os.getsid(0),
+        "boot_id": _boot_id(),
+    })
+
+
+def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, stage: str,
+                            failure: str, *, status: str = "FAILED", replace: bool = False) -> None:
+    current = state.setdefault("dataset_status", {}).get(dataset, {})
+    if not replace and current.get("status") in ("FAILED", "BLOCKED"):
+        return
+    row = {"dataset": dataset, "status": status, "stage": stage, "failure": failure[:2048]}
+    state["dataset_status"][dataset] = row
+    phase_dir = session / "phase"
+    phase_dir.mkdir(exist_ok=True)
+    _write_json(phase_dir / f"{dataset}_failure.json", {
+        "schema": "zkdl_formal_dataset_failure_v1", "baseline": "zkdl",
+        "session_id": state["session_id"], **row, "recorded_at_utc": _now(),
+    })
+    log_path = session / "logs" / f"{dataset}.log"
+    if log_path.parent.is_dir():
+        marker = json.dumps({"dataset": dataset, "status": status, "stage": stage,
+                             "failure": failure[:2048]}, sort_keys=True, separators=(",", ":"))
+        with log_path.open("a", encoding="utf-8") as stream:
+            stream.write(marker + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    state["updated_at_utc"] = _now()
+    _write_json(session / "state.json", state)
 
 
 def _mark_stale_sessions(runs: Path) -> None:
@@ -124,8 +171,9 @@ def _phase_marker(output: str, phase: str, dataset: str | None, session_id: str)
         if isinstance(candidate, dict) and candidate.get("zkdl_phase") == phase:
             marker = candidate
             break
-    if not isinstance(marker, dict) or marker.get("status") != "PASS":
-        raise RunnerError(f"zkDL {phase} phase exited without its exact success marker")
+    allowed_statuses = {"PASS", "PARTIAL", "FAILED"} if phase == "prepare" else ({"PASS", "FAILED"} if phase == "finalize" else {"PASS"})
+    if not isinstance(marker, dict) or marker.get("status") not in allowed_statuses:
+        raise RunnerError(f"zkDL {phase} phase exited without its exact outcome marker")
     if phase in ("prepare", "finalize") and marker.get("session_id") != session_id:
         raise RunnerError(f"zkDL {phase} phase returned a mismatched session identity")
     if phase == "cell" and marker.get("dataset") != dataset:
@@ -136,7 +184,7 @@ def _phase_marker(output: str, phase: str, dataset: str | None, session_id: str)
 def _marker_summary(phase: str, marker: dict[str, Any]) -> dict[str, Any]:
     keys = ("dataset", "prepare_receipt_path", "prepare_receipt_sha256", "receipt_path", "receipt_sha256",
             "final_validation_path", "final_validation_sha256", "proof_sha256", "verification_sha256")
-    summary: dict[str, Any] = {"phase": phase, "status": "PASS"}
+    summary: dict[str, Any] = {"phase": phase, "status": marker.get("status")}
     summary.update({key: marker[key] for key in keys if key in marker})
     return summary
 
@@ -204,7 +252,7 @@ def _session_file_bytes(session: Path) -> int:
     for path in session.rglob("*"):
         if path.is_symlink():
             raise RunnerError(f"zkDL session contains a symlink during capacity accounting: {path}")
-        if path.is_file():
+        if path.is_file() and "logs" not in path.relative_to(session).parts:
             size = path.stat(follow_symlinks=False).st_size
             if size < 0:
                 raise RunnerError(f"zkDL session has an invalid file size: {path}")
@@ -239,7 +287,8 @@ def _checked_capacity_int(value: Any, label: str, *, allow_zero: bool = False) -
     return value
 
 
-def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[str, ...]) -> dict[str, int]:
+def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[str, ...],
+                                    pending: tuple[str, ...] | None = None) -> dict[str, int]:
     if profile.get("schema") != "zkdl_formal_capacity_profile_v3" or profile.get("baseline") != "zkdl":
         raise RunnerError("zkDL local capacity profile schema/baseline mismatch")
     if profile.get("backend") != "cpu" or profile.get("memory_accounting_kind") != "host-only" or profile.get("device") is not None:
@@ -250,14 +299,19 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
             methods.get("host_peak") != "source_derived_upper_bound" or
             methods.get("finalization_host_peak") != "srs_manifest_schema_python_heap_upper_bound"):
         raise RunnerError("zkDL capacity profile lacks source-derived host/disk bounds")
-    if tuple(DATASETS[:len(completed)]) != completed:
-        raise RunnerError("zkDL capacity recheck is not following the canonical dataset sequence")
     datasets = profile.get("datasets")
-    if not isinstance(datasets, dict) or set(datasets) != set(DATASETS):
-        raise RunnerError("zkDL capacity profile does not contain exactly the five canonical datasets")
+    if not isinstance(datasets, dict) or not datasets or not set(datasets).issubset(DATASETS):
+        raise RunnerError("zkDL capacity profile does not contain a canonical admitted subset")
+    admitted_order = tuple(ds for ds in DATASETS if ds in datasets)
+    if any(dataset not in datasets for dataset in completed):
+        raise RunnerError("zkDL completed cells are absent from the admitted capacity profile")
+    if tuple(ds for ds in DATASETS if ds in completed) != completed:
+        raise RunnerError("zkDL completed cell order is not canonical")
+    remaining = tuple(ds for ds in admitted_order if ds not in completed) if pending is None else pending
+    if any(ds not in datasets for ds in remaining) or tuple(ds for ds in DATASETS if ds in remaining) != remaining:
+        raise RunnerError("zkDL capacity recheck is not following the canonical admitted dataset sequence")
     finalization = _checked_capacity_int(profile.get("finalization_disk_bytes_upper_bound"),
                                          "finalization disk upper bound", allow_zero=True)
-    remaining = DATASETS[len(completed):]
     host_required = 0
     device_required = 0
     disk_required = finalization
@@ -271,13 +325,13 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
         route_source_domain = _checked_capacity_int(
             item.get("native_route_source_domain"), f"{dataset} route selector source domain")
         route_factor_elements = _checked_capacity_int(
-            item.get("native_route_selector_factor_elements"),
-            f"{dataset} route selector factor elements")
+            item.get("native_route_selector_factor_elements"), f"{dataset} route selector factor elements")
         if route_source_domain > (1 << 30) or route_factor_elements > route_source_domain + 1:
             raise RunnerError(f"zkDL route selector factor bound is invalid for {dataset}")
         host_required = max(host_required, _checked_capacity_int(item.get("host_peak_bytes"),
                                                                    f"{dataset} host peak"))
-        device_peak = _checked_capacity_int(item.get("device_peak_bytes"), f"{dataset} CPU device peak", allow_zero=True)
+        device_peak = _checked_capacity_int(item.get("device_peak_bytes"),
+                                            f"{dataset} CPU device peak", allow_zero=True)
         if device_peak != 0:
             raise RunnerError(f"zkDL CPU formal cell unexpectedly requires device capacity for {dataset}")
         device_required = max(device_required, device_peak)
@@ -287,9 +341,6 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
                                            f"{dataset} additional disk peak")
         if additional < retained:
             raise RunnerError(f"zkDL capacity profile disk peak is smaller than retained output for {dataset}")
-        # Each cell runs serially. Already-consumed cells are represented by
-        # live available space; future cells need their retained prefix plus
-        # one cell's additional scratch/retained peak at a time.
         candidate_disk = future_retained_prefix + additional + finalization
         if candidate_disk > (1 << 64) - 1:
             raise RunnerError("zkDL remaining disk requirement overflows u64")
@@ -302,10 +353,10 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
     if (not isinstance(finalization_profile, dict) or
             finalization_profile.get("schema") != "zkdl_srs_manifest_finalization_heap_v1" or
             not isinstance(finalization_profile.get("datasets"), dict) or
-            set(finalization_profile["datasets"]) != set(DATASETS)):
-        raise RunnerError("zkDL finalization manifest capacity schema/dataset set mismatch")
+            set(finalization_profile["datasets"]) != set(datasets)):
+        raise RunnerError("zkDL finalization manifest capacity schema/admitted dataset set mismatch")
     finalization_dataset_bounds: list[int] = []
-    for dataset in DATASETS:
+    for dataset in admitted_order:
         item = finalization_profile["datasets"][dataset]
         if not isinstance(item, dict):
             raise RunnerError(f"zkDL finalization manifest capacity is malformed for {dataset}")
@@ -320,11 +371,12 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
         finalization_dataset_bounds.append(expected["host_peak_bytes_upper_bound"])
     finalization_host = _checked_capacity_int(profile.get("finalization_host_peak_bytes_upper_bound"),
                                               "finalization host upper bound")
-    if finalization_host != max(finalization_dataset_bounds):
+    if finalization_dataset_bounds and finalization_host != max(finalization_dataset_bounds):
         raise RunnerError("zkDL finalization host bound differs from its SRS manifest schema bounds")
+    if not finalization_dataset_bounds and finalization_host != 0:
+        raise RunnerError("zkDL empty capacity subset has a nonzero finalization host bound")
     return {"host_bytes": host_required, "disk_bytes": disk_required,
             "device_bytes": device_required, "finalization_host_bytes": finalization_host}
-
 
 def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) -> dict[str, Any]:
     receipt_relative = f"runs/{session.name}/phase/prepare.json"
@@ -342,9 +394,25 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     except (OSError, json.JSONDecodeError) as exc:
         raise RunnerError("zkDL prepare receipt is unreadable") from exc
     if (not isinstance(receipt, dict) or receipt.get("schema") != "zkDL_formal_prepare_receipt_v2" or
-            receipt.get("baseline") != "zkdl" or receipt.get("status") != "PASS" or
-            receipt.get("session_id") != session_id):
+            receipt.get("baseline") != "zkdl" or receipt.get("status") not in ("PASS", "PARTIAL") or
+            marker.get("status") != receipt.get("status") or receipt.get("session_id") != session_id):
         raise RunnerError("zkDL prepare receipt identity/status mismatch")
+    dataset_status = receipt.get("dataset_status")
+    if not isinstance(dataset_status, dict) or set(dataset_status) != set(DATASETS) or marker.get("dataset_status") != dataset_status:
+        raise RunnerError("zkDL prepare outcome does not enumerate the exact five datasets")
+    passing = tuple(dataset for dataset in DATASETS
+                    if isinstance(dataset_status.get(dataset), dict) and dataset_status[dataset].get("status") == "PASS")
+    if not passing:
+        raise RunnerError("zkDL prepare receipt has no dataset that passed complete admission")
+    preflight = receipt.get("preflight_report")
+    if (not isinstance(preflight, dict) or preflight.get("schema") != "zkDL_formal_input_preflight_v1" or
+            not isinstance(preflight.get("datasets"), dict) or set(preflight["datasets"]) != set(DATASETS)):
+        raise RunnerError("zkDL prepare receipt lacks the exact per-dataset input preflight")
+    for dataset in passing:
+        row = preflight["datasets"][dataset]
+        if (not isinstance(row, dict) or row.get("dataset") != dataset or row.get("status") != "PASS" or
+                not isinstance(row.get("input_identity"), dict)):
+            raise RunnerError(f"zkDL admitted dataset lacks its original successful full-input identity: {dataset}")
     build_path = session / "build_manifest.json"
     if build_path.is_symlink() or not build_path.is_file():
         raise RunnerError("zkDL session build manifest is missing, non-regular or symlinked")
@@ -360,8 +428,10 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     source_digest = build.get("source_digest")
     if (receipt.get("source_digest") != source_digest or marker.get("source_digest") != source_digest):
         raise RunnerError("zkDL prepare source identity differs from the validated build")
-    if (receipt.get("graph_identity", {}).get("schema") != "zkdl_canonical_graph_set_v1" or
-            marker.get("graph_identity") != receipt.get("graph_identity")):
+    graph_identity = receipt.get("graph_identity")
+    if (not isinstance(graph_identity, dict) or graph_identity.get("schema") != "zkdl_canonical_graph_set_v1" or
+            graph_identity.get("admitted_datasets") != list(passing) or graph_identity.get("complete") != (passing == DATASETS) or
+            marker.get("graph_identity") != graph_identity or set(graph_identity.get("datasets", {})) != set(passing)):
         raise RunnerError("zkDL prepare receipt graph identity is missing or mismatched")
     profile = receipt.get("capacity_profile")
     if (not isinstance(profile, dict) or marker.get("capacity_profile") != profile or
@@ -370,25 +440,20 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     if profile.get("schema") != "zkdl_formal_capacity_profile_v3":
         raise RunnerError("zkDL prepare capacity profile is not baseline-local")
     native_admissions = receipt.get("native_admissions")
-    if not isinstance(native_admissions, dict) or set(native_admissions) != set(DATASETS):
-        raise RunnerError("zkDL prepare receipt does not contain exactly five native admissions")
     profile_datasets = profile.get("datasets")
-    if not isinstance(profile_datasets, dict) or set(profile_datasets) != set(DATASETS):
-        raise RunnerError("zkDL prepare capacity profile does not contain exactly five datasets")
-    for dataset in DATASETS:
+    if (not isinstance(native_admissions, dict) or set(native_admissions) != set(passing) or
+            not isinstance(profile_datasets, dict) or set(profile_datasets) != set(passing)):
+        raise RunnerError("zkDL prepare receipt/profile does not match its successful dataset subset")
+    for dataset in passing:
         admission = native_admissions[dataset]
         row = profile_datasets[dataset]
-        if (not isinstance(admission, dict) or
-                admission.get("schema") != "zkdl_native_relation_admission_v2" or
-                admission.get("status") != "PASS" or admission.get("dataset") != dataset or
-                not isinstance(row, dict)):
+        if (not isinstance(admission, dict) or admission.get("schema") != "zkdl_native_relation_admission_v2" or
+                admission.get("status") != "PASS" or admission.get("dataset") != dataset or not isinstance(row, dict)):
             raise RunnerError(f"zkDL native admission identity/schema mismatch for {dataset}")
-        source_domain = _checked_capacity_int(
-            admission.get("native_maximum_route_source_domain"),
-            f"{dataset} native route source domain")
-        factor_elements = _checked_capacity_int(
-            admission.get("native_maximum_route_selector_factor_elements"),
-            f"{dataset} native route selector factor elements")
+        source_domain = _checked_capacity_int(admission.get("native_maximum_route_source_domain"),
+                                              f"{dataset} native route source domain")
+        factor_elements = _checked_capacity_int(admission.get("native_maximum_route_selector_factor_elements"),
+                                                f"{dataset} native route selector factor elements")
         if (source_domain > (1 << 30) or factor_elements > source_domain + 1 or
                 row.get("native_route_source_domain") != source_domain or
                 row.get("native_route_selector_factor_elements") != factor_elements):
@@ -398,13 +463,13 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     if _session_file_bytes(session) < _checked_capacity_int(profile.get("preexisting_baseline_artifact_bytes"),
                                                             "preexisting artifact byte count", allow_zero=True):
         raise RunnerError("zkDL prepare session is smaller than its recorded preexisting artifact size")
-    _remaining_capacity_requirements(profile, ())
+    _remaining_capacity_requirements(profile, (), ())
     return profile
 
-
 def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session: Path, session_id: str,
-                   prepare_receipt_sha256: str, build_manifest_sha256: str) -> dict[str, Any]:
-    requirements = _remaining_capacity_requirements(profile, completed)
+                   prepare_receipt_sha256: str, build_manifest_sha256: str,
+                   pending: tuple[str, ...] | None = None) -> dict[str, Any]:
+    requirements = _remaining_capacity_requirements(profile, completed, pending)
     receipt_path = session / "phase" / "prepare.json"
     build_path = session / "build_manifest.json"
     if (receipt_path.is_symlink() or not receipt_path.is_file() or
@@ -444,6 +509,7 @@ def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session:
         raise RunnerError("zkDL live device admission disagrees with the source-bound CPU-only formal path")
     return {
         "completed_datasets": list(completed),
+        "pending_datasets": list(pending) if pending is not None else None,
         "required_host_bytes": required_host,
         "finalization_host_peak_bytes_upper_bound": requirements["finalization_host_bytes"],
         "available_host_bytes": host_available,
@@ -470,13 +536,124 @@ def _run_phase(lock_fd: int, token: str, session: Path, session_id: str, state: 
     env[OWNER_TOKEN_ENV] = token
     env[LOCK_FD_ENV] = str(lock_fd)
     print(f"zkdl_formal_stage=START stage={stage} session={session_id}", flush=True)
-    output = formal_phase._run(command, env=env, capture_output=True, pass_fds=(lock_fd,))
+    try:
+        output = formal_phase._run(command, env=env, capture_output=True, capture_mode="phase_marker",
+                                   pass_fds=(lock_fd,))
+    except formal_phase.PhaseError as exc:
+        if dataset is not None:
+            formal_phase._append_log(session / "logs" / f"{dataset}.log",
+                                     json.dumps({"phase": phase, "dataset": dataset, "status": "FAILED",
+                                                 "error": str(exc)}, sort_keys=True, separators=(",", ":")))
+        raise RunnerError(str(exc)) from exc
     marker = _phase_marker(output, phase, dataset, session_id)
     state.setdefault("completed_phases", []).append(_marker_summary(phase, marker))
+    if phase == "prepare" and isinstance(marker.get("dataset_status"), dict):
+        for item_dataset, outcome in marker["dataset_status"].items():
+            if item_dataset in state.get("dataset_status", {}) and isinstance(outcome, dict):
+                normalized = dict(outcome)
+                if normalized.get("status") == "PASS":
+                    normalized["status"] = "READY"
+                    normalized["stage"] = "admitted"
+                state["dataset_status"][item_dataset].update(normalized)
+    elif phase == "finalize" and isinstance(marker.get("dataset_status"), dict):
+        for item_dataset, outcome in marker["dataset_status"].items():
+            if item_dataset in state.get("dataset_status", {}) and isinstance(outcome, dict):
+                state["dataset_status"][item_dataset].update(outcome)
+    elif phase == "cell" and dataset is not None and marker.get("status") == "PASS":
+        state["dataset_status"][dataset].update({"status": "PASS", "stage": "complete", "failure": ""})
     state["updated_at_utc"] = _now()
     _write_json(session / "state.json", state)
-    print(f"zkdl_formal_stage=PASS stage={stage} session={session_id}", flush=True)
+    print(f"zkdl_formal_stage={marker['status']} stage={stage} session={session_id}", flush=True)
     return marker
+
+
+def _shared_capacity_identity_failure(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(token in message for token in (
+        "source/build", "source or build", "provenance", "build manifest changed",
+        "prepare receipt changed after capacity", "filesystem identity changed",
+        "prepare capacity profile identity mismatch", "local source/build receipt changed",
+    ))
+
+
+def _validate_final_pass(marker: dict[str, Any], session: Path, session_id: str) -> tuple[str, str]:
+    expected_receipt = f"results/{session.name}/final_validation.json"
+    expected_collection = f"results/{session.name}/collected.json"
+    if marker.get("final_validation_path") != expected_receipt or marker.get("collection_path") != expected_collection:
+        raise RunnerError("zkDL final validation marker points outside this session result directory")
+    receipt_path = ROOT / expected_receipt
+    collection_path = ROOT / expected_collection
+    if (receipt_path.is_symlink() or not receipt_path.is_file() or collection_path.is_symlink() or
+            not collection_path.is_file()):
+        raise RunnerError("zkDL final validation receipt or collection is missing/non-regular")
+    receipt_digest = formal_phase.sha256_file(receipt_path)
+    collection_digest = formal_phase.sha256_file(collection_path)
+    if marker.get("final_validation_sha256") != receipt_digest or marker.get("collection_sha256") != collection_digest:
+        raise RunnerError("zkDL final validation marker does not authenticate the final artifacts")
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    collection = json.loads(collection_path.read_text(encoding="utf-8"))
+    strict_marker = "final_validation=PASS records=5 datasets=5 independent_verify=5"
+    if (receipt.get("schema") != "zkDL_formal_final_validation_receipt_v1" or
+            receipt.get("status") != "PASS" or receipt.get("session_id") != session_id or
+            receipt.get("verified_cells") != list(DATASETS) or strict_marker not in receipt.get("validator_output", []) or
+            receipt.get("collection_path") != expected_collection or receipt.get("collection_sha256") != collection_digest or
+            collection.get("schema") != "zkDL_gat_result_collection_v3" or
+            collection.get("session_id") != session_id or
+            {row.get("dataset") for row in collection.get("rows", []) if isinstance(row, dict)} != set(DATASETS) or
+            len(collection.get("rows", [])) != len(DATASETS)):
+        raise RunnerError("zkDL final validation receipt/collection fails the exact five-cell PASS contract")
+    return expected_receipt, receipt_digest
+
+
+def _write_interrupted_summary(session: Path, state: dict[str, Any], failure: str) -> None:
+    session_id = state["session_id"]
+    rows: list[dict[str, Any]] = []
+    for dataset in DATASETS:
+        row = state["dataset_status"][dataset]
+        receipt_path = session / "phase" / f"{dataset}.json"
+        if receipt_path.is_file() and not receipt_path.is_symlink():
+            try:
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                if (receipt.get("schema") == "zkDL_formal_cell_receipt_v1" and
+                        receipt.get("session_id") == session_id and receipt.get("dataset") == dataset and
+                        receipt.get("status") == "PASS" and receipt.get("independent_verification") is True):
+                    rows.append({"dataset": dataset, "status": "PASS", "stage": "independently_verified",
+                                 "result": {key: receipt.get(key) for key in (
+                                     "statement_id", "proof_id", "proof_path", "proof_sha256", "proof_size_bytes",
+                                     "verification_path", "verification_sha256", "commitment_time_seconds",
+                                     "prove_time_seconds", "verify_time_seconds", "metrics")},
+                                 "cell_receipt_path": receipt_path.relative_to(ROOT).as_posix(),
+                                 "cell_receipt_sha256": formal_phase.sha256_file(receipt_path)})
+                    row.update({"status": "PASS", "stage": "independently_verified", "failure": ""})
+                    failure_path = session / "phase" / f"{dataset}_failure.json"
+                    if failure_path.is_file() and not failure_path.is_symlink():
+                        failure_path.unlink()
+                    continue
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+        current_status = row.get("status")
+        if current_status in ("PENDING", "READY"):
+            row.update({"status": "BLOCKED", "stage": "interrupted",
+                        "failure": "not started because the formal run was interrupted"})
+        rows.append({"dataset": dataset, "status": row.get("status", "BLOCKED"),
+                     "stage": row.get("stage", "unknown"),
+                     "failure": row.get("failure") or failure})
+    results_dir = ROOT / "results" / session.name
+    if results_dir.exists() and any(results_dir.iterdir()):
+        return
+    results_dir.mkdir(parents=True, exist_ok=True)
+    collection_path = results_dir / "collected.json"
+    summary = {"schema": "zkDL_gat_formal_partial_result_summary_v1", "mode": "formal_interrupted",
+               "baseline": "zkdl", "session_id": session_id, "runs_path": session.relative_to(ROOT).as_posix(),
+               "overall_status": "INTERRUPTED", "strict_pass": False, "failure": failure[:2048],
+               "datasets": rows}
+    _write_json(collection_path, summary)
+    validation = {"schema": "zkDL_formal_final_validation_receipt_v1", "baseline": "zkdl",
+                  "session_id": session_id, "status": "INTERRUPTED", "strict_pass": False,
+                  "failure": failure[:2048], "collection_path": collection_path.relative_to(ROOT).as_posix(),
+                  "collection_sha256": formal_phase.sha256_file(collection_path),
+                  "dataset_status": {row["dataset"]: row for row in rows}}
+    _write_json(results_dir / "final_validation.json", validation)
 
 
 def run() -> int:
@@ -499,81 +676,171 @@ def run() -> int:
         owner_pid = os.getpid()
         owner = {"pid": owner_pid, "boot_id": _boot_id(), "start_ticks": str(formal_phase._proc_start_ticks(owner_pid))}
         state = {
-            "schema": "zkdl_formal_runner_state_v1",
-            "baseline": "zkdl",
-            "session_id": session_id,
-            "session_dir": session.relative_to(ROOT).as_posix(),
-            "status": "RUNNING",
-            "stage": "prepare",
-            "owner": owner,
-            "lock": {"path": "runs/.formal.lock", "device": lock_stat.st_dev, "inode": lock_stat.st_ino},
+            "schema": "zkdl_formal_runner_state_v1", "baseline": "zkdl", "session_id": session_id,
+            "session_dir": session.relative_to(ROOT).as_posix(), "status": "RUNNING", "stage": "prepare",
+            "owner": owner, "lock": {"path": "runs/.formal.lock", "device": lock_stat.st_dev,
+                                       "inode": lock_stat.st_ino},
             "internal_owner_token_sha256": hashlib.sha256(token.encode("ascii")).hexdigest(),
-            "started_at_utc": _now(),
-            "updated_at_utc": _now(),
-            "completed_phases": [],
+            "started_at_utc": _now(), "updated_at_utc": _now(), "completed_phases": [],
+            "dataset_status": {dataset: {"dataset": dataset, "status": "PENDING", "stage": "pending", "failure": ""}
+                               for dataset in DATASETS},
         }
         _write_json(session / "state.json", state)
+        _write_detached_session_link(session, session_id)
+        formal_phase.SIGNAL_GRACE_SECONDS = 10.0
         for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             signal.signal(signum, formal_phase._signal_handler)
-        prepare_marker = _run_phase(lock_fd, token, session, session_id, state, "prepare")
-        profile = _prepare_capacity(prepare_marker, session, session_id)
-        state["capacity"] = {
-            "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-            "profile_schema": profile["schema"],
-            "backend": profile["backend"],
-            "prepare_receipt_sha256": prepare_marker["prepare_receipt_sha256"],
-            "build_manifest_sha256": prepare_marker["build_manifest_sha256"],
-            "source_digest": prepare_marker["source_digest"],
-            "completed_retained_prefix_actual_bytes": 0,
-            "completed_retained_prefix_artifact_upper_bytes": 0,
-            "completed_cells": [],
-        }
+        global_failure = ""
+        profile: dict[str, Any] | None = None
+        prepare_marker: dict[str, Any] | None = None
+        try:
+            prepare_marker = _run_phase(lock_fd, token, session, session_id, state, "prepare")
+            if prepare_marker.get("status") == "FAILED":
+                global_failure = prepare_marker.get("failure") or "shared preparation failed before dataset admission"
+            else:
+                try:
+                    profile = _prepare_capacity(prepare_marker, session, session_id)
+                except Exception as exc:
+                    global_failure = f"shared prepare/source identity validation failed: {type(exc).__name__}: {exc}"
+                    for dataset in DATASETS:
+                        if state["dataset_status"][dataset].get("status") == "READY":
+                            _record_dataset_failure(session, state, dataset, "prepare_identity", global_failure,
+                                                    status="BLOCKED")
+                if profile is not None:
+                    state["capacity"] = {
+                        "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+                        "profile_schema": profile["schema"], "backend": profile["backend"],
+                        "prepare_receipt_sha256": prepare_marker["prepare_receipt_sha256"],
+                        "build_manifest_sha256": prepare_marker["build_manifest_sha256"],
+                        "source_digest": prepare_marker["source_digest"],
+                        "completed_retained_prefix_actual_bytes": 0,
+                        "completed_retained_prefix_artifact_upper_bytes": 0,
+                        "completed_cells": [],
+                    }
+                    _write_json(session / "state.json", state)
+                    completed: list[str] = []
+                    for dataset in DATASETS:
+                        if state["dataset_status"][dataset].get("status") != "READY":
+                            continue
+                        if dataset not in profile["datasets"]:
+                            _record_dataset_failure(session, state, dataset, "capacity_profile",
+                                                    "dataset was admitted without its exact capacity profile", status="BLOCKED")
+                            continue
+                        try:
+                            capacity_check = _capacity_gate(
+                                profile, tuple(completed), session, session_id,
+                                prepare_marker["prepare_receipt_sha256"], prepare_marker["build_manifest_sha256"],
+                                pending=(dataset,))
+                        except Exception as exc:
+                            failure = f"{type(exc).__name__}: {exc}"
+                            status = "BLOCKED" if _shared_capacity_identity_failure(exc) else "FAILED"
+                            _record_dataset_failure(session, state, dataset, "capacity_admission", failure, status=status)
+                            if status == "BLOCKED":
+                                global_failure = f"shared per-cell source/capacity identity failure: {failure}"
+                                for later in DATASETS[DATASETS.index(dataset) + 1:]:
+                                    if state["dataset_status"][later].get("status") == "READY":
+                                        _record_dataset_failure(session, state, later, "capacity_admission", global_failure,
+                                                                status="BLOCKED")
+                                break
+                            continue
+                        state["capacity"]["last_live_check"] = capacity_check
+                        _write_json(session / "state.json", state)
+                        before_bytes = _session_file_bytes(session)
+                        try:
+                            _run_phase(lock_fd, token, session, session_id, state, "cell", dataset)
+                            after_bytes = _session_file_bytes(session)
+                            retained_actual = max(0, after_bytes - before_bytes)
+                            retained_upper = _checked_capacity_int(
+                                profile["datasets"][dataset].get("cell_retained_artifact_bytes_upper_bound"),
+                                f"{dataset} retained artifact upper bound")
+                            if retained_actual > retained_upper:
+                                raise RunnerError(f"zkDL {dataset} retained artifacts exceeded the admitted bound: "
+                                                  f"actual={retained_actual} upper={retained_upper}")
+                        except Exception as exc:
+                            failure = f"{type(exc).__name__}: {exc}"
+                            status = "BLOCKED" if _shared_capacity_identity_failure(exc) else "FAILED"
+                            _record_dataset_failure(session, state, dataset, "cell", failure, status=status)
+                            if status == "BLOCKED":
+                                global_failure = f"shared source/build identity failure during cell: {failure}"
+                                for later in DATASETS[DATASETS.index(dataset) + 1:]:
+                                    if state["dataset_status"][later].get("status") == "READY":
+                                        _record_dataset_failure(session, state, later, "cell", global_failure, status="BLOCKED")
+                                break
+                            continue
+                        completed.append(dataset)
+                        capacity_state = state["capacity"]
+                        capacity_state["completed_cells"] = list(completed)
+                        capacity_state["completed_retained_prefix_actual_bytes"] += retained_actual
+                        capacity_state["completed_retained_prefix_artifact_upper_bytes"] += retained_upper
+                        capacity_state["last_cell_retained_actual_bytes"] = retained_actual
+                        capacity_state["last_cell_retained_upper_bytes"] = retained_upper
+                        _write_json(session / "state.json", state)
+                    try:
+                        final_capacity = _capacity_gate(
+                            profile, tuple(completed), session, session_id,
+                            prepare_marker["prepare_receipt_sha256"], prepare_marker["build_manifest_sha256"], pending=())
+                        state["capacity"]["finalization_live_check"] = final_capacity
+                    except Exception as exc:
+                        global_failure = f"finalization capacity admission failed: {type(exc).__name__}: {exc}"
+                    _write_json(session / "state.json", state)
+        except Exception as exc:
+            global_failure = global_failure or f"shared preparation/orchestration failure: {type(exc).__name__}: {exc}"
+            for dataset in DATASETS:
+                if state["dataset_status"][dataset].get("status") in ("PENDING", "READY"):
+                    _record_dataset_failure(session, state, dataset, "orchestration", global_failure, status="BLOCKED")
+
+        if global_failure:
+            state["global_failure"] = global_failure[:2048]
+        state["stage"] = "finalize"
+        state["updated_at_utc"] = _now()
         _write_json(session / "state.json", state)
-        completed: list[str] = []
-        for dataset in DATASETS:
-            capacity_check = _capacity_gate(profile, tuple(completed), session, session_id,
-                                             prepare_marker["prepare_receipt_sha256"],
-                                             prepare_marker["build_manifest_sha256"])
-            state["capacity"]["last_live_check"] = capacity_check
-            _write_json(session / "state.json", state)
-            before_bytes = _session_file_bytes(session)
-            _run_phase(lock_fd, token, session, session_id, state, "cell", dataset)
-            after_bytes = _session_file_bytes(session)
-            retained_actual = max(0, after_bytes - before_bytes)
-            retained_upper = _checked_capacity_int(
-                profile["datasets"][dataset].get("cell_retained_artifact_bytes_upper_bound"),
-                f"{dataset} retained artifact upper bound")
-            if retained_actual > retained_upper:
-                raise RunnerError(f"zkDL {dataset} retained artifacts exceeded the admitted bound: actual={retained_actual} upper={retained_upper}")
-            completed.append(dataset)
-            capacity_state = state["capacity"]
-            capacity_state["completed_cells"] = list(completed)
-            capacity_state["completed_retained_prefix_actual_bytes"] += retained_actual
-            capacity_state["completed_retained_prefix_artifact_upper_bytes"] += retained_upper
-            capacity_state["last_cell_retained_actual_bytes"] = retained_actual
-            capacity_state["last_cell_retained_upper_bytes"] = retained_upper
-            _write_json(session / "state.json", state)
-        capacity_check = _capacity_gate(profile, tuple(completed), session, session_id,
-                                         prepare_marker["prepare_receipt_sha256"],
-                                         prepare_marker["build_manifest_sha256"])
-        state["capacity"]["last_live_check"] = capacity_check
-        _write_json(session / "state.json", state)
-        final_marker = _run_phase(lock_fd, token, session, session_id, state, "finalize")
-        state["status"] = "PASS"
-        state["stage"] = "complete"
-        state["failure"] = ""
-        state["final_validation_path"] = final_marker["final_validation_path"]
-        state["final_validation_sha256"] = final_marker["final_validation_sha256"]
+        try:
+            final_marker = _run_phase(lock_fd, token, session, session_id, state, "finalize")
+            if final_marker.get("status") == "PASS":
+                final_path, final_digest = _validate_final_pass(final_marker, session, session_id)
+                state["final_validation_path"] = final_path
+                state["final_validation_sha256"] = final_digest
+                if global_failure or any(state["dataset_status"][dataset].get("status") != "PASS" for dataset in DATASETS):
+                    raise RunnerError("strict final validation reported PASS despite incomplete orchestration state")
+                state["status"] = "PASS"
+                state["stage"] = "complete"
+                state["failure"] = ""
+                state["finished_at_utc"] = _now()
+                state["updated_at_utc"] = state["finished_at_utc"]
+                _write_json(session / "state.json", state)
+                print(f"zkdl_formal_run=PASS session={session_id} session_dir={session.relative_to(ROOT).as_posix()}", flush=True)
+                return 0
+            state["status"] = "FAILED"
+            state["stage"] = "complete"
+            state["failure"] = final_marker.get("failure") or global_failure or "strict five-dataset final validation did not pass"
+            state["final_validation_path"] = final_marker.get("final_validation_path", "")
+            state["final_validation_sha256"] = final_marker.get("final_validation_sha256", "")
+        except Exception as exc:
+            state["status"] = "FAILED"
+            state["stage"] = "complete"
+            state["failure"] = f"{global_failure + '; ' if global_failure else ''}finalization failed: {type(exc).__name__}: {exc}"
         state["finished_at_utc"] = _now()
         state["updated_at_utc"] = state["finished_at_utc"]
         _write_json(session / "state.json", state)
-        print(f"zkdl_formal_run=PASS session={session_id} session_dir={session.relative_to(ROOT).as_posix()}", flush=True)
-        return 0
+        print(f"zkdl_formal_run=FAILED session={session_id} failure={state['failure']}", file=sys.stderr, flush=True)
+        return 2
     except KeyboardInterrupt as exc:
         if state is not None and session is not None:
+            interruption = str(exc) or "formal run interrupted"
+            stage = str(state.get("stage", "unknown"))
+            active_dataset = stage.split(":", 1)[1] if stage.startswith("cell:") else None
+            if active_dataset in DATASETS and state["dataset_status"][active_dataset].get("status") == "READY":
+                _record_dataset_failure(session, state, active_dataset, "interrupted", interruption,
+                                        status="INTERRUPTED", replace=True)
+            for dataset in DATASETS:
+                if state["dataset_status"][dataset].get("status") in ("PENDING", "READY"):
+                    _record_dataset_failure(session, state, dataset, "interrupted",
+                                            "not started because the formal run was interrupted", status="BLOCKED")
+            state["global_failure"] = interruption[:2048]
+            _write_interrupted_summary(session, state, interruption)
             state["status"] = "INTERRUPTED"
             state["stage"] = "interrupted"
-            state["failure"] = str(exc) or "formal run interrupted"
+            state["failure"] = interruption
             state["finished_at_utc"] = _now()
             state["updated_at_utc"] = state["finished_at_utc"]
             _write_json(session / "state.json", state)
@@ -591,7 +858,6 @@ def run() -> int:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
-
 
 def main() -> int:
     if len(sys.argv) != 1:

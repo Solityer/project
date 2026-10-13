@@ -25,6 +25,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _boot_id() -> str:
+    return Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+
+
+def _proc_identity(pid: int) -> dict[str, Any]:
+    raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
+    end = raw.rfind(")")
+    if end < 0:
+        raise RuntimeError(f"cannot parse process identity for pid {pid}")
+    fields = raw[end + 2:].split()
+    if len(fields) < 20:
+        raise RuntimeError(f"process identity is truncated for pid {pid}")
+    return {"start_ticks": fields[19], "process_group_id": int(fields[2]), "session_id": int(fields[3])}
+
+
 def _write_json_atomic(path: Path, document: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
     descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -57,7 +72,7 @@ def _terminate_child_group(child: subprocess.Popen[bytes], signum: int) -> None:
         os.killpg(child.pid, signum)
     except ProcessLookupError:
         return
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
         if not _group_exists(child.pid):
             return
@@ -95,16 +110,27 @@ def run_supervisor(command: list[str], cwd: Path, launch_dir: Path) -> int:
         signal.signal(signal.SIGHUP, signal.SIG_IGN)
         for signum in (signal.SIGINT, signal.SIGTERM):
             signal.signal(signum, _handle_signal)
-        CHILD = subprocess.Popen(command, cwd=cwd, env={**os.environ, "PYTHONUNBUFFERED": "1"}, stdin=subprocess.DEVNULL,
+        runner_env = {**os.environ, "PYTHONUNBUFFERED": "1", "ZKDL_DETACHED_LAUNCH_DIR": str(launch_dir.resolve())}
+        CHILD = subprocess.Popen(command, cwd=cwd, env=runner_env, stdin=subprocess.DEVNULL,
                                  stdout=console_fd, stderr=subprocess.STDOUT, start_new_session=True)
+        runner_identity = _proc_identity(CHILD.pid)
         _write_json_atomic(launch_dir / "pid.json", {
             "schema": "zkdl_detached_launch_pid_v1", "supervisor_pid": os.getpid(),
-            "supervisor_session_id": os.getsid(0), "runner_pid": CHILD.pid,
-            "runner_process_group_id": CHILD.pid, "started_at_utc": started_at,
+            "supervisor_session_id": os.getsid(0), "supervisor_boot_id": _boot_id(),
+            "supervisor_start_ticks": _proc_identity(os.getpid())["start_ticks"],
+            "runner_pid": CHILD.pid, "runner_process_group_id": runner_identity["process_group_id"],
+            "runner_session_id": runner_identity["session_id"],
+            "runner_start_ticks": runner_identity["start_ticks"], "boot_id": _boot_id(),
+            "started_at_utc": started_at,
         })
         if INTERRUPTED_SIGNAL is not None:
             _terminate_child_group(CHILD, signal.SIGTERM)
         child_returncode = CHILD.wait()
+        if _group_exists(CHILD.pid):
+            _terminate_child_group(CHILD, signal.SIGTERM)
+            failure = failure or "runner exited while owned process-group descendants remained"
+            if child_returncode == 0:
+                child_returncode = 2
         if INTERRUPTED_SIGNAL is not None:
             status = "INTERRUPTED"
             exit_code = 128 + INTERRUPTED_SIGNAL
@@ -118,9 +144,10 @@ def run_supervisor(command: list[str], cwd: Path, launch_dir: Path) -> int:
             status = "PASS" if exit_code == 0 else "FAILED"
     except BaseException as exc:
         failure = str(exc) or type(exc).__name__
-        if CHILD is not None and CHILD.poll() is None:
+        if CHILD is not None:
             _terminate_child_group(CHILD, signal.SIGTERM)
-            child_returncode = CHILD.wait()
+            if CHILD.poll() is None:
+                child_returncode = CHILD.wait()
         if INTERRUPTED_SIGNAL is not None:
             status = "INTERRUPTED"
             exit_code = 128 + INTERRUPTED_SIGNAL

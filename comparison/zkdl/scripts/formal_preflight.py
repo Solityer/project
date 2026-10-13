@@ -379,19 +379,18 @@ def check_config(root: Path, dataset: str, config_path: Path | None = None) -> d
 def main() -> int:
     argparse.ArgumentParser().parse_args()
     root = Path(__file__).resolve().parent.parent
-    regular(root / 'configs/quantization_scale_chain.cfg')
-    failures = []
     report: dict[str, dict[str, object]] = {}
     for dataset in DATASETS:
         try:
-            report[dataset] = check_config(root, dataset)
+            item = check_config(root, dataset)
+            item['status'] = 'PASS'
+            report[dataset] = item
         except SystemExit as exc:
             detail = exc.code if isinstance(exc.code, str) else f'exit={exc.code}'
-            failures.append(f'{dataset}: {detail}')
+            report[dataset] = {'dataset': dataset, 'status': 'FAILED', 'failure': str(detail)}
         except Exception as exc:
-            failures.append(f'{dataset}: {type(exc).__name__}: {exc}')
-    if failures:
-        raise SystemExit('formal_input_preflight=BLOCKED ' + ' | '.join(failures))
+            report[dataset] = {'dataset': dataset, 'status': 'FAILED',
+                               'failure': f'{type(exc).__name__}: {exc}'}
     report_raw_path = os.environ.get('ZKDL_PREFLIGHT_REPORT')
     if report_raw_path:
         report_path = Path(report_raw_path)
@@ -408,31 +407,63 @@ def main() -> int:
             try:
                 target_device = target.stat().st_dev
             except OSError as exc:
-                raise SystemExit(f'formal_input_preflight=BLOCKED cannot inspect {label} filesystem: {exc}')
+                target_device = None
+                shared_failure = f'cannot inspect {label} filesystem: {exc}'
+                break
             if target_device not in expected_devices:
-                raise SystemExit(f'formal_input_preflight=BLOCKED {label} are on a different filesystem; combined capacity cannot be certified')
-        total_snapshot_bytes = sum(int(item['snapshot_copy_bytes']) for item in report.values())
-        total_srs_bytes = sum(int(item['resource_prerequisites']['srs_plan']['estimated_materialized_bytes']) for item in report.values())
+                shared_failure = f'{label} are on a different filesystem; combined capacity cannot be certified'
+                break
+        else:
+            shared_failure = ''
         statvfs = os.statvfs(report_path.parent)
         available_bytes = statvfs.f_bavail * statvfs.f_frsize
+        if shared_failure:
+            for dataset, item in report.items():
+                if item.get('status') == 'PASS':
+                    item['status'] = 'BLOCKED'
+                    item['failure'] = f'shared capacity preflight failed: {shared_failure}'
         report_bytes = 0
-        for _ in range(8):
-            required_bytes = total_snapshot_bytes + total_srs_bytes + report_bytes
-            document = {'schema': 'zkDL_formal_input_preflight_v1', 'datasets': report,
-                        'combined_capacity': {'snapshot_copy_bytes': total_snapshot_bytes,
-                                              'srs_materialized_bytes': total_srs_bytes,
+        document: dict[str, object] = {}
+        for _ in range(16):
+            planned = {dataset: dict(item) for dataset, item in report.items()}
+            snapshot_bytes = 0
+            srs_bytes = 0
+            for dataset in DATASETS:
+                item = planned[dataset]
+                if item.get('status') != 'PASS':
+                    continue
+                snapshot = int(item['snapshot_copy_bytes'])
+                srs = int(item['resource_prerequisites']['srs_plan']['estimated_materialized_bytes'])
+                required = snapshot_bytes + srs_bytes + snapshot + srs + report_bytes
+                if required > available_bytes:
+                    item['status'] = 'FAILED'
+                    item['failure'] = (f'combined snapshot/SRS capacity blocked before {dataset}: '
+                                       f'need={required} available={available_bytes}')
+                else:
+                    item['capacity_reservation_bytes'] = {'snapshot_copy_bytes': snapshot,
+                                                          'srs_materialized_bytes': srs}
+                    snapshot_bytes += snapshot
+                    srs_bytes += srs
+            required_bytes = snapshot_bytes + srs_bytes + report_bytes
+            document = {'schema': 'zkDL_formal_input_preflight_v1', 'datasets': planned,
+                        'combined_capacity': {'snapshot_copy_bytes': snapshot_bytes,
+                                              'srs_materialized_bytes': srs_bytes,
                                               'preflight_report_bytes': report_bytes,
                                               'required_bytes': required_bytes,
                                               'available_bytes': available_bytes}}
             next_report_bytes = len((json.dumps(document, sort_keys=True, indent=2) + '\n').encode('utf-8'))
+            report = planned
             if next_report_bytes == report_bytes:
                 break
             report_bytes = next_report_bytes
-        required_bytes = total_snapshot_bytes + total_srs_bytes + report_bytes
-        if required_bytes > available_bytes:
-            raise SystemExit(f'formal_input_preflight=BLOCKED combined snapshots/SRS/report need {required_bytes} bytes but only {available_bytes} are available')
+        else:
+            raise SystemExit('formal_input_preflight=BLOCKED capacity report size did not stabilize')
         report_path.write_text(json.dumps(document, sort_keys=True, indent=2) + '\n')
-    print('formal_input_preflight=PASS datasets=5')
+    passed = sum(item.get('status') == 'PASS' for item in report.values())
+    failed = sum(item.get('status') != 'PASS' for item in report.values())
+    print(f'formal_input_preflight={"PASS" if failed == 0 else "PARTIAL"} datasets=5 ready={passed} failed={failed}')
+    if not report_raw_path and failed:
+        return 2
     return 0
 
 if __name__ == '__main__':

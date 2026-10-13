@@ -1,0 +1,304 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+[ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: associated function `read_activation` is never used
+  --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:72:19
+   |
+40 | impl SelectorBitmap {
+   | ------------------- associated function in this implementation
+...
+72 |     pub(crate) fn read_activation<R: std::io::Read>(
+   |                   ^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `is_activated` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:336:19
+    |
+238 | impl SelectorActivationSet {
+    | -------------------------- method in this implementation
+...
+336 |     pub(crate) fn is_activated(&self, row: usize) -> bool {
+    |                   ^^^^^^^^^^^^
+
+warning: methods `compress_selector_bitmaps` and `directly_convert_selector_bitmaps` are never used
+    --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:2738:19
+     |
+2244 | impl<F: Field> ConstraintSystem<F> {
+     | ---------------------------------- methods in this implementation
+...
+2738 |     pub(crate) fn compress_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+2856 |     pub(crate) fn directly_convert_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `process_bitmaps` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit/compress_selectors.rs:342:15
+    |
+342 | pub(crate) fn process_bitmaps<F: Field, E>(
+    |               ^^^^^^^^^^^^^^^
+
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:56:5
+   |
+36 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+56 |     Y(),
+   |     ^
+57 |     /// Previous value
+58 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pair_at` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:108:8
+    |
+ 30 | impl SuccessorEntries {
+    | --------------------- method in this implementation
+...
+108 |     fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+    |        ^^^^^^^
+
+warning: associated functions `read` and `read_with_native_backing_budget` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:269:19
+    |
+263 | / impl<C: SerdeCurveAffine> ProvingKey<C>
+264 | | where
+265 | |     C::Scalar: Field,
+    | |_____________________- associated functions in this implementation
+...
+269 |       pub(super) fn read<R: io::Read>(
+    |                     ^^^^
+...
+278 |       pub(super) fn read_with_native_backing_budget<R: io::Read>(reader: &mut R, _format: SerdeFormat, domain: &EvaluationDomain<C:...
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `domain_size` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:500:19
+    |
+414 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- method in this implementation
+...
+500 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: variant `Memory` is never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:32:5
+   |
+31 | enum PermutationState {
+   |      ---------------- variant in this enum
+32 |     Memory {
+   |     ^^^^^^
+   |
+   = note: `PermutationState` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `cell_at` and `mapping_at_idx` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:99:8
+    |
+ 54 | impl Assembly {
+    | ------------- methods in this implementation
+...
+ 99 |     fn cell_at(&self, cell: usize) -> (usize, usize) {
+    |        ^^^^^^^
+...
+111 |     fn mapping_at_idx(&mut self, column: usize, row: usize) -> Result<(usize, usize), Error> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:410:15
+    |
+410 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:456:19
+    |
+439 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+456 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:122:19
+    |
+ 61 | impl NativePermutationStore {
+    | --------------------------- associated function in this implementation
+...
+122 |     pub(crate) fn new(cell_count: usize) -> io::Result<Self> {
+    |                   ^^^
+
+warning: associated items `new` and `pair_at` are never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:909:19
+     |
+ 908 | impl NativeSuccessorStore {
+     | ------------------------- associated items in this implementation
+ 909 |     pub(crate) fn new(len: u64) -> io::Result<Self> {
+     |                   ^^^
+...
+1047 |     pub(crate) fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+     |                   ^^^^^^^
+
+warning: associated function `new` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1186:19
+     |
+1183 | impl NativeTargetBitmap {
+     | ----------------------- associated function in this implementation
+...
+1186 |     pub(crate) fn new(bit_count: u64) -> io::Result<Self> {
+     |                   ^^^
+
+warning: method `write_value` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:2096:19
+     |
+2095 | impl<F: Copy> SpillBuilder<F> {
+     | ----------------------------- method in this implementation
+2096 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+     |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+   Compiling halo2wrong v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling maingate v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling integer v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling ecc v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling snark-verifier v0.1.1 (https://github.com/zkonduit/snark-verifier?branch=ac%2Fchunked-mv-lookup#508d96b2)
+warning: `halo2_proofs` (lib) generated 28 warnings (run `cargo fix --lib -p halo2_proofs` to apply 6 suggestions)
+   Compiling halo2_solidity_verifier v0.1.0 (https://github.com/zkonduit/ezkl-verifier?branch=main#a518a917)
+   Compiling halo2_gadgets v0.2.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_gadgets)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+error: function `native_mv_lookup_shape` is never used
+    --> src/execute.rs:2460:4
+     |
+2460 | fn native_mv_lookup_shape(
+     |    ^^^^^^^^^^^^^^^^^^^^^^
+     |
+note: the lint level is defined here
+    --> src/lib.rs:11:5
+     |
+  11 |     unused,
+     |     ^^^^^^
+     = note: `#[deny(dead_code)]` implied by `#[deny(unused)]`
+
+warning: `ezkl` (lib) generated 1 warning
+error: could not compile `ezkl` (lib) due to 1 previous error; 1 warning emitted

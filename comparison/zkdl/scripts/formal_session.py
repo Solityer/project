@@ -30,8 +30,12 @@ def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None
     for source in (cache_source, model_source):
         if source.is_symlink() or not source.is_dir() or any(path.is_symlink() for path in source.rglob('*')):
             raise ValueError(f'formal snapshot input contains a missing directory or symlink: {source}')
-    shutil.copytree(cache_source, root / updates['cache_root'] / dataset)
-    shutil.copytree(model_source, root / updates['checkpoint_bundle'])
+    cache_target = root / updates['cache_root'] / dataset
+    checkpoint_target = root / updates['checkpoint_bundle']
+    cache_target.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(cache_source, cache_target)
+    shutil.copytree(model_source, checkpoint_target)
     manifest_path = root / updates['checkpoint_bundle'] / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     manifest['checkpoint_prefix'] = updates['checkpoint_bundle'] + '/best_model.pt'
@@ -61,15 +65,19 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--session', required=True, type=Path)
     parser.add_argument('--config', type=Path)
+    parser.add_argument('--dataset', choices=DATASETS)
     args = parser.parse_args()
     if os.environ.get('ZKDL_ALLOW_FULL_DATASET_RUN') != '1':
         raise SystemExit('formal-session: full input snapshots belong to the user formal entry')
     root = Path(__file__).resolve().parent.parent
     session = args.session.resolve()
     relative = session.relative_to(root).as_posix()
-    if args.session.is_symlink() or not session.is_dir() or not re.fullmatch(r'runs/[A-Za-z0-9_]+', relative) or (session / 'resources').exists():
+    if (args.session.is_symlink() or not session.is_dir() or not re.fullmatch(r'runs/[A-Za-z0-9_]+', relative) or
+            ((session / 'resources').exists() and args.dataset is None and args.config is None)):
         raise SystemExit('formal-session: use a fresh baseline-local runs/<session> directory')
     if args.config:
+        if args.dataset is not None:
+            raise SystemExit('formal-session: --dataset cannot be combined with --config')
         source_config = args.config.resolve()
         if source_config.parent != root / 'configs' or args.config.is_symlink():
             raise SystemExit('formal-session: source config must be baseline-local')
@@ -79,24 +87,43 @@ def main() -> int:
         config_path = snapshot(root, session, dataset, source_config)
         (session / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
         (session / 'formal_run.path').write_text(relative + '/' + dataset + '\n')
-    else:
+    elif args.dataset is not None:
         report_path = session / 'dataset_prerequisites.json'
         if report_path.is_symlink() or not report_path.is_file():
-            raise SystemExit('formal-session: successful all-five preflight report is missing, non-regular or symlinked')
+            raise SystemExit('formal-session: formal input preflight report is missing, non-regular or symlinked')
         try:
             report = json.loads(report_path.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError) as exc:
-            raise SystemExit(f'formal-session: successful all-five preflight report is missing or invalid: {exc}')
+            raise SystemExit(f'formal-session: formal input preflight report is missing or invalid: {exc}')
         if report.get('schema') != 'zkDL_formal_input_preflight_v1' or not isinstance(report.get('datasets'), dict):
-            raise SystemExit('formal-session: all-five preflight report schema is invalid')
+            raise SystemExit('formal-session: formal input preflight report schema is invalid')
         dataset_reports = report['datasets']
         if set(dataset_reports) != set(DATASETS):
-            raise SystemExit('formal-session: all-five preflight report dataset set is incomplete')
+            raise SystemExit('formal-session: formal input preflight report dataset set is incomplete')
+        item = dataset_reports[args.dataset]
+        if (not isinstance(item, dict) or item.get('dataset') != args.dataset or item.get('status') != 'PASS' or
+                not isinstance(item.get('input_identity'), dict)):
+            raise SystemExit(f'formal-session: this dataset has no successful preflight identity: {args.dataset}')
+        snapshot(root, session, args.dataset, expected_input_identity=item['input_identity'])
+    else:
+        report_path = session / 'dataset_prerequisites.json'
+        if report_path.is_symlink() or not report_path.is_file():
+            raise SystemExit('formal-session: formal input preflight report is missing, non-regular or symlinked')
+        try:
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SystemExit(f'formal-session: formal input preflight report is missing or invalid: {exc}')
+        if report.get('schema') != 'zkDL_formal_input_preflight_v1' or not isinstance(report.get('datasets'), dict):
+            raise SystemExit('formal-session: formal input preflight report schema is invalid')
+        dataset_reports = report['datasets']
+        if set(dataset_reports) != set(DATASETS):
+            raise SystemExit('formal-session: formal input preflight report dataset set is incomplete')
         for dataset in DATASETS:
             item = dataset_reports.get(dataset)
-            if not isinstance(item, dict) or item.get('dataset') != dataset or not isinstance(item.get('input_identity'), dict):
-                raise SystemExit(f'formal-session: preflight input identity is malformed: {dataset}')
-            snapshot(root, session, dataset, expected_input_identity=item['input_identity'])
+            if not isinstance(item, dict) or item.get('dataset') != dataset:
+                raise SystemExit(f'formal-session: preflight row is malformed: {dataset}')
+            if item.get('status') == 'PASS' and isinstance(item.get('input_identity'), dict):
+                snapshot(root, session, dataset, expected_input_identity=item['input_identity'])
     return 0
 
 if __name__ == '__main__':
