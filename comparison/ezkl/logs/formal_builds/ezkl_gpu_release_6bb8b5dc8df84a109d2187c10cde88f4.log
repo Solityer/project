@@ -6,8 +6,6 @@ help: Check that the patched package version and available features are compatib
       with the dependency requirements. If the patch has a different version from
       what is locked in the Cargo.lock file, run `cargo update` to use the new
       version. This may also occur with an optional dependency that is not enabled.
-   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
-   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
 warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
    |
@@ -270,14 +268,7 @@ help: consistently use `'params`
 81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
    |                                           ++++++++
 
-   Compiling halo2wrong v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
-   Compiling maingate v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
-   Compiling integer v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
-   Compiling ecc v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
-   Compiling snark-verifier v0.1.1 (https://github.com/zkonduit/snark-verifier?branch=ac%2Fchunked-mv-lookup#508d96b2)
 warning: `halo2_proofs` (lib) generated 28 warnings (run `cargo fix --lib -p halo2_proofs` to apply 6 suggestions)
-   Compiling halo2_solidity_verifier v0.1.0 (https://github.com/zkonduit/ezkl-verifier?branch=main#a518a917)
-   Compiling halo2_gadgets v0.2.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_gadgets)
    Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
 warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
    --> src/../gat_adapter/loader.rs:637:30
@@ -287,18 +278,9 @@ warning: use of deprecated function `sha256::digest_file`: Use new function `try
     |
     = note: `#[warn(deprecated)]` on by default
 
-error: function `native_mv_lookup_shape` is never used
-    --> src/execute.rs:2460:4
-     |
-2460 | fn native_mv_lookup_shape(
-     |    ^^^^^^^^^^^^^^^^^^^^^^
-     |
-note: the lint level is defined here
-    --> src/lib.rs:11:5
-     |
-  11 |     unused,
-     |     ^^^^^^
-     = note: `#[deny(dead_code)]` implied by `#[deny(unused)]`
-
 warning: `ezkl` (lib) generated 1 warning
-error: could not compile `ezkl` (lib) due to 1 previous error; 1 warning emitted
+    Finished `release` profile [optimized] target(s) in 3m 17s
+[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
+[*] [2026-10-13 04:52:05:359, ezkl] - succeeded
+[ezkl-formal] wrote current GPU build receipt /home/pzh/project/comparison/ezkl/artifacts/build/gpu/build_receipt.json
+[ezkl-formal] BUILD_STAGE=complete backend=gpu binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl

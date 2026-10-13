@@ -2456,7 +2456,7 @@ fn table_expression_cardinality_upper(
     Ok(populated_rows_upper.saturating_add(1).min(domain_size))
 }
 
-#[cfg(any(feature = "gpu-accelerated", test))]
+#[cfg(all(test, feature = "gpu-accelerated"))]
 fn native_mv_lookup_shape(
     cs: &plonk::ConstraintSystem<Fr>,
     census: &plonk::NativeShapeCensus,
@@ -6135,7 +6135,7 @@ pub(crate) fn load_params_prover<Scheme: CommitmentScheme>(
     Ok(params)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gpu-accelerated"))]
 mod native_geometry_diagnostics {
     use super::*;
 

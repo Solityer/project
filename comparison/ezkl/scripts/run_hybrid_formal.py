@@ -1545,6 +1545,7 @@ def native_admit_all_datasets(
             "prepared_dir": str(admission_dir.relative_to(baseline_root)),
             "settings_sha256": admission["settings_sha256"],
             "scalar_domain_vector_bytes": admission["scalar_domain_vector_bytes"],
+            "total_assignments": admission["total_assignments"],
             "logrows": admission["logrows"],
             "domain_size": admission["domain_size"],
             "constraint_system": cs,

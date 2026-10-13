@@ -1,0 +1,43 @@
+{
+  "baseline": "zkdl",
+  "collection_path": "results/formal_ca907ae425d988fc781f6df980342c8c/collected.json",
+  "collection_sha256": "acd97386fd8c98a02ca41339b910f450e34745e069d92e86c9d8535d95361cd8",
+  "failed_cells": [
+    {
+      "dataset": "cora",
+      "failure": "RunnerError: stage exited with status 2: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/formal_phase.py --internal-phase cell --session-dir /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c --dataset cora; detail=zkdl-formal-phase=FAILED error=stage exited with status 1: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/prepare_local.sh /home/pzh/project/comparison/zkdl/configs/formal_ca907ae425d988fc781f6df980342c8c_cora.cfg /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c/cora",
+      "stage": "cell",
+      "status": "FAILED"
+    },
+    {
+      "dataset": "citeseer",
+      "failure": "RunnerError: stage exited with status 2: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/formal_phase.py --internal-phase cell --session-dir /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c --dataset citeseer; detail=zkdl-formal-phase=FAILED error=stage exited with status 1: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/prepare_local.sh /home/pzh/project/comparison/zkdl/configs/formal_ca907ae425d988fc781f6df980342c8c_citeseer.cfg /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c/citeseer",
+      "stage": "cell",
+      "status": "FAILED"
+    },
+    {
+      "dataset": "pubmed",
+      "failure": "RunnerError: stage exited with status 2: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/formal_phase.py --internal-phase cell --session-dir /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c --dataset pubmed; detail=zkdl-formal-phase=FAILED error=stage exited with status 1: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/prepare_local.sh /home/pzh/project/comparison/zkdl/configs/formal_ca907ae425d988fc781f6df980342c8c_pubmed.cfg /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c/pubmed",
+      "stage": "cell",
+      "status": "FAILED"
+    },
+    {
+      "dataset": "ppi",
+      "failure": "RunnerError: stage exited with status 2: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/formal_phase.py --internal-phase cell --session-dir /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c --dataset ppi; detail=zkdl-formal-phase=FAILED error=stage exited with status 1: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/prepare_local.sh /home/pzh/project/comparison/zkdl/configs/formal_ca907ae425d988fc781f6df980342c8c_ppi.cfg /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c/ppi",
+      "stage": "cell",
+      "status": "FAILED"
+    },
+    {
+      "dataset": "ogbn_arxiv",
+      "failure": "RunnerError: stage exited with status 2: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/formal_phase.py --internal-phase cell --session-dir /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c --dataset ogbn_arxiv; detail=zkdl-formal-phase=FAILED error=stage exited with status 1: /usr/bin/python3 /home/pzh/project/comparison/zkdl/scripts/prepare_local.sh /home/pzh/project/comparison/zkdl/configs/formal_ca907ae425d988fc781f6df980342c8c_ogbn_arxiv.cfg /home/pzh/project/comparison/zkdl/runs/formal_ca907ae425d988fc781f6df980342c8c/ogbn_arxiv",
+      "stage": "cell",
+      "status": "FAILED"
+    }
+  ],
+  "failure": "one or more datasets did not complete a proof with independent verification",
+  "schema": "zkDL_formal_final_validation_receipt_v1",
+  "session_id": "ca907ae425d988fc781f6df980342c8c",
+  "status": "FAILED",
+  "strict_pass": false,
+  "verified_cells": []
+}

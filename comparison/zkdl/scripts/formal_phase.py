@@ -1268,7 +1268,7 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             scratch_parent.rmdir()
     try:
         _cell_stage("setup", dataset, setup, log_path)
-        _cell_stage("prepare", dataset, lambda: _run([sys.executable, str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)],
+        _cell_stage("prepare", dataset, lambda: _run(["/bin/bash", str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)],
                                                        log_path=log_path, env=env), log_path)
         _cell_stage("prove", dataset, lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu", "--run-dir", str(run_dir)],
                                                      log_path=log_path, env=env), log_path)
