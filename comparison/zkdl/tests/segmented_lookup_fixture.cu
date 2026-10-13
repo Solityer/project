@@ -12,6 +12,10 @@
 #include <string>
 #include <vector>
 
+#define ZKDL_SORTED_LOOKUP_FIXTURE_INCLUDE
+#include "sorted_lookup_prefix_cache_check.cu"
+#undef ZKDL_SORTED_LOOKUP_FIXTURE_INCLUDE
+
 #include "../zkrelation-proof.cuh"
 #include "../gat_adapter/gat_native_resources.hpp"
 #include "../gat_adapter/gat_native_resources.cu"
@@ -30,6 +34,61 @@ bool fixture_fail(const char *stage, const std::string &reason, std::string *err
 }
 
 void fixture_pass(const char *stage, const char *reason) { std::cerr << "segmented_fixture stage=" << stage << " status=PASS reason=" << reason << '\n'; }
+
+bool descriptor_backing_cow_fixture() {
+    OperationDescriptor descriptor;
+    descriptor.id = "fixture/cow-selector";
+    descriptor.kind = RelationKind::SparseRoute;
+    descriptor.degree = 2U;
+    descriptor.source_refs = {"input", "output"};
+    descriptor.tensor_refs = descriptor.source_refs;
+    descriptor.mapping = "fixture-selector";
+    descriptor.padding = "zero-mask";
+    descriptor.terminal_claim = "output";
+    descriptor.terminal_point = "output";
+    descriptor.selector_edge_domain = 2U;
+    descriptor.selector_node_domain = 2U;
+    descriptor.selector_feature_domain = 1U;
+    descriptor.selector_source_feature_domain = 1U;
+    descriptor.selector_src = {1U, 0U};
+    descriptor.selector_dst = {1U, 0U};
+    descriptor.selector_active = {1U, 0U};
+    descriptor.selector_feature_map = {0U};
+    descriptor.selector_source_ref = "input";
+    descriptor.selector_output_ref = "output";
+
+    OperationDescriptor shared = descriptor;
+    if (shared.selector_active.backing_identity() !=
+            descriptor.selector_active.backing_identity() ||
+        shared.selector_src.backing_identity() !=
+            descriptor.selector_src.backing_identity())
+        return fixture_fail("descriptor-cow", "descriptor copy did not share selector backing");
+    std::vector<byte> descriptor_wire, shared_wire;
+    append_operation(descriptor_wire, descriptor);
+    append_operation(shared_wire, shared);
+    if (descriptor_wire != shared_wire)
+        return fixture_fail("descriptor-cow", "shared descriptor serialization changed canonical bytes");
+
+    shared.selector_active[1U] = 1U;
+    shared.selector_src[0U] = 0U;
+    if (descriptor.selector_active[1U] != 0U ||
+        static_cast<std::uint32_t>(descriptor.selector_src[0U]) != 1U ||
+        shared.selector_active.backing_identity() ==
+            descriptor.selector_active.backing_identity() ||
+        shared.selector_src.backing_identity() ==
+            descriptor.selector_src.backing_identity())
+        return fixture_fail("descriptor-cow", "mutable selector access did not detach safely");
+    OperationDescriptor independent = descriptor;
+    independent.selector_active.assign({1U, 1U});
+    independent.selector_src.assign({0U, 0U});
+    std::vector<byte> detached_wire, independent_wire;
+    append_operation(detached_wire, shared);
+    append_operation(independent_wire, independent);
+    if (detached_wire != independent_wire)
+        return fixture_fail("descriptor-cow", "detached descriptor serialization differs from equal values");
+    fixture_pass("descriptor-cow", "descriptor copies share backing, writes detach, and wire bytes stay canonical");
+    return true;
+}
 
 std::string hex_digest(const std::array<zkdl::byte, 32U> &digest) {
     static constexpr char kHex[] = "0123456789abcdef";
@@ -185,6 +244,171 @@ bool write_authenticated_resource_fixture(const std::filesystem::path &root, std
         return fixture_fail("resource-admission", "manifest/registry/frame metadata is not canonical", error);
     }
     fixture_pass("resource-admission", "logical32 is admitted over four physical frame8 segments");
+    return true;
+}
+
+bool prepared_msm_chunk_fixture(
+    const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
+    std::string* error);
+
+bool prepared_msm_receipt_fixture(
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
+    const SegmentedTensorProvider& provider,
+    const RelationStatement& statement, std::string* error) {
+    std::vector<zkdl::CpuG1Point> authenticated_points = generators;
+    zkdl::CpuIpaBasisContext authenticated_basis;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(authenticated_points), h, u, authenticated_basis, error))
+        return fixture_fail("prepared-msm-basis", "small authenticated basis rejected", error);
+    const auto& owned_generators = authenticated_basis.generators();
+    zkdl::CpuG1MsmSession session(authenticated_basis);
+
+    CommitmentWire cached_wire;
+    SegmentCommitmentMaterial material;
+    SegmentCommitmentValidationReceipt receipt;
+    if (!zktr_build_segment_commitment_material(
+            "fixture/cached-public", 1U, provider, owned_generators, h, u,
+            FrWire{}, statement, cached_wire, material, error, nullptr, 0U,
+            nullptr, &authenticated_basis, &session, &receipt) ||
+        !receipt.valid())
+        return fixture_fail("prepared-msm-receipt", "cached commitment/receipt build failed", error);
+    CommitmentWire raw_wire;
+    if (!zktr_commitment_wire_from_material(
+            "fixture/cached-public", 1U, provider, owned_generators, h, u,
+            statement, material, raw_wire, error, 0U, nullptr,
+            &authenticated_basis, nullptr, nullptr))
+        return fixture_fail("prepared-msm-equality", "raw replay failed", error);
+    std::vector<byte> cached_encoding, raw_encoding;
+    append_commitment(cached_encoding, cached_wire);
+    append_commitment(raw_encoding, raw_wire);
+    if (cached_encoding != raw_encoding ||
+        !receipt.matches_context(
+            cached_wire.tensor_id, cached_wire.visibility, provider,
+            owned_generators, h, u, &authenticated_basis, cached_wire,
+            material, error))
+        return fixture_fail("prepared-msm-equality", "cached and raw commitment bytes differ", error);
+    std::vector<FrWire> segment_values;
+    if (!provider.read_segment(0U, segment_values, error) ||
+        !receipt.matches_segment(0U, segment_values, material, error))
+        return fixture_fail("prepared-msm-receipt", "unchanged segment did not match receipt", error);
+    std::vector<FrWire> changed_values = segment_values;
+    changed_values[0U] = zkdl::fr_add(changed_values[0U], zkdl::fr_from_u32(1U));
+    std::string mutation_error;
+    if (receipt.matches_segment(0U, changed_values, material, &mutation_error))
+        return fixture_fail("prepared-msm-mutation", "mutated scalar was accepted by receipt", error);
+    SegmentCommitmentMaterial changed_material = material;
+    changed_material.blinders[0U] = zkdl::fr_from_u32(1U);
+    mutation_error.clear();
+    if (receipt.matches_context(
+            cached_wire.tensor_id, cached_wire.visibility, provider,
+            owned_generators, h, u, &authenticated_basis, cached_wire,
+            changed_material, &mutation_error))
+        return fixture_fail("prepared-msm-mutation", "mutated material was accepted by receipt", error);
+    fixture_pass("prepared-msm-receipt", "raw bytes match; scalar and material mutations are rejected");
+
+    TensorDescriptor qpad_descriptor;
+    qpad_descriptor.id = "fixture/qpad-selector";
+    qpad_descriptor.visibility = 3U;
+    qpad_descriptor.domain_size = 8U;
+    qpad_descriptor.logical_shape = {3U};
+    qpad_descriptor.padded_shape = {8U};
+    qpad_descriptor.mle_order = "fixture-order";
+    qpad_descriptor.stack_axis = "fixture-axis";
+    qpad_descriptor.mapping = "fixture-qpad";
+    qpad_descriptor.padding_rule = "zero-mask";
+    SegmentedTensorProvider selector_provider;
+    std::array<byte, 32U> selector_digest{};
+    if (!qpad_selector_provider(qpad_descriptor, owned_generators.size(),
+                                selector_provider, selector_digest, error))
+        return fixture_fail("qpad-selector", "canonical Qpad selector provider failed", error);
+    CommitmentWire selector_wire;
+    SegmentCommitmentMaterial selector_material;
+    if (!zktr_build_segment_commitment_material(
+            "fixture/qpad-selector", 1U, selector_provider, owned_generators,
+            h, u, FrWire{}, statement, selector_wire, selector_material,
+            error, nullptr, 0U, nullptr, &authenticated_basis, &session) ||
+        !zkdl::cpu_g1_equal(
+            zktr_segmented_commitment(selector_provider, owned_generators,
+                                      h, FrWire{}, error),
+            zkdl::cpu_g1_from_native(selector_wire.commitment)))
+        return fixture_fail("qpad-selector", "single-build selector commitment changed aggregate", error);
+    zkdl::Sha256 old_digest, fixed_digest;
+    for (std::uint32_t segment = 0U; segment < selector_provider.segment_count(); ++segment) {
+        std::vector<FrWire> values;
+        if (!selector_provider.read_segment(segment, values, error))
+            return fixture_fail("qpad-selector", "selector digest range read failed", error);
+        std::vector<byte> old_encoding;
+        for (const auto& value : values) append_fr_wire(old_encoding, value);
+        old_digest.update(old_encoding.data(), old_encoding.size());
+        zktr_update_fr_wire_digest(fixed_digest, values.data(), values.size());
+    }
+    if (old_digest.final() != fixed_digest.final())
+        return fixture_fail("qpad-selector", "fixed-buffer digest changed canonical FrWire stream", error);
+    fixture_pass("qpad-selector", "one segment-material build retains exact aggregate and scalar digest bytes");
+
+    return prepared_msm_chunk_fixture(h, u, error);
+}
+
+bool prepared_msm_chunk_fixture(
+    const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
+    std::string* error) {
+    constexpr std::size_t count =
+        4U * zkdl::kCpuG1MsmChunkPoints + 17U;
+    const auto first_point = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(211U));
+    const auto second_point = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(223U));
+    std::vector<zkdl::CpuG1Point> large_points(count, first_point);
+    for (std::size_t index = 4U * zkdl::kCpuG1MsmChunkPoints;
+         index < count; ++index)
+        large_points[index] = second_point;
+    zkdl::CpuIpaBasisContext large_basis;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(large_points), h, u, large_basis, error))
+        return fixture_fail("prepared-msm-chunks", "chunked authenticated basis rejected", error);
+    const auto& large_generators = large_basis.generators();
+    std::vector<FrWire> scalars(count);
+    for (std::size_t index = 0U; index < count; ++index) {
+        if (index % 19U == 0U) scalars[index] = FrWire{};
+        else if (index % 19U == 1U) scalars[index] = zkdl::fr_from_u32(1U);
+        else if (index % 19U == 2U) scalars[index] = zkdl::fr_neg(zkdl::fr_from_u32(1U));
+        else scalars[index] = zkdl::fr_from_u32(static_cast<std::uint32_t>(index % 97U + 1U));
+    }
+    const auto prepare_start = std::chrono::steady_clock::now();
+    zkdl::CpuG1MsmSession large_session(large_basis);
+    const double prepare_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - prepare_start).count();
+    const auto raw_start = std::chrono::steady_clock::now();
+    const zkdl::CpuG1Point raw = zkdl::cpu_g1_sum(
+        large_generators.data(), scalars.data(), count);
+    const double raw_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - raw_start).count();
+    const auto cached_start = std::chrono::steady_clock::now();
+    const zkdl::CpuG1Point cached = large_session.sum(
+        large_basis, large_generators, h, u, scalars.data(), count);
+    const double cached_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - cached_start).count();
+    if (!zkdl::cpu_g1_equal(raw, cached))
+        return fixture_fail("prepared-msm-chunks", "raw and prepared MSM outputs differ", error);
+    const std::size_t active_workspace_lanes = large_session.workspace_count();
+    if (active_workspace_lanes < 5U)
+        return fixture_fail("prepared-msm-chunks", "prepared MSM did not allocate five chunk workspaces", error);
+    const std::size_t pool_workers = zkdl::cpu_bounded_thread_pool().size();
+    if (pool_workers < 4U)
+        return fixture_fail("prepared-msm-chunks", "bounded pool did not expose four background workers", error);
+    std::clog << "segmented_fixture stage=prepared-msm-timing status=PASS basis_points="
+              << count << " pippenger_chunks="
+              << (count + zkdl::kCpuG1MsmChunkPoints - 1U) /
+                     zkdl::kCpuG1MsmChunkPoints
+              << " active_workspace_lanes=" << active_workspace_lanes
+              << " pool_workers=" << pool_workers
+              << " raw_seconds=" << raw_seconds
+              << " prepared_build_seconds=" << prepare_seconds
+              << " prepared_basis_bytes=" << large_session.prepared_basis_bytes()
+              << " workspace_bytes=" << large_session.workspace_bytes()
+              << " prepared_sum_seconds=" << cached_seconds << '\n';
+    fixture_pass("prepared-msm-chunks", "five-workspace prepared MSM matches serial raw output");
     return true;
 }
 
@@ -345,12 +569,21 @@ bool small_shared_segment_terminal_fixture() {
     statement.srs_digest = zkdl::sha256(std::vector<zkdl::byte>{'p'});
     statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
     const FrWire tensor_blinder = zkdl::fr_from_u32(193U);
+    std::vector<zkdl::CpuG1Point> authenticated_points = generators;
+    zkdl::CpuIpaBasisContext authenticated_basis;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(authenticated_points), h, u, authenticated_basis, &error))
+        return fixture_fail("shared-small-basis", "authenticated shared-S basis was rejected", &error);
+    const auto& owned_generators = authenticated_basis.generators();
+    zkdl::CpuG1MsmSession msm_session(authenticated_basis);
     CommitmentWire wire;
     SegmentCommitmentMaterial material;
+    SegmentCommitmentValidationReceipt validation_receipt;
     if (!zktr_build_segment_commitment_material(
-            "fixture/small-shared", 3U, provider, generators, h, u,
+            "fixture/small-shared", 3U, provider, owned_generators, h, u,
             tensor_blinder, statement, wire, material, &error, nullptr,
-            kSharedSegment) ||
+            kSharedSegment, nullptr, &authenticated_basis, &msm_session,
+            &validation_receipt) || !validation_receipt.valid() ||
         wire.segment_size != kSharedSegment || wire.segment_count != 2U ||
         wire.segment_commitments.size() != 2U)
         return fixture_fail("shared-small-commitment", "small shared-S commitment failed", &error);
@@ -390,15 +623,18 @@ bool small_shared_segment_terminal_fixture() {
     const std::vector<std::uint32_t> commitment_indices{0U};
     const std::vector<SegmentedTensorProvider> terminal_providers{provider};
     const std::vector<SegmentCommitmentMaterial> terminal_materials{material};
+    const std::vector<const SegmentCommitmentValidationReceipt*> terminal_receipts{
+        &validation_receipt};
     const std::string context = "fixture.small-shared-terminal";
     zkdl::Transcript prover_transcript(context);
     ZkTerminalRelationProverResult terminal;
     if (!prove_zk_terminal_relation_segmented(
             descriptor, terminal_providers, canonical_commitments, tensor_blinders,
-            commitment_indices, point, generators, h, u, statement,
+            commitment_indices, point, owned_generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
             external_blinder, FrWire{}, context, prover_transcript, terminal,
-            &error, &terminal_materials, kSharedSegment))
+            &error, &terminal_materials, kSharedSegment, nullptr,
+            &authenticated_basis, &msm_session, &terminal_receipts))
         return fixture_fail("shared-small-prove", "small shared-S terminal proof failed", &error);
     if (terminal.proof.terminal_segment_openings.size() != 1U ||
         terminal.proof.terminal_segment_openings.front().size() != 2U)
@@ -492,6 +728,11 @@ bool basis8_logical32_four_segment_tamper_fixture() {
     if (!SegmentedTensorProvider::from_values(values, generators.size(), provider, &error) || provider.logical_domain() != 32U ||
         provider.segment_size() != 8U || provider.segment_count() != 4U)
         return fixture_fail("range", "logical32/frame8 provider shape or admission failed", &error);
+    if (!prepared_msm_receipt_fixture(generators, h, u, provider, statement,
+                                      &error))
+        return false;
+    if (!::zkdl_run_tiny_sorted_lookup_receipt_fixture(generators, h, u))
+        return fixture_fail("sorted-receipt", "tiny authenticated sorted lookup with receipts failed");
     fixture_pass("range", "cross-segment provider shape is logical32/frame8/4");
     std::vector<FrWire> first_segment, last_segment;
     if (!provider.read_segment(0U, first_segment, &error) || !provider.read_segment(3U, last_segment, &error) || first_segment.size() != 8U ||
@@ -725,10 +966,37 @@ int main(int argc, char **argv) {
         if (argc == 3 && std::string(argv[1]) == "--authenticated-srs-config") {
             return zkdl_gat::relation::fixture::authenticated_shared_segment_proof_fixture(argv[2]) ? 0 : 1;
         }
+        if (argc == 2 && std::string(argv[1]) == "--sorted-receipt-only") {
+            std::vector<zkdl::CpuG1Point> generators;
+            generators.reserve(8U);
+            for (std::uint32_t index = 0U; index < 8U; ++index)
+                generators.push_back(zkdl::cpu_g1_mul(
+                    zkdl::cpu_g1_generator(), zkdl::fr_from_u32(index + 2U)));
+            const auto h = zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_generator(), zkdl::fr_from_u32(101U));
+            const auto u = zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_generator(), zkdl::fr_from_u32(103U));
+            return ::zkdl_run_tiny_sorted_lookup_receipt_fixture(
+                       generators, h, u)
+                       ? 0
+                       : 1;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--msm-only") {
+            const auto h = zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_generator(), zkdl::fr_from_u32(101U));
+            const auto u = zkdl::cpu_g1_mul(
+                zkdl::cpu_g1_generator(), zkdl::fr_from_u32(103U));
+            std::string error;
+            return zkdl_gat::relation::fixture::prepared_msm_chunk_fixture(
+                       h, u, &error)
+                       ? 0
+                       : 1;
+        }
         if (argc != 1) {
-            std::cerr << "usage: segmented_lookup_fixture [--authenticated-srs-config CONFIG]\n";
+            std::cerr << "usage: segmented_lookup_fixture [--authenticated-srs-config CONFIG | --sorted-receipt-only | --msm-only]\n";
             return 2;
         }
+        if (!zkdl_gat::relation::fixture::descriptor_backing_cow_fixture()) return 1;
         if (!zkdl_gat::relation::fixture::small_shared_segment_terminal_fixture()) return 1;
         if (!zkdl_gat::relation::fixture::basis8_logical32_four_segment_tamper_fixture()) return 1;
         return 0;

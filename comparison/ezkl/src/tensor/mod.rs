@@ -190,6 +190,43 @@ impl<T: TensorType> IntoIterator for Tensor<T> {
     }
 }
 
+/// Compute the exact output length of `Tensor::duplicate_every_n` without materializing values.
+pub fn duplicate_every_n_output_len(
+    len: usize,
+    n: usize,
+    num_repeats: usize,
+    initial_offset: usize,
+) -> Result<usize, TensorError> {
+    if n == 0 {
+        return Err(TensorError::InvalidArgument(
+            "Cannot duplicate every 0th element".to_string(),
+        ));
+    }
+    if len == 0 {
+        return Ok(0);
+    }
+
+    let residue = initial_offset % n;
+    let first = (n - ((residue + 1) % n)) % n;
+    if first >= len {
+        return Ok(len);
+    }
+    let repeats_mod_n = num_repeats % n;
+    let gap = if repeats_mod_n == 0 {
+        n
+    } else {
+        n - repeats_mod_n
+    };
+    let hits = 1usize
+        .checked_add((len - 1 - first) / gap)
+        .ok_or_else(|| TensorError::Overflow("duplicate_every_n hit count".to_string()))?;
+    let extra = hits
+        .checked_mul(num_repeats)
+        .ok_or_else(|| TensorError::Overflow("duplicate_every_n output length".to_string()))?;
+    len.checked_add(extra)
+        .ok_or_else(|| TensorError::Overflow("duplicate_every_n output length".to_string()))
+}
+
 impl<T: TensorType> Deref for Tensor<T> {
     type Target = [T];
 
@@ -389,6 +426,29 @@ impl<T: Clone + TensorType> Tensor<&T> {
 }
 
 impl<T: Clone + TensorType> Tensor<T> {
+    /// Construct a tensor by taking ownership of its values without copying the backing buffer.
+    pub fn from_vec(inner: Vec<T>, dims: &[usize]) -> Result<Self, TensorError> {
+        let total_dims = dims
+            .iter()
+            .try_fold(1usize, |total, dim| total.checked_mul(*dim))
+            .ok_or_else(|| {
+                TensorError::DimError(format!("Tensor shape {:?} overflows usize", dims))
+            })?;
+        if total_dims != inner.len() {
+            return Err(TensorError::DimError(format!(
+                "Cannot create tensor of length {} with dims {:?}",
+                inner.len(),
+                dims
+            )));
+        }
+        Ok(Tensor {
+            inner,
+            dims: Vec::from(dims),
+            scale: None,
+            visibility: None,
+        })
+    }
+
     /// Sets (copies) the tensor values to the provided ones.
     pub fn new(values: Option<&[T]>, dims: &[usize]) -> Result<Self, TensorError> {
         let total_dims: usize = if !dims.is_empty() {
@@ -801,7 +861,13 @@ impl<T: Clone + TensorType> Tensor<T> {
             ));
         }
 
-        let mut inner: Vec<T> = Vec::with_capacity(self.inner.len());
+        let output_len = duplicate_every_n_output_len(
+            self.inner.len(),
+            n,
+            num_repeats,
+            initial_offset,
+        )?;
+        let mut inner: Vec<T> = Vec::with_capacity(output_len);
         let mut offset = initial_offset;
         for (i, elem) in self.inner.iter().enumerate() {
             if (i + offset + 1) % n == 0 {

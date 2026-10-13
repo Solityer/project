@@ -14,6 +14,10 @@ pub mod loader;
 pub mod manifest;
 /// Native ezkl circuit operation.
 pub mod op;
+/// Shape-only geometry for the canonical GAT relation.
+pub mod geometry;
+/// Native einsum geometry metadata shared with Halo2 layout analysis.
+pub mod geometry_primitives;
 /// Independent integer reference relation and witness semantics.
 pub mod relation;
 /// Canonical input and manifest schema.
@@ -30,12 +34,23 @@ pub use manifest::{
     artifact_file, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest, GpuEvidence, GpuProvenance, ResourceFile, ResourceManifest, SrsProvenance,
 };
 pub use op::GatOp;
+pub use geometry::gat_settings_for_run_args;
 pub use relation::{evaluate, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode, SignedDivision,};
 pub use schema::{
     multiplier_to_scale_exponent, scale_exponent_to_multiplier, BoundFamily, CanonicalGat, CanonicalGraph, CanonicalModel, CircuitRef, DigestIdentity,
     ExactTable, HeadWeights, IntegerBoundLedger, ModelBinding, PublicInstanceBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,
 };
 pub use statement::{output_digest, PublicEzkl, PublicStatement};
+
+/// Run the shared, bounded geometry and MockProver regressions used by the
+/// root-crate formal integration test without duplicating their fixtures.
+#[cfg(test)]
+pub(crate) fn run_geometry_and_mock_regressions() {
+    geometry::run_tiny_settings_parity_fixture();
+    geometry_primitives::run_dummy_duplication_boundary_regression();
+    op::run_gat_bounded_mock_regressions();
+    op::run_nonzero_attention_route_equivalence();
+}
 
 /// Pinned native CUDA backend initialization and proof execution evidence.
 #[cfg(feature = "gpu-accelerated")]

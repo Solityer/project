@@ -313,6 +313,11 @@ pub struct MockProver<F: Field> {
     challenges: Vec<F>,
 
     permutation: permutation::keygen::Assembly,
+    // In the formal spill build, MockProver checks the original equality edges
+    // directly. The native sparse assembly intentionally exposes no dense
+    // mapping iterator, and materializing one here would defeat its bound.
+    #[cfg(feature = "formal-permutation-spill")]
+    copy_constraints: Vec<(usize, usize, usize, usize)>,
 
     // A range of available rows for assignment and copies.
     usable_rows: Range<usize>,
@@ -557,8 +562,28 @@ impl<F: Field> Assignment<F> for MockProver<F> {
             self.k,
         );
 
-        self.permutation
-            .copy(left_column, left_row, right_column, right_row)
+        #[cfg(feature = "formal-permutation-spill")]
+        {
+            self.permutation
+                .copy(left_column, left_row, right_column, right_row)?;
+            let columns = self.cs.permutation.get_columns();
+            let left_index = columns
+                .iter()
+                .position(|column| *column == left_column)
+                .expect("successful permutation copy has a left column");
+            let right_index = columns
+                .iter()
+                .position(|column| *column == right_column)
+                .expect("successful permutation copy has a right column");
+            self.copy_constraints
+                .push((left_index, left_row, right_index, right_row));
+            Ok(())
+        }
+        #[cfg(not(feature = "formal-permutation-spill"))]
+        {
+            self.permutation
+                .copy(left_column, left_row, right_column, right_row)
+        }
     }
 
     fn fill_from_row(
@@ -673,7 +698,7 @@ impl<F: FromUniformBytes<64> + Ord> MockProver<F> {
             };
             cs.num_advice_columns
         ];
-        let permutation = permutation::keygen::Assembly::new(n, &cs.permutation);
+        let permutation = permutation::keygen::Assembly::new(n, &cs.permutation)?;
         let constants = cs.constants.clone();
 
         // Use hash chain to derive deterministic challenges for testing
@@ -699,6 +724,8 @@ impl<F: FromUniformBytes<64> + Ord> MockProver<F> {
             selectors,
             challenges,
             permutation,
+            #[cfg(feature = "formal-permutation-spill")]
+            copy_constraints: Vec::new(),
             usable_rows: 0..usable_rows,
             current_phase: FirstPhase.to_sealed(),
         };
@@ -1268,9 +1295,10 @@ impl<F: FromUniformBytes<64> + Ord> MockProver<F> {
                         .collect::<Vec<_>>()
                 });
 
-        let mapping = self.permutation.mapping();
         // Check that permutations preserve the original values of the cells.
+        #[cfg(not(feature = "formal-permutation-spill"))]
         let perm_errors = {
+            let mapping = self.permutation.mapping();
             // Original values of columns involved in the permutation.
             let original = |column, row| {
                 self.cs
@@ -1314,6 +1342,42 @@ impl<F: FromUniformBytes<64> + Ord> MockProver<F> {
                     })
                     .collect::<Vec<_>>()
             })
+        };
+        // Every copy edge is an equality constraint. Checking those edges is
+        // equivalent to checking the assembled permutation cycles, while
+        // avoiding a dense mapping reconstruction in the formal spill build.
+        #[cfg(feature = "formal-permutation-spill")]
+        let perm_errors = {
+            let columns = self.cs.permutation.get_columns();
+            let original = |column: usize, row: usize| {
+                let column = columns.get(column).expect("copy column is in permutation");
+                match column.column_type() {
+                    Any::Advice(_) => self.advice[column.index()][row],
+                    Any::Fixed => self.fixed[column.index()][row],
+                    Any::Instance => {
+                        let cell: &InstanceValue<F> = &self.instance[column.index()][row];
+                        CellValue::Assigned(cell.value())
+                    }
+                }
+            };
+            self.copy_constraints
+                .iter()
+                .filter_map(|(left_column, left_row, right_column, right_row)| {
+                    if original(*left_column, *left_row) == original(*right_column, *right_row) {
+                        None
+                    } else {
+                        let column = columns.get(*left_column).expect("copy column is in permutation");
+                        Some(VerifyFailure::Permutation {
+                            column: (*column).into(),
+                            location: FailureLocation::find(
+                                &self.regions,
+                                *left_row,
+                                Some(column).into_iter().cloned().collect(),
+                            ),
+                        })
+                    }
+                })
+                .collect::<Vec<_>>()
         };
 
         #[cfg(feature = "mv-lookup")]

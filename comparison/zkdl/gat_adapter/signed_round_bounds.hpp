@@ -96,10 +96,14 @@ inline void finish_widths(Widths &widths, const std::string &operation_id) {
     widths.divisor_bits = unsigned_width(widths.divisor_max, operation_id + "/divisor");
 }
 
-inline Widths derive(const Config &config, const IntegerBoundLedger &ledger,
-                     const std::string &operation_id) {
-    if (!ledger.authenticated || ledger.schema != "zkDL_gat_integer_bound_ledger_v1")
-        throw std::runtime_error("signed-round widths require the authenticated integer-bound ledger");
+inline Widths derive_impl(const Config &config, const IntegerBoundLedger &ledger,
+                          const std::string &operation_id, bool planned_analysis_only) {
+    if (ledger.schema != "zkDL_gat_integer_bound_ledger_v1" ||
+        (planned_analysis_only && (ledger.authenticated || !ledger.analysis_only_planned)) ||
+        (!planned_analysis_only && !ledger.authenticated))
+        throw std::runtime_error(planned_analysis_only
+            ? "signed-round planned widths require explicit unauthenticated analysis metadata"
+            : "signed-round widths require the authenticated integer-bound ledger");
 
     Widths widths;
     if (operation_id == "final_average") {
@@ -187,6 +191,16 @@ inline Widths derive(const Config &config, const IntegerBoundLedger &ledger,
     }
 
     throw std::runtime_error("unsupported signed-round operation id: " + operation_id);
+}
+
+inline Widths derive(const Config &config, const IntegerBoundLedger &ledger,
+                     const std::string &operation_id) {
+    return derive_impl(config, ledger, operation_id, false);
+}
+
+inline Widths derive_planned(const Config &config, const IntegerBoundLedger &ledger,
+                             const std::string &operation_id) {
+    return derive_impl(config, ledger, operation_id, true);
 }
 
 } // namespace zkdl_gat::signed_round_bounds

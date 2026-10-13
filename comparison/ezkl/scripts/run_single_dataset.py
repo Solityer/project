@@ -59,6 +59,7 @@ from formal_common import (
     validate_artifact_identity,
     validate_config,
     validate_native_proof_metrics,
+    validate_native_pk_read_timing,
     validate_native_verify_metrics,
     validate_gpu_environment,
     validate_gpu_evidence,
@@ -461,6 +462,7 @@ def main(
     env["EZKL_WORKING_DIR"] = str(ROOT)
     env["EZKL_GAT_BACKEND"] = args.backend
     env["EZKL_GAT_RUN_DIR"] = str(output)
+    env["EZKL_GAT_DATASET"] = args.dataset
     if args.backend == "gpu":
         env["EZKL_GAT_REQUIRE_GPU_EVIDENCE"] = "1"
 
@@ -628,6 +630,36 @@ def main(
     require_file(proof, "verifier-facing proof")
     proof_metrics_path = output / "native_proof_metrics.json"
     proof_metrics = validate_native_proof_metrics(proof_metrics_path, proof_sha256=sha256(proof))
+    native_pk_read_timing = None
+    native_pk_read_timing_path = output / "native_pk_read_timing.json"
+    if formal_session_id is not None:
+        artifact = validate_artifact_identity(
+            artifact_manifest,
+            dataset=args.dataset,
+            backend=args.backend,
+            binary=binary,
+            srs=srs,
+            settings=settings,
+            compiled=compiled,
+            vk=vk,
+            pk=pk,
+        )
+        native_prove_budget_path = output / "native_prove_budget.json"
+        require_file(native_prove_budget_path, "authenticated native prove budget")
+        native_prove_budget_sha256 = sha256(native_prove_budget_path)
+        native_pk_read_timing = validate_native_pk_read_timing(
+            native_pk_read_timing_path,
+            session_id=formal_session_id,
+            dataset=args.dataset,
+            native_prove_budget_sha256=native_prove_budget_sha256,
+            pk_sha256=sha256(pk),
+        )
+        timing_file = next(
+            (record for record in artifact["files"] if record["path"] == "native_pk_read_timing.json"),
+            None,
+        )
+        if timing_file is None or timing_file.get("sha256") != sha256(native_pk_read_timing_path):
+            abort("artifact manifest does not bind the authenticated native PK read timing")
 
     verify_ms = run_command(
         [
@@ -691,6 +723,30 @@ def main(
         gpu_prover_record_sha256 = sha256(gpu_record_path)
     if core["native_verify_result"] is not True or core["native_public_instance_binding"] is not True:
         abort("native verify/public-instance binding attestation is not successful")
+    if formal_session_id is not None and native_pk_read_timing is None:
+        abort("formal proof did not persist its authenticated native PK restore timing")
+    pk_read_validate_ms = 0.0
+    pk_sigma_rebuild_ms = 0.0
+    prove_wall_scope = "outer_command_wall"
+    prove_phase_ms = prove_ms
+    if native_pk_read_timing is not None:
+        pk_read_validate_ms = float(native_pk_read_timing["artifact_read_validate_ms"])
+        pk_sigma_rebuild_ms = float(native_pk_read_timing["sigma_rebuild_wall_ms"])
+        prove_residual = prove_ms - pk_read_validate_ms - pk_sigma_rebuild_ms
+        if prove_residual > 0.0:
+            prove_phase_ms = prove_residual
+            prove_wall_scope = "outer_command_residual_excludes_pk_restore"
+        elif prove_residual >= -0.01:
+            # The process wall clock and native stage clocks have independent
+            # resolution/start boundaries. Preserve all raw values and label
+            # the sub-millisecond overlap instead of clamping a negative phase.
+            prove_phase_ms = prove_ms
+            prove_wall_scope = "outer_command_wall_with_pk_restore_overlap_within_0_01ms"
+        else:
+            abort(
+                "native PK restore subphases exceed the measured proving-command wall time by "
+                f"{-prove_residual:.6f} ms"
+            )
     status = "VERIFY_OK"
     result = {
         "schema_version": 1,
@@ -753,13 +809,24 @@ def main(
         "phase_timings_ms": {
             "prepare_compile_setup": round(prepare_ms, 3),
             "witness_generation": round(witness_ms, 3),
-            "prove": round(prove_ms, 3),
+            "prove": round(prove_phase_ms, 6),
             "verify": round(verify_ms, 3),
+            **(
+                {
+                    "pk_artifact_read_validate": round(pk_read_validate_ms, 6),
+                    "setup_pk_sigma_materialization": round(pk_sigma_rebuild_ms, 6),
+                }
+                if native_pk_read_timing is not None
+                else {}
+            ),
         },
         "gpu_evidence": evidence,
     }
     if formal_session_id is not None:
         result["formal_session_id"] = formal_session_id
+        result["native_pk_read_timing_sha256"] = sha256(native_pk_read_timing_path)
+        result["prove_command_wall_ms"] = round(prove_ms, 6)
+        result["prove_wall_scope"] = prove_wall_scope
         if args.backend == "gpu":
             result["selected_cuda_device"] = selected_cuda_device
             result["build_receipt_sha256"] = build_receipt_sha256

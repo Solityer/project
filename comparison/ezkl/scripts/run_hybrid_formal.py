@@ -1134,7 +1134,6 @@ def native_admit_all_datasets(
         "resource_manifest_sha256",
         "relation_identity",
         "settings_sha256",
-        "compiled_circuit_sha256",
         "native_memory_model",
     }
     cs_keys = {
@@ -1149,9 +1148,9 @@ def native_admit_all_datasets(
         "num_shuffle_arguments",
         "num_permutation_columns",
         "num_blinding_factors",
-        "selector_fixed_column_count",
+        "selector_fixed_column_count_upper",
         "fixed_column_count_post_compression",
-        "permutation_copy_call_count",
+        "permutation_copy_call_count_upper",
         "permutation_successor_entry_count_upper",
         "num_lookup_query_polynomials",
         "max_lookup_query_polynomials_per_argument",
@@ -1205,7 +1204,7 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission JSON has an incompatible schema")
         _validate_native_admission_domain(dataset, admission, native_srs_max_logrows)
         if (
-            admission["schema_version"] != 6
+            admission["schema_version"] != 7
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
         ):
@@ -1218,28 +1217,30 @@ def native_admit_all_datasets(
             or admission["resource_manifest_sha256"] != manifest_sha256
             or not isinstance(admission["settings_sha256"], str)
             or re.fullmatch(r"[0-9a-f]{64}", admission["settings_sha256"]) is None
-            or not isinstance(admission["compiled_circuit_sha256"], str)
-            or re.fullmatch(r"[0-9a-f]{64}", admission["compiled_circuit_sha256"]) is None
         ):
-            abort(f"{dataset} native admission does not bind its canonical resources and handoff files")
-        for name, expected_digest in (("settings.json", admission["settings_sha256"]), ("compiled.circuit", admission["compiled_circuit_sha256"])):
-            handoff_file = admission_dir / name
-            require_file(handoff_file, f"{dataset} admitted {name}")
-            if sha256(handoff_file) != expected_digest:
-                abort(f"{dataset} native admission {name} digest mismatch")
+            abort(f"{dataset} native admission does not bind its canonical resources and settings file")
+        handoff_file = admission_dir / "settings.json"
+        require_file(handoff_file, f"{dataset} admitted settings")
+        if sha256(handoff_file) != admission["settings_sha256"]:
+            abort(f"{dataset} native admission settings digest mismatch")
         cs = admission["constraint_system"]
         if not isinstance(cs, dict) or set(cs) != cs_keys or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in cs.values()):
             abort(f"{dataset} native admission has malformed exact Halo2 constraint-shape counts")
         if cs["minimum_rows"] <= 0 or admission["domain_size"] < cs["minimum_rows"]:
             abort(f"{dataset} native admission domain is below the current Halo2 minimum row requirement")
-        if cs["fixed_column_count_post_compression"] != (cs["num_fixed_columns"] + cs["selector_fixed_column_count"]):
-            abort(f"{dataset} native admission post-compression fixed-column count is inconsistent")
-        expected_successor_entries = min(cs["num_permutation_columns"] * admission["domain_size"], 2 * cs["permutation_copy_call_count"])
+        if cs["selector_fixed_column_count_upper"] != cs["num_selectors"] or cs["fixed_column_count_post_compression"] != (cs["num_fixed_columns"] + cs["selector_fixed_column_count_upper"]):
+            abort(f"{dataset} native admission selector/fixed-column upper bound is inconsistent")
+        expected_permutation_cells = cs["num_permutation_columns"] * admission["domain_size"]
+        if cs["permutation_copy_call_count_upper"] != expected_permutation_cells:
+            abort(f"{dataset} native admission permutation synthesis upper bound is inconsistent")
+        expected_successor_entries = min(expected_permutation_cells, 2 * cs["permutation_copy_call_count_upper"])
         if cs["permutation_successor_entry_count_upper"] != expected_successor_entries:
             abort(f"{dataset} native admission compact permutation entry bound is inconsistent")
         memory = admission["native_memory_model"]
         memory_keys = {
             "schema",
+            "evidence_kind",
+            "coverage",
             "native_target_arch",
             "uses_recursive_fft",
             "proof_logrows",
@@ -1302,19 +1303,36 @@ def native_admit_all_datasets(
             "shplonk_quotient_piece_count",
             "graph_witness_scalar_element_count",
             "size_of_graph_witness_scalar_bytes",
+            "size_of_gat_valtype_bytes",
+            "gat_transient_witness_bytes_upper",
+            "gat_transient_witness_evidence_kind",
+            "gat_transient_witness_formula_id",
+            "advice_event_record_bytes_upper",
+            "advice_event_reservation_chunk_bytes",
+            "advice_event_batch_size_upper",
+            "advice_event_decoded_entry_bytes_upper",
+            "advice_event_read_buffer_bytes_upper",
+            "advice_event_column_metadata_bytes_upper",
+            "advice_event_writer_buffer_bytes_upper",
+            "advice_event_column_bytes_upper",
+            "advice_event_latest_element_bytes",
+            "advice_event_log_bound_evidence_kind",
             "cuda_uuid",
             "cuda_free_bytes_at_admission",
             "cuda_total_memory_bytes",
-            "selector_activation_bitmap_bytes",
-            "selector_activation_storage_bytes",
+            "selector_activation_bitmap_bytes_upper",
+            "selector_activation_storage_bytes_upper",
             "selector_activation_storage_kind",
             "fixed_polynomial_read_mode",
             "fixed_polynomial_read_chunk_fields_upper",
             "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
+            "native_pk_read_buffer_capacity_bytes",
+            "native_successor_read_cache_bytes",
+            "native_target_bitmap_fixed_cache_bytes",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-memory-model-v6":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v11" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "static_pre_setup_envelope; exact_native_selector_and_permutation_observations_are_required_from_keygen_receipt":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
@@ -1336,6 +1354,17 @@ def native_admit_all_datasets(
             "size_of_vec_u8_bytes",
             "size_of_lookup_repr_bytes",
             "size_of_graph_witness_scalar_bytes",
+            "size_of_gat_valtype_bytes",
+            "gat_transient_witness_bytes_upper",
+            "advice_event_record_bytes_upper",
+            "advice_event_reservation_chunk_bytes",
+            "advice_event_batch_size_upper",
+            "advice_event_decoded_entry_bytes_upper",
+            "advice_event_read_buffer_bytes_upper",
+            "advice_event_column_metadata_bytes_upper",
+            "advice_event_writer_buffer_bytes_upper",
+            "advice_event_column_bytes_upper",
+            "advice_event_latest_element_bytes",
             "size_of_vec_header_bytes",
             "size_of_polynomial_header_bytes",
             "size_of_mv_lookup_prepared_bytes",
@@ -1360,6 +1389,9 @@ def native_admit_all_datasets(
             "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
+            "native_pk_read_buffer_capacity_bytes",
+            "native_successor_read_cache_bytes",
+            "native_target_bitmap_fixed_cache_bytes",
         }
         if any(isinstance(memory.get(key), bool) or not isinstance(memory.get(key), int) or memory[key] <= 0 for key in positive_memory_keys) or (
             isinstance(memory.get("cuda_free_bytes_at_admission"), bool)
@@ -1415,6 +1447,28 @@ def native_admit_all_datasets(
             or memory["size_of_lookup_map_entry_bytes"] != memory["size_of_vec_u8_bytes"] + memory["size_of_usize_bytes"]
             or memory["size_of_lookup_repr_bytes"] != memory["size_of_fr_bytes"]
             or memory["size_of_graph_witness_scalar_bytes"] != memory["size_of_fr_bytes"]
+            or memory["gat_transient_witness_evidence_kind"] != "source-derived-conservative-live-tensor-envelope-v1"
+            or memory["gat_transient_witness_formula_id"] != "whole-gat-retained-inputs-plus-max-live-head-phase-v1"
+            or memory["advice_event_log_bound_evidence_kind"] != "cumulative_region_linear_cursor_upper_not_num_rows_or_proof_domain-v1"
+            or memory["advice_event_record_bytes_upper"] != 9 + 2 * memory["size_of_lookup_repr_bytes"]
+            or memory["advice_event_reservation_chunk_bytes"] != 1 << 20
+            or memory["advice_event_batch_size_upper"] != 8192
+            or memory["advice_event_decoded_entry_bytes_upper"] < memory["size_of_assigned_fr_bytes"]
+            or memory["advice_event_writer_buffer_bytes_upper"] != 8192
+            or memory["advice_event_column_bytes_upper"]
+            < memory["advice_event_column_metadata_bytes_upper"]
+            + memory["advice_event_record_bytes_upper"]
+            + memory["advice_event_writer_buffer_bytes_upper"]
+            or memory["advice_event_latest_element_bytes"] != memory["size_of_usize_bytes"]
+            or memory["advice_event_read_buffer_bytes_upper"]
+            != memory["advice_event_batch_size_upper"]
+            * (
+                memory["advice_event_record_bytes_upper"]
+                + memory["advice_event_decoded_entry_bytes_upper"]
+                + memory["size_of_option_fr_bytes"]
+                + memory["size_of_batch_invert_entry_bytes"]
+            )
+            + 3 * memory["size_of_vec_header_bytes"]
             or memory["size_of_vec_header_bytes"] != memory["size_of_vec_u8_bytes"]
             or memory["size_of_option_fr_bytes"] < memory["size_of_fr_bytes"]
             or memory["size_of_batch_invert_entry_bytes"] < memory["size_of_fr_bytes"]
@@ -1459,16 +1513,14 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission lookup dependency/query counts do not match chunked arguments")
         _validate_native_shplonk_shape(dataset, memory, cs, admission["domain_size"])
         expected_bitmap = cs["num_selectors"] * ((admission["domain_size"] + 7) // 8)
-        selector_storage = memory["selector_activation_storage_bytes"]
-        selector_storage_min = cs["num_selectors"] * 8
+        selector_storage = memory["selector_activation_storage_bytes_upper"]
         selector_storage_max = 2 * expected_bitmap + cs["num_selectors"] * 64
         read_chunk_fields = memory["fixed_polynomial_read_chunk_fields_upper"]
         if (
-            memory["selector_activation_bitmap_bytes"] != expected_bitmap
+            memory["selector_activation_bitmap_bytes_upper"] != expected_bitmap
             or isinstance(selector_storage, bool)
             or not isinstance(selector_storage, int)
-            or selector_storage < selector_storage_min
-            or selector_storage > selector_storage_max
+            or selector_storage != selector_storage_max
             or selector_storage > sys.maxsize
             or memory["selector_activation_storage_kind"] != "rle_bitmap_hybrid_v1"
             or memory["fixed_polynomial_read_mode"] != "streamed_one_polynomial_chunked_v1"
@@ -1491,7 +1543,6 @@ def native_admit_all_datasets(
             "sha256": sha256(admission_path),
             "prepared_dir": str(admission_dir.relative_to(baseline_root)),
             "settings_sha256": admission["settings_sha256"],
-            "compiled_circuit_sha256": admission["compiled_circuit_sha256"],
             "scalar_domain_vector_bytes": admission["scalar_domain_vector_bytes"],
             "logrows": admission["logrows"],
             "domain_size": admission["domain_size"],
@@ -2024,7 +2075,12 @@ def _permutation_hashmap_heap_upper(
     return headers_bytes + rehash_transient_bytes, backing_bytes, rehash_old_bytes, sum(buckets)
 
 
-def _native_capacity_requirements(admission: dict[str, object], icicle_type_sizes: dict[str, object]) -> dict[str, int]:
+def _native_capacity_requirements(
+    admission: dict[str, object],
+    icicle_type_sizes: dict[str, object],
+    *,
+    native_census: dict[str, object] | None = None,
+) -> dict[str, object]:
     cs = admission.get("constraint_system")
     memory = admission.get("native_memory_model")
     domain_size = admission.get("domain_size")
@@ -2058,31 +2114,106 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     lookup_query_counts = memory["lookup_query_polynomial_counts"]
     shuffle_dependencies = memory["shuffle_dependency_columns"]
     n = domain_size
+    total_assignments = admission.get("total_assignments")
+    if (
+        isinstance(total_assignments, bool)
+        or not isinstance(total_assignments, int)
+        or total_assignments <= 0
+        or total_assignments > sys.maxsize
+    ):
+        abort("EZKL native admission has invalid cumulative assignment count for prover spill bounds")
     proof_domain = int(memory["proof_domain_size"])
     proof_logrows = int(memory["proof_logrows"])
     uses_recursive_fft = bool(memory["uses_recursive_fft"])
     fixed_post = int(cs["fixed_column_count_post_compression"])
     fixed_uncompressed = int(cs["num_fixed_columns"])
     permutation = int(cs["num_permutation_columns"])
-    copy_calls = cs.get("permutation_copy_call_count")
-    successor_entries = cs.get("permutation_successor_entry_count_upper")
+    copy_calls_upper = cs.get("permutation_copy_call_count_upper")
+    successor_entries_upper = cs.get("permutation_successor_entry_count_upper")
     if (
-        isinstance(copy_calls, bool)
-        or not isinstance(copy_calls, int)
-        or copy_calls < 0
-        or copy_calls > sys.maxsize
-        or isinstance(successor_entries, bool)
-        or not isinstance(successor_entries, int)
-        or successor_entries < 0
-        or successor_entries > sys.maxsize
+        isinstance(copy_calls_upper, bool)
+        or not isinstance(copy_calls_upper, int)
+        or copy_calls_upper < 0
+        or copy_calls_upper > sys.maxsize
+        or isinstance(successor_entries_upper, bool)
+        or not isinstance(successor_entries_upper, int)
+        or successor_entries_upper < 0
+        or successor_entries_upper > sys.maxsize
     ):
         abort("EZKL native admission has malformed permutation-copy bounds for the local capacity gate")
     permutation_cells = permutation * n
-    expected_successor_entries = min(permutation_cells, 2 * copy_calls)
-    if permutation_cells > sys.maxsize or successor_entries != expected_successor_entries:
+    expected_successor_entries_upper = min(permutation_cells, 2 * copy_calls_upper)
+    if permutation_cells > sys.maxsize or successor_entries_upper != expected_successor_entries_upper:
         abort("EZKL native admission permutation-copy bound is inconsistent with the local capacity gate")
+    if expected_successor_entries_upper > sys.maxsize // 16:
+        abort("EZKL native sparse successor-file ceiling exceeds the native address range")
+    selector_activation_storage_ceiling = int(memory["selector_activation_storage_bytes_upper"])
+    if native_census is None:
+        copy_calls = 0
+        successor_entries = 0
+        selectors = 0
+        permutation_cache_host = 0
+        permutation_bitmap_host = 0
+        permutation_data_backing = 0
+        permutation_directory_backing = 0
+        selector_activation_counts: list[int] | None = None
+        fixed_assignment_counts: list[int] | None = None
+    else:
+        copy_calls = native_census.get("permutation_copy_calls")
+        successor_entries = native_census.get("permutation_successor_edges")
+        selectors = native_census.get("selector_activation_storage_peak_bytes")
+        permutation_cache_host = native_census.get("permutation_cache_bytes")
+        permutation_bitmap_host = native_census.get("permutation_allocation_bitmap_bytes")
+        permutation_data_backing = native_census.get("permutation_data_allocated_bytes")
+        permutation_directory_backing = native_census.get("permutation_directory_allocated_bytes")
+        selector_activation_counts = native_census.get("selector_activation_counts")
+        fixed_assignment_counts = native_census.get("fixed_assignment_callback_counts")
+        for label, value in (
+            ("permutation_copy_calls", copy_calls),
+            ("permutation_successor_edges", successor_entries),
+            ("selector_activation_storage_peak_bytes", selectors),
+            ("permutation_cache_bytes", permutation_cache_host),
+            ("permutation_allocation_bitmap_bytes", permutation_bitmap_host),
+            ("permutation_data_allocated_bytes", permutation_data_backing),
+            ("permutation_directory_allocated_bytes", permutation_directory_backing),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
+                abort(f"native keygen census has malformed {label}")
+        if (
+            not isinstance(selector_activation_counts, list)
+            or len(selector_activation_counts) != int(cs["num_selectors"])
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > n for value in selector_activation_counts)
+            or not isinstance(fixed_assignment_counts, list)
+            or len(fixed_assignment_counts) != int(cs["num_fixed_columns"])
+            or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > n for value in fixed_assignment_counts)
+            or selectors > selector_activation_storage_ceiling
+            or copy_calls > copy_calls_upper
+            or successor_entries > expected_successor_entries_upper
+            or successor_entries > min(permutation_cells, 2 * copy_calls)
+        ):
+            abort("native keygen census exceeds its admitted selector/permutation source bounds")
+    successor_entries_for_files = expected_successor_entries_upper if native_census is None else successor_entries
+    if successor_entries_for_files > sys.maxsize // 16:
+        abort("native proving-key successor backing exceeds the native address range")
+    native_successor_file_bytes = 16 * successor_entries_for_files
+    native_successor_backing_reserved_bytes = ((native_successor_file_bytes + 4095) // 4096) * 4096
+    if native_successor_backing_reserved_bytes > sys.maxsize:
+        abort("native proving-key page-rounded successor backing exceeds the native address range")
+    target_bitmap_virtual_bytes = (successor_entries_for_files + 7) // 8
+    target_bitmap_page_bytes = ((target_bitmap_virtual_bytes + 4095) // 4096) * 4096
+    target_bitmap_page_count = target_bitmap_page_bytes // 4096
+    target_bitmap_allocation_bitmap_bytes = (target_bitmap_page_count + 7) // 8
+    native_pk_read_backing_required = native_successor_backing_reserved_bytes + target_bitmap_page_bytes
+    if native_pk_read_backing_required > sys.maxsize:
+        abort("native proving-key read backing exceeds the native address range")
     permutation_hashmap_header = int(memory["size_of_permutation_hashmap_header_bytes"])
     advice = int(cs["num_advice_columns"])
+    gat_transient_witness_bytes = int(memory["gat_transient_witness_bytes_upper"])
+    advice_event_column_bytes = int(memory["advice_event_column_bytes_upper"])
+    advice_event_batch_bytes = int(memory["advice_event_read_buffer_bytes_upper"])
+    advice_event_record_bytes = int(memory["advice_event_record_bytes_upper"])
+    advice_event_chunk_bytes = int(memory["advice_event_reservation_chunk_bytes"])
+    latest_element_bytes = int(memory["advice_event_latest_element_bytes"])
     instances = int(cs["num_instance_columns"])
     degree = int(cs["degree"])
     fft_supported_lengths = int(memory["fft_cache_supported_length_count"])
@@ -2105,8 +2236,8 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     icicle_affine_bytes = int(icicle_type_sizes["affine_bytes"])
     if degree < 2:
         abort("EZKL native admission has invalid quotient degree for the local capacity gate")
-    selectors = int(memory["selector_activation_bitmap_bytes"])
-    selector_census_storage = int(memory["selector_activation_storage_bytes"])
+    selector_activation_bitmap_ceiling = int(memory["selector_activation_bitmap_bytes_upper"])
+    selector_census_storage = int(memory["selector_activation_storage_bytes_upper"])
     read_scratch = int(memory["fixed_polynomial_read_heap_scratch_bytes_upper"])
     for label, number in (
         ("Fr", fr),
@@ -2214,11 +2345,28 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     # The serialized PK keeps the same dominant fixed/l-selector payloads;
     # reserving the complete source-derived setup map payload covers that file
     # plus its bounded headers/commitment metadata and the separately saved VK.
-    selector_vk_bytes = selectors
+    # Serialized selector wire data is conservatively reserved at the dense
+    # bitmap ceiling even though the native in-memory activation set is a
+    # run/bitmap hybrid. These are file bytes, not resident-memory estimates.
+    selector_vk_bytes = selector_activation_bitmap_ceiling
     commitment_vk_bytes = (fixed_post + permutation) * int(memory["size_of_g1_affine_bytes"])
-    permutation_mapping_bytes = 8 + 8 + 10 * permutation + 16 * int(cs["permutation_successor_entry_count_upper"]) + 32
+    permutation_mapping_bytes = 8 + 8 + 10 * permutation + native_successor_backing_reserved_bytes + 32
     setup_key_artifact_upper = setup_persisted_maps + selector_vk_bytes + commitment_vk_bytes + permutation_mapping_bytes + 8 + 12 + 2 * (4 + 4 * fixed_post)
     quotient_coefficients = n * (degree - 1)
+    advice_event_log_records_upper = total_assignments * advice_event_record_bytes
+    advice_event_log_rounding_upper = advice * (advice_event_chunk_bytes - 1)
+    advice_event_log_reserved_upper = advice_event_log_records_upper + advice_event_log_rounding_upper
+    advice_latest_map_bytes = n * latest_element_bytes
+    if any(
+        value < 0 or value > sys.maxsize
+        for value in (
+            advice_event_log_records_upper,
+            advice_event_log_rounding_upper,
+            advice_event_log_reserved_upper,
+            advice_latest_map_bytes,
+        )
+    ):
+        abort("EZKL native advice-event spill or conversion-map source bound exceeds the native address range")
     lookup_query_spill_bytes = lookup_queries * n * fr
     lookup_m_spill_bytes = lookup_arguments * n * fr
     lookup_table_spill_bytes = table_group_count * n * fr
@@ -2254,42 +2402,62 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         + proof_domain * fr
         + quotient_coefficients * fr
         + lookup_spill_known
+        + advice_event_log_reserved_upper
+        + advice_latest_map_bytes
         + evaluation_temporary_mapped_bytes
         + shplonk_transient_spill_upper
+        + native_pk_read_backing_required
+    )
+    # The bounded native proving-key reader uses one lazily allocated
+    # successor-store cache, one target-bitmap cache, its source-derived
+    # allocation bitmap, and two fixed 4096-pair validation buffers. Native
+    # cache sizes include their fixed page/index metadata and struct headers.
+    native_pk_read_validation_buffers = 4 * 4096 * 16
+    native_pk_read_stream_buffer = int(memory["native_pk_read_buffer_capacity_bytes"])
+    native_pk_read_host_scratch = (
+        int(memory["native_successor_read_cache_bytes"])
+        + int(memory["native_target_bitmap_fixed_cache_bytes"])
+        + target_bitmap_allocation_bitmap_bytes
+        + native_pk_read_validation_buffers
+        + native_pk_read_stream_buffer
     )
     # Native save_pk also emits a separate VK file; include its known selector
     # bitmaps and commitments in the retained-artifact reservation.
     setup_key_artifact_upper += selector_vk_bytes + commitment_vk_bytes
-    # In the active non-thread-safe Halo2 build, permutation::keygen::Assembly
-    # retains three std HashMaps: mapping and aux have at most two new cell
-    # keys per copy call, while sizes has at most one representative per call.
-    # Its table capacities are power-of-two/7-of-8 HashBrown capacities; during
-    # a grow the old table remains live while the new table is allocated.
-    # build_vk retains Assembly while building permutation polynomials, and
-    # build_pk additionally materializes the sparse mapping successor Vec.
-    # Keep this heap separate from the file-backed polynomial/mapping bytes.
-    # Source-confirmed selector allocations and fixed-polynomial chunks remain
-    # live alongside those maps in the corresponding keygen phases.
-    # These phases include selector bitmaps, a dense selector field vector,
-    # the PK denominator Option<Fr> vector, and streamed fixed-polynomial
-    # buffers.
-    permutation_aux_entries = expected_successor_entries
-    permutation_sizes_entries = min(permutation_cells, copy_calls)
-    (
-        permutation_hashmap_heap_peak,
-        permutation_hashmap_backing_bytes,
-        permutation_hashmap_resize_old_bytes,
-        permutation_hashmap_bucket_count,
-    ) = _permutation_hashmap_heap_upper(
-        mapping_entries=expected_successor_entries,
-        aux_entries=permutation_aux_entries,
-        sizes_entries=permutation_sizes_entries,
-        entry_bytes=int(memory["size_of_usize_pair_bytes"]),
-        usize_bytes=int(memory["size_of_usize_bytes"]),
-        map_header_bytes=permutation_hashmap_header,
+    # Formal native keygen now stores selector activations and permutation
+    # state in bounded hybrid/sparse stores. The old HashMap and full successor
+    # Vec estimates are not allocations in this path. Before the mandatory
+    # native census these dynamic resident terms are intentionally unknown and
+    # are enforced by the in-process allocation budget; after keygen they are
+    # replaced with the exact source-reported values below.
+    permutation_hashmap_heap_peak = 0
+    permutation_hashmap_backing_bytes = 0
+    permutation_hashmap_resize_old_bytes = 0
+    permutation_hashmap_bucket_count = 0
+    permutation_aux_entries = successor_entries
+    permutation_sizes_entries = 0
+    # NativePermutationStats.cache_bytes already includes its allocation
+    # bitmap backing. Keep the separately reported bitmap field as a
+    # decomposition only; adding it again would double-charge the shared
+    # physical-memory pool and spuriously shrink the selector activation cap.
+    permutation_mapping_host = permutation_cache_host
+    selector_decode_bytes = n * fr
+    selector_encoded_bytes = (n * max(1, degree.bit_length()) + 7) // 8
+    if native_census is not None:
+        native_preflight = native_census.get("preflight")
+        if not isinstance(native_preflight, dict):
+            abort("native keygen census lacks its exact native preflight geometry")
+        selector_decode_bytes = native_preflight.get("one_selector_decode_bytes")
+        selector_encoded_bytes = native_preflight.get("one_selector_encoded_bytes")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in (selector_decode_bytes, selector_encoded_bytes)):
+            abort("native keygen census has malformed one-selector conversion buffers")
+    selector_phase = (
+        selectors
+        + selector_decode_bytes
+        + selector_encoded_bytes
+        + read_scratch
+        + permutation_mapping_host
     )
-    permutation_mapping_host = expected_successor_entries * int(memory["size_of_usize_pair_bytes"]) + vec_header
-    selector_phase = selectors + n * fr + read_scratch + permutation_hashmap_heap_peak
     # Native keygen supplies an exact-size iterator to the pinned batch
     # inversion implementation, so its prefix Vec reserves exactly N entries.
     # Count those native-sized (Fr, &mut Fr) entries alongside Option<Fr>.
@@ -2299,7 +2467,6 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         + n * option_fr
         + batch_invert_heap_upper
         + read_scratch
-        + permutation_hashmap_heap_peak
         + permutation_mapping_host
     )
     # `icicle.rs` materializes one scalar and one affine host Vec per <=2^20
@@ -2310,7 +2477,14 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     # During permutation VK commitments, keygen retains the selector bitmap
     # Vecs, omega powers, and the current dense permutation column as well as
     # the ICICLE conversion Vecs.
-    permutation_vk_phase = selectors + 2 * n * fr + icicle_msm_staging + permutation_hashmap_heap_peak
+    permutation_vk_phase = selectors + 2 * n * fr + icicle_msm_staging + permutation_mapping_host
+    # Exact static reserve for later native keygen arrays, excluding activation
+    # sets, one-selector conversion buffers, and bounded sparse-store caches,
+    # which the in-process preflight accounts separately before allocation.
+    setup_keygen_future_host_reserve = max(
+        n * option_fr + batch_invert_heap_upper + read_scratch,
+        2 * n * fr + icicle_msm_staging,
+    )
     # Native SRS loading keeps the target G1 monomial vector while deriving
     # Lagrange points. On aarch64, recursive::fft copies its projective input
     # and allocates a second projective scratch vector, so the transform peak
@@ -2333,8 +2507,12 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         srs_fft_output_peak = 2 * n * g1_affine + n * g1_projective + srs_fft_cache_metadata + srs_fft_twiddle_lut + 2 * g2_affine
         srs_fft_cache_build_peak = n * g1_affine + n * g1_projective + srs_fft_cache_metadata + n * fr + srs_fft_twiddle_lut + 2 * g2_affine
     srs_downsize_peak = max(srs_fft_transform_peak, srs_fft_output_peak, srs_fft_cache_build_peak)
-    srs_setup_peak = graph_witness_scalars * fr + srs_downsize_peak
-    srs_loaded_and_witness = graph_witness_scalars * fr + srs_loaded
+    # GAT Setup uses a witnessless circuit. Keep its declared tensor geometry
+    # in the shape buffer term below, but do not charge the former dense Fr
+    # witness copy that `GraphCircuit::new()` used to allocate.
+    setup_witnessless_shape_values_upper = graph_witness_scalars * option_fr
+    srs_setup_peak = srs_downsize_peak
+    srs_loaded_and_witness = srs_loaded
     # While the proof owns the key and SRS, advice and public instance maps
     # remain mapped. The sparse permutation successor vector is heap-backed.
     selector_bitmap_host = selectors
@@ -2344,6 +2522,23 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
     # group at a time and are bounded by proof_eval_hot_mmap below.
     proof_nonprepare_hot_mmap = 3 * proof_domain * fr
     proof_nonprepare_resident = proof_nonprepare_heap + proof_nonprepare_hot_mmap
+    # The native proof's assignment callback keeps one event column for each
+    # advice column through circuit synthesis. The source-derived GAT live
+    # tensor envelope is concurrent with this synthesis, while event decode
+    # later has one latest-index map, one current field map (already covered
+    # by A*N*Fr proof spill), and one bounded record/decoded/inversion batch.
+    gat_proof_synthesis_host_peak = (
+        proof_nonprepare_resident
+        + gat_transient_witness_bytes
+        + advice * advice_event_column_bytes
+    )
+    advice_conversion_mapped_host_upper = n * (latest_element_bytes + fr)
+    advice_conversion_host_peak = (
+        proof_nonprepare_resident
+        + advice_event_batch_bytes
+        + advice_conversion_mapped_host_upper
+    )
+    native_pk_read_host_peak = proof_nonprepare_resident + native_pk_read_host_scratch
     lookup_map_allocations: list[int] = []
     previous_bucket_growth: list[int] = []
     for upper in table_bounds:
@@ -2405,8 +2600,23 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         + shplonk_fixed_workspace_bytes
         + shplonk_batch_width_upper * shplonk_task_bytes
     )
-    proof_host_peak = max(lookup_prepare_host_peak, lookup_commit_host_peak, proof_eval_h_host_peak, shplonk_host_peak)
-    setup_keygen_host_peak = srs_loaded_and_witness + max(selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase)
+    proof_host_peak = max(
+        lookup_prepare_host_peak,
+        lookup_commit_host_peak,
+        proof_eval_h_host_peak,
+        shplonk_host_peak,
+        gat_proof_synthesis_host_peak,
+        advice_conversion_host_peak,
+        native_pk_read_host_peak,
+    )
+    setup_fixed_assignment_dirty_host_upper = fixed_assignment_maps
+    setup_keygen_host_peak = (
+        srs_loaded_and_witness
+        + setup_witnessless_shape_values_upper
+        + setup_fixed_assignment_dirty_host_upper
+        + gat_transient_witness_bytes
+        + max(selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase)
+    )
     host_known = max(setup_keygen_host_peak, srs_setup_peak, proof_host_peak)
     return {
         "fixed_assignment_mapped_bytes": fixed_assignment_maps,
@@ -2415,6 +2625,30 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         "setup_disk_known_bytes": setup_mapped_peak,
         "setup_mapped_peak_bytes": setup_mapped_peak,
         "proof_spill_known_bytes": proof_spill_known,
+        "advice_polynomial_mapped_bytes": advice * n * fr,
+        "advice_event_log_records_upper_bytes": advice_event_log_records_upper,
+        "advice_event_log_rounding_upper_bytes": advice_event_log_rounding_upper,
+        "advice_event_log_reserved_upper_bytes": advice_event_log_reserved_upper,
+        "advice_latest_index_mapped_bytes": advice_latest_map_bytes,
+        "advice_conversion_current_field_map_upper_bytes": n * fr,
+        "advice_event_column_resident_upper_bytes": advice * advice_event_column_bytes,
+        "advice_event_decode_batch_resident_upper_bytes": advice_event_batch_bytes,
+        "native_pk_read_successor_file_bytes": native_successor_file_bytes,
+        "native_pk_read_successor_reserved_bytes": native_successor_backing_reserved_bytes,
+        "native_pk_read_target_bitmap_virtual_bytes": target_bitmap_virtual_bytes,
+        "native_pk_read_target_bitmap_backing_upper_bytes": target_bitmap_page_bytes,
+        "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": target_bitmap_allocation_bitmap_bytes,
+        "native_pk_read_backing_required_bytes": native_pk_read_backing_required,
+        "native_pk_read_backing_evidence_kind": (
+            "exact_successor_count_with_page_rounded_store_and_4KiB_target_page_upper"
+            if native_census is not None
+            else "source_successor_ceiling_with_page_rounded_store_and_4KiB_target_page_upper_census_pending"
+        ),
+        "native_pk_read_host_scratch_upper_bytes": native_pk_read_host_scratch,
+        "native_pk_read_successor_cache_upper_bytes": int(memory["native_successor_read_cache_bytes"]),
+        "native_pk_read_target_bitmap_fixed_cache_upper_bytes": int(memory["native_target_bitmap_fixed_cache_bytes"]),
+        "native_pk_read_validation_buffers_upper_bytes": native_pk_read_validation_buffers,
+        "native_pk_read_stream_buffer_upper_bytes": native_pk_read_stream_buffer,
         "lookup_query_spill_bytes": lookup_query_spill_bytes,
         "lookup_m_spill_bytes": lookup_m_spill_bytes,
         "lookup_table_spill_bytes": lookup_table_spill_bytes,
@@ -2431,15 +2665,18 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         "srs_fft_twiddle_lut_bytes_upper": srs_fft_twiddle_lut,
         "srs_setup_host_peak_bytes": srs_setup_peak,
         "setup_keygen_host_peak_bytes": setup_keygen_host_peak,
-        "permutation_hashmap_heap_peak_bytes": permutation_hashmap_heap_peak,
-        "permutation_hashmap_header_bytes_upper": 3 * permutation_hashmap_header,
-        "permutation_hashmap_backing_bytes": permutation_hashmap_backing_bytes,
-        "permutation_hashmap_resize_old_bytes_upper": permutation_hashmap_resize_old_bytes,
-        "permutation_hashmap_bucket_count_upper": permutation_hashmap_bucket_count,
-        "permutation_mapping_entries_upper": expected_successor_entries,
-        "permutation_aux_entries_upper": permutation_aux_entries,
-        "permutation_sizes_entries_upper": permutation_sizes_entries,
-        "permutation_mapping_host_bytes": permutation_mapping_host,
+        "setup_keygen_future_host_reserve_bytes": setup_keygen_future_host_reserve,
+        "setup_fixed_assignment_dirty_host_upper_bytes": setup_fixed_assignment_dirty_host_upper,
+        "permutation_sparse_cache_host_bytes": permutation_cache_host if native_census is not None else None,
+        "permutation_allocation_bitmap_host_bytes": permutation_bitmap_host if native_census is not None else None,
+        "permutation_data_backing_observed_bytes": permutation_data_backing if native_census is not None else None,
+        "permutation_directory_backing_observed_bytes": permutation_directory_backing if native_census is not None else None,
+        "permutation_successor_entries_upper": expected_successor_entries_upper,
+        "permutation_successor_entries_observed": successor_entries if native_census is not None else None,
+        "permutation_successor_backing_file_upper_bytes": native_successor_backing_reserved_bytes,
+        "permutation_aux_entries_upper": successor_entries if native_census is not None else None,
+        "permutation_sizes_entries_upper": None,
+        "permutation_mapping_host_bytes": permutation_mapping_host if native_census is not None else None,
         "selector_keygen_host_phase_bytes": selector_phase,
         "permutation_pk_host_phase_bytes": pk_phase,
         "proof_nonprepare_resident_host_bytes": proof_nonprepare_resident,
@@ -2471,14 +2708,21 @@ def _native_capacity_requirements(admission: dict[str, object], icicle_type_size
         "lookup_commit_active_map_window_bytes_upper": lookup_commit_active_map_window,
         "lookup_commit_host_peak_bytes": lookup_commit_host_peak,
         "proof_host_peak_bytes": proof_host_peak,
+        "proof_gat_synthesis_host_peak_bytes": gat_proof_synthesis_host_peak,
+        "proof_advice_conversion_mapped_host_upper_bytes": advice_conversion_mapped_host_upper,
+        "proof_advice_conversion_host_peak_bytes": advice_conversion_host_peak,
+        "proof_native_pk_read_host_peak_bytes": native_pk_read_host_peak,
         "lookup_map_bounds": [int(item) for item in table_bounds],
         "lookup_map_bucket_count_upper": [max(4, 1 << (((int(item) * 8 + 6) // 7 - 1).bit_length())) for item in table_bounds],
         "setup_key_artifact_upper_bytes": setup_key_artifact_upper,
         "quotient_extended_backing_bytes": proof_domain * fr,
         "quotient_piece_bytes": quotient_coefficients * fr,
+        "setup_witnessless_shape_values_upper_bytes": setup_witnessless_shape_values_upper,
+        "gat_transient_witness_bytes_upper": gat_transient_witness_bytes,
         "host_known_bytes": host_known,
-        "selector_activation_bitmap_bytes": selectors,
-        "admission_census_selector_storage_bytes": selector_census_storage,
+        "selector_activation_storage_observed_bytes": selectors if native_census is not None else None,
+        "selector_activation_storage_static_upper_bytes": selector_census_storage,
+        "selector_activation_storage_evidence_kind": "exact_native_vk_pk_census" if native_census is not None else "static_ceiling_only_native_census_pending",
         "selector_dense_field_vector_bytes": n * fr,
         "keygen_option_fr_vector_bytes": n * option_fr,
         "batch_invert_entry_bytes": batch_invert_entry,
@@ -2602,6 +2846,197 @@ def _pending_srs_copy_disk_budget(
         "pending_output_srs_copy_bytes": total,
         "pending_output_srs_copy_datasets": pending,
     }
+
+
+def _write_native_keygen_budget_receipt(
+    output: Path,
+    *,
+    dataset: str,
+    session_id: str,
+    admission: dict[str, object],
+    resume_identity: dict[str, object],
+    capacity: dict[str, object],
+    setup_check: dict[str, object],
+    workspace_query: dict[str, object],
+) -> str:
+    path = output / "native_keygen_budget.json"
+    if path.exists() or path.is_symlink():
+        abort(f"{dataset} native keygen budget refuses to overwrite an existing receipt")
+    disk_available = setup_check.get("disk_available_bytes")
+    setup_disk_required = setup_check.get("disk_required_known_bytes")
+    proof_spill_reserve = capacity.get("proof_spill_known_bytes")
+    future_host_reserve = capacity.get("setup_keygen_future_host_reserve_bytes")
+    successor_file_upper = capacity.get("permutation_successor_backing_file_upper_bytes")
+    gat_transient_witness = capacity.get("gat_transient_witness_bytes_upper")
+    setup_keygen_host_peak = capacity.get("setup_keygen_host_peak_bytes")
+    proof_gat_synthesis_host_peak = capacity.get("proof_gat_synthesis_host_peak_bytes")
+    memory_model = admission.get("native_memory_model")
+    admitted_gat_transient = memory_model.get("gat_transient_witness_bytes_upper") if isinstance(memory_model, dict) else None
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize
+        for value in (
+            disk_available,
+            setup_disk_required,
+            proof_spill_reserve,
+            future_host_reserve,
+            successor_file_upper,
+            gat_transient_witness,
+            setup_keygen_host_peak,
+            proof_gat_synthesis_host_peak,
+        )
+    ):
+        abort(f"{dataset} native keygen budget inputs are malformed")
+    if (
+        isinstance(admitted_gat_transient, bool)
+        or not isinstance(admitted_gat_transient, int)
+        or gat_transient_witness != admitted_gat_transient
+        or setup_keygen_host_peak < gat_transient_witness
+        or proof_gat_synthesis_host_peak < gat_transient_witness
+    ):
+        abort(f"{dataset} native keygen budget GAT tensor reserve does not match the admitted capacity envelope")
+    if setup_disk_required > disk_available:
+        abort(
+            f"{dataset} setup keygen peak needs {setup_disk_required} bytes, "
+            f"but setup admission observed only {disk_available} bytes"
+        )
+    # The setup check already reserves the complete PK/VK artifacts, mapped
+    # setup peak and pending SRS copy. The native sparse stores are a bounded
+    # transient on top of that phase; future proof spill is separately checked
+    # as a sequential phase and is never double-counted as a setup allocation.
+    native_permutation_backing_budget = disk_available - setup_disk_required
+    relation_identity = admission.get("relation_identity")
+    if not isinstance(relation_identity, dict):
+        abort(f"{dataset} native keygen budget lacks its admitted relation identity")
+    value = {
+        "schema": "ezkl.native-keygen-budget.v1",
+        "session_id": session_id,
+        "dataset": dataset,
+        "admission_sha256": admission.get("sha256"),
+        "settings_sha256": admission.get("settings_sha256"),
+        "binary_sha256": resume_identity.get("binary_sha256"),
+        "resource_manifest_sha256": relation_identity.get("resource_manifest_sha256"),
+        "build_receipt_sha256": resume_identity.get("build_receipt_sha256"),
+        "build_environment_sha256": resume_identity.get("build_environment_sha256"),
+        "logrows": admission.get("logrows"),
+        "domain_size": admission.get("domain_size"),
+        "gat_transient_witness_bytes_upper": gat_transient_witness,
+        "host_available_bytes": setup_check.get("host_available_bytes"),
+        "host_os_diagnostic_reserve_bytes": setup_check.get("host_os_diagnostic_reserve_bytes"),
+        "setup_keygen_future_host_reserve_bytes": future_host_reserve,
+        "integrated_device": workspace_query.get("integrated_device"),
+        "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
+        "disk_available_bytes": disk_available,
+        "setup_disk_required_known_bytes": setup_disk_required,
+        "proof_spill_reserve_bytes": proof_spill_reserve,
+        "disk_required_known_bytes": setup_disk_required,
+        "permutation_successor_backing_file_upper_bytes": successor_file_upper,
+        "native_permutation_backing_budget_bytes": native_permutation_backing_budget,
+        "native_successor_read_cache_bytes": admission["native_memory_model"]["native_successor_read_cache_bytes"],
+        "native_target_bitmap_fixed_cache_bytes": admission["native_memory_model"]["native_target_bitmap_fixed_cache_bytes"],
+        "native_pk_read_buffer_capacity_bytes": admission["native_memory_model"]["native_pk_read_buffer_capacity_bytes"],
+        "host_budget_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
+        "disk_budget_scope": "setup_and_future_proof_known_peaks_reserved; native_sparse_backing_has_finite_residual_cap",
+    }
+    _write_session_record(path, value)
+    return sha256(path)
+
+
+def _write_native_prove_budget_receipt(
+    output: Path,
+    *,
+    dataset: str,
+    session_id: str,
+    admission: dict[str, object],
+    resume_identity: dict[str, object],
+    setup_receipt_sha256: str,
+    native_keygen_budget_sha256: str,
+    native_keygen_receipt_sha256: str,
+    capacity: dict[str, object],
+    prove_check: dict[str, object],
+    workspace_query: dict[str, object],
+) -> str:
+    path = output / "native_prove_budget.json"
+    if path.exists() or path.is_symlink():
+        abort(f"{dataset} native prove budget refuses to overwrite an existing receipt")
+    disk_available = prove_check.get("disk_available_bytes")
+    disk_required = prove_check.get("disk_required_known_bytes")
+    host_available = prove_check.get("host_available_bytes")
+    host_required = prove_check.get("host_required_known_bytes")
+    native_read_required = capacity.get("native_pk_read_backing_required_bytes")
+    native_read_host_scratch = capacity.get("native_pk_read_host_scratch_upper_bytes")
+    native_read_cache = capacity.get("native_pk_read_successor_cache_upper_bytes")
+    target_bitmap_cache = capacity.get("native_pk_read_target_bitmap_fixed_cache_upper_bytes")
+    target_bitmap_allocation = capacity.get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes")
+    validation_buffers = capacity.get("native_pk_read_validation_buffers_upper_bytes")
+    stream_buffer = capacity.get("native_pk_read_stream_buffer_upper_bytes")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize
+        for value in (
+            disk_available,
+            disk_required,
+            host_available,
+            host_required,
+            native_read_required,
+            native_read_host_scratch,
+            native_read_cache,
+            target_bitmap_cache,
+            target_bitmap_allocation,
+            validation_buffers,
+            stream_buffer,
+        )
+    ):
+        abort(f"{dataset} native prove budget has malformed host or disk accounting")
+    if native_read_host_scratch != native_read_cache + target_bitmap_cache + target_bitmap_allocation + validation_buffers + stream_buffer:
+        abort(f"{dataset} native PK reader host scratch does not equal its source-derived cache/buffer components")
+    if host_required > host_available or native_read_host_scratch > host_required:
+        abort(f"{dataset} native PK reader host scratch exceeds the checked shared-memory envelope")
+    if native_read_required > disk_required:
+        abort(f"{dataset} native PK read backing is missing from the checked proof disk peak")
+    other_known = disk_required - native_read_required
+    max_backing = min(native_read_required, disk_available - other_known) if disk_available >= other_known else 0
+    if max_backing < native_read_required:
+        abort(
+            f"{dataset} native PK reader needs {native_read_required} source-bounded backing bytes, "
+            f"but only {max_backing} remain after the other proof spill reservations"
+        )
+    required_identity = admission.get("relation_identity")
+    if not isinstance(required_identity, dict):
+        abort(f"{dataset} native prove budget lacks the admitted relation identity")
+    value = {
+        "schema": "ezkl.native-prove-budget.v1",
+        "session_id": session_id,
+        "dataset": dataset,
+        "admission_sha256": admission.get("sha256"),
+        "resource_manifest_sha256": required_identity.get("resource_manifest_sha256"),
+        "build_receipt_sha256": resume_identity.get("build_receipt_sha256"),
+        "build_environment_sha256": resume_identity.get("build_environment_sha256"),
+        "binary_sha256": resume_identity.get("binary_sha256"),
+        "settings_sha256": admission.get("settings_sha256"),
+        "compiled_circuit_sha256": sha256(require_file(output / "compiled.circuit", f"{dataset} compiled circuit")),
+        "vk_sha256": sha256(require_file(output / "vk.key", f"{dataset} verifying key")),
+        "pk_sha256": sha256(require_file(output / "pk.key", f"{dataset} proving key")),
+        "setup_receipt_sha256": setup_receipt_sha256,
+        "native_keygen_budget_sha256": native_keygen_budget_sha256,
+        "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
+        "disk_available_bytes": disk_available,
+        "disk_required_known_bytes": disk_required,
+        "native_pk_read_backing_required_bytes": native_read_required,
+        "max_total_backing_bytes": max_backing,
+        "native_pk_read_host_scratch_upper_bytes": native_read_host_scratch,
+        "native_pk_read_successor_cache_upper_bytes": native_read_cache,
+        "native_pk_read_target_bitmap_fixed_cache_upper_bytes": target_bitmap_cache,
+        "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": target_bitmap_allocation,
+        "native_pk_read_validation_buffers_upper_bytes": validation_buffers,
+        "native_pk_read_stream_buffer_upper_bytes": stream_buffer,
+        "host_available_bytes": host_available,
+        "host_required_known_bytes": host_required,
+        "integrated_device": workspace_query.get("integrated_device"),
+        "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
+        "backing_scope": "single_formal_pk_stream_read_and_target_validation; exact_successor_count_plus_4KiB_target_page_upper",
+        "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
+    }
+    _write_session_record(path, value)
+    return sha256(path)
 
 
 def _disk_budget_components(
@@ -2805,12 +3240,22 @@ def _admit_local_capacity(
         abort("resume capacity stage selections do not match the admitted datasets")
     future_key_artifacts = sum(requirements[name]["setup_key_artifact_upper_bytes"] for name in setup_required)
     max_setup_map_peak = max((requirements[name]["setup_mapped_peak_bytes"] for name in setup_required), default=0)
+    max_future_proof_spill = max((requirements[name]["proof_spill_known_bytes"] for name in active), default=0)
     initial_srs_budget = _pending_srs_copy_disk_budget(srs_copy_size_bytes, pending_finalize)
     initial_disk_components = _disk_budget_components(
         pending_srs=initial_srs_budget,
         setup_key_artifact_upper_bytes=future_key_artifacts,
         setup_mapped_peak_bytes=max_setup_map_peak,
     )
+    # Setup's transient maps and a later dataset's proof spill are separate
+    # phases. Keep all retained key files and SRS copies, then reserve the
+    # larger of those two transient peaks instead of summing unrelated phases.
+    srs_pending_bytes = int(initial_srs_budget["pending_output_srs_copy_bytes"])
+    initial_phase_peak = max(max_setup_map_peak, max_future_proof_spill)
+    initial_disk_components["proof_spill_known_bytes"] = max_future_proof_spill
+    initial_disk_components["total_required_bytes"] = future_key_artifacts + initial_phase_peak + srs_pending_bytes
+    if initial_disk_components["total_required_bytes"] > sys.maxsize:
+        abort("initial known setup/proof disk peak exceeds the native address range")
     initial_disk_required = int(initial_disk_components["total_required_bytes"])
     initial_sample = {
         "device_uuid": query["device_uuid"],
@@ -2919,12 +3364,15 @@ _SETUP_REUSE_FILES = (
     "compiled.circuit",
     "pk.key",
     "vk.key",
+    "native_keygen_budget.json",
+    "native_keygen_receipt.json",
     "gat_static_tables.json",
     "gat_integer_ledger.json",
     "circuit_ref.json",
     "producer_context.json",
 )
 _POST_SETUP_FILES = (
+    "native_prove_budget.json",
     "statement.json",
     "public_output.json",
     "producer_manifest.json",
@@ -2933,6 +3381,7 @@ _POST_SETUP_FILES = (
     "witness.json",
     "proof.json",
     "native_proof_metrics.json",
+    "native_pk_read_timing.json",
     "native_verify_metrics.json",
     "core_run_manifest.json",
     "gpu_evidence.json",
@@ -2941,16 +3390,205 @@ _POST_SETUP_FILES = (
 )
 
 
+def _load_native_keygen_receipt(
+    output: Path,
+    dataset: str,
+    session_id: str,
+    resume_identity: dict[str, object],
+    admission: dict[str, object],
+) -> tuple[dict[str, object], dict[str, object], str]:
+    budget_path = output / "native_keygen_budget.json"
+    receipt_path = output / "native_keygen_receipt.json"
+    require_file(budget_path, f"{dataset} native keygen budget receipt")
+    require_file(receipt_path, f"{dataset} native keygen census receipt")
+    budget = load_json(budget_path, f"{dataset} native keygen budget receipt")
+    receipt = load_json(receipt_path, f"{dataset} native keygen census receipt")
+    if not isinstance(budget, dict) or not isinstance(receipt, dict):
+        abort(f"{dataset} native keygen receipts must be JSON objects")
+    relation_identity = admission.get("relation_identity")
+    if not isinstance(relation_identity, dict):
+        abort(f"{dataset} native admission has no authenticated relation identity")
+    expected_budget = {
+        "schema": "ezkl.native-keygen-budget.v1",
+        "session_id": session_id,
+        "dataset": dataset,
+        "admission_sha256": admission.get("sha256"),
+        "settings_sha256": admission.get("settings_sha256"),
+        "binary_sha256": resume_identity.get("binary_sha256"),
+        "resource_manifest_sha256": relation_identity.get("resource_manifest_sha256"),
+        "build_receipt_sha256": resume_identity.get("build_receipt_sha256"),
+        "build_environment_sha256": resume_identity.get("build_environment_sha256"),
+        "logrows": admission.get("logrows"),
+        "domain_size": admission.get("domain_size"),
+    }
+    for name, value in expected_budget.items():
+        if budget.get(name) != value:
+            abort(f"{dataset} native keygen budget identity mismatch: {name}")
+    for name in (
+        "host_available_bytes",
+        "host_os_diagnostic_reserve_bytes",
+        "setup_keygen_future_host_reserve_bytes",
+        "device_workspace_peak_bytes",
+        "disk_available_bytes",
+        "setup_disk_required_known_bytes",
+        "proof_spill_reserve_bytes",
+        "disk_required_known_bytes",
+        "permutation_successor_backing_file_upper_bytes",
+        "native_permutation_backing_budget_bytes",
+        "gat_transient_witness_bytes_upper",
+    ):
+        value = budget.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
+            abort(f"{dataset} native keygen budget has an invalid {name}")
+    if budget["host_available_bytes"] <= 0 or budget["disk_available_bytes"] <= 0:
+        abort(f"{dataset} native keygen budget has no admitted host or disk capacity")
+    memory_model = admission.get("native_memory_model")
+    admitted_gat_transient = memory_model.get("gat_transient_witness_bytes_upper") if isinstance(memory_model, dict) else None
+    if (
+        isinstance(admitted_gat_transient, bool)
+        or not isinstance(admitted_gat_transient, int)
+        or budget["gat_transient_witness_bytes_upper"] != admitted_gat_transient
+    ):
+        abort(f"{dataset} native keygen GAT workspace budget does not match its admitted memory model")
+    if (
+        budget["disk_required_known_bytes"] > budget["disk_available_bytes"]
+        or budget["setup_disk_required_known_bytes"] != budget["disk_required_known_bytes"]
+        or budget["native_permutation_backing_budget_bytes"]
+        != budget["disk_available_bytes"] - budget["disk_required_known_bytes"]
+        or not isinstance(budget.get("integrated_device"), bool)
+    ):
+        abort(f"{dataset} native keygen budget exceeds its admitted disk or device envelope")
+
+    census = receipt.get("native_census")
+    preflight = census.get("preflight") if isinstance(census, dict) else None
+    cs = admission.get("constraint_system")
+    if not isinstance(census, dict) or not isinstance(preflight, dict) or not isinstance(cs, dict):
+        abort(f"{dataset} native keygen receipt lacks exact census geometry")
+    for name, value in (
+        ("logrows", admission.get("logrows")),
+        ("domain_size", admission.get("domain_size")),
+        ("fixed_columns", cs.get("num_fixed_columns")),
+        ("advice_columns", cs.get("num_advice_columns")),
+        ("instance_columns", cs.get("num_instance_columns")),
+        ("permutation_columns", cs.get("num_permutation_columns")),
+        ("selector_count", cs.get("num_selectors")),
+        ("constraint_degree", cs.get("degree")),
+    ):
+        if preflight.get(name) != value:
+            abort(f"{dataset} mandatory native keygen preflight changed admitted geometry: {name}")
+    for name in (
+        "compressed_selector_columns",
+        "selector_activation_storage_current_bytes",
+        "selector_activation_storage_peak_bytes",
+        "permutation_copy_calls",
+        "permutation_successor_edges",
+        "permutation_nondefault_records",
+        "permutation_data_pages_allocated",
+        "permutation_directory_pages_allocated",
+        "permutation_data_allocated_bytes",
+        "permutation_directory_allocated_bytes",
+        "permutation_cache_bytes",
+        "permutation_allocation_bitmap_bytes",
+    ):
+        value = census.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
+            abort(f"{dataset} exact native keygen census has an invalid {name}")
+    selector_counts = census.get("selector_activation_counts")
+    fixed_counts = census.get("fixed_assignment_callback_counts")
+    if (
+        not isinstance(selector_counts, list)
+        or len(selector_counts) != cs["num_selectors"]
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > admission["domain_size"] for value in selector_counts)
+        or not isinstance(fixed_counts, list)
+        or len(fixed_counts) != cs["num_fixed_columns"]
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > admission["domain_size"] for value in fixed_counts)
+        or census["selector_activation_storage_current_bytes"] > census["selector_activation_storage_peak_bytes"]
+        or census["selector_activation_storage_peak_bytes"] > admission["native_memory_model"]["selector_activation_storage_bytes_upper"]
+        or census["compressed_selector_columns"] > cs["num_selectors"]
+        or census["permutation_copy_calls"] > cs["permutation_copy_call_count_upper"]
+        or census["permutation_successor_edges"] > min(
+            cs["num_permutation_columns"] * admission["domain_size"],
+            2 * census["permutation_copy_calls"],
+        )
+    ):
+        abort(f"{dataset} exact native keygen census exceeds its source-derived shape ceiling")
+    actual_backing = (
+        census["permutation_data_allocated_bytes"]
+        + census["permutation_directory_allocated_bytes"]
+        + ((16 * census["permutation_successor_edges"] + 4095) // 4096) * 4096
+    )
+    source_components = (
+        preflight.get("permutation_data_virtual_bytes"),
+        preflight.get("permutation_directory_virtual_bytes"),
+        budget["permutation_successor_backing_file_upper_bytes"],
+    )
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in source_components):
+        abort(f"{dataset} native preflight permutation backing bounds are invalid")
+    source_backing_upper = sum(source_components)
+    if (
+        source_backing_upper > sys.maxsize
+        or actual_backing > budget["native_permutation_backing_budget_bytes"]
+        or actual_backing > source_backing_upper
+    ):
+        abort(f"{dataset} exact native permutation backing exceeds its authenticated setup budget")
+    stage_caps = receipt.get("stage_budget_caps")
+    if not isinstance(stage_caps, list) or len(stage_caps) != 2:
+        abort(f"{dataset} native keygen receipt lacks separate VK/PK allocation caps")
+    selector_caps: list[int] = []
+    permutation_caps: list[int] = []
+    selector_initial = preflight.get("selector_activation_initial_backing_bytes")
+    if isinstance(selector_initial, bool) or not isinstance(selector_initial, int) or selector_initial < 0 or selector_initial > sys.maxsize:
+        abort(f"{dataset} native preflight selector activation backing geometry is invalid")
+    for index, stage in enumerate(("vk", "pk")):
+        cap = stage_caps[index]
+        if not isinstance(cap, dict) or cap.get("stage") != stage:
+            abort(f"{dataset} native keygen allocation caps are not ordered VK then PK")
+        selector_cap = cap.get("max_selector_activation_bytes")
+        permutation_cap = cap.get("max_permutation_backing_bytes")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value >= 1 << 64 for value in (selector_cap, permutation_cap)):
+            abort(f"{dataset} native {stage.upper()} keygen allocation cap is invalid")
+        if selector_cap < selector_initial or selector_cap > budget["host_available_bytes"]:
+            abort(f"{dataset} native {stage.upper()} selector cap is outside its shared-pool envelope")
+        if permutation_cap > min(budget["native_permutation_backing_budget_bytes"], source_backing_upper):
+            abort(f"{dataset} native {stage.upper()} permutation cap exceeds its source/disk envelope")
+        selector_caps.append(selector_cap)
+        permutation_caps.append(permutation_cap)
+    if (
+        census["selector_activation_storage_peak_bytes"] > min(selector_caps)
+        or actual_backing > min(permutation_caps)
+    ):
+        abort(f"{dataset} exact keygen census exceeds the stricter of its VK/PK live allocation caps")
+
+    expected_receipt = {
+        "schema": "ezkl.native-keygen-receipt.v2",
+        "session_id": session_id,
+        "dataset": dataset,
+        "relation_identity": relation_identity,
+        "resource_manifest_sha256": relation_identity.get("resource_manifest_sha256"),
+        "budget_receipt_sha256": sha256(budget_path),
+        "settings_sha256": admission.get("settings_sha256"),
+        "compiled_circuit_sha256": sha256(require_file(output / "compiled.circuit", f"{dataset} compiled circuit")),
+        "vk_sha256": sha256(require_file(output / "vk.key", f"{dataset} verifying key")),
+        "pk_sha256": sha256(require_file(output / "pk.key", f"{dataset} proving key")),
+        "evidence_kind": "mandatory_vk_pk_native_keygen_synthesis_census",
+        "coverage": "one_actual_vk_synthesis_and_matching_pk_synthesis; exact_selector_and_permutation_counts",
+    }
+    for name, value in expected_receipt.items():
+        if receipt.get(name) != value:
+            abort(f"{dataset} native keygen receipt identity mismatch: {name}")
+    return budget, receipt, sha256(receipt_path)
+
+
 def _setup_reuse_receipt(output: Path, dataset: str, session_id: str, resume_identity: dict[str, object], admission: dict[str, object]) -> dict[str, object]:
     setup_files: dict[str, str] = {}
     for name in _SETUP_REUSE_FILES:
         path = output / name
         require_file(path, f"{dataset} setup reuse artifact {name}")
         setup_files[name] = sha256(path)
-    if (
-        setup_files["settings.json"] != admission.get("settings_sha256")
-        or setup_files["compiled.circuit"] != admission.get("compiled_circuit_sha256")
-    ):
+    _, native_receipt, native_receipt_sha256 = _load_native_keygen_receipt(
+        output, dataset, session_id, resume_identity, admission
+    )
+    if setup_files["settings.json"] != admission.get("settings_sha256") or setup_files["compiled.circuit"] != native_receipt.get("compiled_circuit_sha256"):
         abort(f"{dataset} setup artifacts do not match the exact native admission")
     return {
         "schema": "ezkl.setup-reuse-receipt.v1",
@@ -2958,6 +3596,7 @@ def _setup_reuse_receipt(output: Path, dataset: str, session_id: str, resume_ide
         "dataset": dataset,
         "resume_identity_sha256": canonical_json_digest(resume_identity),
         "admission_sha256": admission.get("sha256"),
+        "native_keygen_receipt_sha256": native_receipt_sha256,
         "setup_files": setup_files,
     }
 
@@ -3350,11 +3989,13 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         "ICICLE_NATIVE_MANIFEST_SHA256",
         "CUDA_ARCH",
         "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
+        "EZKL_FORMAL_SESSION_ID",
         "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
         "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES",
         "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
     ):
         os.environ.pop(name, None)
+    os.environ["EZKL_FORMAL_SESSION_ID"] = session_id
 
     _set_stage(session_file, "five_dataset_config_preflight")
     config_values = _preflight_dataset_configs()
@@ -3696,6 +4337,16 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             session_document.setdefault("capacity_checks", []).append(setup_check)
             _write_session_record(session_file, session_document)
             output = prepare_output_dir(output_root, dataset)
+            native_keygen_budget_sha256 = _write_native_keygen_budget_receipt(
+                output,
+                dataset=dataset,
+                session_id=session_id,
+                admission=admission,
+                resume_identity=resume_identity,
+                capacity=capacity_requirements[dataset],
+                setup_check=setup_check,
+                workspace_query=workspace_receipt["query"],
+            )
             _set_stage(session_file, f"{dataset}_setup")
             setup_ms = run(item["setup"], f"{dataset} native setup", gpu=NATIVE_FORMAL_BACKEND == "gpu")
             (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
@@ -3703,9 +4354,35 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             anchor_setup_reuse_receipt(session_file, dataset, setup_receipt_sha256)
         else:
             print(f"[ezkl-formal] reuse validated {dataset} native setup receipt and keys", flush=True)
-        invoke_python_entrypoint(
-            "produce_public_statement", item["producer"], f"{dataset} independent public statement/Y producer", context=context, session_id=session_id
+            setup_receipt_sha256 = sha256(output / "setup_receipt.json")
+        _native_keygen_budget, native_keygen_receipt, native_keygen_receipt_sha256 = _load_native_keygen_receipt(
+            output, dataset, session_id, resume_identity, admission
         )
+        native_census = native_keygen_receipt.get("native_census")
+        if not isinstance(native_census, dict):
+            abort(f"{dataset} authenticated setup lacks the mandatory native keygen census")
+        capacity_requirements[dataset] = _native_capacity_requirements(
+            admission,
+            workspace_receipt["query"]["native_type_sizes"],
+            native_census=native_census,
+        )
+        if (
+            capacity_requirements[dataset].get("gat_transient_witness_bytes_upper")
+            != _native_keygen_budget.get("gat_transient_witness_bytes_upper")
+        ):
+            abort(f"{dataset} authenticated keygen budget and recomputed capacity disagree on the GAT live-tensor reserve")
+        capacity_requirements[dataset]["host_known_bytes"] = capacity_requirements[dataset]["proof_host_peak_bytes"]
+        session_document = load_json(session_file, "formal session record")
+        native_capacity = session_document.setdefault("native_keygen_capacity", {})
+        if not isinstance(native_capacity, dict):
+            abort("formal native keygen capacity evidence map is malformed")
+        native_capacity[dataset] = {
+            "native_keygen_budget_sha256": sha256(output / "native_keygen_budget.json"),
+            "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
+            "coverage": "exact mandatory native VK/PK synthesis census; source-derived post-keygen capacity envelope",
+            "requirements": capacity_requirements[dataset],
+        }
+        _write_session_record(session_file, session_document)
         proof_disk_components = _disk_budget_components(
             pending_srs=_remaining_srs_copy_disk_budget(srs_copy_size_bytes, dataset_index, pending_finalize_datasets={dataset}),
             proof_spill_known_bytes=capacity_requirements[dataset]["proof_spill_known_bytes"],
@@ -3724,6 +4401,20 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             build_environment=build_environment,
             disk_budget_components=proof_disk_components,
         )
+        native_prove_budget_sha256 = _write_native_prove_budget_receipt(
+            output,
+            dataset=dataset,
+            session_id=session_id,
+            admission=admission,
+            resume_identity=resume_identity,
+            setup_receipt_sha256=setup_receipt_sha256,
+            native_keygen_budget_sha256=sha256(output / "native_keygen_budget.json"),
+            native_keygen_receipt_sha256=native_keygen_receipt_sha256,
+            capacity=capacity_requirements[dataset],
+            prove_check=prove_check,
+            workspace_query=workspace_receipt["query"],
+        )
+        prove_check["native_prove_budget_sha256"] = native_prove_budget_sha256
         prepare_budget = _native_prepare_budget(
             capacity_requirements[dataset], initial_available_bytes=int(prove_check["host_available_bytes"]), workspace_query=workspace_receipt["query"]
         )
@@ -3731,6 +4422,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         session_document = load_json(session_file, "formal session record")
         session_document.setdefault("capacity_checks", []).append(prove_check)
         _write_session_record(session_file, session_document)
+        invoke_python_entrypoint(
+            "produce_public_statement", item["producer"], f"{dataset} independent public statement/Y producer", context=context, session_id=session_id
+        )
         cardinality_bounds = admission["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
         taskcap_env, device_headroom_env, cardinality_env = _validated_native_prepare_exports(
             prepare_budget,

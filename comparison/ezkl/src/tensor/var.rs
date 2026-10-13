@@ -606,7 +606,15 @@ impl VarTensor {
                     self.num_inner_cols()
                 };
 
-                let (_, _, duplication_offset) = self.cartesian_coord(offset);
+                let duplication_offset = if single_inner_col {
+                    // The live constrained path duplicates within each column and therefore
+                    // uses the row coordinate as its phase.
+                    self.cartesian_coord(offset).2
+                } else {
+                    // The live unconstrained path passes the full linear offset to
+                    // duplicate_every_n; the dummy path must use the same phase.
+                    offset
+                };
 
                 // duplicates every nth element to adjust for column overflow
                 let mut res: ValTensor<F> = v

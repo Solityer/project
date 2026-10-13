@@ -800,6 +800,32 @@ fn native_gat_fixture_proof_verifies_independently() {
         started.elapsed().as_millis()
     );
 
+    assert!(known.settings().run_args.output_visibility.is_public());
+    let output_count = witness.outputs.iter().map(|output| output.len()).sum::<usize>();
+    assert!(output_count > 0, "tiny GAT fixture must expose public logits");
+    assert!(public.len() >= output_count, "public instance vector contains every GAT logit");
+    let mut tampered_public = public.clone();
+    let tampered_logit = tampered_public
+        .last_mut()
+        .expect("public output logits are the final public instances");
+    *tampered_logit += Fr::from(1u64);
+    let tampered_instances: &[&[&[Fr]]] = &[&[&tampered_public]];
+    let mut tampered_instance_reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&proof[..]);
+    let tampered_instance_result =
+        verify_proof::<KZGCommitmentScheme<Bn256>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+            &params,
+            pk.get_vk(),
+            SingleStrategy::new(&params),
+            tampered_instances,
+            &mut tampered_instance_reader,
+            1u64 << k,
+        );
+    assert!(
+        tampered_instance_result.is_err(),
+        "independent verifier accepted a proof against a modified public logit"
+    );
+    eprintln!("EZKL_TEST_PHASE DONE stage=tampered_public_logit_rejected");
+
     let mut tampered_proof = proof.clone();
     let tamper_index = tampered_proof.len() / 2;
     tampered_proof[tamper_index] ^= 1;

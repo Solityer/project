@@ -35,7 +35,15 @@ mod multiopen_test;
 pub use domain::*;
 pub use query::{ProverQuery, VerifierQuery};
 pub use spill::NativeSpillScope;
+pub use spill::{
+    native_target_bitmap_allocation_bitmap_bytes, NATIVE_SUCCESSOR_READ_CACHE_BYTES,
+    NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES,
+};
 pub(crate) use spill::SpillLog;
+pub(crate) use spill::{
+    NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+    NativeSuccessorStore, NativeSuccessorValidationStats,
+};
 pub use strategy::{Guard, VerificationStrategy};
 
 /// Creates a private, session-local backing directory for native polynomial

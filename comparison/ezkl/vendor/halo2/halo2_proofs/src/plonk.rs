@@ -19,6 +19,7 @@ use crate::poly::{
 };
 use crate::transcript::{ChallengeScalar, EncodedChallenge, Transcript};
 use crate::SerdeFormat;
+use std::time::{Duration, Instant};
 
 mod assigned;
 mod circuit;
@@ -34,7 +35,7 @@ pub mod permutation;
 mod shuffle;
 mod vanishing;
 
-use circuit::SelectorBitmap;
+use circuit::SelectorActivationSet;
 
 mod prover;
 mod verifier;
@@ -56,6 +57,17 @@ use std::io;
 
 const NATIVE_PK_MAGIC: &[u8; 8] = b"EZKLPK\0\x02";
 
+/// Non-overlapping timing breakdown for loading the compact native proving
+/// key. The first duration includes artifact reading, decoding, digest checks,
+/// and mapping validation; it is not a pure file-I/O measurement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NativePkReadTiming {
+    /// Wall time for artifact reading, decoding, digest checks, and mapping validation.
+    pub artifact_read_validate: Duration,
+    /// Wall time for rebuilding native sigma coefficients; mapped spill I/O may be included.
+    pub sigma_rebuild: Duration,
+}
+
 /// This is a verifying key which allows for the verification of proofs for a
 /// particular circuit.
 #[derive(Clone, Debug)]
@@ -68,7 +80,7 @@ pub struct VerifyingKey<C: CurveAffine> {
     cs_degree: usize,
     /// The representative of this `VerifyingKey` in transcripts.
     transcript_repr: C::Scalar,
-    selectors: Vec<SelectorBitmap>,
+    selectors: Vec<SelectorActivationSet>,
     /// Whether selector compression is turned on or not.
     compress_selectors: bool,
 }
@@ -108,7 +120,7 @@ where
         }
         // write self.selectors
         for selector in &self.selectors {
-            writer.write_all(selector.as_bytes())?;
+            selector.write_activation(writer)?;
         }
         Ok(())
     }
@@ -163,7 +175,11 @@ where
             k as u32,
             #[cfg(feature = "circuit-params")]
             params,
-        );
+        )
+        .map_err(|error| match error {
+            Error::NativeStorage(error) | Error::Transcript(error) => error,
+            error => io::Error::new(io::ErrorKind::InvalidData, error.to_string()),
+        })?;
         let mut num_fixed_columns = [0u8; 4];
         reader.read_exact(&mut num_fixed_columns)?;
         let num_fixed_columns = u32::from_le_bytes(num_fixed_columns);
@@ -176,10 +192,10 @@ where
 
         let (cs, selectors) = if compress_selectors {
             // read selectors
-            let selectors: Vec<SelectorBitmap> = (0..cs.num_selectors)
-                .map(|_| SelectorBitmap::read_activation(reader, 1usize << k))
+            let selectors: Vec<SelectorActivationSet> = (0..cs.num_selectors)
+                .map(|_| SelectorActivationSet::read_activation(reader, 1usize << k))
                 .collect::<io::Result<_>>()?;
-            let (cs, _, _) = cs.compress_selector_bitmaps(&selectors);
+            let (cs, _, _) = cs.compress_selector_activation_sets(&selectors);
             (cs, selectors)
         } else {
             // we still need to replace selectors with fixed Expressions in `cs`
@@ -230,7 +246,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
             + self
                 .selectors
                 .iter()
-                .map(|selector| selector.as_bytes().len())
+                .map(SelectorActivationSet::encoded_byte_len)
                 .sum::<usize>()
     }
 
@@ -239,7 +255,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
         fixed_commitments: Vec<C>,
         permutation: permutation::VerifyingKey<C>,
         cs: ConstraintSystem<C::Scalar>,
-        selectors: Vec<SelectorBitmap>,
+        selectors: Vec<SelectorActivationSet>,
         compress_selectors: bool,
     ) -> Self
     where
@@ -413,6 +429,31 @@ where
         format: SerdeFormat,
         #[cfg(feature = "circuit-params")] params: ConcreteCircuit::Params,
     ) -> io::Result<Self> {
+        Self::read_with_native_backing_budget::<R, ConcreteCircuit>(reader, format, u64::MAX, #[cfg(feature = "circuit-params")] params)
+    }
+
+    /// Reads a proving key with a checked combined cap for the native sparse
+    /// permutation mapping and the temporary target-membership bitmap.
+    pub fn read_with_native_backing_budget<R: io::Read, ConcreteCircuit: Circuit<C::Scalar>>(reader: &mut R, format: SerdeFormat, max_total_backing_bytes: u64, #[cfg(feature = "circuit-params")] params: ConcreteCircuit::Params) -> io::Result<Self> {
+        Self::read_with_native_backing_budget_and_timing::<R, ConcreteCircuit>(
+            reader,
+            format,
+            max_total_backing_bytes,
+            #[cfg(feature = "circuit-params")]
+            params,
+        )
+        .map(|(key, _)| key)
+    }
+
+    /// Reads and authenticates a compact proving key while separately timing
+    /// the required native sigma coefficient reconstruction.
+    pub fn read_with_native_backing_budget_and_timing<R: io::Read, ConcreteCircuit: Circuit<C::Scalar>>(
+        reader: &mut R,
+        format: SerdeFormat,
+        max_total_backing_bytes: u64,
+        #[cfg(feature = "circuit-params")] params: ConcreteCircuit::Params,
+    ) -> io::Result<(Self, NativePkReadTiming)> {
+        let load_started = Instant::now();
         let mut magic = [0u8; NATIVE_PK_MAGIC.len()];
         reader.read_exact(&mut magic)?;
         if &magic != NATIVE_PK_MAGIC {
@@ -432,23 +473,31 @@ where
         let l_active_row = Polynomial::read(reader, format)?;
         let fixed_values = read_polynomial_vec(reader, format)?;
         let fixed_polys = read_polynomial_vec(reader, format)?;
-        let permutation = permutation::ProvingKey::read(
+        let (permutation, sigma_rebuild) = permutation::ProvingKey::read_with_native_backing_budget_and_timing(
             reader,
             format,
             &vk.domain,
             &vk.cs.permutation().get_columns(),
+            max_total_backing_bytes,
         )?;
+        let artifact_read_validate = load_started.elapsed().saturating_sub(sigma_rebuild);
         let ev = Evaluator::new(vk.cs());
-        Ok(Self {
-            vk,
-            l0,
-            l_last,
-            l_active_row,
-            fixed_values,
-            fixed_polys,
-            permutation,
-            ev,
-        })
+        Ok((
+            Self {
+                vk,
+                l0,
+                l_last,
+                l_active_row,
+                fixed_values,
+                fixed_polys,
+                permutation,
+                ev,
+            },
+            NativePkReadTiming {
+                artifact_read_validate,
+                sigma_rebuild,
+            },
+        ))
     }
 
     /// Writes a proving key to a vector of bytes using [`Self::write`].

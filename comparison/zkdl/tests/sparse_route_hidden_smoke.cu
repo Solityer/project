@@ -5,11 +5,36 @@
 int main() {
     using namespace zkdl_gat::relation;
     const auto scalar = [](std::uint32_t value) { return zkdl::fr_from_u32(value); };
+    const auto require = [](bool condition, const char *label,
+                            const std::string& detail) {
+        if (!condition)
+            throw std::runtime_error(std::string(label) + ": " + detail);
+    };
 
-    std::vector<zkdl::CpuG1Point> generators;
-    for (std::uint32_t i = 0U; i < 4U; ++i) generators.push_back(zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(i + 2U)));
-    const auto h = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(103U));
-    const auto u = zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), scalar(109U));
+    std::vector<zkdl::CpuG1Point> generator_points;
+    const auto seed = zkdl::cpu_g1_generator();
+    for (std::uint32_t index = 0U; index < 4U; ++index)
+        generator_points.push_back(zkdl::cpu_g1_mul(seed, scalar(index + 2U)));
+    const auto h = zkdl::cpu_g1_mul(seed, scalar(103U));
+    const auto u = zkdl::cpu_g1_mul(seed, scalar(109U));
+    zkdl::CpuIpaBasisContext prover_basis;
+    std::string error;
+    require(zkdl::CpuIpaBasisContext::authenticate(
+                std::move(generator_points), h, u, prover_basis, &error),
+            "prover basis authentication", error);
+    const auto& generators = prover_basis.generators();
+    zkdl::CpuG1MsmSession prover_session(prover_basis);
+
+    TensorWitness canonical{"layer1/fac/canonical", 3U, 2U,
+                            {scalar(3U), scalar(5U)}};
+    TensorWitness view{"layer1/fac/view", 3U, 8U,
+                       {scalar(3U), scalar(3U), scalar(3U), scalar(3U),
+                        scalar(5U), scalar(5U), scalar(5U), scalar(5U)}};
+    const std::map<std::string, const TensorWitness*> witnesses{
+        {canonical.id, &canonical}, {view.id, &view}};
+    const std::map<std::string, FrWire> blinders{
+        {canonical.id, scalar(29U)}, {view.id, scalar(31U)}};
+
     RelationStatement statement;
     statement.statement_digest = zkdl::sha256(std::vector<zkdl::byte>{'s'});
     statement.model_digest = zkdl::sha256(std::vector<zkdl::byte>{'m'});
@@ -17,104 +42,117 @@ int main() {
     statement.ledger_digest = zkdl::sha256(std::vector<zkdl::byte>{'l'});
     statement.srs_digest = zkdl::sha256(std::vector<zkdl::byte>{'p'});
     statement.registry_digest = zkdl::sha256(std::vector<zkdl::byte>{'r'});
-    TensorWitness source{"layer1/source", 3U, 2U, {scalar(3U), scalar(5U)}};
-    TensorWitness output{"layer1/output", 3U, 4U, {scalar(5U), scalar(5U), scalar(0U), scalar(0U)}};
-    const std::map<std::string, const TensorWitness *> witnesses{{source.id, &source}, {output.id, &output}};
-    const std::map<std::string, FrWire> blinders{{source.id, scalar(17U)}, {output.id, scalar(19U)}};
+
+    OperationDescriptor fac;
+    fac.id = "layer1/fac-smoke";
+    fac.kind = RelationKind::Add;
+    fac.degree = 2U;
+    fac.source_refs = {canonical.id, view.id};
+    fac.tensor_refs = fac.source_refs;
+    fac.mapping = "tiny-fac-nested-cross-segment-route";
+    fac.padding = "zero-mask";
+    fac.terminal_claim = "fac-terminal";
+    fac.terminal_point = "fac-point";
+    ConstraintDescriptor constraint;
+    constraint.id = fac.id + "/shape";
+    constraint.degree = 1U;
+    constraint.terms = {Monomial{scalar(1U), {0U}}};
+    constraint.logical_shape = {2U};
+    constraint.padded_shape = {2U};
+    fac.constraints.push_back(std::move(constraint));
+    FacBindingDescriptor binding;
+    binding.view_ref = view.id;
+    binding.canonical_ref = canonical.id;
+    binding.view_outer_domain = 2U;
+    binding.canonical_outer_domain = 2U;
+    binding.view_feature_domain = 4U;
+    binding.canonical_feature_domain = 1U;
+    binding.source_outer_index = {0U, 1U};
+    binding.source_feature_index = {0U, 0U, 0U, 0U};
+    binding.selector_active = {1U, 1U};
+    fac.fac_bindings.push_back(std::move(binding));
+    require(fac.valid(&error), "FAC descriptor", error);
+
     std::vector<CommitmentWire> commitments;
-    OperationDescriptor descriptor;
-    descriptor.id = "layer1/route";
-    descriptor.kind = RelationKind::SparseRoute;
-    descriptor.degree = 2U;
-    descriptor.source_refs = {source.id, output.id};
-    descriptor.tensor_refs = {source.id, output.id};
-    descriptor.mapping = "public-dst-and-feature-broadcast";
-    descriptor.padding = "inactive-edge-zero";
-    descriptor.terminal_claim = "hidden-canonical-evaluations";
-    descriptor.terminal_point = "feature-before-outer";
-    descriptor.public_route = true;
-    descriptor.route_by_destination = true;
-    descriptor.selector_edge_domain = 2U;
-    descriptor.selector_node_domain = 2U;
-    descriptor.selector_feature_domain = 2U;
-    descriptor.selector_source_feature_domain = 1U;
-    descriptor.selector_src = {1U, 0U};
-    descriptor.selector_dst = {1U, 0U};
-    descriptor.selector_active = {1U, 0U};
-    descriptor.selector_feature_map = {0U, 0U};
-    descriptor.selector_source_ref = source.id;
-    descriptor.selector_output_ref = output.id;
-    std::string error;
-    const auto require = [&](bool condition, const char *label) {
-        if (!condition) throw std::runtime_error(std::string(label) + ": " + error);
-    };
-    try {
-        for (const auto *tensor : {&source, &output}) {
-            SegmentedTensorProvider provider;
-            SegmentCommitmentMaterial material;
-            CommitmentWire commitment;
-            require(SegmentedTensorProvider::from_values(tensor->values, generators.size(), provider, &error),
-                    "segment commitment provider");
-            require(zktr_build_segment_commitment_material(
-                        tensor->id, tensor->visibility, provider, generators, h, u,
-                        blinders.at(tensor->id), statement, commitment, material, &error),
-                    "segment commitment material");
-            commitments.push_back(std::move(commitment));
-        }
-        statement.segment_commitments_digest =
-            relation_commitment_vector_digest(statement, commitments);
-        const std::vector<FrWire> kat_point{scalar(2U), scalar(3U)};
-        const std::vector<FrWire> kat_expected{scalar(2U), zkdl::fr_neg(scalar(3U)), zkdl::fr_neg(scalar(4U)), scalar(6U)};
-        const auto kat_weights = zkdl::cpu_ipa_mle_weights(kat_point);
-        require(kat_weights.size() == kat_expected.size(), "MLE weights KAT size");
-        for (std::size_t index = 0U; index < kat_expected.size(); ++index)
-            require(zkdl::fr_compare(kat_weights[index], kat_expected[index]) == 0, "MLE weights KAT value");
-        const std::vector<FrWire> kat_values{scalar(1U), scalar(2U), scalar(3U), scalar(4U)};
-        const auto folded = mle_value(kat_values, kat_point);
-        const std::vector<FrWire> dot_point{kat_point.rbegin(), kat_point.rend()};
-        const auto dotted = zkdl::cpu_ipa_inner_product(kat_values, zkdl::cpu_ipa_mle_weights(dot_point));
-        require(zkdl::fr_compare(folded, dotted) == 0, "fold/dot MLE identity");
-        require(descriptor.valid(&error), "descriptor");
-        require(formal_relation_components_supported({descriptor}, &error), "route admission");
-        zkdl::Transcript prover_transcript("sparse-route-hidden-smoke");
-        SparseRouteProof proof;
-        static_assert(std::is_same<decltype(proof.sumcheck), zkdl::ZkSumcheckProof>::value, "route must use hidden Sumcheck");
-        static_assert(std::is_same<decltype(proof.source_opening), zkdl::HyraxOpeningProofV3>::value, "route must use a hidden evaluation opening");
-        require(prove_sparse_route(descriptor, witnesses, blinders, generators, h, u, commitments, statement, prover_transcript, proof, &error), "prove");
-        const auto encoded = proof.serialize();
-        SparseRouteProof decoded;
-        require(SparseRouteProof::deserialize(encoded, decoded, &error), "decode");
-        require(decoded.serialize() == encoded, "canonical wire");
-        zkdl::Transcript verifier_transcript("sparse-route-hidden-smoke");
-        require(verify_sparse_route(descriptor, commitments, generators, h, u, statement, verifier_transcript, decoded, &error), "independent verify");
-        require(fr_compare_mixed(prover_transcript.challenge("after-route"), verifier_transcript.challenge("after-route")) == 0, "transcript replay");
-
-        auto changed_descriptor = descriptor;
-        changed_descriptor.selector_dst[0] = 0U;
-        zkdl::Transcript changed_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(changed_descriptor, commitments, generators, h, u, statement, changed_transcript, decoded, &error),
-                "reject changed public route");
-        auto changed_commitments = commitments;
-        changed_commitments[0].commitment = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(zkdl::cpu_g1_from_native(commitments[0].commitment), generators[0]));
-        zkdl::Transcript replaced_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(descriptor, changed_commitments, generators, h, u, statement, replaced_transcript, decoded, &error),
-                "reject replaced canonical source");
-        auto old_version = encoded;
-        old_version[4] = 2U;
-        require(!SparseRouteProof::deserialize(old_version, decoded, &error), "reject old revealing wire");
-        auto trailing = encoded;
-        trailing.push_back(0U);
-        require(!SparseRouteProof::deserialize(trailing, decoded, &error), "reject trailing wire");
-        decoded = proof;
-        decoded.output_opening.tau.x.val[0] ^= 1U;
-        zkdl::Transcript tau_tampered_transcript("sparse-route-hidden-smoke");
-        require(!verify_sparse_route(descriptor, commitments, generators, h, u, statement, tau_tampered_transcript, decoded, &error), "reject tau tamper");
-
-        std::cout << "sparse_route_hidden_smoke PASS: cross-domain route, destination/feature "
-                     "selectors, inactive padding, hidden wire, independent verifier, tamper\n";
-        return 0;
-    } catch (const std::exception &exception) {
-        std::cerr << exception.what() << '\n';
-        return 1;
+    std::map<std::string, std::vector<FrWire>> segment_blinders;
+    for (const TensorWitness* tensor : {&canonical, &view}) {
+        SegmentedTensorProvider provider;
+        SegmentCommitmentMaterial material;
+        CommitmentWire commitment;
+        require(SegmentedTensorProvider::from_values(
+                    tensor->values, generators.size(), provider, &error),
+                "segmented provider", error);
+        require(zktr_build_segment_commitment_material(
+                    tensor->id, tensor->visibility, provider, generators, h, u,
+                    blinders.at(tensor->id), statement, commitment, material,
+                    &error, nullptr, 0U, nullptr, &prover_basis,
+                    &prover_session),
+                "segmented commitment material", error);
+        if (tensor->id == view.id &&
+            (commitment.segment_size != 4U || commitment.segment_count != 2U))
+            throw std::runtime_error("view commitment did not cross the expected 4+4 segments");
+        segment_blinders.emplace(tensor->id, std::move(material.blinders));
+        commitments.push_back(std::move(commitment));
     }
+    statement.segment_commitments_digest =
+        relation_commitment_vector_digest(statement, commitments);
+
+    const auto raw_source_digest = zkdl::cpu_ipa_basis_digest(
+        std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + 2),
+        h, u, 4U);
+    const auto cached_source_digest =
+        zkdl::cpu_ipa_basis_digest(prover_basis, 2U, 4U);
+    const auto raw_view_digest = zkdl::cpu_ipa_basis_digest(generators, h, u, 8U);
+    const auto cached_view_digest =
+        zkdl::cpu_ipa_basis_digest(prover_basis, 4U, 8U);
+    require(raw_source_digest == cached_source_digest &&
+                raw_view_digest == cached_view_digest,
+            "legacy prefix basis digests", "prepared and raw basis digest differ");
+
+    static_assert(std::is_same<decltype(std::declval<SparseRouteProof>().source_opening),
+                               zkdl::HyraxOpeningProofV3>::value,
+                  "nested FAC selector must use hidden Hyrax openings");
+    FacLine8Proof proof;
+    zkdl::Transcript prover_transcript("fac-line8-cross-segment-smoke");
+    require(prove_fac_line8(
+                fac, witnesses, blinders, generators, h, u, commitments,
+                statement, prover_transcript, proof, &error, &segment_blinders,
+                &prover_basis, &prover_session),
+            "prove nested FAC sparse route", error);
+    const std::vector<zkdl::byte> encoded = proof.serialize();
+    FacLine8Proof decoded;
+    require(FacLine8Proof::deserialize(encoded, decoded, &error) &&
+                decoded.serialize() == encoded,
+            "canonical FAC wire", error);
+
+    zkdl::CpuIpaBasisContext verifier_basis;
+    require(zkdl::CpuIpaBasisContext::authenticate(
+                std::vector<zkdl::CpuG1Point>(generators), h, u,
+                verifier_basis, &error),
+            "fresh verifier basis authentication", error);
+    zkdl::CpuG1MsmSession verifier_session(verifier_basis);
+    zkdl::Transcript verifier_transcript("fac-line8-cross-segment-smoke");
+    require(verify_fac_line8(
+                fac, commitments, verifier_basis.generators(), h, u,
+                statement, verifier_transcript, decoded, &error,
+                &verifier_basis, &verifier_session),
+            "fresh independent FAC verification", error);
+    require(fr_compare_mixed(
+                prover_transcript.challenge("after-fac"),
+                verifier_transcript.challenge("after-fac")) == 0,
+            "transcript replay", "prover and fresh verifier transcripts differ");
+
+    decoded.selector_proofs[0U].output_opening.z1.val[0] ^= 1U;
+    zkdl::Transcript tampered_transcript("fac-line8-cross-segment-smoke");
+    require(!verify_fac_line8(
+                fac, commitments, verifier_basis.generators(), h, u,
+                statement, tampered_transcript, decoded, &error,
+                &verifier_basis, &verifier_session),
+            "FAC opening tamper rejection", "tampered opening was accepted");
+
+    std::cout << "sparse_route_hidden_smoke PASS nested_FAC=1 view_domain=8"
+              << " segment_size=4 segment_count=2 canonical_domain=2 basis=4"
+              << " raw_prefix_digest=PREPARED_EQUAL fresh_verify=PASS"
+              << " tamper=REJECTED full_datasets=0\n";
+    return 0;
 }

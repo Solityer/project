@@ -1,7 +1,6 @@
 use crate::circuit::base::BaseOp;
 use crate::circuit::chip::einsum::analysis::{analyze_single_equation, EinsumAnalysis};
 use crate::circuit::einsum::layouts::{pairwise, sum};
-use crate::circuit::einsum::reduction_planner::Reduction;
 use crate::circuit::layouts::einsum_with_base_ops;
 use crate::circuit::region::RegionCtx;
 use crate::circuit::{BaseConfig, CheckMode, CircuitError};
@@ -22,6 +21,8 @@ pub mod analysis;
 pub mod circuit_params;
 mod layouts;
 mod reduction_planner;
+
+pub use reduction_planner::{input_reductions as native_input_reductions, Reduction};
 
 /// The maximum number of challenges
 pub const NUM_MAX_EINSUM_CHALLENGES: usize = 10;

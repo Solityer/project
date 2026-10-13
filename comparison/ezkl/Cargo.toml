@@ -219,6 +219,7 @@ formal-gpu = [
     "dep:halo2_solidity_verifier",
     "ezkl",
     "gpu-accelerated",
+    "halo2_proofs/formal-permutation-spill",
     "no-banner",
     "parallel-poly-read",
     "reusable-verifier",

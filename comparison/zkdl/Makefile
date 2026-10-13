@@ -92,7 +92,7 @@ tests/static_table_bounds_check: tests/static_table_bounds_check.cpp gat_adapter
 tests/output_stream_failure_check: tests/output_stream_failure_check.cpp gat_adapter/output_stream.hpp
 	$(CXX) -O2 -std=c++17 -I. $< -o $@
 
-tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
+tests/segmented_lookup_fixture: tests/segmented_lookup_fixture.cu tests/sorted_lookup_prefix_cache_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	 timeout 600s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter tests/segmented_lookup_fixture.cu $(BLST_LIBRARY) -o $@
 
 tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_lookup_descriptor_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
@@ -109,6 +109,9 @@ tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-
 
 tests/pointwise_algebra_check: tests/pointwise_algebra_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
 	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
+
+tests/sparse_route_hidden_smoke: tests/sparse_route_hidden_smoke.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_sparse_route.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@

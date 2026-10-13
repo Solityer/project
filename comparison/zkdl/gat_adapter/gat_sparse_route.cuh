@@ -178,13 +178,16 @@ inline void sparse_route_absorb_terminal(zkdl::Transcript &transcript, const Spa
 
 inline bool sparse_route_aggregate_opening_inputs(const TensorWitness &tensor, const std::vector<FrWire> &point,
                                                   const std::vector<zkdl::CpuG1Point> &generators, const zkdl::CpuG1Point &ipa_blinding_generator,
+                                                  const zkdl::CpuG1Point &ipa_u_generator,
                                                   const std::vector<CommitmentWire> &commitments, std::uint32_t commitment_index,
                                                   const std::map<std::string, FrWire> &blinders,
                                                   const std::map<std::string, std::vector<FrWire>> *segment_blinding_scalars,
                                                   std::vector<FrWire> &aggregate_values, FrWire &aggregate_blinder, FrWire &aggregate_value,
                                                   zkdl::CpuG1Point &aggregate_xi, std::string *error,
                                                   const std::vector<FrWire> *validated_values = nullptr,
-                                                  const RouteWorkProgressCallback* progress = nullptr) {
+                                                  const RouteWorkProgressCallback* progress = nullptr,
+                                                  const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+                                                  zkdl::CpuG1MsmSession* msm_session = nullptr) {
     if (commitment_index >= commitments.size() || commitments[commitment_index].tensor_id != tensor.id) {
         if (error) *error = "sparse route aggregate commitment index is not canonical";
         return false;
@@ -250,8 +253,16 @@ inline bool sparse_route_aggregate_opening_inputs(const TensorWitness &tensor, c
             (*progress)("opening_aggregate_segments", segment + 1U,
                         layout.segment_count);
     }
-    const zkdl::CpuG1Point recomputed_xi = zkdl::cpu_g1_add(zkdl::cpu_g1_sum(segment_generators, aggregate_values),
-                                                            zkdl::cpu_g1_mul(ipa_blinding_generator, aggregate_blinder));
+    const zkdl::CpuG1Point aggregate_generator_sum =
+        authenticated_basis != nullptr && msm_session != nullptr
+            ? msm_session->sum(*authenticated_basis, generators,
+                               ipa_blinding_generator,
+                               ipa_u_generator, aggregate_values.data(),
+                               layout.segment_size)
+            : zkdl::cpu_g1_sum(segment_generators, aggregate_values);
+    const zkdl::CpuG1Point recomputed_xi = zkdl::cpu_g1_add(
+        aggregate_generator_sum,
+        zkdl::cpu_g1_mul(ipa_blinding_generator, aggregate_blinder));
     if (!zkdl::cpu_g1_equal(recomputed_xi, aggregate_xi)) {
         if (error) *error = "sparse route aggregate material does not match witness values";
         return false;
@@ -265,7 +276,9 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
                                const zkdl::CpuG1Point &ipa_blinding_generator, const zkdl::CpuG1Point &ipa_u_generator,
                                const std::vector<CommitmentWire> &commitments, const RelationStatement &statement, zkdl::Transcript &transcript,
                                SparseRouteProof &route, std::string *error, SparseRouteProverSecrets *secrets,
-                               const std::map<std::string, std::vector<FrWire>> *segment_blinding_scalars) {
+                               const std::map<std::string, std::vector<FrWire>> *segment_blinding_scalars,
+                               const zkdl::CpuIpaBasisContext* authenticated_basis,
+                               zkdl::CpuG1MsmSession* msm_session) {
     try {
         RouteSumcheckProgressReporter route_work_reporter{descriptor.id, 0U};
         const RouteWorkProgressCallback route_work_progress =
@@ -302,9 +315,10 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         std::vector<FrWire> output_values;
         FrWire output_aggregate_blinder{}, output_value{};
         zkdl::CpuG1Point output_xi;
-        if (!sparse_route_aggregate_opening_inputs(*output, output_point, generators, ipa_blinding_generator, commitments, route.output_commitment_index,
+        if (!sparse_route_aggregate_opening_inputs(*output, output_point, generators, ipa_blinding_generator, ipa_u_generator, commitments, route.output_commitment_index,
                                                    blinders, segment_blinding_scalars, output_values, output_aggregate_blinder, output_value, output_xi, error,
-                                                   nullptr, &route_work_progress))
+                                                   nullptr, &route_work_progress,
+                                                   authenticated_basis, msm_session))
             return false;
         const std::uint32_t domain = std::max(2U, source->domain_size);
         const bool duplicate_singleton = source_values.size() == 1U;
@@ -338,10 +352,11 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         std::vector<FrWire> source_values_aggregate;
         FrWire source_aggregate_blinder{}, source_value_aggregate{};
         zkdl::CpuG1Point source_xi;
-        if (!sparse_route_aggregate_opening_inputs(*source, source_point, generators, ipa_blinding_generator, commitments, route.source_commitment_index,
+        if (!sparse_route_aggregate_opening_inputs(*source, source_point, generators, ipa_blinding_generator, ipa_u_generator, commitments, route.source_commitment_index,
                                                    blinders, segment_blinding_scalars, source_values_aggregate, source_aggregate_blinder,
                                                    source_value_aggregate, source_xi, error, &source_values,
-                                                   &route_work_progress))
+                                                   &route_work_progress,
+                                                   authenticated_basis, msm_session))
             return false;
         const auto terminal_digest = sparse_route_terminal_digest(header_digest, route);
         const auto source_metadata = zktr_make_opening_metadata(terminal_digest, statement, source_point, route.source_commitment_index,
@@ -375,14 +390,28 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
         }
         const auto source_tau = zkdl::cpu_pedersen_scalar_commit(source_value_aggregate, source_blinder, ipa_blinding_generator, ipa_u_generator);
         const auto output_tau = zkdl::cpu_pedersen_scalar_commit(output_value, output_blinder, ipa_blinding_generator, ipa_u_generator);
-        route.source_opening = zkdl::cpu_open_hyrax_v3(source_generators, source_values_aggregate, zktr_segment_point(source_point, source_layout.segment_size),
-                                                       ipa_blinding_generator, ipa_u_generator, source_aggregate_blinder, source_blinder, source_tau,
-                                                       source_segment_metadata)
-                                   .proof;
-        route.output_opening = zkdl::cpu_open_hyrax_v3(output_generators, output_values, zktr_segment_point(output_point, output_layout.segment_size),
-                                                       ipa_blinding_generator, ipa_u_generator, output_aggregate_blinder, output_blinder, output_tau,
-                                                       output_segment_metadata)
-                                   .proof;
+        route.source_opening = authenticated_basis != nullptr
+            ? zkdl::cpu_open_hyrax_v3_authenticated(
+                  *authenticated_basis, source_values_aggregate,
+                  zktr_segment_point(source_point, source_layout.segment_size),
+                  source_aggregate_blinder, source_blinder, source_tau,
+                  source_segment_metadata, source_xi, msm_session).proof
+            : zkdl::cpu_open_hyrax_v3(
+                  source_generators, source_values_aggregate,
+                  zktr_segment_point(source_point, source_layout.segment_size),
+                  ipa_blinding_generator, ipa_u_generator, source_aggregate_blinder,
+                  source_blinder, source_tau, source_segment_metadata).proof;
+        route.output_opening = authenticated_basis != nullptr
+            ? zkdl::cpu_open_hyrax_v3_authenticated(
+                  *authenticated_basis, output_values,
+                  zktr_segment_point(output_point, output_layout.segment_size),
+                  output_aggregate_blinder, output_blinder, output_tau,
+                  output_segment_metadata, output_xi, msm_session).proof
+            : zkdl::cpu_open_hyrax_v3(
+                  output_generators, output_values,
+                  zktr_segment_point(output_point, output_layout.segment_size),
+                  ipa_blinding_generator, ipa_u_generator, output_aggregate_blinder,
+                  output_blinder, output_tau, output_segment_metadata).proof;
         if (!zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(route.source_opening.xi), source_xi) ||
             !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(route.output_opening.xi), output_xi)) {
             if (error) *error = "sparse route witness is not the weighted canonical segment commitment";
@@ -415,7 +444,9 @@ inline bool prove_sparse_route(const OperationDescriptor &descriptor, const std:
 inline bool verify_sparse_route(const OperationDescriptor &descriptor, const std::vector<CommitmentWire> &commitments,
                                 const std::vector<zkdl::CpuG1Point> &generators, const zkdl::CpuG1Point &ipa_blinding_generator,
                                 const zkdl::CpuG1Point &ipa_u_generator, const RelationStatement &statement, zkdl::Transcript &transcript,
-                                const SparseRouteProof &route, std::string *error) {
+                                const SparseRouteProof &route, std::string *error,
+                                const zkdl::CpuIpaBasisContext* authenticated_basis,
+                                zkdl::CpuG1MsmSession* msm_session) {
     try {
         std::uint32_t source_index = 0U, output_index = 0U;
         if (!sparse_route_public_inputs_valid(descriptor, commitments, generators, statement, source_index, output_index, error) ||
@@ -511,14 +542,30 @@ inline bool verify_sparse_route(const OperationDescriptor &descriptor, const std
         output_metadata.logical_offset = 0U;
         output_metadata.actual_length = output_layout.segment_size;
         output_metadata.padded_length = output_layout.segment_size;
-        if (!zkdl::cpu_verify_hyrax_v3(route.source_opening, source_xi, source_tau,
-                                       std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + source_layout.segment_size),
-                                       zktr_segment_point(source_point, source_layout.segment_size), ipa_blinding_generator, ipa_u_generator, source_metadata,
-                                       error) ||
-            !zkdl::cpu_verify_hyrax_v3(route.output_opening, output_xi, output_tau,
-                                       std::vector<zkdl::CpuG1Point>(generators.begin(), generators.begin() + output_layout.segment_size),
-                                       zktr_segment_point(output_point, output_layout.segment_size), ipa_blinding_generator, ipa_u_generator, output_metadata,
-                                       error))
+        const auto verify_route_opening = [&](const zkdl::HyraxOpeningProofV3& opening,
+                                              const zkdl::CpuG1Point& xi,
+                                              const zkdl::CpuG1Point& tau,
+                                              const std::vector<FrWire>& point,
+                                              const zkdl::CpuIpaOpeningMetadata& metadata,
+                                              std::uint32_t generator_count) {
+            if (authenticated_basis != nullptr)
+                return zkdl::cpu_verify_hyrax_v3_authenticated(
+                    opening, xi, tau, *authenticated_basis, point, metadata,
+                    error, msm_session);
+            const std::vector<zkdl::CpuG1Point> prefix(
+                generators.begin(), generators.begin() + generator_count);
+            return zkdl::cpu_verify_hyrax_v3(
+                opening, xi, tau, prefix, point, ipa_blinding_generator,
+                ipa_u_generator, metadata, error);
+        };
+        if (!verify_route_opening(
+                route.source_opening, source_xi, source_tau,
+                zktr_segment_point(source_point, source_layout.segment_size),
+                source_metadata, source_layout.segment_size) ||
+            !verify_route_opening(
+                route.output_opening, output_xi, output_tau,
+                zktr_segment_point(output_point, output_layout.segment_size),
+                output_metadata, output_layout.segment_size))
             return false;
         auto selector = sparse_route_public_selector(descriptor, edge_point, feature_point);
         FrWire q0 = zkdl::fr_from_u32(1U);

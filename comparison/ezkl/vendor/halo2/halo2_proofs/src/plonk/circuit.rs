@@ -247,7 +247,175 @@ impl SelectorActivationSet {
         }
     }
 
+    /// Read the existing packed VK activation bytes into bounded hybrid
+    /// storage. Regular rows remain run encoded; only a selector whose run set
+    /// reaches the dense bitmap size is promoted to the native packed backing.
+    pub(crate) fn read_activation<R: std::io::Read>(
+        reader: &mut R,
+        len: usize,
+    ) -> std::io::Result<Self> {
+        const CHUNK_BYTES: usize = 8192;
+        let byte_len = len.checked_add(7).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector activation length overflow")
+        })? / 8;
+        let mut rows = Vec::<std::ops::Range<usize>>::new();
+        let mut bitmap: Option<SelectorBitmap> = None;
+        let mut chunk = [0u8; CHUNK_BYTES];
+        let mut byte_offset = 0usize;
+        while byte_offset < byte_len {
+            let take = (byte_len - byte_offset).min(CHUNK_BYTES);
+            reader.read_exact(&mut chunk[..take])?;
+            if byte_offset + take == byte_len && len % 8 != 0 {
+                let mask = (1u8 << (len % 8)) - 1;
+                chunk[take - 1] &= mask;
+            }
+            if let Some(bitmap) = bitmap.as_mut() {
+                bitmap.bytes[byte_offset..byte_offset + take].copy_from_slice(&chunk[..take]);
+                byte_offset += take;
+                continue;
+            }
+
+            for (local_byte, byte) in chunk[..take].iter().copied().enumerate() {
+                let absolute_byte = byte_offset + local_byte;
+                let mut remaining = byte;
+                while remaining != 0 {
+                    let first = remaining.trailing_zeros() as usize;
+                    let shifted = remaining >> first;
+                    let run_len = shifted.trailing_ones() as usize;
+                    let start = absolute_byte * 8 + first;
+                    let end = (start + run_len).min(len);
+                    if start < end {
+                        let joins_previous = rows.last().map(|previous| previous.end == start).unwrap_or(false);
+                        if joins_previous {
+                            rows.last_mut().expect("checked previous run").end = end;
+                        } else {
+                            let next_count = rows.len().checked_add(1).ok_or_else(|| {
+                                std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run count overflow")
+                            })?;
+                            let next_bytes = next_count
+                                .checked_mul(std::mem::size_of::<std::ops::Range<usize>>())
+                                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run storage overflow"))?;
+                            if next_bytes >= dense_storage_bytes_for(len)? {
+                                let mut packed = SelectorBitmap::zeroed(len, 1)?;
+                                for run in &rows {
+                                    packed.set_range(run.start, run.end, 1)?;
+                                }
+                                packed.bytes[byte_offset..byte_offset + take].copy_from_slice(&chunk[..take]);
+                                bitmap = Some(packed);
+                                break;
+                            }
+                            rows.try_reserve_exact(1).map_err(|error| {
+                                std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+                            })?;
+                            rows.push(start..end);
+                        }
+                    }
+                    let run_mask = ((1u16 << run_len) - 1) as u8;
+                    remaining &= !(run_mask << first);
+                }
+                if bitmap.is_some() {
+                    break;
+                }
+            }
+            byte_offset += take;
+        }
+        if let Some(bitmap) = bitmap {
+            Ok(Self::Bitmap(bitmap))
+        } else {
+            Ok(Self::Runs { len, rows })
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Runs { len, .. } => *len,
+            Self::Bitmap(bitmap) => bitmap.len(),
+        }
+    }
+
+    pub(crate) fn is_activated(&self, row: usize) -> bool {
+        match self {
+            Self::Runs { len, rows } => {
+                assert!(row < *len);
+                let index = rows.partition_point(|run| run.end <= row);
+                index < rows.len() && rows[index].start <= row
+            }
+            Self::Bitmap(bitmap) => bitmap.value(row) != 0,
+        }
+    }
+
+    pub(crate) fn for_each_set_bit(&self, mut visit: impl FnMut(usize)) {
+        match self {
+            Self::Runs { rows, .. } => {
+                for run in rows {
+                    for row in run.clone() {
+                        visit(row);
+                    }
+                }
+            }
+            Self::Bitmap(bitmap) => bitmap.for_each_set_bit(visit),
+        }
+    }
+
+    /// Serialize exactly the packed selector bytes used by the native VK
+    /// format. Run-backed selectors are encoded in bounded chunks so retaining
+    /// their compact representation does not require a temporary dense copy.
+    pub(crate) fn write_activation<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        match self {
+            Self::Bitmap(bitmap) => writer.write_all(bitmap.as_bytes()),
+            Self::Runs { len, rows } => {
+                const CHUNK_BYTES: usize = 8192;
+                let mut buffer = [0u8; CHUNK_BYTES];
+                let mut chunk_start = 0usize;
+                let mut first_run = 0usize;
+                while chunk_start < *len {
+                    let chunk_bits = (*len - chunk_start).min(CHUNK_BYTES * 8);
+                    let chunk_end = chunk_start + chunk_bits;
+                    let byte_count = (chunk_bits + 7) / 8;
+                    buffer[..byte_count].fill(0);
+                    while first_run < rows.len() && rows[first_run].end <= chunk_start {
+                        first_run += 1;
+                    }
+                    let mut run_index = first_run;
+                    while run_index < rows.len() && rows[run_index].start < chunk_end {
+                        let run_start = rows[run_index].start.max(chunk_start) - chunk_start;
+                        let run_end = rows[run_index].end.min(chunk_end) - chunk_start;
+                        set_packed_range(&mut buffer[..byte_count], run_start, run_end);
+                        run_index += 1;
+                    }
+                    writer.write_all(&buffer[..byte_count])?;
+                    chunk_start = chunk_end;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn encoded_byte_len(&self) -> usize {
+        self.len().saturating_add(7) / 8
+    }
+
     pub(crate) fn insert(&mut self, row: usize) -> std::io::Result<SelectorActivationInsert> {
+        let current_total_bytes = self.storage_bytes();
+        self.insert_bounded(row, current_total_bytes, usize::MAX)
+    }
+
+    /// Insert one activation while enforcing an aggregate backing-memory
+    /// ceiling. `current_total_bytes` includes every selector set and its
+    /// outer vector; checks account for the old/new buffers coexisting during
+    /// run-vector growth or promotion to the dense bitmap.
+    pub(crate) fn insert_bounded(
+        &mut self,
+        row: usize,
+        current_total_bytes: usize,
+        maximum_total_bytes: usize,
+    ) -> std::io::Result<SelectorActivationInsert> {
+        if current_total_bytes > maximum_total_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::OutOfMemory,
+                "selector activation backing exceeds configured native budget",
+            ));
+        }
         match self {
             Self::Bitmap(bitmap) => {
                 if row >= bitmap.len() {
@@ -279,6 +447,10 @@ impl SelectorActivationSet {
                     let next_run_count = rows.len().checked_add(1).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run count overflow"))?;
                     let next_run_bytes = next_run_count.checked_mul(std::mem::size_of::<std::ops::Range<usize>>()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector activation storage overflow"))?;
                     if next_run_bytes >= dense_storage_bytes_for(*len)? {
+                        let projected_peak = current_total_bytes.checked_add(dense_storage_bytes_for(*len)?).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector promotion budget overflow"))?;
+                        if projected_peak > maximum_total_bytes {
+                            return Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector bitmap promotion exceeds configured native budget"));
+                        }
                         let mut bitmap = SelectorBitmap::zeroed(*len, 1)?;
                         for run in rows.iter() {
                             bitmap.set_range(run.start, run.end, 1)?;
@@ -291,6 +463,13 @@ impl SelectorActivationSet {
                     }
                     let old_capacity_bytes = rows.capacity()
                         * std::mem::size_of::<std::ops::Range<usize>>();
+                    if rows.len() == rows.capacity() {
+                        let requested_new_bytes = next_run_bytes;
+                        let projected_peak = current_total_bytes.checked_add(requested_new_bytes).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run growth budget overflow"))?;
+                        if projected_peak > maximum_total_bytes {
+                            return Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run growth exceeds configured native budget"));
+                        }
+                    }
                     rows.try_reserve_exact(1).map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
                     let new_capacity_bytes = rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>();
                     if rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>()
@@ -299,6 +478,13 @@ impl SelectorActivationSet {
                         growth_peak_bytes = old_capacity_bytes
                             .checked_add(new_capacity_bytes)
                             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector activation storage overflow"))?;
+                        let aggregate_peak = current_total_bytes
+                            .checked_sub(old_capacity_bytes)
+                            .and_then(|base| base.checked_add(growth_peak_bytes))
+                            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run growth total overflow"))?;
+                        if aggregate_peak > maximum_total_bytes {
+                            return Err(std::io::Error::new(std::io::ErrorKind::OutOfMemory, "selector run allocator capacity exceeds configured native budget"));
+                        }
                     }
                 }
                 match (joins_previous, joins_next) {
@@ -337,6 +523,26 @@ impl SelectorActivationSet {
             (Self::Bitmap(bitmap), Self::Runs { rows, .. }) | (Self::Runs { rows, .. }, Self::Bitmap(bitmap)) => rows.iter().any(|run| bitmap.any_set_in_range(run.start, run.end)),
         }
     }
+}
+
+fn set_packed_range(bytes: &mut [u8], start: usize, end: usize) {
+    debug_assert!(start < end);
+    let first_byte = start / 8;
+    let last_byte = (end - 1) / 8;
+    if first_byte == last_byte {
+        let lower = start % 8;
+        let upper = (end - 1) % 8 + 1;
+        bytes[first_byte] |= (((1u16 << upper) - 1) as u8) & !(((1u16 << lower) - 1) as u8);
+        return;
+    }
+    bytes[first_byte] |= u8::MAX << (start % 8);
+    bytes[first_byte + 1..last_byte].fill(u8::MAX);
+    let last_bits = end % 8;
+    bytes[last_byte] |= if last_bits == 0 {
+        u8::MAX
+    } else {
+        ((1u16 << last_bits) - 1) as u8
+    };
 }
 
 fn dense_storage_bytes_for(len: usize) -> std::io::Result<usize> {
@@ -2577,6 +2783,57 @@ impl<F: Field> ConstraintSystem<F> {
         (self, combination_count, assignments)
     }
 
+    /// Compress selectors from the hybrid row sets retained by native
+    /// key-generation. The grouping plan is computed once here and the same
+    /// assignment map is used for fixed selector polynomial construction.
+    pub(crate) fn compress_selector_activation_sets(
+        mut self,
+        selectors: &[SelectorActivationSet],
+    ) -> (
+        Self,
+        usize,
+        Vec<compress_selectors::PackedSelectorAssignment<F>>,
+    ) {
+        assert_eq!(selectors.len(), self.num_selectors);
+
+        let mut degrees = vec![0; selectors.len()];
+        for expression in self.gates.iter().flat_map(|gate| gate.polys.iter()) {
+            if let Some(selector) = expression.extract_simple_selector() {
+                degrees[selector.0] = max(degrees[selector.0], expression.degree());
+            }
+        }
+
+        let max_degree = self.degree();
+        let mut new_columns = Vec::new();
+        let (combination_count, assignments) =
+            compress_selectors::process_activation_sets(selectors, &degrees, max_degree, || {
+                let column = self.fixed_column();
+                new_columns.push(column);
+                Expression::Fixed(FixedQuery {
+                    index: Some(self.query_fixed_index(column, Rotation::cur())),
+                    column_index: column.index,
+                    rotation: Rotation::cur(),
+                })
+            });
+
+        let mut selector_map = vec![None; assignments.len()];
+        let mut selector_replacements = vec![None; assignments.len()];
+        for assignment in &assignments {
+            selector_replacements[assignment.selector] = Some(assignment.expression.clone());
+            selector_map[assignment.selector] = Some(new_columns[assignment.combination_index]);
+        }
+        self.selector_map = selector_map
+            .into_iter()
+            .map(|column| column.expect("every selector receives a fixed-column mapping"))
+            .collect();
+        let selector_replacements = selector_replacements
+            .into_iter()
+            .map(|expression| expression.expect("every selector receives a fixed expression"))
+            .collect::<Vec<_>>();
+        self.replace_selectors_with_fixed(&selector_replacements);
+        (self, combination_count, assignments)
+    }
+
     /// Count compressed selector columns from the exact row sets captured by
     /// selector-only synthesis without allocating compression expressions or
     /// fixed-column assignments.
@@ -2599,6 +2856,42 @@ impl<F: Field> ConstraintSystem<F> {
     pub(crate) fn directly_convert_selector_bitmaps(
         mut self,
         selectors: &[SelectorBitmap],
+    ) -> (
+        Self,
+        usize,
+        Vec<compress_selectors::PackedSelectorAssignment<F>>,
+    ) {
+        assert_eq!(selectors.len(), self.num_selectors);
+        let mut new_columns = Vec::with_capacity(selectors.len());
+        let mut assignments = Vec::with_capacity(selectors.len());
+        for selector in 0..selectors.len() {
+            let column = self.fixed_column();
+            new_columns.push(column);
+            let rotation = Rotation::cur();
+            let expression = Expression::Fixed(FixedQuery {
+                index: Some(self.query_fixed_index(column, rotation)),
+                column_index: column.index,
+                rotation,
+            });
+            assignments.push(compress_selectors::PackedSelectorAssignment {
+                selector,
+                combination_index: selector,
+                root_value: 1,
+                expression,
+            });
+        }
+        let selector_replacements = assignments
+            .iter()
+            .map(|assignment| assignment.expression.clone())
+            .collect::<Vec<_>>();
+        self.replace_selectors_with_fixed(&selector_replacements);
+        self.num_selectors = 0;
+        (self, new_columns.len(), assignments)
+    }
+
+    pub(crate) fn directly_convert_selector_activation_sets(
+        mut self,
+        selectors: &[SelectorActivationSet],
     ) -> (
         Self,
         usize,

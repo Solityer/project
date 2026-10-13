@@ -361,6 +361,26 @@ fn aggregate(
 /// Evaluate and validate the complete canonical integer GAT relation.
 pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, String> {
     model.validate()?;
+    evaluate_validated(model, mode)
+}
+
+/// Evaluate the complete integer relation for a compile-stage test fixture.
+///
+/// Native `CircuitRef` is only available after setup, while adapter geometry
+/// and circuit-equivalence tests run before key generation. Keep production
+/// callers on [`evaluate`], which requires the fully bound native identity;
+/// this test-only entry still validates every canonical relation/resource
+/// field available before setup and executes the same numeric evaluator.
+#[cfg(test)]
+pub(crate) fn evaluate_for_compile_for_tests(
+    model: &CanonicalGat,
+    mode: RoundingMode,
+) -> Result<GatTrace, String> {
+    model.validate_for_compile()?;
+    evaluate_validated(model, mode)
+}
+
+fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, String> {
     let modulus = modulus_from_spec(model)?;
     let output_recovery_scale = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
     let output_head_scale = scale_multiplier_i128(model.scales.s_out_head, "s_out_head")?;

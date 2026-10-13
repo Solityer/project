@@ -73,7 +73,7 @@ fn build_model_with_hashed_runtime(spec: CanonicalGat, rounding: RoundingMode,) 
     }
     let mut gat_inputs = inputs.iter().map(|idx| (*idx, 0)).collect::<Vec<_>>();
     let parameter_input = next;
-    let parameter_len = spec.model.flattened_params().len();
+    let parameter_len = spec.model.flattened_params_len()?;
     if parameter_len == 0 {
         return Err("canonical GAT model has an empty private parameter closure".into());
     }

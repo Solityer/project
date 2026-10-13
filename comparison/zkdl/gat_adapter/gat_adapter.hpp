@@ -175,6 +175,20 @@ struct StaticTables {
     std::vector<std::int64_t> lrelu;
     std::vector<std::int64_t> elu;
     std::vector<std::int64_t> exp;
+    std::uint64_t lrelu_rows = 0U;
+    std::uint64_t elu_rows = 0U;
+    std::uint64_t exp_rows = 0U;
+    std::int64_t lrelu_value_min = 0;
+    std::int64_t lrelu_value_max = 0;
+    std::int64_t elu_value_min = 0;
+    std::int64_t elu_value_max = 0;
+    std::int64_t exp_value_min = 0;
+    std::int64_t exp_value_max = 0;
+    bool metadata_only = false;
+
+    std::uint64_t lrelu_row_count() const noexcept { return lrelu_rows != 0U ? lrelu_rows : lrelu.size(); }
+    std::uint64_t elu_row_count() const noexcept { return elu_rows != 0U ? elu_rows : elu.size(); }
+    std::uint64_t exp_row_count() const noexcept { return exp_rows != 0U ? exp_rows : exp.size(); }
 
     std::uint64_t lrelu_padded_domain = 0;
     std::uint64_t elu_padded_domain = 0;
@@ -238,6 +252,7 @@ struct IntegerBoundLedger {
     std::int64_t max_divisor = 0;
     std::vector<IntegerBoundFamily> families;
     bool authenticated = false;
+    bool analysis_only_planned = false;
 };
 
 struct SignedRoundDivWitness {
@@ -538,7 +553,8 @@ struct RunRecord {
     std::string error;
 };
 
-Config load_config(const std::filesystem::path &path, bool admission_only = false);
+Config load_config(const std::filesystem::path &path, bool admission_only = false,
+                   bool allow_analysis_only_planned = false);
 struct AssetManifestEntry {
     std::string path;
     std::uint64_t bytes = 0;

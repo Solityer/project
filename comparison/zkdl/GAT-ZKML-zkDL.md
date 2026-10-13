@@ -2060,3 +2060,11 @@ $$
 与原论文 threat model 一致。soundness 仍要求错误 GAT statement 不能被作弊 prover 通过 Sumcheck/commitment/evaluation proof 接受；privacy claim 则只在登记的 verifier model 与实际 masking/zero-knowledge Sumcheck 前提下成立。
 
 本文不声明 arbitrary malicious-verifier zero knowledge；若要得到该结论，必须另给独立安全证明。
+
+### 5.7 当前 CPU 执行实现边界
+
+当前 baseline 的初始 CPU G1 commitment MSM 使用固定大小分块的 BLST Pippenger；预计算 affine basis 在同一证明或验证上下文内只读共享，有序归并保持相同的群元素结果。分块回执绑定 segment、family 与 sorted-lookup 列，验证端仍检查每一项和顺序。Hyrax prover 保留协议原有的展开 projective G 向量和逐轮 fold 方程；每轮在同一有界持久工作池上并行计算各 G 点对的两次 BLST 标量乘法与一次加法，并将 `a/b` fold 结果写回固定索引。内积输入先完整检查规范标量，再按固定连续块在 BLST Montgomery 域中累加，并按块序归并；零乘数只在完整输入检查后跳过乘法。独立验证端仍由 proof transcript 重建折叠系数和最终 G 项。上述实现没有采用展开 indexed-basis fold 作为正式 prover 路径，也不改变挑战、随机数、transcript、wire 编码、证明范围或验证条件。CPU 工作池并行度有界，调用者工作区计入资源上界。sorted-prefix 索引按规范化后的全局前缀边界处理最后一个分块，不改变 lookup 语义。
+
+Canonical operation descriptors 可在单次 relation-plan 构造期间共享内容完全相同的 selector index/mask backing；每个 operation 的逻辑引用、维度、约束和规范化序列化仍保持原值。mask 与 index-map 的共享采用写时复制，因此 mutation 不会穿过别名修改其他 operation。Proof 中仍序列化完整展开的 descriptor arrays；独立验证的接收侧 descriptor 仍按未共享树计入内存上界。上述实现优化不改变 zkDL proof protocol、Fiat--Shamir/transcript 顺序或接受条件。
+
+新增 `gat_runner resource-plan` 只用于静态容量分析：它从已认证配置形状、checkpoint tensor-index、规范化图边和静态表描述符计算带 `ANALYSIS_ONLY` 标记的上界，再复用正式执行的 host/disk 计算公式。它不准备数据、不运行正式 admission、不生成或验证 proof，也不产生实验结果；只有正式入口成功完成实际独立验证和结果收集后，才能声称实验完成。

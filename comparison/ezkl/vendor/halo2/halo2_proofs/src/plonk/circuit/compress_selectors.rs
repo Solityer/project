@@ -392,6 +392,62 @@ where
     (combination_count, selector_assignments)
 }
 
+/// Compress the same selectors directly from their hybrid row-set backing.
+/// This uses the exact greedy grouping rule and root ordering as
+/// `process_bitmaps`, without expanding run-backed selectors into dense arrays.
+pub(crate) fn process_activation_sets<F: Field, E>(
+    selectors: &[super::SelectorActivationSet],
+    degrees: &[usize],
+    max_degree: usize,
+    mut allocate_fixed_column: E,
+) -> (usize, Vec<PackedSelectorAssignment<F>>)
+where
+    E: FnMut() -> Expression<F>,
+{
+    assert_eq!(selectors.len(), degrees.len());
+    if selectors.is_empty() {
+        return (0, Vec::new());
+    }
+    let n = selectors[0].len();
+    assert!(selectors.iter().all(|selector| selector.len() == n));
+
+    let combinations = selector_combinations(degrees, max_degree, |left, right| {
+        selectors[left].has_intersection(&selectors[right])
+    });
+    let combination_count = combinations.len();
+    let mut selector_assignments = Vec::with_capacity(selectors.len());
+    for (combination_index, combination) in combinations.into_iter().enumerate() {
+        let query = allocate_fixed_column();
+        let combination_len = combination.len();
+        let mut assigned_root = F::ONE;
+        let mut root_value = 1u64;
+        for selector in combination {
+            assert!(root_value <= max_degree as u64);
+            let mut expression = query.clone();
+            let mut root = F::ONE;
+            for _ in 0..combination_len {
+                if root != assigned_root {
+                    expression = expression * (Expression::Constant(root) - query.clone());
+                }
+                root += F::ONE;
+            }
+            selector_assignments.push(PackedSelectorAssignment {
+                selector,
+                combination_index,
+                root_value,
+                expression,
+            });
+            assigned_root += F::ONE;
+            root_value = root_value
+                .checked_add(1)
+                .expect("selector root value overflow");
+        }
+    }
+
+    assert_eq!(selector_assignments.len(), selectors.len());
+    (combination_count, selector_assignments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -517,14 +573,15 @@ mod tests {
     }
 
     #[test]
-    fn packed_selector_compression_preserves_group_values_and_order() {
-        let raw = vec![
-            vec![true, false, true, false, false, false, false, false],
-            vec![false, true, false, true, false, false, false, false],
-            vec![false, false, true, false, true, false, false, false],
-            vec![false, false, false, false, false, false, false, true],
-            vec![false, false, false, false, false, true, false, false],
-        ];
+    fn native_packed_selector_compression_preserves_group_values_and_order() {
+        let mut raw = vec![vec![false; 256]; 5];
+        raw[0][10..40].fill(true);
+        raw[1][80..110].fill(true);
+        for row in [1, 5, 9, 13, 17] {
+            raw[2][row] = true;
+        }
+        raw[3][250] = true;
+        raw[4][150] = true;
         let degrees = vec![1, 1, 1, 0, 1];
         let descriptions: Vec<_> = raw
             .iter()
@@ -566,6 +623,34 @@ mod tests {
                 bitmap
             })
             .collect::<Vec<_>>();
+        let hybrid = raw
+            .iter()
+            .map(|activations| {
+                let mut rows = super::super::SelectorActivationSet::zeroed(activations.len());
+                for (row, active) in activations.iter().copied().enumerate() {
+                    if active {
+                        rows.insert(row).unwrap();
+                    }
+                }
+                rows
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(&hybrid[3], super::super::SelectorActivationSet::Runs { .. }));
+        assert!(matches!(&hybrid[0], super::super::SelectorActivationSet::Bitmap(_)));
+        for (expected, set) in packed.iter().zip(&hybrid) {
+            let mut encoded = Vec::new();
+            set.write_activation(&mut encoded).unwrap();
+            assert_eq!(encoded, expected.as_bytes());
+            let mut bytes = encoded.as_slice();
+            let decoded = super::super::SelectorActivationSet::read_activation(
+                &mut bytes,
+                expected.len(),
+            )
+            .unwrap();
+            let mut reencoded = Vec::new();
+            decoded.write_activation(&mut reencoded).unwrap();
+            assert_eq!(reencoded, expected.as_bytes());
+        }
         let mut new_query = 0;
         let (new_column_count, assignments) =
             process_bitmaps::<Fp, _>(&packed, &degrees, 6, || {
@@ -609,5 +694,60 @@ mod tests {
                 assert_eq!(roots[packed_column.value(row) as usize], expected[row]);
             }
         }
+
+        let mut hybrid_query = 0;
+        let (hybrid_column_count, hybrid_assignments) =
+            process_activation_sets::<Fp, _>(&hybrid, &degrees, 6, || {
+                let query = hybrid_query;
+                hybrid_query += 1;
+                Expression::Fixed(FixedQuery {
+                    index: Some(query),
+                    column_index: query,
+                    rotation: Rotation::cur(),
+                })
+            });
+        assert_eq!(hybrid_column_count, new_column_count);
+        for assignment in &hybrid_assignments {
+            let packed_assignment = assignments
+                .iter()
+                .find(|other| other.selector == assignment.selector)
+                .unwrap();
+            assert_eq!(assignment.combination_index, packed_assignment.combination_index);
+            assert_eq!(assignment.root_value, packed_assignment.root_value);
+        }
+        for (column_index, expected) in expected_columns.iter().enumerate() {
+            let members = hybrid_assignments
+                .iter()
+                .filter(|assignment| assignment.combination_index == column_index)
+                .collect::<Vec<_>>();
+            let max_root = members
+                .iter()
+                .map(|assignment| assignment.root_value)
+                .max()
+                .unwrap();
+            let width = u64::BITS - max_root.leading_zeros();
+            let mut encoded = SelectorBitmap::zeroed(raw[0].len(), width).unwrap();
+            for assignment in members {
+                hybrid[assignment.selector].for_each_set_bit(|row| {
+                    encoded.set_value(row, assignment.root_value).unwrap();
+                });
+            }
+            let mut roots = vec![Fp::ZERO; max_root as usize + 1];
+            for root in 1..roots.len() {
+                roots[root] = roots[root - 1] + Fp::ONE;
+            }
+            for row in 0..encoded.len() {
+                assert_eq!(roots[encoded.value(row) as usize], expected[row]);
+            }
+        }
+    }
+
+    #[test]
+    fn native_hybrid_selector_stream_preserves_partial_byte_wire_encoding() {
+        let mut packed = &[0x81u8, 0xf1][..];
+        let selector = super::super::SelectorActivationSet::read_activation(&mut packed, 13).unwrap();
+        let mut encoded = Vec::new();
+        selector.write_activation(&mut encoded).unwrap();
+        assert_eq!(encoded, [0x81, 0x11]);
     }
 }

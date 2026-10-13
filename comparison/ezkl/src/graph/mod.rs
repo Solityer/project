@@ -1281,6 +1281,11 @@ pub struct GraphCircuit {
     pub core: CoreCircuit,
     /// The witness data for the model.
     pub graph_witness: GraphWitness,
+    /// GAT setup circuits carry no placeholder field buffers. During native
+    /// key generation their declared tensor shapes are represented by unknown
+    /// values; this flag is never serialized into a proving circuit.
+    #[serde(skip)]
+    native_gat_witnessless: bool,
 }
 
 impl GraphCircuit {
@@ -1444,6 +1449,7 @@ impl GraphCircuit {
         Ok(GraphCircuit {
             core,
             graph_witness: GraphWitness::new(inputs, vec![]),
+            native_gat_witnessless: false,
         })
     }
 
@@ -1472,7 +1478,26 @@ impl GraphCircuit {
         Ok(GraphCircuit {
             core,
             graph_witness: GraphWitness::new(inputs, vec![]),
+            native_gat_witnessless: false,
         })
+    }
+
+    /// Construct a GAT setup circuit without allocating zero-valued field
+    /// vectors for every declared input. Native keygen uses
+    /// `without_witnesses()` and receives shape-correct unknown tensors from
+    /// `synthesize`; a real proving circuit is loaded from its serialized
+    /// compiled form and must supply the complete witness.
+    pub fn new_gat_witnessless_from_settings(
+        model: Model,
+        mut settings: GraphSettings,
+        check_mode: CheckMode,
+    ) -> GraphCircuit {
+        settings.check_mode = check_mode;
+        GraphCircuit {
+            core: CoreCircuit { model, settings },
+            graph_witness: GraphWitness::new(Vec::new(), Vec::new()),
+            native_gat_witnessless: true,
+        }
     }
 
     /// load inputs and outputs for the model
@@ -1496,7 +1521,52 @@ impl GraphCircuit {
             ));
         }
         self.graph_witness = data.clone();
+        self.native_gat_witnessless = false;
         // load the module settings
+        Ok(())
+    }
+
+    /// Fail closed before a real proof if a native GAT circuit has no complete
+    /// input, output, or runtime-parameter witness.
+    pub fn ensure_complete_gat_witness(&self) -> Result<(), GraphError> {
+        if self.native_gat_witnessless {
+            return Err(GraphError::MisformedParams(
+                "witnessless native GAT setup circuit cannot be used to prove".into(),
+            ));
+        }
+        let input_shapes = self.model().graph.input_shapes()?;
+        let output_shapes = self.model().graph.output_shapes()?;
+        let inputs_match = self.graph_witness.inputs.len() == input_shapes.len()
+            && self
+                .graph_witness
+                .inputs
+                .iter()
+                .zip(&input_shapes)
+                .all(|(value, shape)| value.len() == shape.iter().product::<usize>());
+        let outputs_match = self.graph_witness.outputs.len() == output_shapes.len()
+            && self
+                .graph_witness
+                .outputs
+                .iter()
+                .zip(&output_shapes)
+                .all(|(value, shape)| value.len() == shape.iter().product::<usize>());
+        let params_match = if self.model().graph.num_param_inputs() > 0 {
+            let shapes = self.model().graph.param_shapes()?;
+            self.graph_witness.params.len() == shapes.len()
+                && self
+                    .graph_witness
+                    .params
+                    .iter()
+                    .zip(&shapes)
+                    .all(|(value, shape)| value.len() == shape.iter().product::<usize>())
+        } else {
+            self.graph_witness.params.is_empty()
+        };
+        if !inputs_match || !outputs_match || !params_match {
+            return Err(GraphError::MisformedParams(
+                "native GAT proof requires complete input, output, and runtime-parameter witnesses".into(),
+            ));
+        }
         Ok(())
     }
 
@@ -2074,6 +2144,18 @@ impl Circuit<Fp> for GraphCircuit {
     type Params = GraphSettings;
 
     fn without_witnesses(&self) -> Self {
+        if self.native_gat_witnessless {
+            let mut model = self.model().clone();
+            Self::redact_compiled_model_params(&mut model);
+            return GraphCircuit {
+                core: CoreCircuit {
+                    model,
+                    settings: self.settings().clone(),
+                },
+                graph_witness: GraphWitness::new(Vec::new(), Vec::new()),
+                native_gat_witnessless: true,
+            };
+        }
         let mut circuit = self.clone();
         Self::redact_compiled_model_params(&mut circuit.core.model);
         circuit.graph_witness.params = self
@@ -2199,44 +2281,90 @@ impl Circuit<Fp> for GraphCircuit {
         let mut config = config.clone();
 
         let input_scales = self.model().graph.get_input_scales();
-        let mut input_tensors = self.graph_witness.get_input_tensor();
-        if input_tensors.len() != input_scales.len() {
-            return Err(PlonkError::Synthesis);
-        }
-        let mut inputs = input_tensors
-            .iter_mut()
-            .enumerate()
-            .map(|(i, tensor)| {
-                tensor.set_scale(input_scales[i]);
-                tensor.set_visibility(input_vis);
-                ValTensor::try_from(tensor.clone()).map_err(|e| {
-                    log::error!("failed to convert input to valtensor: {:?}", e);
-                    PlonkError::Synthesis
+        let mut inputs = if self.native_gat_witnessless {
+            let shapes = self.model().graph.input_shapes().map_err(|_| PlonkError::Synthesis)?;
+            if shapes.len() != input_scales.len() {
+                return Err(PlonkError::Synthesis);
+            }
+            shapes
+                .iter()
+                .zip(input_scales.iter())
+                .map(|(shape, scale)| {
+                    let length = shape
+                        .iter()
+                        .try_fold(1usize, |total, dimension| total.checked_mul(*dimension))
+                        .ok_or(PlonkError::Synthesis)?;
+                    let values = vec![halo2_proofs::circuit::Value::<Fp>::unknown(); length];
+                    let mut tensor = Tensor::from_vec(values, shape)
+                        .map_err(|_| PlonkError::Synthesis)?;
+                    tensor.set_scale(*scale);
+                    tensor.set_visibility(input_vis);
+                    Ok(ValTensor::from(tensor))
                 })
-            })
-            .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?;
+                .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?
+        } else {
+            let mut input_tensors = self.graph_witness.get_input_tensor();
+            if input_tensors.len() != input_scales.len() {
+                return Err(PlonkError::Synthesis);
+            }
+            input_tensors
+                .iter_mut()
+                .enumerate()
+                .map(|(i, tensor)| {
+                    tensor.set_scale(input_scales[i]);
+                    tensor.set_visibility(input_vis);
+                    ValTensor::try_from(tensor.clone()).map_err(|e| {
+                        log::error!("failed to convert input to valtensor: {:?}", e);
+                        PlonkError::Synthesis
+                    })
+                })
+                .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?
+        };
 
         let output_scales = self
             .model()
             .graph
             .get_output_scales()
             .map_err(|_| PlonkError::Synthesis)?;
-        let mut output_tensors = self.graph_witness.get_output_tensor();
-        if output_tensors.len() != output_scales.len() {
-            return Err(PlonkError::Synthesis);
-        }
-        let outputs = output_tensors
-            .iter_mut()
-            .enumerate()
-            .map(|(i, tensor)| {
-                tensor.set_scale(output_scales[i]);
-                tensor.set_visibility(output_vis);
-                ValTensor::try_from(tensor.clone()).map_err(|e| {
-                    log::error!("failed to convert output to valtensor: {:?}", e);
-                    PlonkError::Synthesis
+        let outputs = if self.native_gat_witnessless {
+            let shapes = self.model().graph.output_shapes().map_err(|_| PlonkError::Synthesis)?;
+            if shapes.len() != output_scales.len() {
+                return Err(PlonkError::Synthesis);
+            }
+            shapes
+                .iter()
+                .zip(output_scales.iter())
+                .map(|(shape, scale)| {
+                    let length = shape
+                        .iter()
+                        .try_fold(1usize, |total, dimension| total.checked_mul(*dimension))
+                        .ok_or(PlonkError::Synthesis)?;
+                    let values = vec![halo2_proofs::circuit::Value::<Fp>::unknown(); length];
+                    let mut tensor = Tensor::from_vec(values, shape)
+                        .map_err(|_| PlonkError::Synthesis)?;
+                    tensor.set_scale(*scale);
+                    tensor.set_visibility(output_vis);
+                    Ok(ValTensor::from(tensor))
                 })
-            })
-            .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?;
+                .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?
+        } else {
+            let mut output_tensors = self.graph_witness.get_output_tensor();
+            if output_tensors.len() != output_scales.len() {
+                return Err(PlonkError::Synthesis);
+            }
+            output_tensors
+                .iter_mut()
+                .enumerate()
+                .map(|(i, tensor)| {
+                    tensor.set_scale(output_scales[i]);
+                    tensor.set_visibility(output_vis);
+                    ValTensor::try_from(tensor.clone()).map_err(|e| {
+                        log::error!("failed to convert output to valtensor: {:?}", e);
+                        PlonkError::Synthesis
+                    })
+                })
+                .collect::<Result<Vec<ValTensor<Fp>>, PlonkError>>()?
+        };
 
         let mut instance_offset = 0;
         trace!("running input module layout");
@@ -2284,22 +2412,19 @@ impl Circuit<Fp> for GraphCircuit {
                 .graph
                 .param_shapes()
                 .map_err(|_| PlonkError::Synthesis)?;
-            let mut parameter_tensors = self.graph_witness.get_param_tensor();
-            if parameter_tensors.len() != parameter_shapes.len()
-                || parameter_tensors
-                    .iter()
-                    .zip(&parameter_shapes)
-                    .any(|(tensor, shape)| tensor.len() != shape.iter().product::<usize>())
-            {
+            if parameter_shapes.len() != 1 {
                 return Err(PlonkError::Synthesis);
             }
-            for (i, tensor) in parameter_tensors.iter_mut().enumerate() {
-                let node_idx = *self
-                    .model()
-                    .graph
-                    .param_inputs
-                    .get(i)
+            let parameter: ValTensor<Fp> = if self.native_gat_witnessless {
+                let shape = &parameter_shapes[0];
+                let length = shape
+                    .iter()
+                    .try_fold(1usize, |total, dimension| total.checked_mul(*dimension))
                     .ok_or(PlonkError::Synthesis)?;
+                let values = vec![halo2_proofs::circuit::Value::<Fp>::unknown(); length];
+                let mut tensor = Tensor::from_vec(values, shape)
+                    .map_err(|_| PlonkError::Synthesis)?;
+                let node_idx = *self.model().graph.param_inputs.first().ok_or(PlonkError::Synthesis)?;
                 let scale = self
                     .model()
                     .graph
@@ -2308,13 +2433,38 @@ impl Circuit<Fp> for GraphCircuit {
                     .and_then(|node| node.out_scales().first().copied())
                     .ok_or(PlonkError::Synthesis)?;
                 tensor.set_scale(scale);
-            }
-            if parameter_tensors.len() != 1 {
-                return Err(PlonkError::Synthesis);
-            }
-            let mut parameter = parameter_tensors.pop().ok_or(PlonkError::Synthesis)?;
-            parameter.set_visibility(param_visibility);
-            let parameter: ValTensor<Fp> = parameter.try_into().map_err(|_| PlonkError::Synthesis)?;
+                tensor.set_visibility(param_visibility);
+                ValTensor::from(tensor)
+            } else {
+                let mut parameter_tensors = self.graph_witness.get_param_tensor();
+                if parameter_tensors.len() != parameter_shapes.len()
+                    || parameter_tensors
+                        .iter()
+                        .zip(&parameter_shapes)
+                        .any(|(tensor, shape)| tensor.len() != shape.iter().product::<usize>())
+                {
+                    return Err(PlonkError::Synthesis);
+                }
+                for (i, tensor) in parameter_tensors.iter_mut().enumerate() {
+                    let node_idx = *self
+                        .model()
+                        .graph
+                        .param_inputs
+                        .get(i)
+                        .ok_or(PlonkError::Synthesis)?;
+                    let scale = self
+                        .model()
+                        .graph
+                        .nodes
+                        .get(&node_idx)
+                        .and_then(|node| node.out_scales().first().copied())
+                        .ok_or(PlonkError::Synthesis)?;
+                    tensor.set_scale(scale);
+                }
+                let mut parameter = parameter_tensors.pop().ok_or(PlonkError::Synthesis)?;
+                parameter.set_visibility(param_visibility);
+                parameter.try_into().map_err(|_| PlonkError::Synthesis)?
+            };
 
             let param_advice = config.runtime_param_advice.as_ref().ok_or(PlonkError::Synthesis)?;
             if parameter.len() > param_advice.col_size() {

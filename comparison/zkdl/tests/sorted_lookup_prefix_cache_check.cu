@@ -22,6 +22,59 @@ void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+void check_sorted_lookup_prefix_next_boundaries() {
+    const FrWire beta = zkdl::fr_from_u32(2U);
+    const FrWire gamma = zkdl::fr_from_u32(3U);
+    const auto check_case = [&](std::uint32_t domain, std::uint32_t segment_size,
+                                std::uint32_t active_length) {
+        std::vector<FrWire> keys(domain), active(domain, FrWire{});
+        for (std::uint32_t index = 0U; index < domain; ++index) {
+            if (index < active_length) {
+                keys[index] = zkdl::fr_from_u32(index + 1U);
+                active[index] = zkdl::fr_from_u32(1U);
+            }
+        }
+        SegmentedTensorProvider key_provider, active_provider, prefix_provider,
+            next_provider;
+        std::string error;
+        if (!SegmentedTensorProvider::from_values(
+                keys, segment_size, key_provider, &error) ||
+            !SegmentedTensorProvider::from_values(
+                active, segment_size, active_provider, &error) ||
+            !make_authenticated_sorted_lookup_prefix_product_provider(
+                key_provider, active_provider, beta, gamma, prefix_provider,
+                &error) ||
+            !make_authenticated_sorted_lookup_prefix_next_provider(
+                prefix_provider, key_provider, active_provider, active_length,
+                beta, gamma, next_provider, &error))
+            throw std::runtime_error("prefix-next boundary provider setup failed: " + error);
+
+        std::vector<FrWire> expected(domain, FrWire{}), actual(domain, FrWire{});
+        FrWire product = zkdl::fr_from_u32(1U);
+        for (std::uint32_t index = 0U; index < active_length; ++index) {
+            product = zkdl::fr_mul(
+                product, zkdl::fr_add(zkdl::fr_mul(beta, keys[index]), gamma));
+            expected[index] = product;
+        }
+        for (std::uint32_t segment = 0U;
+             segment < next_provider.segment_count(); ++segment) {
+            std::vector<FrWire> block;
+            if (!next_provider.read_segment(segment, block, &error) ||
+                block.size() != segment_size)
+                throw std::runtime_error("prefix-next boundary read failed: " + error);
+            std::copy(block.begin(), block.end(),
+                      actual.begin() + static_cast<std::ptrdiff_t>(
+                          static_cast<std::uint64_t>(segment) * segment_size));
+        }
+        if (actual != expected)
+            throw std::runtime_error("prefix-next final-block result differs from scalar recurrence");
+    };
+    check_case(8U, 4U, 7U);
+    check_case(4U, 2U, 4U);
+    check_case(1U, 1U, 1U);
+    std::cerr << "sorted_lookup_prefix_next_fixture=PASS cases=domain8_active7,domain4_active4,domain1_active1\n";
+}
+
 SegmentedTensorProvider counted_provider(const std::vector<FrWire>& values,
                                          std::uint32_t segment_size,
                                          const std::shared_ptr<ReadCounts>& counts,
@@ -268,6 +321,14 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                               const std::vector<zkdl::CpuG1Point>& generators,
                               const zkdl::CpuG1Point& h,
                               const zkdl::CpuG1Point& u) {
+    std::vector<zkdl::CpuG1Point> authenticated_points = generators;
+    zkdl::CpuIpaBasisContext authenticated_basis;
+    std::string error;
+    require(zkdl::CpuIpaBasisContext::authenticate(
+                std::move(authenticated_points), h, u, authenticated_basis, &error),
+            "tiny sorted-lookup basis authentication failed");
+    const auto& owned_generators = authenticated_basis.generators();
+    zkdl::CpuG1MsmSession msm_session(authenticated_basis);
     std::map<std::string, std::vector<FrWire>> values;
     const auto put = [&](const std::string& name,
                          const std::vector<std::uint32_t>& input) {
@@ -285,20 +346,27 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     };
     put("table_keys", {0U, 3U, 4U, 0U});
     put("table_active", {1U, 1U, 1U, 0U});
-    std::vector<std::uint32_t> query_x, query_y, query_scratch;
-    query_x.reserve(query_keys.size());
-    query_y.reserve(query_keys.size());
+    constexpr std::uint32_t query_domain = 4U;
+    std::vector<std::uint32_t> query_x(query_domain, 0U);
+    std::vector<std::uint32_t> query_y(query_domain, 0U);
+    std::vector<std::uint32_t> query_scratch;
     query_scratch.reserve(query_keys.size());
     for (std::size_t index = 0U; index < query_keys.size(); ++index) {
-        query_x.push_back(query_keys[index] >> 2U);
-        query_y.push_back(query_keys[index] & 3U);
+        query_x[index] = query_keys[index] >> 2U;
+        query_y[index] = query_keys[index] & 3U;
         query_scratch.push_back(static_cast<std::uint32_t>(index + 1U));
     }
-    put("query_keys", query_keys);
+    std::vector<std::uint32_t> padded_query_keys(query_domain, 0U);
+    std::copy(query_keys.begin(), query_keys.end(), padded_query_keys.begin());
+    std::vector<std::uint32_t> padded_query_prefix(query_domain, 0U);
+    std::copy(query_scratch.begin(), query_scratch.end(), padded_query_prefix.begin());
+    put("query_keys", padded_query_keys);
     put("query_x", query_x);
     put("query_y", query_y);
-    put("query_prefix", query_scratch);
-    put("query_active", {1U, 1U});
+    put("query_prefix", padded_query_prefix);
+    std::vector<std::uint32_t> query_active(query_domain, 0U);
+    std::fill_n(query_active.begin(), query_keys.size(), 1U);
+    put("query_active", query_active);
     std::vector<std::uint32_t> padded_merge_keys(8U, 0U);
     std::copy(merged_keys.begin(), merged_keys.end(), padded_merge_keys.begin());
     std::vector<std::uint32_t> merge_delta(8U, 0U);
@@ -322,8 +390,10 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     put("merge_marker", merge_marker);
     put_fields("merge_inverse", merge_inverse);
     put("merge_prefix", merge_scratch);
-    put("merge_active", {1U, 1U, 1U, 1U, 1U, 0U, 0U, 0U});
-    put_zero("query_prefix_next", 2U);
+    std::vector<std::uint32_t> merge_active(8U, 0U);
+    std::fill_n(merge_active.begin(), merged_keys.size(), 1U);
+    put("merge_active", merge_active);
+    put_zero("query_prefix_next", query_domain);
     put_zero("merge_prefix_next", 8U);
 
     const std::vector<std::pair<std::string, std::vector<FrWire>>> identity_guard = {
@@ -350,10 +420,9 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                               SegmentedTensorProvider& output) {
         const auto found = values.find(name);
         return found != values.end() && SegmentedTensorProvider::from_values(
-            found->second, 1U, output, nullptr);
+            found->second, 2U, output, nullptr);
     };
     AuthenticatedSortedLookupProviderSet providers;
-    std::string error;
     const auto require_provider = [&](const std::string& name,
                                       SegmentedTensorProvider& output) {
         require(provider(name, output), "tiny sorted-lookup provider setup failed");
@@ -374,13 +443,16 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     require_provider("merge_prefix_next", providers.merge_prefix_next);
     require_provider("query_active", providers.query_active);
     require(make_authenticated_sorted_lookup_selector_provider(
-                2U, 1U, 0U, providers.query_first, &error) &&
+                query_domain, 2U, 0U, providers.query_first, &error) &&
                 make_authenticated_sorted_lookup_selector_provider(
-                    2U, 1U, 1U, providers.query_last, &error) &&
+                    query_domain, 2U,
+                    static_cast<std::uint32_t>(query_keys.size() - 1U),
+                    providers.query_last, &error) &&
                 make_authenticated_sorted_lookup_selector_provider(
-                    8U, 1U, 0U, providers.merge_first, &error) &&
+                    8U, 2U, 0U, providers.merge_first, &error) &&
                 make_authenticated_sorted_lookup_selector_provider(
-                    8U, 1U, 4U, providers.merge_last, &error) &&
+                    8U, 2U, static_cast<std::uint32_t>(merged_keys.size() - 1U),
+                    providers.merge_last, &error) &&
                 make_authenticated_sorted_lookup_shifted_key_provider(
                     providers.merge_keys, providers.merge_active,
                     providers.merge_previous_key, &error) &&
@@ -417,15 +489,15 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     descriptor.table_digest = statement.table_digest;
     descriptor.descriptor_digest = zkdl::sha256(std::vector<zkdl::byte>{'d'});
     descriptor.table_domain = 4U;
-    descriptor.query_domain = 2U;
+    descriptor.query_domain = query_domain;
     descriptor.merge_domain = 8U;
     descriptor.table_active_length = 3U;
-    descriptor.query_active_length = 2U;
-    descriptor.merge_active_length = 5U;
-    descriptor.segment_size = 1U;
-    descriptor.table_segment_count = 4U;
+    descriptor.query_active_length = static_cast<std::uint32_t>(query_keys.size());
+    descriptor.merge_active_length = static_cast<std::uint32_t>(merged_keys.size());
+    descriptor.segment_size = 2U;
+    descriptor.table_segment_count = 2U;
     descriptor.query_segment_count = 2U;
-    descriptor.merge_segment_count = 8U;
+    descriptor.merge_segment_count = 4U;
     descriptor.x_bits = 1U;
     descriptor.y_bits = 2U;
     descriptor.key_max = zkdl::fr_from_u32(4U);
@@ -488,6 +560,7 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     std::vector<FrWire> outer_blinders;
     std::vector<SegmentCommitmentMaterial> outer_materials;
     std::vector<CommitmentWire> outer_wires;
+    std::vector<SegmentCommitmentValidationReceipt> outer_receipts;
     const auto add_outer = [&](std::uint32_t role, std::uint32_t column,
                                const std::string& tag,
                                const SegmentedTensorProvider& source) {
@@ -495,9 +568,11 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
         const FrWire blinder = zkdl::fr_from_u32(101U + index);
         CommitmentWire wire;
         SegmentCommitmentMaterial material;
+        SegmentCommitmentValidationReceipt receipt;
         if (!zktr_build_segment_commitment_material(
-                "tiny/sorted_lookup/" + tag, 3U, source, generators, h, u,
-                blinder, statement, wire, material, &error, nullptr, 1U))
+                "tiny/sorted_lookup/" + tag, 3U, source, owned_generators, h, u,
+                blinder, statement, wire, material, &error, nullptr, 2U, nullptr,
+                &authenticated_basis, &msm_session, &receipt) || !receipt.valid())
             return false;
         zkdl::AuthenticatedSortedLookupCommitmentRef ref;
         ref.role = role;
@@ -510,6 +585,7 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
         outer_commitments.push_back(zkdl::cpu_g1_from_native(wire.commitment));
         outer_blinders.push_back(blinder);
         outer_materials.push_back(std::move(material));
+        outer_receipts.push_back(std::move(receipt));
         outer_wires.push_back(std::move(wire));
         return true;
     };
@@ -534,9 +610,14 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     require_provider_state("after outer commitments");
 
     zkdl::AuthenticatedSortedLookupProof proof;
-    const bool proved = prove_authenticated_sorted_lookup(
-        descriptor, providers, refs, outer_commitments, outer_blinders,
-        outer_materials, generators, h, u, statement, proof, &error);
+    const bool proved = expect_valid
+        ? prove_authenticated_sorted_lookup(
+              descriptor, providers, refs, outer_commitments, outer_blinders,
+              outer_materials, owned_generators, h, u, statement, proof, &error,
+              &authenticated_basis, &msm_session, &outer_receipts, &outer_wires)
+        : prove_authenticated_sorted_lookup(
+              descriptor, providers, refs, outer_commitments, outer_blinders,
+              outer_materials, owned_generators, h, u, statement, proof, &error);
     if (!expect_valid) {
         if (proved) {
             const auto encoded = proof.serialize();
@@ -751,7 +832,7 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                 error.find("segment commitment material differs from provider witness") != std::string::npos,
             "sorted-lookup accepted a marker-count vector that differs from its outer commitment");
     values["merge_marker"][0U] = zkdl::fr_from_u32(1U);
-    values["merge_marker"][5U] = zkdl::fr_from_u32(1U);
+    values["merge_marker"][merged_keys.size()] = zkdl::fr_from_u32(1U);
     error.clear();
     require(!prove_authenticated_sorted_lookup(
                 descriptor, providers, refs, outer_commitments, outer_blinders,
@@ -762,6 +843,25 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
 
 }  // namespace
 
+#ifdef ZKDL_SORTED_LOOKUP_FIXTURE_INCLUDE
+bool zkdl_run_tiny_sorted_lookup_receipt_fixture(
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u) {
+    try {
+        check_sorted_lookup_prefix_next_boundaries();
+        check_tiny_sorted_lookup({3U, 4U, 3U, 4U},
+                                 {0U, 3U, 3U, 3U, 4U, 4U, 4U}, true,
+                                 generators, h, u);
+        return true;
+    } catch (const std::exception& exception) {
+        std::cerr << "sorted_lookup_receipt_fixture=FAIL error="
+                  << exception.what() << '\n';
+        return false;
+    }
+}
+#endif
+
+#ifndef ZKDL_SORTED_LOOKUP_FIXTURE_INCLUDE
 int main() {
     try {
         const std::vector<zkdl::CpuG1Point> proof_generators{
@@ -906,3 +1006,4 @@ int main() {
         return 1;
     }
 }
+#endif

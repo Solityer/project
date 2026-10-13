@@ -500,6 +500,8 @@ inline CpuG1Point cpu_g1_sum_portable(const std::vector<CpuG1Point>& points,
 
 static constexpr size_t kCpuG1MsmChunkPoints = 1U << 14U;
 static constexpr size_t kCpuG1MsmProfileBytes = 16U * 1024U * 1024U;
+static constexpr size_t kCpuG1MsmMaxConcurrentChunks = 20U;
+static constexpr size_t kCpuG1MsmParallelThresholdChunks = 4U;
 
 inline unsigned cpu_parallel_worker_count() {
     const unsigned hardware = std::thread::hardware_concurrency();
@@ -587,10 +589,11 @@ inline bool& cpu_in_parallel_worker() {
 }
 
 template <typename Function>
-inline void cpu_parallel_for(std::size_t count, std::size_t grain,
-                             Function&& function) {
-    constexpr std::size_t kParallelThreshold = 4096U;
-    if (count < kParallelThreshold || grain == 0U || cpu_in_parallel_worker()) {
+inline void cpu_parallel_for_with_threshold(std::size_t count,
+                                            std::size_t grain,
+                                            std::size_t parallel_threshold,
+                                            Function&& function) {
+    if (count < parallel_threshold || grain == 0U || cpu_in_parallel_worker()) {
         for (std::size_t index = 0U; index < count; ++index) function(index);
         return;
     }
@@ -659,17 +662,37 @@ inline void cpu_parallel_for(std::size_t count, std::size_t grain,
     }
 }
 
+template <typename Function>
+inline void cpu_parallel_for(std::size_t count, std::size_t grain,
+                             Function&& function) {
+    cpu_parallel_for_with_threshold(count, grain, 4096U,
+                                    std::forward<Function>(function));
+}
+
+// Explicit opt-in for a small number of individually expensive independent
+// tasks.  Existing callers retain cpu_parallel_for's 4096-item threshold.
+template <typename Function>
+inline void cpu_parallel_for_expensive_tasks(std::size_t count,
+                                             std::size_t grain,
+                                             std::size_t minimum_tasks,
+                                             Function&& function) {
+    cpu_parallel_for_with_threshold(count, grain, minimum_tasks,
+                                    std::forward<Function>(function));
+}
+
 inline size_t cpu_g1_msm_workspace_bound_bytes() {
 #if defined(ZKDL_USE_BLST_G1_CODEC)
     const size_t scratch_bytes =
         zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
     if (scratch_bytes > std::numeric_limits<size_t>::max() -
                             kCpuG1MsmChunkPoints *
-                                (sizeof(zkdl_blst::blst_p1_affine) + sizeof(const zkdl_blst::byte*))) {
+                                (sizeof(zkdl_blst::blst_p1_affine) +
+                                 2U * sizeof(const zkdl_blst::byte*))) {
         throw std::overflow_error("BLST G1 MSM workspace size overflow");
     }
     return scratch_bytes + kCpuG1MsmChunkPoints *
-                               (sizeof(zkdl_blst::blst_p1_affine) + sizeof(const zkdl_blst::byte*));
+                               (sizeof(zkdl_blst::blst_p1_affine) +
+                                2U * sizeof(const zkdl_blst::byte*));
 #else
     return 0U;
 #endif
@@ -908,23 +931,94 @@ inline std::array<byte, 32U> cpu_ipa_basis_digest(
     return digest;
 }
 
-inline FrWire cpu_ipa_inner_product(const std::vector<FrWire>& left,
-                                    const std::vector<FrWire>& right) {
-    if (left.size() != right.size()) throw std::invalid_argument("IPA inner-product shape mismatch");
-    FrWire result{};
-    for (size_t i = 0; i < left.size(); ++i)
-        result = fr_add(result, fr_mul(left[i], right[i]));
-    return result;
-}
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+inline zkdl_blst::blst_fr cpu_ipa_frwire_to_montgomery_unchecked(
+    const FrWire& value);
+inline FrWire cpu_ipa_montgomery_to_frwire(
+    const zkdl_blst::blst_fr& value);
+#endif
 
 inline FrWire cpu_ipa_inner_product(const FrWire* left, const FrWire* right,
                                     std::size_t count) {
     if (count != 0U && (left == nullptr || right == nullptr))
         throw std::invalid_argument("IPA inner-product has null input");
+    if (count > std::numeric_limits<std::size_t>::max() / sizeof(FrWire))
+        throw std::length_error("IPA inner-product byte range overflows");
+    const std::size_t byte_count = count * sizeof(FrWire);
+    const std::uintptr_t left_address = reinterpret_cast<std::uintptr_t>(left);
+    const std::uintptr_t right_address = reinterpret_cast<std::uintptr_t>(right);
+    if ((count != 0U && byte_count >
+             std::numeric_limits<std::uintptr_t>::max() - left_address) ||
+        (count != 0U && byte_count >
+             std::numeric_limits<std::uintptr_t>::max() - right_address))
+        throw std::length_error("IPA inner-product pointer range overflows");
+    for (std::size_t index = 0U; index < count; ++index)
+        if (!fr_canonical(left[index]) || !fr_canonical(right[index]))
+            throw std::invalid_argument("non-canonical IPA inner-product input");
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (count == 0U) return FrWire{};
+    constexpr std::size_t kChunkElements = 1U << 12U;
+    const std::size_t chunk_count = (count - 1U) / kChunkElements + 1U;
+    std::vector<zkdl_blst::blst_fr> partials(chunk_count);
+    cpu_parallel_for_expensive_tasks(chunk_count, 1U, 4U,
+        [&](std::size_t chunk) {
+            const std::size_t begin = chunk * kChunkElements;
+            const std::size_t end = std::min(count, begin + kChunkElements);
+            zkdl_blst::blst_fr partial{};
+            for (std::size_t index = begin; index < end; ++index) {
+                // The complete serial canonical scan above still validates
+                // both operands before dispatch; only then may a zero pair
+                // skip Montgomery conversion and multiplication.
+                if (fr_compare(left[index], FrWire{}) == 0 ||
+                    fr_compare(right[index], FrWire{}) == 0)
+                    continue;
+                const zkdl_blst::blst_fr left_montgomery =
+                    cpu_ipa_frwire_to_montgomery_unchecked(left[index]);
+                const zkdl_blst::blst_fr right_montgomery =
+                    cpu_ipa_frwire_to_montgomery_unchecked(right[index]);
+                zkdl_blst::blst_fr product{}, next_partial{};
+                zkdl_blst::blst_fr_mul(
+                    &product, &left_montgomery, &right_montgomery);
+                zkdl_blst::blst_fr_add(&next_partial, &partial, &product);
+                partial = next_partial;
+            }
+            partials[chunk] = partial;
+        });
+    zkdl_blst::blst_fr total{};
+    for (const zkdl_blst::blst_fr& partial : partials) {
+        zkdl_blst::blst_fr next_total{};
+        zkdl_blst::blst_fr_add(&next_total, &total, &partial);
+        total = next_total;
+    }
+    const FrWire result = cpu_ipa_montgomery_to_frwire(total);
+    if (!fr_canonical(result))
+        throw std::runtime_error("IPA inner-product result is not canonical");
+    return result;
+#else
     FrWire result{};
     for (std::size_t index = 0U; index < count; ++index)
         result = fr_add(result, fr_mul(left[index], right[index]));
     return result;
+#endif
+}
+
+inline FrWire cpu_ipa_inner_product(
+    const std::vector<FrWire>& left, std::size_t left_offset,
+    const std::vector<FrWire>& right, std::size_t right_offset,
+    std::size_t count) {
+    if (left_offset > left.size() || count > left.size() - left_offset ||
+        right_offset > right.size() || count > right.size() - right_offset)
+        throw std::invalid_argument("IPA inner-product slice is out of range");
+    const FrWire* left_data = count == 0U ? nullptr : left.data() + left_offset;
+    const FrWire* right_data = count == 0U ? nullptr : right.data() + right_offset;
+    return cpu_ipa_inner_product(left_data, right_data, count);
+}
+
+inline FrWire cpu_ipa_inner_product(const std::vector<FrWire>& left,
+                                    const std::vector<FrWire>& right) {
+    if (left.size() != right.size())
+        throw std::invalid_argument("IPA inner-product shape mismatch");
+    return cpu_ipa_inner_product(left, 0U, right, 0U, left.size());
 }
 
 inline std::vector<FrWire> cpu_ipa_mle_weights(const std::vector<FrWire>& point) {
@@ -1159,6 +1253,321 @@ public:
 
 private:
     std::shared_ptr<const Data> data_;
+};
+
+/* A proof-local immutable affine view of an authenticated IPA basis.  The
+ * projective points remain owned by CpuIpaBasisContext; this object only
+ * caches their BLST affine conversion for repeated segmented MSMs. */
+class CpuG1PreparedMsmBasis {
+public:
+    explicit CpuG1PreparedMsmBasis(const CpuIpaBasisContext& authenticated_basis)
+        : authenticated_basis_(authenticated_basis) {
+        if (!authenticated_basis_.valid())
+            throw std::invalid_argument("prepared G1 MSM requires an authenticated IPA basis");
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        const auto& generators = authenticated_basis_.generators();
+        affine_.resize(generators.size());
+        for (std::size_t index = 0U; index < generators.size(); ++index) {
+            const zkdl_blst::blst_p1 projective = cpu_g1_to_blst(generators[index]);
+            zkdl_blst::blst_p1_to_affine(&affine_[index], &projective);
+        }
+#endif
+    }
+
+    const CpuIpaBasisContext& authenticated_basis() const noexcept {
+        return authenticated_basis_;
+    }
+    std::size_t size() const noexcept {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        return affine_.size();
+#else
+        return authenticated_basis_.size();
+#endif
+    }
+    bool owns_exact_generators(const CpuIpaBasisContext& basis,
+                               const std::vector<CpuG1Point>& generators,
+                               const CpuG1Point& h,
+                               const CpuG1Point& u) const noexcept {
+        return authenticated_basis_.owns_exact_generators(generators, h, u) &&
+               basis.owns_exact_generators(generators, h, u);
+    }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_p1_affine* affine_points() const noexcept {
+        return affine_.data();
+    }
+#endif
+
+private:
+    CpuIpaBasisContext authenticated_basis_;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::vector<zkdl_blst::blst_p1_affine> affine_;
+#endif
+};
+
+/* Scratch is caller-owned and reused by every MSM performed through one
+ * CpuG1MsmSession.  It is deliberately not shared globally or across proof
+ * threads. */
+class CpuG1MsmWorkspace {
+public:
+    CpuG1MsmWorkspace() {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (cpu_g1_msm_workspace_bound_bytes() > kCpuG1MsmProfileBytes)
+            throw std::runtime_error("BLST G1 MSM exceeds its source-bound workspace profile");
+        scratch_bytes_ =
+            zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
+        if (scratch_bytes_ == 0U ||
+            scratch_bytes_ % sizeof(zkdl_blst::limb_t) != 0U)
+            throw std::runtime_error("BLST returned an invalid Pippenger scratch bound");
+        scalar_ptrs_.reset(new const zkdl_blst::byte*[kCpuG1MsmChunkPoints]);
+        scratch_.reset(new zkdl_blst::limb_t[
+            scratch_bytes_ / sizeof(zkdl_blst::limb_t)]);
+#endif
+    }
+
+    CpuG1MsmWorkspace(const CpuG1MsmWorkspace&) = delete;
+    CpuG1MsmWorkspace& operator=(const CpuG1MsmWorkspace&) = delete;
+    CpuG1MsmWorkspace(CpuG1MsmWorkspace&&) noexcept = default;
+    CpuG1MsmWorkspace& operator=(CpuG1MsmWorkspace&&) noexcept = default;
+
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::byte** scalar_ptrs() noexcept { return scalar_ptrs_.get(); }
+    const zkdl_blst::blst_p1_affine** indexed_point_ptrs() {
+        if (!indexed_point_ptrs_)
+            indexed_point_ptrs_.reset(
+                new const zkdl_blst::blst_p1_affine*[kCpuG1MsmChunkPoints]);
+        return indexed_point_ptrs_.get();
+    }
+    zkdl_blst::limb_t* scratch() noexcept { return scratch_.get(); }
+    std::size_t resident_bytes() const noexcept {
+        return scratch_bytes_ + kCpuG1MsmChunkPoints *
+            (sizeof(const zkdl_blst::byte*) +
+             (indexed_point_ptrs_ ? sizeof(const zkdl_blst::blst_p1_affine*) : 0U));
+    }
+#endif
+
+private:
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::unique_ptr<const zkdl_blst::byte*[]> scalar_ptrs_;
+    std::unique_ptr<const zkdl_blst::blst_p1_affine*[]> indexed_point_ptrs_;
+    std::unique_ptr<zkdl_blst::limb_t[]> scratch_;
+    size_t scratch_bytes_ = 0U;
+#endif
+};
+
+class CpuG1MsmSession {
+public:
+    explicit CpuG1MsmSession(const CpuIpaBasisContext& authenticated_basis)
+        : prepared_basis_(authenticated_basis) {}
+
+    CpuG1Point sum(const CpuIpaBasisContext& authenticated_basis,
+                   const std::vector<CpuG1Point>& generators,
+                   const CpuG1Point& h, const CpuG1Point& u,
+                   const FrWire* scalars, size_t count) {
+        if (!prepared_basis_.owns_exact_generators(
+                authenticated_basis, generators, h, u))
+            throw std::invalid_argument(
+                "prepared G1 MSM basis does not own the supplied generators/H/U");
+        if (count != 0U && scalars == nullptr)
+            throw std::invalid_argument("prepared G1 MSM has null scalar input");
+        if (count > prepared_basis_.size())
+            throw std::invalid_argument("prepared G1 MSM exceeds authenticated basis size");
+        std::lock_guard<std::mutex> workspace_lock(workspace_mutex_);
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (count == 0U) return CpuG1Point::zero();
+        const std::size_t chunk_count =
+            (count + kCpuG1MsmChunkPoints - 1U) / kCpuG1MsmChunkPoints;
+        std::size_t workspace_count = 1U;
+        bool parallel_chunks = false;
+        if (chunk_count >= kCpuG1MsmParallelThresholdChunks &&
+            !cpu_in_parallel_worker()) {
+            const std::size_t lane_limit = std::min(
+                kCpuG1MsmMaxConcurrentChunks,
+                static_cast<std::size_t>(cpu_parallel_worker_count()) + 1U);
+            workspace_count = std::min(chunk_count, lane_limit);
+            parallel_chunks = workspace_count >= kCpuG1MsmParallelThresholdChunks;
+        }
+        if (!parallel_chunks) workspace_count = 1U;
+        if (workspaces_.size() < workspace_count)
+            workspaces_.resize(workspace_count);
+
+        // Fail before dispatching any worker so malformed scalar input cannot
+        // create partial concurrent MSM work or nondeterministic errors.
+        if (parallel_chunks) {
+            for (std::size_t index = 0U; index < count; ++index)
+                if (!fr_canonical(scalars[index]))
+                    throw std::invalid_argument("non-canonical G1 MSM scalar");
+        }
+
+        const zkdl_blst::blst_p1_affine* const affine_base =
+            prepared_basis_.affine_points();
+        std::vector<CpuG1Point> partials(chunk_count, CpuG1Point::zero());
+        const auto execute_chunk = [&](std::size_t chunk_index,
+                                       std::size_t workspace_index) {
+            const std::size_t offset = chunk_index * kCpuG1MsmChunkPoints;
+            const std::size_t points = std::min(kCpuG1MsmChunkPoints, count - offset);
+            CpuG1MsmWorkspace& workspace = workspaces_[workspace_index];
+            for (std::size_t index = 0U; index < points; ++index) {
+                if (!parallel_chunks && !fr_canonical(scalars[offset + index]))
+                    throw std::invalid_argument("non-canonical G1 MSM scalar");
+                workspace.scalar_ptrs()[index] = reinterpret_cast<const zkdl_blst::byte*>(
+                    scalars[offset + index].data());
+            }
+            const zkdl_blst::blst_p1_affine* affine_sources[2] = {
+                affine_base + offset, nullptr};
+            zkdl_blst::blst_p1 partial{};
+            zkdl_blst::blst_p1s_mult_pippenger(
+                &partial, affine_sources, points,
+                workspace.scalar_ptrs(), sizeof(FrWire) * 8U,
+                workspace.scratch());
+            partials[chunk_index] = cpu_g1_from_blst(partial);
+        };
+        for (std::size_t base = 0U; base < chunk_count; base += workspace_count) {
+            const std::size_t active_chunks =
+                std::min(workspace_count, chunk_count - base);
+            if (parallel_chunks &&
+                active_chunks >= kCpuG1MsmParallelThresholdChunks) {
+                cpu_parallel_for_expensive_tasks(
+                    active_chunks, 1U, kCpuG1MsmParallelThresholdChunks,
+                    [&](std::size_t lane) { execute_chunk(base + lane, lane); });
+            } else {
+                for (std::size_t lane = 0U; lane < active_chunks; ++lane)
+                    execute_chunk(base + lane, lane);
+            }
+        }
+        CpuG1Point result = CpuG1Point::zero();
+        for (const auto& partial : partials)
+            result = cpu_g1_add(result, partial);
+        return result;
+#else
+        if (count != 0U && generators.size() < count)
+            throw std::invalid_argument("prepared G1 MSM generator shape mismatch");
+        CpuG1Point result = CpuG1Point::zero();
+        for (size_t index = 0U; index < count; ++index) {
+            if (!fr_canonical(scalars[index]))
+                throw std::invalid_argument("non-canonical G1 MSM scalar");
+            result = cpu_g1_add(result,
+                                cpu_g1_mul_portable(generators[index], scalars[index]));
+        }
+        return result;
+#endif
+    }
+
+    CpuG1Point sum_indexed(const CpuIpaBasisContext& authenticated_basis,
+                           const std::vector<CpuG1Point>& generators,
+                           const CpuG1Point& h, const CpuG1Point& u,
+                           std::size_t authenticated_prefix,
+                           const std::uint32_t* indices, const FrWire* scalars,
+                           std::size_t count) {
+        if (!prepared_basis_.owns_exact_generators(
+                authenticated_basis, generators, h, u))
+            throw std::invalid_argument(
+                "prepared indexed G1 MSM basis does not own supplied generators/H/U");
+        if (authenticated_prefix == 0U || authenticated_prefix > prepared_basis_.size())
+            throw std::invalid_argument(
+                "prepared indexed G1 MSM prefix exceeds authenticated basis");
+        if (count != 0U && (indices == nullptr || scalars == nullptr))
+            throw std::invalid_argument("prepared indexed G1 MSM has null input");
+        std::lock_guard<std::mutex> workspace_lock(workspace_mutex_);
+        for (std::size_t index = 0U; index < count; ++index) {
+            if (indices[index] >= authenticated_prefix)
+                throw std::invalid_argument(
+                    "prepared indexed G1 MSM index exceeds authenticated prefix");
+            if (!fr_canonical(scalars[index]))
+                throw std::invalid_argument("non-canonical indexed G1 MSM scalar");
+        }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (count == 0U) return CpuG1Point::zero();
+        const std::size_t chunk_count =
+            (count + kCpuG1MsmChunkPoints - 1U) / kCpuG1MsmChunkPoints;
+        std::size_t workspace_count = 1U;
+        bool parallel_chunks = false;
+        if (chunk_count >= kCpuG1MsmParallelThresholdChunks &&
+            !cpu_in_parallel_worker()) {
+            const std::size_t lane_limit = std::min(
+                kCpuG1MsmMaxConcurrentChunks,
+                static_cast<std::size_t>(cpu_parallel_worker_count()) + 1U);
+            workspace_count = std::min(chunk_count, lane_limit);
+            parallel_chunks = workspace_count >= kCpuG1MsmParallelThresholdChunks;
+        }
+        if (!parallel_chunks) workspace_count = 1U;
+        if (workspaces_.size() < workspace_count)
+            workspaces_.resize(workspace_count);
+
+        const zkdl_blst::blst_p1_affine* const affine_base =
+            prepared_basis_.affine_points();
+        std::vector<CpuG1Point> partials(chunk_count, CpuG1Point::zero());
+        const auto execute_chunk = [&](std::size_t chunk_index,
+                                       std::size_t workspace_index) {
+            const std::size_t offset = chunk_index * kCpuG1MsmChunkPoints;
+            const std::size_t points = std::min(kCpuG1MsmChunkPoints, count - offset);
+            CpuG1MsmWorkspace& workspace = workspaces_[workspace_index];
+            auto point_ptrs = workspace.indexed_point_ptrs();
+            for (std::size_t index = 0U; index < points; ++index) {
+                point_ptrs[index] = affine_base + indices[offset + index];
+                workspace.scalar_ptrs()[index] = reinterpret_cast<const zkdl_blst::byte*>(
+                    scalars[offset + index].data());
+            }
+            zkdl_blst::blst_p1 partial{};
+            zkdl_blst::blst_p1s_mult_pippenger(
+                &partial, point_ptrs, points, workspace.scalar_ptrs(),
+                sizeof(FrWire) * 8U, workspace.scratch());
+            partials[chunk_index] = cpu_g1_from_blst(partial);
+        };
+        for (std::size_t base = 0U; base < chunk_count; base += workspace_count) {
+            const std::size_t active_chunks =
+                std::min(workspace_count, chunk_count - base);
+            if (parallel_chunks &&
+                active_chunks >= kCpuG1MsmParallelThresholdChunks) {
+                cpu_parallel_for_expensive_tasks(
+                    active_chunks, 1U, kCpuG1MsmParallelThresholdChunks,
+                    [&](std::size_t lane) { execute_chunk(base + lane, lane); });
+            } else {
+                for (std::size_t lane = 0U; lane < active_chunks; ++lane)
+                    execute_chunk(base + lane, lane);
+            }
+        }
+        CpuG1Point result = CpuG1Point::zero();
+        for (const auto& partial : partials)
+            result = cpu_g1_add(result, partial);
+        return result;
+#else
+        CpuG1Point result = CpuG1Point::zero();
+        for (std::size_t index = 0U; index < count; ++index)
+            result = cpu_g1_add(
+                result, cpu_g1_mul_portable(generators[indices[index]], scalars[index]));
+        return result;
+#endif
+    }
+
+    std::size_t prepared_basis_bytes() const noexcept {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        return prepared_basis_.size() * sizeof(zkdl_blst::blst_p1_affine);
+#else
+        return 0U;
+#endif
+    }
+
+    std::size_t workspace_bytes() const {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        std::lock_guard<std::mutex> lock(workspace_mutex_);
+        std::size_t total = 0U;
+        for (const auto& workspace : workspaces_)
+            total += workspace.resident_bytes();
+        return total;
+#else
+        return 0U;
+#endif
+    }
+
+    std::size_t workspace_count() const {
+        std::lock_guard<std::mutex> lock(workspace_mutex_);
+        return workspaces_.size();
+    }
+
+private:
+    CpuG1PreparedMsmBasis prepared_basis_;
+    mutable std::mutex workspace_mutex_;
+    std::vector<CpuG1MsmWorkspace> workspaces_;
 };
 
 inline bool cpu_pedersen_basis_valid(const CpuIpaBasisContext& basis,
@@ -1733,6 +2142,300 @@ struct HyraxOpeningProverResult {
     FrWire folded_blinder{};
 };
 
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+struct CpuIpaPreparedScalar {
+    std::array<byte, 32U> little_endian{};
+    zkdl_blst::blst_fr montgomery{};
+};
+
+inline CpuIpaPreparedScalar cpu_ipa_prepare_frwire_checked(
+    const FrWire& value) {
+    if (!fr_canonical(value))
+        throw std::invalid_argument("non-canonical Hyrax fold scalar");
+    CpuIpaPreparedScalar prepared;
+    std::array<byte, 32U> little_endian{};
+    for (std::size_t limb = 0U; limb < value.size(); ++limb)
+        for (std::size_t part = 0U; part < 4U; ++part)
+            little_endian[4U * limb + part] = static_cast<byte>(
+                value[limb] >> (8U * part));
+    prepared.little_endian = little_endian;
+    zkdl_blst::blst_scalar scalar{};
+    zkdl_blst::blst_scalar_from_lendian(&scalar, little_endian.data());
+    zkdl_blst::blst_fr_from_scalar(&prepared.montgomery, &scalar);
+    return prepared;
+}
+
+inline zkdl_blst::blst_fr cpu_ipa_frwire_to_montgomery_unchecked(
+    const FrWire& value) {
+    std::array<byte, 32U> little_endian{};
+    for (std::size_t limb = 0U; limb < value.size(); ++limb)
+        for (std::size_t part = 0U; part < 4U; ++part)
+            little_endian[4U * limb + part] = static_cast<byte>(
+                value[limb] >> (8U * part));
+    zkdl_blst::blst_scalar scalar{};
+    zkdl_blst::blst_scalar_from_lendian(&scalar, little_endian.data());
+    zkdl_blst::blst_fr montgomery{};
+    zkdl_blst::blst_fr_from_scalar(&montgomery, &scalar);
+    return montgomery;
+}
+
+inline zkdl_blst::blst_fr cpu_ipa_frwire_to_montgomery_checked(
+    const FrWire& value) {
+    return cpu_ipa_prepare_frwire_checked(value).montgomery;
+}
+
+inline FrWire cpu_ipa_montgomery_to_frwire(
+    const zkdl_blst::blst_fr& value) {
+    zkdl_blst::blst_scalar scalar{};
+    zkdl_blst::blst_scalar_from_fr(&scalar, &value);
+    std::array<byte, 32U> little_endian{};
+    zkdl_blst::blst_lendian_from_scalar(little_endian.data(), &scalar);
+    FrWire wire{};
+    for (std::size_t limb = 0U; limb < wire.size(); ++limb)
+        for (std::size_t part = 0U; part < 4U; ++part)
+            wire[limb] |= static_cast<std::uint32_t>(
+                little_endian[4U * limb + part]) << (8U * part);
+    return wire;
+}
+
+inline FrWire cpu_ipa_montgomery_product_to_frwire(
+    const zkdl_blst::blst_fr& left,
+    const zkdl_blst::blst_fr& right) {
+    zkdl_blst::blst_fr product{};
+    zkdl_blst::blst_fr_mul(&product, &left, &right);
+    return cpu_ipa_montgomery_to_frwire(product);
+}
+#endif
+
+inline std::vector<FrWire> cpu_ipa_next_generator_weights(
+    const std::vector<FrWire>& weights, const FrWire& challenge,
+    const FrWire& inverse) {
+    if (weights.size() > std::numeric_limits<std::size_t>::max() / 2U)
+        throw std::overflow_error("Hyrax folded generator coefficient count overflow");
+    std::vector<FrWire> next(2U * weights.size());
+    for (std::size_t index = 0U; index < weights.size(); ++index) {
+        // Contiguous-half folds interleave the original-basis coefficient
+        // blocks: [v*w0,c*w0,v*w1,c*w1,...].
+        next[2U * index] = fr_mul(inverse, weights[index]);
+        next[2U * index + 1U] = fr_mul(challenge, weights[index]);
+    }
+    return next;
+}
+
+inline std::vector<FrWire> cpu_ipa_next_generator_weights_fast(
+    const std::vector<FrWire>& weights, const FrWire& challenge,
+    const FrWire& inverse) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (weights.size() > std::numeric_limits<std::size_t>::max() / 2U)
+        throw std::overflow_error("Hyrax folded generator coefficient count overflow");
+    const zkdl_blst::blst_fr challenge_montgomery =
+        cpu_ipa_frwire_to_montgomery_checked(challenge);
+    const zkdl_blst::blst_fr inverse_montgomery =
+        cpu_ipa_frwire_to_montgomery_checked(inverse);
+    std::vector<zkdl_blst::blst_fr> weights_montgomery;
+    weights_montgomery.reserve(weights.size());
+    for (const FrWire& weight : weights)
+        weights_montgomery.push_back(
+            cpu_ipa_frwire_to_montgomery_checked(weight));
+    std::vector<FrWire> next(2U * weights.size());
+    for (std::size_t index = 0U; index < weights.size(); ++index) {
+        next[2U * index] = cpu_ipa_montgomery_product_to_frwire(
+            inverse_montgomery, weights_montgomery[index]);
+        next[2U * index + 1U] = cpu_ipa_montgomery_product_to_frwire(
+            challenge_montgomery, weights_montgomery[index]);
+        if (!fr_canonical(next[2U * index]) ||
+            !fr_canonical(next[2U * index + 1U]))
+            throw std::runtime_error(
+                "Hyrax folded generator coefficient is not canonical");
+    }
+    return next;
+#else
+    return cpu_ipa_next_generator_weights(weights, challenge, inverse);
+#endif
+}
+
+inline void cpu_ipa_fold_projective_vectors_parallel(
+    const std::vector<CpuG1Point>& current_generators,
+    const std::vector<FrWire>& current_a,
+    const std::vector<FrWire>& current_b,
+    const FrWire& challenge, const FrWire& inverse,
+    std::vector<CpuG1Point>& next_generators,
+    std::vector<FrWire>& next_a, std::vector<FrWire>& next_b) {
+    const std::size_t current_size = current_a.size();
+    if (current_size == 0U || (current_size & 1U) != 0U ||
+        current_generators.size() != current_size ||
+        current_b.size() != current_size)
+        throw std::invalid_argument("Hyrax projective fold vector shape mismatch");
+    if (!fr_canonical(challenge) || !fr_canonical(inverse))
+        throw std::invalid_argument("non-canonical Hyrax fold challenge");
+    for (const FrWire& value : current_a)
+        if (!fr_canonical(value))
+            throw std::invalid_argument("non-canonical Hyrax a-fold input");
+    for (const FrWire& value : current_b)
+        if (!fr_canonical(value))
+            throw std::invalid_argument("non-canonical Hyrax b-fold input");
+
+    const std::size_t half = current_size / 2U;
+    next_generators.resize(half);
+    next_a.resize(half);
+    next_b.resize(half);
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const CpuIpaPreparedScalar challenge_scalar =
+        cpu_ipa_prepare_frwire_checked(challenge);
+    const CpuIpaPreparedScalar inverse_scalar =
+        cpu_ipa_prepare_frwire_checked(inverse);
+    cpu_parallel_for(half, 128U, [&](std::size_t index) {
+        const zkdl_blst::blst_p1 low_generator =
+            cpu_g1_to_blst(current_generators[index]);
+        const zkdl_blst::blst_p1 high_generator =
+            cpu_g1_to_blst(current_generators[half + index]);
+        zkdl_blst::blst_p1 low_scaled{};
+        zkdl_blst::blst_p1 high_scaled{};
+        zkdl_blst::blst_p1 folded_generator{};
+        zkdl_blst::blst_p1_mult(
+            &low_scaled, &low_generator, inverse_scalar.little_endian.data(),
+            sizeof(FrWire) * 8U);
+        zkdl_blst::blst_p1_mult(
+            &high_scaled, &high_generator, challenge_scalar.little_endian.data(),
+            sizeof(FrWire) * 8U);
+        zkdl_blst::blst_p1_add_or_double(
+            &folded_generator, &low_scaled, &high_scaled);
+        next_generators[index] = cpu_g1_from_blst(folded_generator);
+
+        const zkdl_blst::blst_fr a_low =
+            cpu_ipa_frwire_to_montgomery_unchecked(current_a[index]);
+        const zkdl_blst::blst_fr a_high =
+            cpu_ipa_frwire_to_montgomery_unchecked(current_a[half + index]);
+        const zkdl_blst::blst_fr b_low =
+            cpu_ipa_frwire_to_montgomery_unchecked(current_b[index]);
+        const zkdl_blst::blst_fr b_high =
+            cpu_ipa_frwire_to_montgomery_unchecked(current_b[half + index]);
+        zkdl_blst::blst_fr a_low_product{}, a_high_product{}, a_folded{};
+        zkdl_blst::blst_fr b_low_product{}, b_high_product{}, b_folded{};
+        zkdl_blst::blst_fr_mul(&a_low_product, &a_low,
+                               &challenge_scalar.montgomery);
+        zkdl_blst::blst_fr_mul(&a_high_product, &a_high,
+                               &inverse_scalar.montgomery);
+        zkdl_blst::blst_fr_add(&a_folded, &a_low_product, &a_high_product);
+        zkdl_blst::blst_fr_mul(&b_low_product, &b_low,
+                               &inverse_scalar.montgomery);
+        zkdl_blst::blst_fr_mul(&b_high_product, &b_high,
+                               &challenge_scalar.montgomery);
+        zkdl_blst::blst_fr_add(&b_folded, &b_low_product, &b_high_product);
+        next_a[index] = cpu_ipa_montgomery_to_frwire(a_folded);
+        next_b[index] = cpu_ipa_montgomery_to_frwire(b_folded);
+        if (!fr_canonical(next_a[index]) || !fr_canonical(next_b[index]))
+            throw std::runtime_error("Hyrax folded scalar is not canonical");
+    });
+#else
+    cpu_parallel_for(half, 128U, [&](std::size_t index) {
+        next_generators[index] = cpu_g1_add(
+            cpu_g1_mul(current_generators[index], inverse),
+            cpu_g1_mul(current_generators[half + index], challenge));
+        next_a[index] = fr_add(
+            fr_mul(current_a[index], challenge),
+            fr_mul(current_a[half + index], inverse));
+        next_b[index] = fr_add(
+            fr_mul(current_b[index], inverse),
+            fr_mul(current_b[half + index], challenge));
+    });
+#endif
+}
+
+inline void cpu_ipa_fold_generator_lrs_indexed(
+    CpuG1MsmSession& msm_session, const CpuIpaBasisContext& basis,
+    const std::vector<CpuG1Point>& generators, std::size_t generator_count,
+    const CpuG1Point& blinding_generator, const CpuG1Point& u_generator,
+    const std::vector<FrWire>& current_weights,
+    const std::vector<FrWire>& current_a,
+    std::vector<std::uint32_t>& indices, std::vector<FrWire>& scalars,
+    CpuG1Point& left, CpuG1Point& right) {
+    const std::size_t current_size = current_a.size();
+    if (current_size == 0U || (current_size & 1U) != 0U ||
+        current_weights.empty() ||
+        current_weights.size() > std::numeric_limits<std::size_t>::max() / current_size)
+        throw std::invalid_argument("Hyrax indexed generator-fold shape is invalid");
+    const std::size_t padded_size = cpu_ipa_padded_size(
+        static_cast<std::uint32_t>(generator_count));
+    if (current_size > padded_size || padded_size % current_size != 0U ||
+        current_weights.size() != padded_size / current_size)
+        throw std::invalid_argument("Hyrax indexed generator-fold coefficient shape mismatch");
+    const std::size_t half = current_size / 2U;
+    indices.clear();
+    scalars.clear();
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::vector<zkdl_blst::blst_fr> weights_montgomery;
+    weights_montgomery.reserve(current_weights.size());
+    for (const FrWire& weight : current_weights)
+        weights_montgomery.push_back(
+            cpu_ipa_frwire_to_montgomery_checked(weight));
+    std::vector<zkdl_blst::blst_fr> current_a_montgomery;
+    current_a_montgomery.reserve(current_a.size());
+    for (const FrWire& value : current_a)
+        current_a_montgomery.push_back(
+            cpu_ipa_frwire_to_montgomery_checked(value));
+#else
+    for (const FrWire& weight : current_weights)
+        if (!fr_canonical(weight))
+            throw std::invalid_argument(
+                "non-canonical Hyrax generator-fold coefficient");
+    for (const FrWire& value : current_a)
+        if (!fr_canonical(value))
+            throw std::invalid_argument(
+                "non-canonical Hyrax generator-fold scalar");
+#endif
+    for (std::size_t block = 0U; block < current_weights.size(); ++block) {
+        const std::size_t base = block * current_size;
+        for (std::size_t index = 0U; index < half; ++index) {
+            const std::size_t basis_index = base + half + index;
+            if (basis_index >= generator_count) continue;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+            const FrWire scalar = cpu_ipa_montgomery_product_to_frwire(
+                weights_montgomery[block], current_a_montgomery[index]);
+#else
+            const FrWire scalar = fr_mul(current_weights[block], current_a[index]);
+#endif
+            if (fr_compare(scalar, FrWire{}) != 0) {
+                indices.push_back(static_cast<std::uint32_t>(basis_index));
+                scalars.push_back(scalar);
+            }
+        }
+    }
+    const std::size_t left_count = indices.size();
+    for (std::size_t block = 0U; block < current_weights.size(); ++block) {
+        const std::size_t base = block * current_size;
+        for (std::size_t index = 0U; index < half; ++index) {
+            const std::size_t basis_index = base + index;
+            if (basis_index >= generator_count) continue;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+            const FrWire scalar = cpu_ipa_montgomery_product_to_frwire(
+                weights_montgomery[block],
+                current_a_montgomery[half + index]);
+#else
+            const FrWire scalar = fr_mul(
+                current_weights[block], current_a[half + index]);
+#endif
+            if (fr_compare(scalar, FrWire{}) != 0) {
+                indices.push_back(static_cast<std::uint32_t>(basis_index));
+                scalars.push_back(scalar);
+            }
+        }
+    }
+    const std::size_t right_count = indices.size() - left_count;
+    const std::uint32_t* index_data = indices.empty() ? nullptr : indices.data();
+    const FrWire* scalar_data = scalars.empty() ? nullptr : scalars.data();
+    left = msm_session.sum_indexed(
+        basis, generators, blinding_generator, u_generator, generator_count,
+        index_data, scalar_data, left_count);
+    const std::uint32_t* right_indices = right_count == 0U
+        ? nullptr : index_data + left_count;
+    const FrWire* right_scalars = right_count == 0U
+        ? nullptr : scalar_data + left_count;
+    right = msm_session.sum_indexed(
+        basis, generators, blinding_generator, u_generator, generator_count,
+        right_indices, right_scalars, right_count);
+}
+
 inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     const std::vector<CpuG1Point>& generators, const std::vector<FrWire>& values,
     const std::vector<FrWire>& point, const CpuG1Point& blinding_generator,
@@ -1741,7 +2444,8 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     const CpuIpaOpeningMetadata& metadata, bool public_evaluation,
     const CpuG1Point* checked_xi = nullptr,
     const CpuIpaBasisContext* authenticated_basis = nullptr,
-    std::uint32_t requested_generator_size = 0U) {
+    std::uint32_t requested_generator_size = 0U,
+    CpuG1MsmSession* msm_session = nullptr) {
     const std::size_t generator_count = requested_generator_size == 0U
         ? generators.size() : requested_generator_size;
     if (point.size() >= 31U || generators.empty() || generator_count == 0U ||
@@ -1777,6 +2481,12 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     HyraxOpeningProofV3& opening = result.proof;
     const std::uint32_t generator_size = static_cast<std::uint32_t>(generator_count);
     const std::uint32_t padded_size = cpu_ipa_padded_size(generator_size);
+    std::size_t fold_count = 0U;
+    for (std::uint32_t remaining = padded_size; remaining > 1U; remaining >>= 1U)
+        ++fold_count;
+    opening.rounds.reserve(2U * fold_count);
+    opening.inner_point.reserve(point.size());
+    opening.outer_point.reserve(metadata.outer_point.size());
     opening.commitment_index = metadata.commitment_index;
     opening.evaluation_commitment_index = metadata.evaluation_commitment_index;
     opening.generator_size = generator_size;
@@ -1812,6 +2522,7 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     opening.xi = cpu_g1_to_native(xi);
     opening.tau = cpu_g1_to_native(tau);
 
+    (void)msm_session;
     std::vector<CpuG1Point> current_generators(padded_size, CpuG1Point::zero());
     std::vector<FrWire> current_a(padded_size), current_b(padded_size);
     for (std::size_t i = 0U; i < generator_count; ++i) {
@@ -1826,18 +2537,21 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     Transcript transcript("hyrax-appendix-a3-v3");
     if (public_evaluation) cpu_hyrax_v3_absorb_public_evaluation(transcript, evaluation);
     cpu_hyrax_v3_absorb_header(transcript, opening);
-    while (current_generators.size() > 1U) {
-        const std::size_t half = current_generators.size() / 2U;
-        CpuG1Point left = cpu_g1_sum(current_generators.data() + half,
-                                     current_a.data(), half);
+    std::size_t current_size = padded_size;
+    while (current_size > 1U) {
+        const std::size_t half = current_size / 2U;
+        CpuG1Point left = CpuG1Point::zero();
+        CpuG1Point right = CpuG1Point::zero();
+        left = cpu_g1_sum(current_generators.data() + half,
+                          current_a.data(), half);
+        right = cpu_g1_sum(current_generators.data(),
+                           current_a.data() + half, half);
         left = cpu_g1_add(left, cpu_g1_mul(
             u_generator, cpu_ipa_inner_product(
-                current_a.data(), current_b.data() + half, half)));
-        CpuG1Point right = cpu_g1_sum(current_generators.data(),
-                                      current_a.data() + half, half);
+                current_a, 0U, current_b, half, half)));
         right = cpu_g1_add(right, cpu_g1_mul(
             u_generator, cpu_ipa_inner_product(
-                current_a.data() + half, current_b.data(), half)));
+                current_a, half, current_b, 0U, half)));
         const FrWire r_left = cpu_fresh_csprng_scalar();
         const FrWire r_right = cpu_fresh_csprng_scalar();
         left = cpu_g1_add(left, cpu_g1_mul(blinding_generator, r_left));
@@ -1856,20 +2570,15 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         current_blinder = fr_add(current_blinder,
                                  fr_add(fr_mul(challenge_sq, r_left),
                                         fr_mul(inverse_sq, r_right)));
-        std::vector<CpuG1Point> next_generators(half);
+        std::vector<CpuG1Point> next_generators;
         std::vector<FrWire> next_a(half), next_b(half);
-        cpu_parallel_for(half, 128U, [&](std::size_t i) {
-            next_a[i] = fr_add(fr_mul(current_a[i], challenge),
-                               fr_mul(current_a[half + i], inverse));
-            next_b[i] = fr_add(fr_mul(current_b[i], inverse),
-                               fr_mul(current_b[half + i], challenge));
-            next_generators[i] = cpu_g1_add(
-                cpu_g1_mul(current_generators[i], inverse),
-                cpu_g1_mul(current_generators[half + i], challenge));
-        });
+        cpu_ipa_fold_projective_vectors_parallel(
+            current_generators, current_a, current_b, challenge, inverse,
+            next_generators, next_a, next_b);
         current_a.swap(next_a);
         current_b.swap(next_b);
         current_generators.swap(next_generators);
+        current_size = half;
     }
 
     // Fennel's short terminal Sigma equation proves the folded scalar while
@@ -1936,15 +2645,21 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_authenticated(
     const CpuIpaBasisContext& basis, const std::vector<FrWire>& values,
     const std::vector<FrWire>& point, const FrWire& randomness,
     const FrWire& tau_blinder, const CpuG1Point& expected_tau,
-    const CpuIpaOpeningMetadata& metadata, const CpuG1Point& checked_xi) {
+    const CpuIpaOpeningMetadata& metadata, const CpuG1Point& checked_xi,
+    CpuG1MsmSession* msm_session = nullptr) {
     if (!basis.valid() || values.size() > basis.size() ||
         values.size() > std::numeric_limits<std::uint32_t>::max())
         throw std::invalid_argument("Hyrax v3 authenticated basis context is unavailable");
     const auto& generators = basis.generators();
-    return cpu_open_hyrax_v3_impl(
-        generators, values, point, basis.h(), basis.u(), randomness,
-        tau_blinder, expected_tau, metadata, false, &checked_xi, &basis,
-        static_cast<std::uint32_t>(values.size()));
+    const auto open_with_session = [&](CpuG1MsmSession* session) {
+        return cpu_open_hyrax_v3_impl(
+            generators, values, point, basis.h(), basis.u(), randomness,
+            tau_blinder, expected_tau, metadata, false, &checked_xi, &basis,
+            static_cast<std::uint32_t>(values.size()), session);
+    };
+    if (msm_session != nullptr) return open_with_session(msm_session);
+    CpuG1MsmSession local_session(basis);
+    return open_with_session(&local_session);
 }
 
 /* The pre-F3a private signature is retained only as a compile-time seam for
@@ -2004,7 +2719,8 @@ inline bool cpu_verify_hyrax_v3_impl(
     const CpuIpaOpeningMetadata& expected_metadata, const FrWire* public_evaluation,
     std::string* error,
     const CpuIpaBasisContext* authenticated_basis = nullptr,
-    std::uint32_t requested_generator_size = 0U) {
+    std::uint32_t requested_generator_size = 0U,
+    CpuG1MsmSession* msm_session = nullptr) {
     if (!hyrax_opening_v3_shape_valid(opening, error)) return false;
     if (public_evaluation != nullptr && !fr_canonical(*public_evaluation)) {
         if (error) *error = "Hyrax v3 public evaluation is not canonical";
@@ -2147,8 +2863,10 @@ inline bool cpu_verify_hyrax_v3_impl(
         if (error) *error = "Hyrax v3 folded generator coefficient shape mismatch";
         return false;
     }
-    const CpuG1Point g_hat = cpu_g1_sum(
-        generators.data(), generator_weights.data(), generator_count);
+    const CpuG1Point g_hat = msm_session != nullptr && authenticated_basis != nullptr
+        ? msm_session->sum(*authenticated_basis, generators, blinding_generator,
+                           u_generator, generator_weights.data(), generator_count)
+        : cpu_g1_sum(generators.data(), generator_weights.data(), generator_count);
     const FrWire b_hat = current_b[0];
     if (fr_compare(b_hat, FrWire{}) == 0) {
         if (error) *error = "BLOCKED: Hyrax v3 terminal weight is zero";
@@ -2191,15 +2909,20 @@ inline bool cpu_verify_hyrax_v3_authenticated(
     const CpuG1Point& expected_tau, const CpuIpaBasisContext& basis,
     const std::vector<FrWire>& expected_point,
     const CpuIpaOpeningMetadata& expected_metadata,
-    std::string* error = nullptr) {
+    std::string* error = nullptr, CpuG1MsmSession* msm_session = nullptr) {
     if (!basis.valid()) {
         if (error) *error = "Hyrax v3 authenticated basis context is unavailable";
         return false;
     }
-    return cpu_verify_hyrax_v3_impl(
-        opening, expected_xi, expected_tau, basis.generators(), expected_point,
-        basis.h(), basis.u(), expected_metadata, nullptr, error, &basis,
-        opening.generator_size);
+    const auto verify_with_session = [&](CpuG1MsmSession* session) {
+        return cpu_verify_hyrax_v3_impl(
+            opening, expected_xi, expected_tau, basis.generators(), expected_point,
+            basis.h(), basis.u(), expected_metadata, nullptr, error, &basis,
+            opening.generator_size, session);
+    };
+    if (msm_session != nullptr) return verify_with_session(msm_session);
+    CpuG1MsmSession local_session(basis);
+    return verify_with_session(&local_session);
 }
 
 inline bool cpu_verify_hyrax_v3_public(

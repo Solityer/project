@@ -1,6 +1,10 @@
 #ifndef ZKDL_RELATION_PROOF_CUH
 #define ZKDL_RELATION_PROOF_CUH
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
+
 /*
  * Verifier-facing wire and host implementation for the GAT relation layer.
  *
@@ -23,8 +27,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <iostream>
 #include <openssl/hmac.h>
@@ -38,8 +46,11 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <type_traits>
 #include <utility>
+#include <unistd.h>
 #include <vector>
 
 namespace zkdl_gat {
@@ -96,6 +107,116 @@ constexpr std::size_t kMaxRelationOpenings = 4096U;
 // is deliberately separate from the much larger opening-count cap above.
 constexpr std::size_t kMaxRelationPointBits = 30U;
 constexpr std::uint32_t kMaxRelationSegments = 1U << 12U;
+
+// Public selector masks are often copied from authenticated plan descriptors
+// into several operation views.  Keep the exact byte contents while allowing
+// those views to share one immutable backing until a mutable access occurs.
+class CowByteVector {
+public:
+    using value_type = std::uint8_t;
+    using container_type = std::vector<value_type>;
+    using iterator = container_type::iterator;
+    using const_iterator = container_type::const_iterator;
+
+    class reference {
+    public:
+        reference(CowByteVector* owner, std::size_t index)
+            : owner_(owner), index_(index) {}
+        reference& operator=(value_type value) {
+            owner_->set_value(index_, value);
+            return *this;
+        }
+        reference& operator=(const reference& other) {
+            return *this = static_cast<value_type>(other);
+        }
+        operator value_type() const noexcept {
+            return static_cast<const CowByteVector&>(*owner_)[index_];
+        }
+
+    private:
+        CowByteVector* owner_ = nullptr;
+        std::size_t index_ = 0U;
+    };
+
+    CowByteVector() = default;
+    CowByteVector(std::initializer_list<value_type> values) { assign(values); }
+    CowByteVector(container_type&& values) { assign(std::move(values)); }
+
+    CowByteVector& operator=(std::initializer_list<value_type> values) {
+        assign(values);
+        return *this;
+    }
+    CowByteVector& operator=(container_type&& values) {
+        assign(std::move(values));
+        return *this;
+    }
+
+    void assign(std::size_t count, value_type value) {
+        data_ = std::make_shared<container_type>(count, value);
+    }
+    void assign(std::initializer_list<value_type> values) {
+        data_ = std::make_shared<container_type>(values);
+    }
+    void assign(container_type&& values) {
+        data_ = std::make_shared<container_type>(std::move(values));
+    }
+    void resize(std::size_t count) {
+        make_unique();
+        data_->resize(count);
+    }
+    void clear() noexcept { data_.reset(); }
+    void push_back(value_type value) {
+        make_unique();
+        data_->push_back(value);
+    }
+    void pop_back() {
+        make_unique();
+        data_->pop_back();
+    }
+
+    std::size_t size() const noexcept { return data_ ? data_->size() : 0U; }
+    std::size_t capacity() const noexcept { return data_ ? data_->capacity() : 0U; }
+    bool empty() const noexcept { return size() == 0U; }
+    const void* backing_identity() const noexcept { return data_.get(); }
+    std::uint64_t unique_capacity_bytes() const noexcept {
+        return data_ && data_.unique()
+            ? static_cast<std::uint64_t>(data_->capacity()) * sizeof(value_type)
+            : 0U;
+    }
+
+    const value_type& operator[](std::size_t index) const noexcept {
+        return (*data_)[index];
+    }
+    reference operator[](std::size_t index) noexcept { return reference(this, index); }
+    const_iterator begin() const noexcept {
+        static const container_type empty_values;
+        return data_ ? data_->cbegin() : empty_values.cbegin();
+    }
+    const_iterator end() const noexcept {
+        static const container_type empty_values;
+        return data_ ? data_->cend() : empty_values.cend();
+    }
+    iterator begin() {
+        make_unique();
+        return data_->begin();
+    }
+    iterator end() {
+        make_unique();
+        return data_->end();
+    }
+
+private:
+    void set_value(std::size_t index, value_type value) {
+        make_unique();
+        (*data_)[index] = value;
+    }
+    void make_unique() {
+        if (!data_) data_ = std::make_shared<container_type>();
+        else if (!data_.unique()) data_ = std::make_shared<container_type>(*data_);
+    }
+
+    std::shared_ptr<container_type> data_;
+};
 
 // A public index map is often the identity on a padded domain.  Keep that
 // representation implicit in memory while retaining the historical wire
@@ -220,8 +341,12 @@ public:
     bool empty() const noexcept { return size() == 0U; }
     std::size_t capacity() const noexcept { return explicit_ ? explicit_->capacity() : 0U; }
     bool is_identity() const noexcept { return identity_count_ != 0U; }
+    const void* backing_identity() const noexcept { return explicit_.get(); }
     std::uint64_t resident_bytes() const noexcept {
         return static_cast<std::uint64_t>(capacity()) * sizeof(std::uint32_t);
+    }
+    std::uint64_t unique_capacity_bytes() const noexcept {
+        return explicit_ && explicit_.unique() ? resident_bytes() : 0U;
     }
 
     std::uint32_t operator[](std::size_t index) const noexcept {
@@ -465,8 +590,11 @@ public:
                 return false;
             }
         }
-        output.assign(segment_size_, FrWire{});
-        std::copy(raw.begin(), raw.end(), output.begin());
+        if (raw.size() != segment_size_) {
+            if (error) *error = "segmented tensor provider returned a partial authenticated segment";
+            return false;
+        }
+        output = std::move(raw);
         return true;
     }
 
@@ -538,6 +666,10 @@ inline bool zksc_folded_state_peak_bytes(
     return true;
 }
 
+inline bool zksc_spilled_state_ram_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept;
+
 inline bool zksc_selected_sumcheck_peak_bytes(
     std::uint64_t tensor_count, std::uint64_t logical_domain,
     std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
@@ -545,8 +677,13 @@ inline bool zksc_selected_sumcheck_peak_bytes(
             tensor_count, logical_domain, segment_size, peak_bytes))
         return false;
     if (peak_bytes <= kZkSumcheckFoldedStateBudgetBytes) return true;
-    return zksc_segmented_streaming_peak_bytes(
-        tensor_count, segment_size, peak_bytes);
+    std::uint64_t provider_peak = 0U, spill_peak = 0U;
+    if (!zksc_segmented_streaming_peak_bytes(
+            tensor_count, segment_size, provider_peak) ||
+        !zksc_spilled_state_ram_peak_bytes(
+            tensor_count, logical_domain, segment_size, spill_peak)) return false;
+    peak_bytes = std::max(provider_peak, spill_peak);
+    return true;
 }
 
 inline bool zksc_folded_state_within_budget(
@@ -558,6 +695,607 @@ inline bool zksc_folded_state_within_budget(
                providers.front().segment_size(), peak_bytes) &&
            peak_bytes <= kZkSumcheckFoldedStateBudgetBytes;
 }
+
+constexpr std::uint64_t kZkSumcheckSpillIoAlignment = 4096U;
+constexpr std::uint64_t kZkSumcheckSpillIoRows = 4096U;
+constexpr std::uint64_t kZkSumcheckSpillRamBudgetBytes = std::uint64_t{1U} << 30U;
+// The largest current range provider decodes one 107-byte sorted scratch row
+// into a 32-byte FrWire; include both live buffers and an extra fixed reserve.
+constexpr std::uint64_t kZkSumcheckSpillMaxProviderRecordBytes = 107U;
+constexpr std::uint64_t kZkSumcheckSpillProviderScratchReserveBytes =
+    std::uint64_t{16U} << 20U;
+static_assert(sizeof(FrWire) == 32U,
+              "Sumcheck spill canonical FrWire encoding requires 32-byte field wires");
+
+inline bool zksc_spill_power_of_two(std::uint64_t value) noexcept {
+    return value != 0U && (value & (value - 1U)) == 0U;
+}
+
+inline bool zksc_spill_round_up(std::uint64_t value, std::uint64_t alignment,
+                                std::uint64_t& output) noexcept {
+    if (alignment == 0U || (alignment & (alignment - 1U)) != 0U ||
+        value > std::numeric_limits<std::uint64_t>::max() - (alignment - 1U))
+        return false;
+    output = (value + alignment - 1U) & ~(alignment - 1U);
+    return true;
+}
+
+inline bool zksc_spilled_state_disk_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (tensor_count == 0U || logical_domain < 4U ||
+        !zksc_spill_power_of_two(logical_domain)) return false;
+    std::uint64_t first_values = 0U, next_values = 0U;
+    std::uint64_t first_bytes = 0U, next_bytes = 0U;
+    if (tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (logical_domain / 2U) ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (logical_domain / 4U)) return false;
+    first_values = tensor_count * (logical_domain / 2U);
+    next_values = tensor_count * (logical_domain / 4U);
+    if (first_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        next_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+        return false;
+    first_bytes = first_values * sizeof(FrWire);
+    next_bytes = next_values * sizeof(FrWire);
+    if (!zksc_spill_round_up(first_bytes, kZkSumcheckSpillIoAlignment,
+                             first_bytes) ||
+        !zksc_spill_round_up(next_bytes, kZkSumcheckSpillIoAlignment,
+                             next_bytes) ||
+        first_bytes > std::numeric_limits<std::uint64_t>::max() - next_bytes)
+        return false;
+    peak_bytes = first_bytes + next_bytes;
+    return true;
+}
+
+inline bool zksc_spilled_state_io_bytes_upper_bound(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t& io_bytes) noexcept {
+    io_bytes = 0U;
+    if (tensor_count == 0U || logical_domain < 4U ||
+        !zksc_spill_power_of_two(logical_domain)) return false;
+    std::uint64_t values = 0U, payload_bytes = 0U;
+    if (tensor_count > std::numeric_limits<std::uint64_t>::max() / logical_domain)
+        return false;
+    values = tensor_count * logical_domain;
+    if (values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+        return false;
+    payload_bytes = values * sizeof(FrWire);
+    if (payload_bytes > std::numeric_limits<std::uint64_t>::max() / 3U ||
+        logical_domain > std::numeric_limits<std::uint64_t>::max() / 4U)
+        return false;
+    std::uint64_t bits = 0U;
+    for (std::uint64_t value = logical_domain; value > 1U; value >>= 1U) ++bits;
+    if (logical_domain > (std::numeric_limits<std::uint64_t>::max() -
+                          (bits + 2U) * 8192U) / 4U ||
+        bits > (std::numeric_limits<std::uint64_t>::max() -
+                logical_domain * 4U) / 12288U) return false;
+    const std::uint64_t alignment_read_overhead = logical_domain * 4U +
+                                                   (bits + 2U) * 8192U;
+    const std::uint64_t file_tail_overhead = bits * 4096U;
+    const std::uint64_t spill_payload_io = payload_bytes * 3U;
+    if (alignment_read_overhead > std::numeric_limits<std::uint64_t>::max() -
+                                      file_tail_overhead ||
+        spill_payload_io > std::numeric_limits<std::uint64_t>::max() -
+                               alignment_read_overhead - file_tail_overhead) return false;
+    io_bytes = spill_payload_io + alignment_read_overhead + file_tail_overhead;
+    return true;
+}
+
+inline bool zksc_spilled_state_ram_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t logical_domain,
+    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (tensor_count == 0U || logical_domain < 4U ||
+        !zksc_spill_power_of_two(logical_domain) || segment_size < 2U ||
+        !zksc_spill_power_of_two(segment_size) || segment_size > logical_domain ||
+        logical_domain % segment_size != 0U) return false;
+
+    std::uint64_t init_tile_values = 0U, init_tile_bytes = 0U;
+    std::uint64_t provider_decode_bytes = 0U;
+    if (tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (segment_size / 2U)) return false;
+    init_tile_values = tensor_count * (segment_size / 2U);
+    if (init_tile_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        segment_size > (std::numeric_limits<std::uint64_t>::max() -
+                        kZkSumcheckSpillProviderScratchReserveBytes) /
+                           (kZkSumcheckSpillMaxProviderRecordBytes + sizeof(FrWire)))
+        return false;
+    init_tile_bytes = init_tile_values * sizeof(FrWire);
+    provider_decode_bytes = segment_size *
+        (kZkSumcheckSpillMaxProviderRecordBytes + sizeof(FrWire)) +
+        kZkSumcheckSpillProviderScratchReserveBytes;
+    if (!zksc_spill_round_up(init_tile_bytes, kZkSumcheckSpillIoAlignment,
+                             init_tile_bytes) ||
+        provider_decode_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                    kZkSumcheckSpillIoAlignment ||
+        init_tile_bytes > std::numeric_limits<std::uint64_t>::max() -
+                              provider_decode_bytes - kZkSumcheckSpillIoAlignment)
+        return false;
+    const std::uint64_t initialize_peak = init_tile_bytes + provider_decode_bytes +
+        kZkSumcheckSpillIoAlignment;
+
+    const std::uint64_t max_io_rows = std::min<std::uint64_t>(
+        logical_domain / 4U, kZkSumcheckSpillIoRows);
+    std::uint64_t input_values = 0U, output_values = 0U;
+    if (max_io_rows == 0U ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (2U * max_io_rows) ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           max_io_rows) return false;
+    input_values = tensor_count * (2U * max_io_rows);
+    output_values = tensor_count * max_io_rows;
+    if (input_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        output_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+        return false;
+    std::uint64_t io_peak = input_values * sizeof(FrWire);
+    std::uint64_t output_bytes = output_values * sizeof(FrWire);
+    if (!zksc_spill_round_up(io_peak, kZkSumcheckSpillIoAlignment, io_peak) ||
+        !zksc_spill_round_up(output_bytes, kZkSumcheckSpillIoAlignment, output_bytes) ||
+        output_bytes > std::numeric_limits<std::uint64_t>::max() -
+                           2U * kZkSumcheckSpillIoAlignment ||
+        io_peak > std::numeric_limits<std::uint64_t>::max() - output_bytes -
+                      2U * kZkSumcheckSpillIoAlignment)
+        return false;
+    io_peak += output_bytes + 2U * kZkSumcheckSpillIoAlignment;
+    peak_bytes = std::max(initialize_peak, io_peak);
+    return peak_bytes <= kZkSumcheckSpillRamBudgetBytes;
+}
+
+class ZkSumcheckAlignedBuffer {
+public:
+    ZkSumcheckAlignedBuffer() = default;
+    ZkSumcheckAlignedBuffer(const ZkSumcheckAlignedBuffer&) = delete;
+    ZkSumcheckAlignedBuffer& operator=(const ZkSumcheckAlignedBuffer&) = delete;
+    ZkSumcheckAlignedBuffer(ZkSumcheckAlignedBuffer&& other) noexcept
+        : data_(other.data_), size_(other.size_) {
+        other.data_ = nullptr;
+        other.size_ = 0U;
+    }
+    ZkSumcheckAlignedBuffer& operator=(ZkSumcheckAlignedBuffer&& other) noexcept {
+        if (this != &other) {
+            std::free(data_);
+            data_ = other.data_;
+            size_ = other.size_;
+            other.data_ = nullptr;
+            other.size_ = 0U;
+        }
+        return *this;
+    }
+    ~ZkSumcheckAlignedBuffer() { std::free(data_); }
+
+    bool allocate(std::uint64_t bytes, std::string* error = nullptr) {
+        std::uint64_t allocation = 0U;
+        if (bytes == 0U || bytes > std::numeric_limits<std::size_t>::max() ||
+            !zksc_spill_round_up(bytes, kZkSumcheckSpillIoAlignment, allocation) ||
+            allocation > std::numeric_limits<std::size_t>::max()) {
+            if (error) *error = "Sumcheck spill aligned-buffer size is invalid";
+            return false;
+        }
+        std::free(data_);
+        data_ = nullptr;
+        size_ = 0U;
+        void* aligned = nullptr;
+        const int status = ::posix_memalign(
+            &aligned, static_cast<std::size_t>(kZkSumcheckSpillIoAlignment),
+            static_cast<std::size_t>(allocation));
+        if (status != 0) {
+            if (error) *error = "Sumcheck spill aligned-buffer allocation failed: " +
+                                std::to_string(status);
+            return false;
+        }
+        data_ = aligned;
+        size_ = static_cast<std::size_t>(allocation);
+        std::memset(data_, 0, size_);
+        return true;
+    }
+    void* data() noexcept { return data_; }
+    const void* data() const noexcept { return data_; }
+    std::size_t size() const noexcept { return size_; }
+    FrWire* wires() noexcept { return static_cast<FrWire*>(data_); }
+    const FrWire* wires() const noexcept { return static_cast<const FrWire*>(data_); }
+
+private:
+    void* data_ = nullptr;
+    std::size_t size_ = 0U;
+};
+
+class ZkSumcheckFoldedSpillFile {
+public:
+    ZkSumcheckFoldedSpillFile() = default;
+    ZkSumcheckFoldedSpillFile(const ZkSumcheckFoldedSpillFile&) = delete;
+    ZkSumcheckFoldedSpillFile& operator=(const ZkSumcheckFoldedSpillFile&) = delete;
+    ZkSumcheckFoldedSpillFile(ZkSumcheckFoldedSpillFile&& other) noexcept
+        : fd_(other.fd_), directory_(std::move(other.directory_)),
+          operation_identity_(std::move(other.operation_identity_)),
+          logical_domain_(other.logical_domain_), tensor_count_(other.tensor_count_),
+          logical_rows_(other.logical_rows_), round_index_(other.round_index_),
+          logical_bytes_(other.logical_bytes_), allocated_bytes_(other.allocated_bytes_),
+          logical_written_(other.logical_written_), physical_written_(other.physical_written_),
+          staging_(std::move(other.staging_)), staging_used_(other.staging_used_),
+          complete_(other.complete_) {
+        other.fd_ = -1;
+        other.logical_domain_ = 0U;
+        other.tensor_count_ = 0U;
+        other.logical_rows_ = 0U;
+        other.logical_bytes_ = 0U;
+        other.allocated_bytes_ = 0U;
+        other.logical_written_ = 0U;
+        other.physical_written_ = 0U;
+        other.staging_used_ = 0U;
+        other.complete_ = false;
+    }
+    ZkSumcheckFoldedSpillFile& operator=(ZkSumcheckFoldedSpillFile&& other) noexcept {
+        if (this != &other) {
+            close_fd();
+            fd_ = other.fd_;
+            directory_ = std::move(other.directory_);
+            operation_identity_ = std::move(other.operation_identity_);
+            logical_domain_ = other.logical_domain_;
+            tensor_count_ = other.tensor_count_;
+            logical_rows_ = other.logical_rows_;
+            round_index_ = other.round_index_;
+            logical_bytes_ = other.logical_bytes_;
+            allocated_bytes_ = other.allocated_bytes_;
+            logical_written_ = other.logical_written_;
+            physical_written_ = other.physical_written_;
+            staging_ = std::move(other.staging_);
+            staging_used_ = other.staging_used_;
+            complete_ = other.complete_;
+            other.fd_ = -1;
+            other.logical_domain_ = 0U;
+            other.tensor_count_ = 0U;
+            other.logical_rows_ = 0U;
+            other.logical_bytes_ = 0U;
+            other.allocated_bytes_ = 0U;
+            other.logical_written_ = 0U;
+            other.physical_written_ = 0U;
+            other.staging_used_ = 0U;
+            other.complete_ = false;
+        }
+        return *this;
+    }
+    ~ZkSumcheckFoldedSpillFile() { close_fd(); }
+
+    static bool create(const std::string& directory,
+                       const std::string& operation_identity,
+                       std::uint64_t logical_domain,
+                       std::uint64_t tensor_count,
+                       std::uint64_t logical_rows,
+                       std::uint32_t round_index,
+                       ZkSumcheckFoldedSpillFile& output,
+                       std::string* error = nullptr) {
+        output = ZkSumcheckFoldedSpillFile{};
+#if !defined(__BYTE_ORDER__) || !defined(__ORDER_LITTLE_ENDIAN__) || \
+    __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+        if (error) *error = "Sumcheck spill requires canonical little-endian FrWire storage";
+        return false;
+#endif
+        if (directory.empty() || operation_identity.empty() ||
+            logical_domain < 2U || !zksc_spill_power_of_two(logical_domain) ||
+            tensor_count == 0U || logical_rows == 0U ||
+            logical_rows > logical_domain ||
+            tensor_count > std::numeric_limits<std::uint64_t>::max() / logical_rows) {
+            if (error) *error = "Sumcheck spill file identity or shape is invalid";
+            return false;
+        }
+        const std::uint64_t elements = tensor_count * logical_rows;
+        if (elements > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire)) {
+            if (error) *error = "Sumcheck spill file element byte count overflows";
+            return false;
+        }
+        const std::uint64_t logical_bytes = elements * sizeof(FrWire);
+        std::uint64_t allocated_bytes = 0U;
+        if (!zksc_spill_round_up(logical_bytes, kZkSumcheckSpillIoAlignment,
+                                 allocated_bytes) ||
+            allocated_bytes > static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
+            if (error) *error = "Sumcheck spill file size exceeds the host file-offset range";
+            return false;
+        }
+        const int directory_fd = ::open(
+            directory.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        if (directory_fd < 0) {
+            if (error) *error = "Sumcheck spill directory open failed: errno=" +
+                                std::to_string(errno);
+            return false;
+        }
+        struct stat directory_stat{};
+        const bool directory_valid = ::fstat(directory_fd, &directory_stat) == 0 &&
+            S_ISDIR(directory_stat.st_mode) && directory_stat.st_uid == ::geteuid() &&
+            (directory_stat.st_mode & 0777U) == 0700U;
+        if (!directory_valid) {
+            const int saved_errno = errno;
+            ::close(directory_fd);
+            if (error) *error = "Sumcheck spill directory owner/mode/type is not canonical" +
+                                (saved_errno != 0 ? ": errno=" + std::to_string(saved_errno) : "");
+            return false;
+        }
+        const int fd = ::openat(directory_fd, ".",
+            O_TMPFILE | O_RDWR | O_CLOEXEC | O_DIRECT, 0600);
+        const int open_errno = errno;
+        struct stat file_stat{};
+        const bool file_valid = fd >= 0 && ::fstat(fd, &file_stat) == 0 &&
+            S_ISREG(file_stat.st_mode) && file_stat.st_uid == ::geteuid() &&
+            (file_stat.st_mode & 0777U) == 0600U &&
+            file_stat.st_nlink == 0 &&
+            file_stat.st_dev == directory_stat.st_dev;
+        ::close(directory_fd);
+        if (!file_valid) {
+            if (fd >= 0) ::close(fd);
+            if (error) *error = "Sumcheck anonymous direct-I/O file creation failed closed: errno=" +
+                                std::to_string(open_errno);
+            return false;
+        }
+        const int allocation_status = ::posix_fallocate(
+            fd, 0, static_cast<off_t>(allocated_bytes));
+        struct stat allocated_stat{};
+        if (allocation_status != 0 || ::fstat(fd, &allocated_stat) != 0 ||
+            allocated_stat.st_size != static_cast<off_t>(allocated_bytes)) {
+            const int saved_errno = allocation_status != 0 ? allocation_status : errno;
+            ::close(fd);
+            if (error) *error = "Sumcheck spill file exact preallocation failed closed: errno=" +
+                                std::to_string(saved_errno);
+            return false;
+        }
+        output.fd_ = fd;
+        output.directory_ = directory;
+        output.operation_identity_ = operation_identity;
+        output.logical_domain_ = logical_domain;
+        output.tensor_count_ = tensor_count;
+        output.logical_rows_ = logical_rows;
+        output.round_index_ = round_index;
+        output.logical_bytes_ = logical_bytes;
+        output.allocated_bytes_ = allocated_bytes;
+        if (!output.staging_.allocate(kZkSumcheckSpillIoAlignment, error)) {
+            output.close_fd();
+            return false;
+        }
+        return true;
+    }
+
+    bool append_values(const FrWire* values, std::uint64_t count,
+                       std::string* error = nullptr) {
+        if (fd_ < 0 || complete_ || values == nullptr || count == 0U ||
+            count > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire)) {
+            if (error) *error = "Sumcheck spill append state is invalid";
+            return false;
+        }
+        const std::uint64_t bytes = count * sizeof(FrWire);
+        if (logical_written_ > logical_bytes_ || bytes > logical_bytes_ - logical_written_) {
+            if (error) *error = "Sumcheck spill append exceeds its canonical prefix length";
+            return false;
+        }
+        const auto* source = reinterpret_cast<const unsigned char*>(values);
+        std::uint64_t remaining = bytes;
+        while (remaining != 0U) {
+            if (staging_used_ == 0U && remaining >= kZkSumcheckSpillIoAlignment &&
+                (reinterpret_cast<std::uintptr_t>(source) % kZkSumcheckSpillIoAlignment) == 0U) {
+                const std::uint64_t direct_bytes =
+                    remaining & ~(kZkSumcheckSpillIoAlignment - 1U);
+                if (!write_direct(source, direct_bytes, error)) return false;
+                source += direct_bytes;
+                remaining -= direct_bytes;
+                logical_written_ += direct_bytes;
+                continue;
+            }
+            const std::size_t available = kZkSumcheckSpillIoAlignment - staging_used_;
+            const std::size_t copied = static_cast<std::size_t>(
+                std::min<std::uint64_t>(remaining, available));
+            std::memcpy(static_cast<unsigned char*>(staging_.data()) + staging_used_,
+                        source, copied);
+            staging_used_ += copied;
+            source += copied;
+            remaining -= copied;
+            logical_written_ += copied;
+            if (staging_used_ == kZkSumcheckSpillIoAlignment) {
+                if (!write_direct(staging_.data(), staging_used_, error)) return false;
+                staging_used_ = 0U;
+            }
+        }
+        return true;
+    }
+
+    bool finish(std::string* error = nullptr) {
+        if (fd_ < 0 || complete_ || logical_written_ != logical_bytes_) {
+            if (error) *error = "Sumcheck spill file did not cover its complete logical prefix";
+            return false;
+        }
+        if (staging_used_ != 0U) {
+            std::memset(static_cast<unsigned char*>(staging_.data()) + staging_used_,
+                        0, kZkSumcheckSpillIoAlignment - staging_used_);
+            if (!write_direct(staging_.data(), kZkSumcheckSpillIoAlignment, error)) return false;
+            staging_used_ = 0U;
+        }
+        struct stat status{};
+        if (physical_written_ != allocated_bytes_ || ::fstat(fd_, &status) != 0 ||
+            status.st_size != static_cast<off_t>(allocated_bytes_)) {
+            if (error) *error = "Sumcheck spill file exact length/complete marker validation failed";
+            return false;
+        }
+        complete_ = true;
+        return true;
+    }
+
+    bool read_values(std::uint64_t offset, std::uint64_t count,
+                     FrWire* output, std::uint64_t output_capacity,
+                     const std::string& expected_operation,
+                     std::uint64_t expected_domain,
+                     std::uint64_t expected_tensor_count,
+                     std::uint64_t expected_rows,
+                     std::uint32_t expected_round,
+                     std::string* error = nullptr) const {
+        if (!validate_complete(expected_operation, expected_domain,
+                               expected_tensor_count, expected_rows,
+                               expected_round, error) ||
+            output == nullptr || count == 0U || count > output_capacity ||
+            offset > tensor_count_ * logical_rows_ ||
+            count > tensor_count_ * logical_rows_ - offset ||
+            count > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire)) {
+            if (error && error->empty()) *error = "Sumcheck spill read range is invalid";
+            return false;
+        }
+        const std::uint64_t byte_offset = offset * sizeof(FrWire);
+        const std::uint64_t byte_count = count * sizeof(FrWire);
+        std::uint64_t read_end = 0U;
+        if (byte_offset > std::numeric_limits<std::uint64_t>::max() - byte_count ||
+            !zksc_spill_round_up(byte_offset + byte_count,
+                                 kZkSumcheckSpillIoAlignment, read_end)) {
+            if (error) *error = "Sumcheck spill read byte range overflows";
+            return false;
+        }
+        const std::uint64_t read_begin = byte_offset &
+            ~(kZkSumcheckSpillIoAlignment - 1U);
+        if (read_end > allocated_bytes_ || read_end < read_begin) {
+            if (error) *error = "Sumcheck spill padded read exceeds its preallocated extent";
+            return false;
+        }
+        const bool direct = read_begin == byte_offset &&
+            read_end - read_begin == byte_count &&
+            (reinterpret_cast<std::uintptr_t>(output) % kZkSumcheckSpillIoAlignment) == 0U;
+        ZkSumcheckAlignedBuffer temporary;
+        void* destination = output;
+        if (!direct) {
+            if (!temporary.allocate(read_end - read_begin, error)) return false;
+            destination = temporary.data();
+        }
+        if (!read_direct(destination, read_end - read_begin, read_begin, error)) return false;
+        if (!direct) {
+            const std::uint64_t prefix = byte_offset - read_begin;
+            const std::uint64_t payload_end = byte_offset + byte_count;
+            if (read_end > logical_bytes_) {
+                const std::uint64_t padding_begin = std::max(logical_bytes_, byte_offset);
+                const std::uint64_t padding_offset = padding_begin - read_begin;
+                const std::uint64_t padding_end = read_end - read_begin;
+                const auto* raw = static_cast<const unsigned char*>(temporary.data());
+                for (std::uint64_t index = padding_offset; index < padding_end; ++index)
+                    if (raw[index] != 0U) {
+                        if (error) *error = "Sumcheck spill final-page padding is not canonical zero";
+                        return false;
+                    }
+            }
+            std::memcpy(output, static_cast<const unsigned char*>(temporary.data()) + prefix,
+                        static_cast<std::size_t>(byte_count));
+        }
+        for (std::uint64_t index = 0U; index < count; ++index)
+            if (!zkdl::fr_canonical(output[index])) {
+                if (error) *error = "Sumcheck spill read encountered a non-canonical FrWire";
+                return false;
+            }
+        return true;
+    }
+
+    bool validate_complete(const std::string& expected_operation,
+                           std::uint64_t expected_domain,
+                           std::uint64_t expected_tensor_count,
+                           std::uint64_t expected_rows,
+                           std::uint32_t expected_round,
+                           std::string* error = nullptr) const {
+        struct stat status{};
+        if (fd_ < 0 || !complete_ || operation_identity_ != expected_operation ||
+            logical_domain_ != expected_domain || tensor_count_ != expected_tensor_count ||
+            logical_rows_ != expected_rows || round_index_ != expected_round ||
+            logical_written_ != logical_bytes_ || physical_written_ != allocated_bytes_ ||
+            ::fstat(fd_, &status) != 0 || !S_ISREG(status.st_mode) ||
+            status.st_uid != ::geteuid() || (status.st_mode & 0777U) != 0600U ||
+            status.st_nlink != 0 ||
+            status.st_size != static_cast<off_t>(allocated_bytes_)) {
+            if (error) *error = "Sumcheck spill state identity, prefix, or exact length validation failed";
+            return false;
+        }
+        return true;
+    }
+
+    const std::string& directory() const noexcept { return directory_; }
+    const std::string& operation_identity() const noexcept { return operation_identity_; }
+    std::uint64_t logical_domain() const noexcept { return logical_domain_; }
+    std::uint64_t tensor_count() const noexcept { return tensor_count_; }
+    std::uint64_t logical_rows() const noexcept { return logical_rows_; }
+    std::uint32_t round_index() const noexcept { return round_index_; }
+
+private:
+    void close_fd() noexcept {
+        if (fd_ >= 0) ::close(fd_);
+        fd_ = -1;
+    }
+
+    bool write_direct(const void* source, std::uint64_t bytes,
+                      std::string* error) {
+        if (fd_ < 0 || source == nullptr || bytes == 0U ||
+            (bytes % kZkSumcheckSpillIoAlignment) != 0U ||
+            (reinterpret_cast<std::uintptr_t>(source) % kZkSumcheckSpillIoAlignment) != 0U ||
+            physical_written_ > allocated_bytes_ ||
+            bytes > allocated_bytes_ - physical_written_) {
+            if (error) *error = "Sumcheck spill direct write alignment/prefix is invalid";
+            return false;
+        }
+        const auto* cursor = static_cast<const unsigned char*>(source);
+        std::uint64_t remaining = bytes;
+        while (remaining != 0U) {
+            const ssize_t written = ::pwrite(
+                fd_, cursor, static_cast<std::size_t>(remaining),
+                static_cast<off_t>(physical_written_));
+            if (written < 0 && errno == EINTR) continue;
+            if (written <= 0 ||
+                (static_cast<std::uint64_t>(written) % kZkSumcheckSpillIoAlignment) != 0U) {
+                if (error) *error = "Sumcheck spill direct write was short or failed: errno=" +
+                                    std::to_string(errno);
+                return false;
+            }
+            physical_written_ += static_cast<std::uint64_t>(written);
+            cursor += written;
+            remaining -= static_cast<std::uint64_t>(written);
+        }
+        return true;
+    }
+
+    bool read_direct(void* destination, std::uint64_t bytes,
+                     std::uint64_t offset, std::string* error) const {
+        if (fd_ < 0 || destination == nullptr || bytes == 0U ||
+            (bytes % kZkSumcheckSpillIoAlignment) != 0U ||
+            (offset % kZkSumcheckSpillIoAlignment) != 0U ||
+            (reinterpret_cast<std::uintptr_t>(destination) % kZkSumcheckSpillIoAlignment) != 0U ||
+            offset > allocated_bytes_ || bytes > allocated_bytes_ - offset) {
+            if (error) *error = "Sumcheck spill direct read alignment/range is invalid";
+            return false;
+        }
+        auto* cursor = static_cast<unsigned char*>(destination);
+        std::uint64_t remaining = bytes;
+        std::uint64_t current_offset = offset;
+        while (remaining != 0U) {
+            const ssize_t read = ::pread(
+                fd_, cursor, static_cast<std::size_t>(remaining),
+                static_cast<off_t>(current_offset));
+            if (read < 0 && errno == EINTR) continue;
+            if (read <= 0 ||
+                (static_cast<std::uint64_t>(read) % kZkSumcheckSpillIoAlignment) != 0U) {
+                if (error) *error = "Sumcheck spill direct read was short or failed: errno=" +
+                                    std::to_string(errno);
+                return false;
+            }
+            cursor += read;
+            current_offset += static_cast<std::uint64_t>(read);
+            remaining -= static_cast<std::uint64_t>(read);
+        }
+        return true;
+    }
+
+    int fd_ = -1;
+    std::string directory_;
+    std::string operation_identity_;
+    std::uint64_t logical_domain_ = 0U;
+    std::uint64_t tensor_count_ = 0U;
+    std::uint64_t logical_rows_ = 0U;
+    std::uint32_t round_index_ = 0U;
+    std::uint64_t logical_bytes_ = 0U;
+    std::uint64_t allocated_bytes_ = 0U;
+    std::uint64_t logical_written_ = 0U;
+    std::uint64_t physical_written_ = 0U;
+    ZkSumcheckAlignedBuffer staging_;
+    std::size_t staging_used_ = 0U;
+    bool complete_ = false;
+};
+
 
 /*
  * Range-backed helpers for the authenticated sorted-lookup primitive.  None
@@ -1193,17 +1931,26 @@ inline bool make_authenticated_sorted_lookup_prefix_next_provider(
                 !sorted_lookup_read_range(keys, offset, count, key, read_error) ||
                 !sorted_lookup_read_range(active_mask, offset, count, active, read_error))
                 return false;
-            if (offset + count < prefix.logical_domain()) {
-                if (!sorted_lookup_read_range(prefix, offset + 1U, count, next, read_error))
+            const std::uint64_t domain = prefix.logical_domain();
+            const std::uint64_t shifted_available =
+                offset < domain ? domain - offset - 1U : 0U;
+            const std::uint32_t next_count = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(count, shifted_available));
+            if (next_count != 0U) {
+                if (!sorted_lookup_read_range(
+                        prefix, offset + 1U, next_count, next, read_error))
                     return false;
-            } else {
-                next.assign(count, FrWire{});
             }
             output.assign(count, FrWire{});
             for (std::uint32_t index = 0U; index < count; ++index) {
                 const std::uint64_t global = offset + index;
                 if (global >= active_length) continue;
                 if (global + 1U < active_length) {
+                    if (index >= next.size()) {
+                        if (read_error)
+                            *read_error = "sorted-lookup prefix-next shifted range is truncated";
+                        return false;
+                    }
                     output[index] = next[index];
                 } else {
                     output[index] = zkdl::fr_mul(
@@ -1701,7 +2448,7 @@ struct FacBindingDescriptor {
     std::uint32_t canonical_feature_domain = 0U;
     IndexMapU32 source_outer_index;
     IndexMapU32 source_feature_index;
-    std::vector<std::uint8_t> selector_active;
+    CowByteVector selector_active;
 
     bool valid(const std::vector<std::string>& operation_refs,
                std::string* error = nullptr) const {
@@ -1771,7 +2518,7 @@ struct OperationDescriptor {
     IndexMapU32 selector_dst;
     // Public graph slots.  Inactive slots are fixed zero padding and must
     // carry src=dst=0; they contribute no selector mass.
-    std::vector<std::uint8_t> selector_active;
+    CowByteVector selector_active;
     // Output feature coordinate -> source feature coordinate.  Standard
     // graph routing uses identity; scalar broadcast repeats source 0.
     IndexMapU32 selector_feature_map;
@@ -2464,6 +3211,10 @@ struct ProverContext {
     // One blinder is sampled per private/model tensor and reused for every
     // opening of that canonical commitment in this proof.
     std::map<std::string, FrWire> blinding_scalars;
+    // Native formal proving uses anonymous O_DIRECT folded-state spill files
+    // under its existing private witness directory when a Sumcheck state
+    // exceeds the in-memory cache budget. Generic callers leave this empty.
+    std::string sumcheck_spill_directory;
     // Native core supplies one bounded provider set and one authenticated
     // outer commitment map per sorted-lookup descriptor.
     std::vector<zkdl::AuthenticatedSortedLookupDescriptor> sorted_lookup_descriptors;
@@ -2655,13 +3406,13 @@ inline void append_fr_vector(zkdl::WireSizeCounter& out,
 
 template <typename Output>
 inline void append_u32_vector(Output& out,
-                              const std::vector<std::uint8_t>& values) {
+                              const CowByteVector& values) {
     zkdl::append_u64(out, static_cast<std::uint64_t>(values.size()));
     for (const auto value : values) zkdl::append_u32(out, value);
 }
 
 inline void append_u32_vector(zkdl::WireSizeCounter& out,
-                              const std::vector<std::uint8_t>& values) {
+                              const CowByteVector& values) {
     const std::uint64_t count = static_cast<std::uint64_t>(values.size());
     if (count > std::numeric_limits<std::uint64_t>::max() / sizeof(std::uint32_t))
         throw std::overflow_error("u32 vector wire size overflows uint64");
@@ -2843,7 +3594,7 @@ inline bool read_index_map_exact(const std::vector<byte>& in, size_t& offset,
 inline bool read_selector_active_exact(const std::vector<byte>& in,
                                        size_t& offset,
                                        std::uint32_t expected_count,
-                                       std::vector<std::uint8_t>& output) {
+                                       CowByteVector& output) {
     std::uint64_t count = 0U;
     if (!zkdl::read_u64(in, offset, count) || count != expected_count ||
         count > (std::uint64_t{1} << kMaxRelationPointBits) || offset > in.size() ||
@@ -4833,6 +5584,271 @@ inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
     return true;
 }
 
+inline bool zksc_spilled_round_evaluations(
+    const ConstraintDescriptor& descriptor,
+    const ZkSumcheckFoldedSpillFile& state,
+    std::uint32_t degree, std::vector<FrWire>& evaluations,
+    std::string* error = nullptr,
+    std::uint32_t round_index = 0U,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
+    const std::uint64_t tensor_count = state.tensor_count();
+    const std::uint64_t state_rows = state.logical_rows();
+    if (tensor_count == 0U || state_rows < 2U || (state_rows & 1U) != 0U ||
+        degree > 8U ||
+        !state.validate_complete(state.operation_identity(), state.logical_domain(),
+                                 tensor_count, state_rows, round_index, error)) {
+        if (error && error->empty()) *error = "Sumcheck spill round evaluation state is invalid";
+        return false;
+    }
+    const std::uint64_t row_count = state_rows / 2U;
+    const std::uint64_t max_io_rows = std::min<std::uint64_t>(
+        row_count, kZkSumcheckSpillIoRows);
+    std::uint64_t input_values = 0U, input_bytes = 0U;
+    if (max_io_rows == 0U ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (2U * max_io_rows) ||
+        tensor_count * (2U * max_io_rows) >
+            std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire)) {
+        if (error) *error = "Sumcheck spill evaluation block size overflows";
+        return false;
+    }
+    input_values = tensor_count * (2U * max_io_rows);
+    input_bytes = input_values * sizeof(FrWire);
+    ZkSumcheckAlignedBuffer input;
+    if (!input.allocate(input_bytes, error)) return false;
+    const std::size_t scratch_chunks = row_count < 4096U ? 1U :
+        std::min<std::uint64_t>(row_count,
+            static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U);
+    ZkSumcheckRoundEvaluationScratch scratch(
+        scratch_chunks, static_cast<std::size_t>(tensor_count), degree + 1U);
+    evaluations.assign(degree + 1U, FrWire{});
+    for (std::uint64_t row_begin = 0U; row_begin < row_count;) {
+        const std::uint64_t rows = std::min<std::uint64_t>(
+            row_count - row_begin, kZkSumcheckSpillIoRows);
+        const std::uint64_t offset = row_begin * 2U * tensor_count;
+        const std::uint64_t count = rows * 2U * tensor_count;
+        if (!state.read_values(offset, count, input.wires(), input_values,
+                               state.operation_identity(), state.logical_domain(),
+                               tensor_count, state_rows, round_index, error)) return false;
+        std::size_t chunk_limit = 1U;
+        if (rows >= 4096U) chunk_limit = std::min<std::uint64_t>(
+            rows, static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U);
+        const std::size_t grain = static_cast<std::size_t>(rows / chunk_limit +
+            (rows % chunk_limit != 0U ? 1U : 0U));
+        const std::size_t active_chunks = static_cast<std::size_t>(rows / grain +
+            (rows % grain != 0U ? 1U : 0U));
+        if (active_chunks == 0U || active_chunks > scratch.row_values.size() ||
+            active_chunks > scratch.chunk_evaluations.size()) {
+            if (error) *error = "Sumcheck spill row evaluation scratch shape is invalid";
+            return false;
+        }
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            std::fill(scratch.chunk_evaluations[chunk].begin(),
+                      scratch.chunk_evaluations[chunk].end(), FrWire{});
+        std::array<FrWire, 9U> evaluation_points{};
+        for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+            evaluation_points[evaluation] = zkdl::fr_from_u32(evaluation);
+        const FrWire* values = input.wires();
+        zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), grain,
+            [&](std::size_t local_row) {
+                const std::size_t chunk = local_row / grain;
+                auto& row_values = scratch.row_values[chunk];
+                auto& partial = scratch.chunk_evaluations[chunk];
+                const std::size_t base = 2U * local_row * static_cast<std::size_t>(tensor_count);
+                for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                    const FrWire x = evaluation_points[evaluation];
+                    for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
+                        const FrWire& left = values[base + tensor];
+                        const FrWire& right = values[base + tensor_count + tensor];
+                        row_values[tensor] = zkdl::fr_add(
+                            left, zkdl::fr_mul(x, zkdl::fr_sub(right, left)));
+                    }
+                    partial[evaluation] = zkdl::fr_add(
+                        partial[evaluation], eval_constraint(descriptor, row_values));
+                }
+            });
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+                evaluations[evaluation] = zkdl::fr_add(
+                    evaluations[evaluation], scratch.chunk_evaluations[chunk][evaluation]);
+        row_begin += rows;
+        if (progress != nullptr)
+            (*progress)("sumcheck_spill_eval_rows", round_index,
+                        std::numeric_limits<std::uint32_t>::max(), row_begin,
+                        row_count);
+    }
+    return true;
+}
+
+inline bool zksc_spilled_fold_state_initialize(
+    const std::vector<SegmentedTensorProvider>& providers,
+    const FrWire& challenge, const std::string& operation_identity,
+    const std::string& directory, std::uint32_t round_index,
+    ZkSumcheckFoldedSpillFile& state, std::string* error = nullptr,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (providers.empty() || !zkdl::fr_canonical(challenge) ||
+        providers.front().logical_domain() < 2U || directory.empty()) {
+        if (error) *error = "Sumcheck spill initialization inputs are invalid";
+        return false;
+    }
+    const std::uint32_t domain = providers.front().logical_domain();
+    const std::uint32_t segment_size = providers.front().segment_size();
+    const std::uint32_t segment_count = providers.front().segment_count();
+    if ((domain & 1U) != 0U || (segment_size & 1U) != 0U ||
+        static_cast<std::uint64_t>(domain) !=
+            static_cast<std::uint64_t>(segment_size) * segment_count ||
+        static_cast<std::uint64_t>(providers.size()) >
+            std::numeric_limits<std::uint64_t>::max() / (segment_size / 2U)) {
+        if (error) *error = "Sumcheck spill initialization provider layout is invalid";
+        return false;
+    }
+    std::uint64_t tile_values = static_cast<std::uint64_t>(providers.size()) *
+                                (segment_size / 2U);
+    if (tile_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire)) {
+        if (error) *error = "Sumcheck spill initialization tile size overflows";
+        return false;
+    }
+    const std::uint64_t tile_bytes = tile_values * sizeof(FrWire);
+    std::uint64_t peak = 0U;
+    if (!zksc_spilled_state_ram_peak_bytes(providers.size(), domain,
+                                           segment_size, peak) ||
+        peak > kZkSumcheckSpillRamBudgetBytes) {
+        if (error) *error = "Sumcheck spill initialization exceeds its bounded RAM envelope";
+        return false;
+    }
+    ZkSumcheckAlignedBuffer tile;
+    if (!tile.allocate(tile_bytes, error) ||
+        !ZkSumcheckFoldedSpillFile::create(
+            directory, operation_identity, domain, providers.size(), domain / 2U,
+            round_index, state, error)) return false;
+    auto* tile_values_ptr = tile.wires();
+    for (const auto& provider : providers)
+        if (!provider.valid(error) || provider.logical_domain() != domain ||
+            provider.segment_size() != segment_size ||
+            provider.segment_count() != segment_count) {
+            if (error && error->empty()) *error = "Sumcheck spill provider layout mismatch";
+            return false;
+        }
+    for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
+        for (std::size_t tensor = 0U; tensor < providers.size(); ++tensor) {
+            std::vector<FrWire> block;
+            if (!providers[tensor].read_segment(segment, block, error) ||
+                block.size() != segment_size ||
+                !zksc_fold_values_in_place(block, challenge, error,
+                                           round_index, static_cast<std::uint32_t>(tensor),
+                                           progress)) return false;
+            for (std::uint32_t row = 0U; row < segment_size / 2U; ++row)
+                tile_values_ptr[static_cast<std::uint64_t>(row) * providers.size() + tensor] =
+                    block[row];
+        }
+        if (!state.append_values(tile_values_ptr, tile_values, error)) return false;
+        if (progress != nullptr)
+            (*progress)("sumcheck_spill_init_segments", round_index,
+                        std::numeric_limits<std::uint32_t>::max(), segment + 1U,
+                        segment_count);
+    }
+    return state.finish(error);
+}
+
+inline bool zksc_spilled_fold_state(
+    const FrWire& challenge, ZkSumcheckFoldedSpillFile& state,
+    std::uint32_t next_round, std::string* error = nullptr,
+    const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (!zkdl::fr_canonical(challenge) || state.logical_rows() < 2U ||
+        (state.logical_rows() & 1U) != 0U ||
+        state.round_index() + 1U != next_round ||
+        !state.validate_complete(state.operation_identity(), state.logical_domain(),
+                                  state.tensor_count(), state.logical_rows(),
+                                  state.round_index(), error)) {
+        if (error && error->empty()) *error = "Sumcheck spill fold input state is invalid";
+        return false;
+    }
+    const std::uint64_t tensor_count = state.tensor_count();
+    const std::uint64_t output_rows = state.logical_rows() / 2U;
+    std::uint64_t input_values = 0U, output_values = 0U;
+    if (tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (2U * kZkSumcheckSpillIoRows) ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           kZkSumcheckSpillIoRows) {
+        if (error) *error = "Sumcheck spill fold block size overflows";
+        return false;
+    }
+    const std::uint64_t max_io_rows = std::min<std::uint64_t>(
+        output_rows, kZkSumcheckSpillIoRows);
+    if (max_io_rows == 0U ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           (2U * max_io_rows) ||
+        tensor_count > std::numeric_limits<std::uint64_t>::max() /
+                           max_io_rows) {
+        if (error) *error = "Sumcheck spill fold block size overflows";
+        return false;
+    }
+    input_values = tensor_count * (2U * max_io_rows);
+    output_values = tensor_count * max_io_rows;
+    ZkSumcheckAlignedBuffer input, output;
+    if (input_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        output_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        !input.allocate(input_values * sizeof(FrWire), error) ||
+        !output.allocate(output_values * sizeof(FrWire), error)) return false;
+    ZkSumcheckFoldedSpillFile next;
+    if (!ZkSumcheckFoldedSpillFile::create(
+            state.directory(), state.operation_identity(), state.logical_domain(),
+            tensor_count, output_rows, next_round, next, error)) return false;
+    const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
+    for (std::uint64_t row_begin = 0U; row_begin < output_rows;) {
+        const std::uint64_t rows = std::min<std::uint64_t>(
+            output_rows - row_begin, kZkSumcheckSpillIoRows);
+        const std::uint64_t input_offset = row_begin * 2U * tensor_count;
+        const std::uint64_t count = rows * 2U * tensor_count;
+        if (!state.read_values(input_offset, count, input.wires(), input_values,
+                               state.operation_identity(), state.logical_domain(),
+                               tensor_count, state.logical_rows(), state.round_index(),
+                               error)) return false;
+        const FrWire* input_values_ptr = input.wires();
+        FrWire* output_values_ptr = output.wires();
+        zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), 128U,
+            [&](std::size_t local_row) {
+                const std::size_t input_base = 2U * local_row * tensor_count;
+                const std::size_t output_base = local_row * tensor_count;
+                for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
+                    const FrWire left = input_values_ptr[input_base + tensor];
+                    const FrWire right = input_values_ptr[input_base + tensor_count + tensor];
+                    output_values_ptr[output_base + tensor] = zkdl::fr_add(
+                        zkdl::fr_mul(one_minus, left), zkdl::fr_mul(challenge, right));
+                }
+            });
+        if (!next.append_values(output_values_ptr, rows * tensor_count, error)) return false;
+        row_begin += rows;
+        if (progress != nullptr)
+            (*progress)("sumcheck_spill_fold_rows", next_round,
+                        std::numeric_limits<std::uint32_t>::max(), row_begin,
+                        output_rows);
+    }
+    if (!next.finish(error)) return false;
+    state = std::move(next);
+    return true;
+}
+
+inline bool zksc_spilled_terminal_values(
+    const ZkSumcheckFoldedSpillFile& state, std::uint32_t expected_round,
+    std::vector<FrWire>& terminal, std::string* error = nullptr) {
+    if (state.logical_rows() != 1U ||
+        !state.validate_complete(state.operation_identity(), state.logical_domain(),
+                                 state.tensor_count(), 1U, expected_round, error)) {
+        if (error && error->empty()) *error = "Sumcheck spill terminal state shape is invalid";
+        return false;
+    }
+    ZkSumcheckAlignedBuffer values;
+    std::uint64_t count = state.tensor_count();
+    if (count > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire) ||
+        !values.allocate(count * sizeof(FrWire), error) ||
+        !state.read_values(0U, count, values.wires(), values.size() / sizeof(FrWire),
+                           state.operation_identity(), state.logical_domain(), count,
+                           1U, expected_round, error)) return false;
+    terminal.assign(values.wires(), values.wires() + count);
+    return true;
+}
+
 inline bool zksc_folded_round_evaluations(
     const ConstraintDescriptor& descriptor,
     const std::vector<std::vector<FrWire>>& state,
@@ -4908,7 +5924,8 @@ inline bool prove_zk_sumcheck_segmented(
     std::uint32_t shared_segment_size = 0U,
     bool reuse_folded_state = false,
     const char* progress_phase = nullptr,
-    const char* progress_operation_id = nullptr) {
+    const char* progress_operation_id = nullptr,
+    const std::string* spill_directory = nullptr) {
     try {
         if (!zksc_validate_provider_inputs(
                 descriptor, tensor_providers, degree, domain_size, generators,
@@ -4949,6 +5966,31 @@ inline bool prove_zk_sumcheck_segmented(
         const ZkSumcheckProgressCallback* progress = reuse_folded_state
             ? &route_progress_callback
             : progress_phase != nullptr ? &native_progress_callback : nullptr;
+        bool use_spilled_folded_state = false;
+        if (!reuse_folded_state && spill_directory != nullptr) {
+            std::uint64_t folded_peak_bytes = 0U;
+            if (spill_directory->empty() ||
+                !zksc_folded_state_peak_bytes(
+                    tensor_providers.size(), tensor_providers.front().logical_domain(),
+                    tensor_providers.front().segment_size(), folded_peak_bytes)) {
+                if (error) *error = "Sumcheck spill context or folded-state capacity is invalid";
+                return false;
+            }
+            if (folded_peak_bytes > kZkSumcheckFoldedStateBudgetBytes) {
+                std::uint64_t spill_disk_bytes = 0U, spill_ram_bytes = 0U;
+                if (!zksc_spilled_state_disk_peak_bytes(
+                        tensor_providers.size(), tensor_providers.front().logical_domain(),
+                        spill_disk_bytes) ||
+                    !zksc_spilled_state_ram_peak_bytes(
+                        tensor_providers.size(), tensor_providers.front().logical_domain(),
+                        tensor_providers.front().segment_size(), spill_ram_bytes) ||
+                    spill_ram_bytes > kZkSumcheckSpillRamBudgetBytes) {
+                    if (error) *error = "Sumcheck spill resource envelope is invalid";
+                    return false;
+                }
+                use_spilled_folded_state = true;
+            }
+        }
         result = ZkSumcheckProverResult{};
         auto& proof = result.proof;
         proof.label = operation_context;
@@ -4981,11 +6023,16 @@ inline bool prove_zk_sumcheck_segmented(
         std::vector<FrWire> prior_challenges;
         prior_challenges.reserve(bits);
         std::vector<std::vector<FrWire>> folded_state;
+        ZkSumcheckFoldedSpillFile spilled_folded_state;
         for (std::uint32_t round_index = 0U; round_index < bits; ++round_index) {
             std::vector<FrWire> evaluations;
             const bool evaluated = reuse_folded_state && round_index != 0U
                 ? zksc_folded_round_evaluations(
                       descriptor, folded_state, degree, evaluations, error,
+                      round_index, progress)
+                : use_spilled_folded_state && round_index != 0U
+                ? zksc_spilled_round_evaluations(
+                      descriptor, spilled_folded_state, degree, evaluations, error,
                       round_index, progress)
                 : zksc_segmented_round_evaluations(
                       descriptor, tensor_providers, degree, round_index,
@@ -5092,6 +6139,15 @@ inline bool prove_zk_sumcheck_segmented(
                             return false;
                     }
                 }
+            } else if (use_spilled_folded_state) {
+                if (round_index == 0U) {
+                    if (!zksc_spilled_fold_state_initialize(
+                            tensor_providers, challenge_wire, operation_context,
+                            *spill_directory, round_index + 1U,
+                            spilled_folded_state, error, progress)) return false;
+                } else if (!zksc_spilled_fold_state(
+                               challenge_wire, spilled_folded_state,
+                               round_index + 1U, error, progress)) return false;
             }
             prior_challenges.push_back(challenge_wire);
             result.challenges.push_back(challenge);
@@ -5107,6 +6163,10 @@ inline bool prove_zk_sumcheck_segmented(
                 }
                 result.folded_terminal_values.push_back(tensor.front());
             }
+        } else if (use_spilled_folded_state) {
+            if (!zksc_spilled_terminal_values(
+                    spilled_folded_state, bits, result.folded_terminal_values, error))
+                return false;
         } else if (!zksc_segmented_terminal_values(
                        tensor_providers, prior_challenges,
                        result.folded_terminal_values, error, progress)) return false;
@@ -5407,6 +6467,240 @@ struct SegmentCommitmentMaterial {
     std::vector<zkdl::CpuG1Point> commitments;
 };
 
+inline void zktr_update_fr_wire_digest(
+    zkdl::Sha256& hash, const FrWire* values, std::size_t count) {
+    std::array<byte, 4096U> encoded{};
+    std::size_t used = 0U;
+    for (std::size_t index = 0U; index < count; ++index) {
+        const auto& value = values[index];
+        for (const std::uint32_t limb : value) {
+            for (std::size_t octet = 0U; octet < 4U; ++octet)
+                encoded[used++] = static_cast<byte>(limb >> (8U * octet));
+        }
+        if (used == encoded.size()) {
+            hash.update(encoded.data(), used);
+            used = 0U;
+        }
+    }
+    if (used != 0U) hash.update(encoded.data(), used);
+}
+
+inline std::array<byte, 32U> zktr_segment_scalar_digest(
+    const std::vector<FrWire>& values) {
+    zkdl::Sha256 hash;
+    zktr_update_fr_wire_digest(hash, values.data(), values.size());
+    return hash.final();
+}
+
+inline std::array<byte, 32U> zktr_segment_receipt_header_digest(
+    const std::string& tensor_id, std::uint32_t visibility,
+    const SegmentedTensorProvider& provider, const CommitmentWire& commitment) {
+    std::vector<byte> encoded;
+    zkdl::append_string(encoded, "zkdl.segment-msm-receipt.v1");
+    zkdl::append_string(encoded, tensor_id);
+    zkdl::append_u32(encoded, visibility);
+    zkdl::append_u32(encoded, provider.logical_domain());
+    zkdl::append_u32(encoded, provider.segment_size());
+    zkdl::append_u32(encoded, provider.segment_count());
+    zkdl::append_u32(encoded, commitment.segment_binding_version);
+    zkdl::append_u32(encoded, commitment.domain_size);
+    zkdl::append_u32(encoded, commitment.segment_size);
+    zkdl::append_u32(encoded, commitment.segment_count);
+    append_digest(encoded, commitment.srs_manifest_digest);
+    append_digest(encoded, commitment.basis_digest);
+    append_digest(encoded, commitment.segment_commitment_digest);
+    return zkdl::sha256(encoded);
+}
+
+inline std::array<byte, 32U> zktr_segment_receipt_material_digest(
+    const std::string& tensor_id, std::uint32_t visibility,
+    std::uint32_t domain_size, const std::array<byte, 32U>& basis_digest,
+    const SegmentCommitmentMaterial& material, std::uint32_t segment) {
+    std::vector<byte> encoded;
+    zkdl::append_string(encoded, "zkdl.segment-msm-material.v1");
+    zkdl::append_string(encoded, tensor_id);
+    zkdl::append_u32(encoded, visibility);
+    zkdl::append_u32(encoded, domain_size);
+    zkdl::append_u32(encoded, segment);
+    append_digest(encoded, basis_digest);
+    zkdl::append_g1(encoded,
+                    zkdl::cpu_g1_to_native(material.commitments.at(segment)));
+    append_fr_wire(encoded, material.blinders.at(segment));
+    return zkdl::sha256(encoded);
+}
+
+class SegmentCommitmentValidationReceipt {
+public:
+    SegmentCommitmentValidationReceipt() = default;
+    bool valid() const noexcept { return valid_; }
+    std::size_t segment_count() const noexcept { return scalar_digests_.size(); }
+
+    bool matches_context(
+        const std::string& tensor_id, std::uint32_t visibility,
+        const SegmentedTensorProvider& provider,
+        const std::vector<zkdl::CpuG1Point>& generators,
+        const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
+        const zkdl::CpuIpaBasisContext* authenticated_basis,
+        const CommitmentWire& commitment,
+        const SegmentCommitmentMaterial& material,
+        std::string* error = nullptr) const {
+        if (!valid_ || authenticated_basis == nullptr ||
+            !segment_commitment_wire_shape_valid(commitment, error) ||
+            !authenticated_basis->owns_exact_generators(generators, h, u) ||
+            !basis_.owns_exact_generators(generators, h, u) ||
+            !basis_.owns_exact_generators(authenticated_basis->generators(),
+                                          authenticated_basis->h(),
+                                          authenticated_basis->u()) ||
+            tensor_id != commitment.tensor_id || visibility != commitment.visibility ||
+            provider.logical_domain() != commitment.domain_size ||
+            provider.segment_size() != commitment.segment_size ||
+            provider.segment_count() != commitment.segment_count ||
+            material.blinders.size() != scalar_digests_.size() ||
+            material.commitments.size() != scalar_digests_.size() ||
+            commitment.segment_commitments.size() != scalar_digests_.size() ||
+            !zkdl::cpu_g1_equal(
+                aggregate_commitment_,
+                zkdl::cpu_g1_from_native(commitment.commitment)) ||
+            header_digest_ != zktr_segment_receipt_header_digest(
+                tensor_id, visibility, provider, commitment)) {
+            if (error) *error = "segment MSM receipt does not match authenticated basis/provider/wire";
+            return false;
+        }
+        for (std::uint32_t segment = 0U; segment < scalar_digests_.size(); ++segment) {
+            if (!zkdl::fr_canonical(material.blinders[segment]) ||
+                !zkdl::cpu_g1_equal(
+                    material.commitments[segment],
+                    zkdl::cpu_g1_from_native(
+                        commitment.segment_commitments[segment].commitment)) ||
+                zktr_segment_receipt_material_digest(
+                    tensor_id, visibility, commitment.domain_size,
+                    commitment.basis_digest, material, segment) !=
+                    material_digests_[segment]) {
+                if (error) *error = "segment MSM receipt material binding mismatch";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool matches_segment(std::uint32_t segment,
+                         const std::vector<FrWire>& values,
+                         const SegmentCommitmentMaterial& material,
+                         std::string* error = nullptr) const {
+        if (!valid_ || segment >= scalar_digests_.size() ||
+            segment >= material.blinders.size() ||
+            segment >= material.commitments.size() ||
+            zktr_segment_scalar_digest(values) != scalar_digests_[segment] ||
+            zktr_segment_receipt_material_digest(
+                tensor_id_, visibility_, domain_size_, basis_digest_, material,
+                segment) != material_digests_[segment]) {
+            if (error) *error = "segment MSM receipt witness/material digest mismatch";
+            return false;
+        }
+        return true;
+    }
+
+    bool matches_opening_context(
+        const zkdl::CpuIpaBasisContext& authenticated_basis,
+        const std::vector<zkdl::CpuG1Point>& generators,
+        const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
+        std::uint32_t domain_size, std::uint32_t segment_size,
+        std::uint32_t segment_count, const zkdl::CpuG1Point& aggregate,
+        const SegmentCommitmentMaterial& material,
+        std::string* error = nullptr) const {
+        if (!valid_ ||
+            !authenticated_basis.owns_exact_generators(generators, h, u) ||
+            !basis_.owns_exact_generators(generators, h, u) ||
+            !basis_.owns_exact_generators(authenticated_basis.generators(),
+                                          authenticated_basis.h(),
+                                          authenticated_basis.u()) ||
+            domain_size != domain_size_ || segment_size != segment_size_ ||
+            segment_count != segment_count_ || material.blinders.size() != segment_count_ ||
+            material.commitments.size() != segment_count_ ||
+            !zkdl::cpu_g1_equal(aggregate, aggregate_commitment_)) {
+            if (error) *error = "segment MSM receipt does not match opening context";
+            return false;
+        }
+        for (std::uint32_t segment = 0U; segment < segment_count_; ++segment) {
+            if (zktr_segment_receipt_material_digest(
+                    tensor_id_, visibility_, domain_size_, basis_digest_, material,
+                    segment) != material_digests_[segment]) {
+                if (error) *error = "segment MSM receipt opening material mismatch";
+                return false;
+            }
+        }
+        return true;
+    }
+
+private:
+    friend struct SegmentCommitmentValidationReceiptFactory;
+    bool valid_ = false;
+    zkdl::CpuIpaBasisContext basis_;
+    std::string tensor_id_;
+    std::uint32_t visibility_ = 0U;
+    std::uint32_t domain_size_ = 0U;
+    std::uint32_t segment_size_ = 0U;
+    std::uint32_t segment_count_ = 0U;
+    std::array<byte, 32U> basis_digest_{};
+    std::array<byte, 32U> header_digest_{};
+    zkdl::CpuG1Point aggregate_commitment_;
+    std::vector<std::array<byte, 32U>> scalar_digests_;
+    std::vector<std::array<byte, 32U>> material_digests_;
+};
+
+struct SegmentCommitmentValidationReceiptFactory {
+private:
+    static SegmentCommitmentValidationReceipt mint(
+        const zkdl::CpuIpaBasisContext& basis,
+        const std::string& tensor_id, std::uint32_t visibility,
+        const SegmentedTensorProvider& provider,
+        const CommitmentWire& commitment,
+        const SegmentCommitmentMaterial& material,
+        std::vector<std::array<byte, 32U>>&& scalar_digests) {
+        if (scalar_digests.size() != commitment.segment_count ||
+            !basis.valid())
+            throw std::invalid_argument("cannot mint incomplete segment MSM receipt");
+        SegmentCommitmentValidationReceipt receipt;
+        receipt.basis_ = basis;
+        receipt.tensor_id_ = tensor_id;
+        receipt.visibility_ = commitment.visibility;
+        receipt.domain_size_ = commitment.domain_size;
+        receipt.segment_size_ = commitment.segment_size;
+        receipt.segment_count_ = commitment.segment_count;
+        receipt.basis_digest_ = commitment.basis_digest;
+        receipt.aggregate_commitment_ = zkdl::cpu_g1_from_native(commitment.commitment);
+        receipt.header_digest_ = zktr_segment_receipt_header_digest(
+            tensor_id, visibility, provider, commitment);
+        receipt.scalar_digests_ = std::move(scalar_digests);
+        receipt.material_digests_.reserve(receipt.scalar_digests_.size());
+        for (std::uint32_t segment = 0U;
+             segment < receipt.scalar_digests_.size(); ++segment)
+            receipt.material_digests_.push_back(
+                zktr_segment_receipt_material_digest(
+                    tensor_id, commitment.visibility, commitment.domain_size,
+                    commitment.basis_digest, material, segment));
+        receipt.valid_ = true;
+        return receipt;
+    }
+
+    friend bool zktr_build_segment_commitment_material(
+        const std::string&, std::uint32_t, const SegmentedTensorProvider&,
+        const std::vector<zkdl::CpuG1Point>&, const zkdl::CpuG1Point&,
+        const zkdl::CpuG1Point&, const FrWire&, const RelationStatement&,
+        CommitmentWire&, SegmentCommitmentMaterial&, std::string*, double*,
+        std::uint32_t, const SegmentCommitmentProgressCallback*,
+        const zkdl::CpuIpaBasisContext*, zkdl::CpuG1MsmSession*,
+        SegmentCommitmentValidationReceipt*);
+    friend bool zktr_commitment_wire_from_material(
+        const std::string&, std::uint32_t, const SegmentedTensorProvider&,
+        const std::vector<zkdl::CpuG1Point>&, const zkdl::CpuG1Point&,
+        const zkdl::CpuG1Point&, const RelationStatement&,
+        const SegmentCommitmentMaterial&, CommitmentWire&, std::string*,
+        std::uint32_t, const SegmentCommitmentProgressCallback*,
+        const zkdl::CpuIpaBasisContext*, zkdl::CpuG1MsmSession*,
+        SegmentCommitmentValidationReceipt*);
+};
+
 inline bool registered_model_segment_blinders(const std::string& tensor_id, const ZkRelationSegmentLayout& layout, const FrWire& total, const std::array<byte, 32U>& srs_digest, std::vector<FrWire>& shares, std::string* error = nullptr) {
     if (tensor_id.empty() || !zkdl::fr_canonical(total) || same_wire(total, FrWire{}) || layout.segment_count == 0U || layout.segment_count > kMaxRelationSegments || srs_digest == std::array<byte, 32U>{}) { if (error) *error = "registered model segment blinder inputs are invalid"; return false; }
     if (layout.segment_count == 1U) { shares = {total}; return true; }
@@ -5492,6 +6786,21 @@ inline std::array<byte, 32U> zktr_basis_digest_for_prefix(
     return zkdl::cpu_ipa_basis_digest(prefix, h, u, padded_size);
 }
 
+inline zkdl::CpuG1Point zktr_cpu_g1_sum(
+    const std::vector<zkdl::CpuG1Point>& generators, const FrWire* scalars,
+    std::size_t count, const zkdl::CpuIpaBasisContext* authenticated_basis,
+    zkdl::CpuG1MsmSession* msm_session) {
+    if (msm_session != nullptr) {
+        if (authenticated_basis == nullptr)
+            throw std::invalid_argument(
+                "prepared segment MSM requires an authenticated IPA basis");
+        return msm_session->sum(*authenticated_basis, generators,
+                                authenticated_basis->h(),
+                                authenticated_basis->u(), scalars, count);
+    }
+    return zkdl::cpu_g1_sum(generators.data(), scalars, count);
+}
+
 inline bool zktr_build_segment_commitment_material(
     const std::string& tensor_id, std::uint32_t visibility,
     const SegmentedTensorProvider& provider,
@@ -5503,7 +6812,9 @@ inline bool zktr_build_segment_commitment_material(
     double* commitment_crypto_time_seconds = nullptr,
     std::uint32_t shared_segment_size = 0U,
     const SegmentCommitmentProgressCallback* segment_progress = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    SegmentCommitmentValidationReceipt* validation_receipt = nullptr) {
     try {
         double commitment_crypto_seconds = 0.0;
         ZkRelationSegmentLayout layout;
@@ -5525,6 +6836,10 @@ inline bool zktr_build_segment_commitment_material(
                                          u_generator, layout.segment_size,
                                          authenticated_basis, error))
             return false;
+        if (validation_receipt != nullptr && authenticated_basis == nullptr) {
+            if (error) *error = "segment MSM receipt requires authenticated IPA basis";
+            return false;
+        }
         std::uint32_t generator_count = 0U;
         if (!checked_relation_u32(generators.size(), generator_count,
                                   "segment commitment generator count", error))
@@ -5567,9 +6882,14 @@ inline bool zktr_build_segment_commitment_material(
         commitment.basis_digest = basis_digest;
         commitment.segment_commitments.reserve(layout.segment_count);
         zkdl::CpuG1Point legacy = zkdl::CpuG1Point::zero();
+        std::vector<std::array<byte, 32U>> scalar_digests;
+        if (validation_receipt != nullptr)
+            scalar_digests.reserve(layout.segment_count);
         for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
             std::vector<FrWire> values;
             if (!provider.read_segment(segment, values, error)) return false;
+            if (validation_receipt != nullptr)
+                scalar_digests.push_back(zktr_segment_scalar_digest(values));
             const std::uint64_t offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
             std::uint32_t actual = 0U;
             if (!checked_relation_u32(
@@ -5579,8 +6899,8 @@ inline bool zktr_build_segment_commitment_material(
                 return false;
             const auto crypto_start = std::chrono::steady_clock::now();
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
-                zkdl::cpu_g1_sum(generators.data(), values.data(),
-                                 layout.segment_size),
+                zktr_cpu_g1_sum(generators, values.data(), layout.segment_size,
+                                authenticated_basis, msm_session),
                 zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
             const G1Jacobian_t encoded_commitment = zkdl::cpu_g1_to_native(xi);
             const zkdl::CpuG1Point next_legacy = zkdl::cpu_g1_add(legacy, xi);
@@ -5610,6 +6930,10 @@ inline bool zktr_build_segment_commitment_material(
             std::chrono::steady_clock::now() - finalization_start).count();
         commitment.segment_commitment_digest = segment_commitment_digest(commitment);
         if (!segment_commitment_wire_shape_valid(commitment, error)) return false;
+        if (validation_receipt != nullptr)
+            *validation_receipt = SegmentCommitmentValidationReceiptFactory::mint(
+                *authenticated_basis, tensor_id, visibility, provider, commitment,
+                material, std::move(scalar_digests));
         if (commitment_crypto_time_seconds != nullptr)
             *commitment_crypto_time_seconds += commitment_crypto_seconds;
         return true;
@@ -5633,7 +6957,9 @@ inline bool zktr_commitment_wire_from_material(
     std::string* error = nullptr,
     std::uint32_t shared_segment_size = 0U,
     const SegmentCommitmentProgressCallback* segment_progress = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    SegmentCommitmentValidationReceipt* validation_receipt = nullptr) {
     try {
         ZkRelationSegmentLayout layout;
         const bool layout_valid = shared_segment_size == 0U
@@ -5682,6 +7008,9 @@ inline bool zktr_commitment_wire_from_material(
         commitment.basis_digest = basis_digest;
         commitment.segment_commitments.reserve(layout.segment_count);
         zkdl::CpuG1Point legacy = zkdl::CpuG1Point::zero();
+        std::vector<std::array<byte, 32U>> scalar_digests;
+        if (validation_receipt != nullptr)
+            scalar_digests.reserve(layout.segment_count);
         for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
             if (!zkdl::fr_canonical(material.blinders[segment])) {
                 if (error) *error = "segment commitment material has a non-canonical blinder";
@@ -5689,6 +7018,8 @@ inline bool zktr_commitment_wire_from_material(
             }
             std::vector<FrWire> values;
             if (!provider.read_segment(segment, values, error)) return false;
+            if (validation_receipt != nullptr)
+                scalar_digests.push_back(zktr_segment_scalar_digest(values));
             const std::uint64_t offset = static_cast<std::uint64_t>(segment) * layout.segment_size;
             std::uint32_t actual = 0U;
             if (!checked_relation_u32(
@@ -5697,8 +7028,8 @@ inline bool zktr_commitment_wire_from_material(
                     actual, "segment commitment actual length", error))
                 return false;
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
-                zkdl::cpu_g1_sum(generators.data(), values.data(),
-                                 layout.segment_size),
+                zktr_cpu_g1_sum(generators, values.data(), layout.segment_size,
+                                authenticated_basis, msm_session),
                 zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
             if ((xi.is_zero() && visibility != 1U) || !zkdl::cpu_g1_equal(xi, material.commitments[segment])) {
                 if (error) *error = "segment commitment material differs from provider witness";
@@ -5718,7 +7049,17 @@ inline bool zktr_commitment_wire_from_material(
         }
         commitment.commitment = zkdl::cpu_g1_to_native(legacy);
         commitment.segment_commitment_digest = segment_commitment_digest(commitment);
-        return segment_commitment_wire_shape_valid(commitment, error);
+        if (!segment_commitment_wire_shape_valid(commitment, error)) return false;
+        if (validation_receipt != nullptr) {
+            if (authenticated_basis == nullptr) {
+                if (error) *error = "segment MSM receipt requires authenticated IPA basis";
+                return false;
+            }
+            *validation_receipt = SegmentCommitmentValidationReceiptFactory::mint(
+                *authenticated_basis, tensor_id, visibility, provider, commitment,
+                material, std::move(scalar_digests));
+        }
+        return true;
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
         return false;
@@ -6197,7 +7538,10 @@ inline bool prove_zk_terminal_relation_segmented(
     const std::vector<SegmentCommitmentMaterial>* segment_materials = nullptr,
     std::uint32_t shared_segment_size = 0U,
     NativeOperationProgressReporter* progress = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::vector<const SegmentCommitmentValidationReceipt*>*
+        segment_receipts = nullptr) {
     try {
         NativeOperationProgressReporter local_progress("terminal_relation", operation_context);
         if (progress == nullptr) progress = &local_progress;
@@ -6309,6 +7653,18 @@ inline bool prove_zk_terminal_relation_segmented(
                 return false;
             }
             const std::vector<FrWire>& segment_blinders = fixed_material->blinders;
+            const SegmentCommitmentValidationReceipt* validation_receipt =
+                segment_receipts != nullptr && tensor_index < segment_receipts->size()
+                    ? (*segment_receipts)[tensor_index] : nullptr;
+            if (validation_receipt != nullptr && !validation_receipt->valid())
+                validation_receipt = nullptr;
+            if (validation_receipt != nullptr &&
+                (authenticated_basis == nullptr ||
+                 !validation_receipt->matches_opening_context(
+                     *authenticated_basis, generators, blinding_generator,
+                     u_generator, layout.logical_domain, layout.segment_size,
+                     layout.segment_count, canonical_commitments[tensor_index],
+                     *fixed_material, error))) return false;
             FrWire value{};
             FrWire tau_blinder{};
             zkdl::CpuG1Point aggregate_tau = zkdl::CpuG1Point::zero();
@@ -6330,14 +7686,23 @@ inline bool prove_zk_terminal_relation_segmented(
                 const FrWire segment_value = zkdl::cpu_ipa_inner_product(
                     segment_values, zkdl::cpu_ipa_mle_weights(low_point));
                 const FrWire segment_tau_blinder = zkdl::cpu_fresh_csprng_scalar();
-                const zkdl::CpuG1Point recomputed_xi = zkdl::cpu_g1_add(
-                    zkdl::cpu_g1_sum(generators.data(), segment_values.data(),
-                                     layout.segment_size),
-                    zkdl::cpu_g1_mul(blinding_generator, segment_blinders[segment]));
                 const zkdl::CpuG1Point segment_xi = fixed_material->commitments[segment];
-                if (!zkdl::cpu_g1_equal(recomputed_xi, segment_xi)) {
-                    if (error) *error = "segment commitment material does not match witness values";
-                    return false;
+                zkdl::CpuG1Point checked_xi = segment_xi;
+                if (validation_receipt != nullptr) {
+                    if (!validation_receipt->matches_segment(
+                            segment, segment_values, *fixed_material, error))
+                        return false;
+                } else {
+                    checked_xi = zkdl::cpu_g1_add(
+                        zktr_cpu_g1_sum(generators, segment_values.data(),
+                                        layout.segment_size, authenticated_basis,
+                                        msm_session),
+                        zkdl::cpu_g1_mul(blinding_generator,
+                                         segment_blinders[segment]));
+                    if (!zkdl::cpu_g1_equal(checked_xi, segment_xi)) {
+                        if (error) *error = "segment commitment material does not match witness values";
+                        return false;
+                    }
                 }
                 const zkdl::CpuG1Point segment_tau = zkdl::cpu_pedersen_scalar_commit(
                     segment_value, segment_tau_blinder, blinding_generator, u_generator);
@@ -6353,11 +7718,11 @@ inline bool prove_zk_terminal_relation_segmented(
                     ? zkdl::cpu_open_hyrax_v3_authenticated(
                           *authenticated_basis, segment_values, low_point,
                           segment_blinders[segment], segment_tau_blinder,
-                          segment_tau, metadata, recomputed_xi)
+                          segment_tau, metadata, checked_xi, msm_session)
                     : zkdl::cpu_open_hyrax_v3_with_checked_xi(
                           segment_generators, segment_values, low_point,
                           blinding_generator, u_generator, segment_blinders[segment],
-                          segment_tau_blinder, segment_tau, metadata, recomputed_xi);
+                          segment_tau_blinder, segment_tau, metadata, checked_xi);
                 if (!zkdl::cpu_g1_equal(
                         zkdl::cpu_g1_from_native(opening.proof.xi), segment_xi)) {
                     if (error) *error = "segment Hyrax xi differs from authenticated statement vector";
@@ -6564,7 +7929,8 @@ inline bool verify_zk_terminal_relation(
     std::string* error = nullptr,
     const std::vector<CommitmentWire>* commitment_wires = nullptr,
     std::uint32_t shared_segment_size = 0U,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     try {
         if (!zktr_link_kind_valid(link_kind) ||
             !zktr_validate_public_inputs(
@@ -6748,7 +8114,8 @@ inline bool verify_zk_terminal_relation(
                           ? zkdl::cpu_verify_hyrax_v3_authenticated(
                                 opening, zkdl::cpu_g1_from_native(opening.xi),
                                 zkdl::cpu_g1_from_native(opening.tau),
-                                *authenticated_basis, low_point, metadata, error)
+                                *authenticated_basis, low_point, metadata, error,
+                                msm_session)
                           : zkdl::cpu_verify_hyrax_v3(
                                 opening, zkdl::cpu_g1_from_native(opening.xi),
                                 zkdl::cpu_g1_from_native(opening.tau),
@@ -7114,7 +8481,8 @@ inline bool verify_constraint(const ConstraintProof& proof,
                              const RelationStatement& statement,
                              zkdl::Transcript& transcript,
                              std::string* error = nullptr,
-                             const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+                             const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+                             zkdl::CpuG1MsmSession* msm_session = nullptr) {
     std::vector<byte> expected_bytes, actual_bytes;
     append_constraint(expected_bytes, expected);
     append_constraint(actual_bytes, proof.descriptor);
@@ -7188,7 +8556,7 @@ inline bool verify_constraint(const ConstraintProof& proof,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
             zkdl::cpu_g1_from_native(sumcheck_result.final_claim_commitment),
             FrWire{}, operation_context, transcript, terminal_result, error,
-            &commitments, 0U, authenticated_basis)) return false;
+            &commitments, 0U, authenticated_basis, msm_session)) return false;
     return true;
 }
 
@@ -7239,7 +8607,11 @@ inline bool fill_constraint_openings(
     zkdl::Transcript& transcript, ConstraintProof& proof,
     std::string* error = nullptr,
     const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::map<std::string, SegmentCommitmentValidationReceipt>*
+        validation_receipts = nullptr,
+    const std::string* spill_directory = nullptr) {
     if (operation_refs.empty()) {
         if (error) *error = "relation batched proof has no operation tensor references";
         return false;
@@ -7311,7 +8683,8 @@ inline bool fill_constraint_openings(
                 ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
                 operation_context, transcript, sumcheck_result, error, 0U,
                 zksc_folded_state_within_budget(weighted_providers),
-                "constraint_sumcheck", descriptor.id.c_str())) return false;
+                "constraint_sumcheck", descriptor.id.c_str(),
+                spill_directory)) return false;
         proof.zk_sumcheck = std::move(sumcheck_result.proof);
         std::vector<FrWire> terminal_point;
         terminal_point.reserve(sumcheck_result.challenges.size());
@@ -7319,9 +8692,14 @@ inline bool fill_constraint_openings(
             terminal_point.push_back(zkdl::fr_wire(challenge));
         std::reverse(terminal_point.begin(), terminal_point.end());
         std::vector<SegmentCommitmentMaterial> terminal_materials;
+        std::vector<const SegmentCommitmentValidationReceipt*> terminal_receipts;
         terminal_materials.reserve(operation_refs.size());
+        if (validation_receipts != nullptr)
+            terminal_receipts.reserve(operation_refs.size());
         if (segment_blinding_scalars != nullptr) {
-            for (const auto& ref : operation_refs) {
+            for (std::size_t ref_index = 0U; ref_index < operation_refs.size();
+                 ++ref_index) {
+                const auto& ref = operation_refs[ref_index];
                 const auto commitment = std::find_if(
                     commitments.begin(), commitments.end(),
                     [&](const CommitmentWire& value) { return value.tensor_id == ref; });
@@ -7332,6 +8710,20 @@ inline bool fill_constraint_openings(
                 SegmentCommitmentMaterial material;
                 if (!zktr_material_from_wire(
                         *commitment, *segment_blinding_scalars, material, error)) return false;
+                if (validation_receipts != nullptr) {
+                    const auto receipt = validation_receipts->find(ref);
+                    if (receipt == validation_receipts->end() ||
+                        !receipt->second.matches_context(
+                            ref, commitment->visibility,
+                            tensor_providers[ref_index], generators,
+                            ipa_blinding_generator, ipa_u_generator,
+                            authenticated_basis, *commitment, material, error)) {
+                        if (error && error->empty())
+                            *error = "terminal segment MSM receipt is missing or invalid";
+                        return false;
+                    }
+                    terminal_receipts.push_back(&receipt->second);
+                }
                 terminal_materials.push_back(std::move(material));
             }
         }
@@ -7346,7 +8738,8 @@ inline bool fill_constraint_openings(
                 sumcheck_result.final_q_blinder, FrWire{}, operation_context,
                 transcript, terminal_result, error,
                 segment_blinding_scalars != nullptr ? &terminal_materials : nullptr,
-                0U, &constraint_progress, authenticated_basis)) return false;
+                0U, &constraint_progress, authenticated_basis, msm_session,
+                validation_receipts != nullptr ? &terminal_receipts : nullptr)) return false;
         proof.terminal_relation = std::move(terminal_result.proof);
         return true;
     } catch (const std::exception& exception) {
@@ -7391,7 +8784,9 @@ inline bool prove_sparse_route(
     const RelationStatement& statement,
     zkdl::Transcript& transcript, SparseRouteProof& route,
     std::string* error, SparseRouteProverSecrets* secrets = nullptr,
-    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr);
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr);
 
 inline bool verify_sparse_route(
     const OperationDescriptor& descriptor,
@@ -7401,7 +8796,9 @@ inline bool verify_sparse_route(
     const zkdl::CpuG1Point& ipa_u_generator,
     const RelationStatement& statement,
     zkdl::Transcript& transcript, const SparseRouteProof& route,
-    std::string* error);
+    std::string* error,
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr);
 
 inline OperationDescriptor fac_line8_selector_descriptor(
     const OperationDescriptor& operation, const FacBindingDescriptor& binding,
@@ -7574,7 +8971,9 @@ inline bool prove_fac_line8(
     const RelationStatement& statement,
     zkdl::Transcript& transcript, FacLine8Proof& proof,
     std::string* error = nullptr,
-    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr) {
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     try {
         NativeOperationProgressReporter fac_progress("fac_line8", operation.id);
         proof = FacLine8Proof{};
@@ -7595,7 +8994,7 @@ inline bool prove_fac_line8(
                     selector, tensor_map, blinders, generators,
                     ipa_blinding_generator, ipa_u_generator, commitments,
                     statement, transcript, route, &selector_error, &secrets,
-                    segment_blinding_scalars)) {
+                    segment_blinding_scalars, authenticated_basis, msm_session)) {
                 if (error) *error = "FAC4DNN selector proof failed operation_id=" + operation.id +
                     " binding_index=" + std::to_string(index) + ": " + selector_error;
                 return false;
@@ -7667,7 +9066,9 @@ inline bool verify_fac_line8(
     const zkdl::CpuG1Point& ipa_u_generator,
     const RelationStatement& statement,
     zkdl::Transcript& transcript, const FacLine8Proof& proof,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     try {
         if (proof.version != FacLine8Proof::kVersion ||
             operation.fac_bindings.empty() ||
@@ -7685,7 +9086,8 @@ inline bool verify_fac_line8(
             if (!verify_sparse_route(
                     selector, commitments, generators, ipa_blinding_generator,
                     ipa_u_generator, statement, transcript,
-                    proof.selector_proofs[index], error)) return false;
+                    proof.selector_proofs[index], error,
+                    authenticated_basis, msm_session)) return false;
             const std::vector<byte> encoded = proof.selector_proofs[index].serialize();
             transcript.absorb(
                 "gat.fac4dnn.line8." + operation.id + ".selector." +
@@ -8274,7 +9676,7 @@ struct HiddenMatMulOpeningSecrets {
     FrWire tau_blinder{};
 };
 
-inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provider, const CommitmentWire& commitment, const SegmentCommitmentMaterial& material, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, HiddenMatMulOpeningSecrets& result, std::string* error, NativeOperationProgressReporter* progress = nullptr, const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provider, const CommitmentWire& commitment, const SegmentCommitmentMaterial& material, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, HiddenMatMulOpeningSecrets& result, std::string* error, NativeOperationProgressReporter* progress = nullptr, const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr, const SegmentCommitmentValidationReceipt* validation_receipt = nullptr, zkdl::CpuG1MsmSession* msm_session = nullptr) {
     ZkRelationSegmentLayout layout;
     if (!provider.valid(error) || !zktr_segment_layout(provider.logical_domain(), generators.size(), layout, error) || !zktr_segment_material_matches(commitment, material, error) || commitment.domain_size != provider.logical_domain() || commitment.segment_size != layout.segment_size || commitment.segment_count != layout.segment_count || provider.segment_size() != layout.segment_size || provider.segment_count() != layout.segment_count || point.size() != log2_exact(layout.logical_domain)) return false;
     const auto low = zktr_segment_point(point, layout.segment_size), high = zktr_segment_prefix_point(point, layout.segment_size);
@@ -8284,6 +9686,10 @@ inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provid
     const auto frame = zktr_basis_digest_for_prefix(
         generators, h, u, layout.segment_size,
         zkdl::cpu_ipa_padded_size(layout.segment_size), authenticated_basis);
+    if (validation_receipt != nullptr &&
+        !validation_receipt->matches_context(
+            commitment.tensor_id, commitment.visibility, provider, generators,
+            h, u, authenticated_basis, commitment, material, error)) return false;
     std::vector<zkdl::CpuG1Point> raw_basis;
     if (authenticated_basis == nullptr)
         raw_basis.assign(generators.begin(), generators.begin() + layout.segment_size);
@@ -8293,10 +9699,17 @@ inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provid
         const auto& wire = commitment.segment_commitments[segment];
         std::vector<FrWire> values;
         if (wire.frame_digest != frame || !provider.read_segment(segment, values, error)) return false;
-        const auto xi = zkdl::cpu_g1_add(
-            zkdl::cpu_g1_sum(generators.data(), values.data(), layout.segment_size),
-            zkdl::cpu_g1_mul(h, material.blinders[segment]));
-        if (!zkdl::cpu_g1_equal(xi, material.commitments[segment])) { if (error) *error = "hidden segment Xi differs from canonical witness commitment"; return false; }
+        zkdl::CpuG1Point xi = material.commitments[segment];
+        if (validation_receipt != nullptr) {
+            if (!validation_receipt->matches_segment(segment, values, material, error))
+                return false;
+        } else {
+            xi = zkdl::cpu_g1_add(
+                zktr_cpu_g1_sum(generators, values.data(), layout.segment_size,
+                                authenticated_basis, msm_session),
+                zkdl::cpu_g1_mul(h, material.blinders[segment]));
+            if (!zkdl::cpu_g1_equal(xi, material.commitments[segment])) { if (error) *error = "hidden segment Xi differs from canonical witness commitment"; return false; }
+        }
         const FrWire value = zkdl::cpu_ipa_inner_product(values, low_weights), blinder = hidden_matmul_nonzero_scalar();
         const auto segment_tau = zkdl::cpu_pedersen_scalar_commit(value, blinder, h, u);
         metadata.outer_point = point;
@@ -8308,7 +9721,7 @@ inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provid
         const auto opening = authenticated_basis != nullptr
             ? zkdl::cpu_open_hyrax_v3_authenticated(
                   *authenticated_basis, values, low, material.blinders[segment],
-                  blinder, segment_tau, metadata, xi)
+                  blinder, segment_tau, metadata, xi, msm_session)
             : zkdl::cpu_open_hyrax_v3_with_checked_xi(
                   raw_basis, values, low, h, u, material.blinders[segment],
                   blinder, segment_tau, metadata, xi);
@@ -8323,7 +9736,7 @@ inline bool prove_hidden_segmented_opening(const SegmentedTensorProvider& provid
     return hidden_matmul_opening_shape_valid(result.proof, layout.logical_domain);
 }
 
-inline bool verify_hidden_segmented_opening(const HiddenMatMulOpening& opening, const CommitmentWire& commitment, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, std::string* error, const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+inline bool verify_hidden_segmented_opening(const HiddenMatMulOpening& opening, const CommitmentWire& commitment, const std::vector<FrWire>& point, const std::vector<zkdl::CpuG1Point>& generators, const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u, zkdl::CpuIpaOpeningMetadata metadata, std::string* error, const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr, zkdl::CpuG1MsmSession* msm_session = nullptr) {
     ZkRelationSegmentLayout layout;
     if (!segment_commitment_wire_shape_valid(commitment, error) || !zktr_segment_layout(commitment.domain_size, generators.size(), layout, error) || !hidden_matmul_opening_shape_valid(opening, layout.logical_domain) || commitment.segment_size != layout.segment_size || commitment.segment_count != layout.segment_count || point.size() != log2_exact(layout.logical_domain) || opening.segments.size() != layout.segment_count) return false;
     const auto low = zktr_segment_point(point, layout.segment_size), high = zktr_segment_prefix_point(point, layout.segment_size);
@@ -8350,7 +9763,7 @@ inline bool verify_hidden_segmented_opening(const HiddenMatMulOpening& opening, 
             ? zkdl::cpu_verify_hyrax_v3_authenticated(
                   proof, zkdl::cpu_g1_from_native(wire.commitment),
                   zkdl::cpu_g1_from_native(proof.tau), *authenticated_basis,
-                  low, metadata, error)
+                  low, metadata, error, msm_session)
             : zkdl::cpu_verify_hyrax_v3(
                   proof, zkdl::cpu_g1_from_native(wire.commitment),
                   zkdl::cpu_g1_from_native(proof.tau), raw_basis, low, h, u,
@@ -8373,7 +9786,10 @@ inline bool prove_hidden_matmul(
     const std::vector<CommitmentWire>& commitments,
     const RelationStatement& statement, zkdl::Transcript& transcript,
     HiddenMatMulProof& result, std::string* error, const std::map<std::string, std::vector<FrWire>>& segment_blinding_scalars,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::map<std::string, SegmentCommitmentValidationReceipt>*
+        validation_receipts = nullptr) {
     try {
         const std::string progress_operation_id = operation.id + "/primitive/" + std::to_string(primitive_index);
         NativeOperationProgressReporter hidden_progress("hidden_matmul", progress_operation_id);
@@ -8454,10 +9870,21 @@ inline bool prove_hidden_matmul(
             SegmentCommitmentMaterial material;
             if (!zktr_material_from_wire(commitments[index], segment_blinding_scalars, material, error)) return false;
             const auto metadata = hidden_matmul_opening_metadata(operation, primitive, primitive_index, role, index, point, statement);
+            const SegmentCommitmentValidationReceipt* receipt = nullptr;
+            if (validation_receipts != nullptr) {
+                const auto found_receipt = validation_receipts->find(primitive.tensor_refs[
+                    role[0] == 'A' ? 0U : role[0] == 'B' ? 1U : 2U]);
+                if (found_receipt == validation_receipts->end()) {
+                    if (error) *error = "hidden matrix opening receipt is missing";
+                    return false;
+                }
+                receipt = &found_receipt->second;
+            }
             return prove_hidden_segmented_opening(
                 provider, commitments[index], material, point, generators,
                 ipa_blinding_generator, ipa_u_generator, metadata, opening,
-                error, &hidden_progress, authenticated_basis);
+                error, &hidden_progress, authenticated_basis, receipt,
+                msm_session);
         };
         HiddenMatMulOpeningSecrets opening_a, opening_b, opening_c;
         if (!open_one(a_provider, a_index, full_a, "A", opening_a) || !open_one(b_provider, b_index, full_b, "B", opening_b) || !open_one(c_provider, c_index, full_c, "C", opening_c)) return false;
@@ -8536,7 +9963,8 @@ inline bool verify_hidden_matmul(
     const zkdl::CpuG1Point& ipa_u_generator,
     const RelationStatement& statement, zkdl::Transcript& transcript,
     std::string* error = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     try {
         std::uint32_t primitive_index_u32 = 0U;
         std::array<std::uint32_t, 3U> product_indices{};
@@ -8620,7 +10048,7 @@ inline bool verify_hidden_matmul(
                    verify_hidden_segmented_opening(
                        opening, commitments[index], point, generators,
                        ipa_blinding_generator, ipa_u_generator, metadata, error,
-                       authenticated_basis);
+                       authenticated_basis, msm_session);
         };
         if (!verify_opening(proof.opening_a, proof.a_commitment_index, a_domain,
                             full_a, "A") ||
@@ -9200,11 +10628,7 @@ inline bool qpad_selector_provider(
                                         descriptor.domain_size - offset),
                 actual, "Qpad selector segment length", error))
             return false;
-        for (std::uint32_t index = 0U; index < actual; ++index) {
-            std::vector<byte> encoded;
-            append_fr_wire(encoded, values[index]);
-            hash.update(encoded.data(), encoded.size());
-        }
+        zktr_update_fr_wire_digest(hash, values.data(), actual);
     }
     selector_digest = hash.final();
     return true;
@@ -9248,7 +10672,11 @@ inline bool prove_padding_record(
     const RelationStatement& statement, zkdl::Transcript& transcript,
     PaddingProofRecord& record, std::string* error = nullptr,
     const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::map<std::string, SegmentCommitmentValidationReceipt>*
+        validation_receipts = nullptr,
+    const std::string* spill_directory = nullptr) {
     try {
         SegmentedTensorProvider selector_provider;
         std::array<byte, 32U> selector_digest{};
@@ -9277,8 +10705,21 @@ inline bool prove_padding_record(
             return false;
         SegmentedTensorProvider tensor_provider;
         if (!tensor->second->segmented(generators.size(), tensor_provider, error)) return false;
-        const zkdl::CpuG1Point selector_commitment = zktr_segmented_commitment(
-            selector_provider, generators, ipa_blinding_generator, FrWire{}, error);
+        CommitmentWire selector_wire;
+        SegmentCommitmentMaterial selector_material;
+        SegmentCommitmentValidationReceipt selector_receipt;
+        zkdl::CpuG1Point selector_commitment;
+        if (segment_blinding_scalars != nullptr) {
+            if (!zktr_build_segment_commitment_material(
+                    "qpad/" + descriptor.id, 1U, selector_provider, generators,
+                    ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
+                    selector_wire, selector_material, error, nullptr, 0U, nullptr,
+                    authenticated_basis, msm_session, &selector_receipt)) return false;
+            selector_commitment = zkdl::cpu_g1_from_native(selector_wire.commitment);
+        } else {
+            selector_commitment = zktr_segmented_commitment(
+                selector_provider, generators, ipa_blinding_generator, FrWire{}, error);
+        }
         if (selector_commitment.is_zero()) return false;
         const ConstraintDescriptor constraint = qpad_constraint_descriptor(descriptor.id);
         const std::string operation_context = "gat.relation.padding." + descriptor.id;
@@ -9294,7 +10735,8 @@ inline bool prove_padding_record(
                 ipa_blinding_generator,
                 ipa_u_generator, FrWire{}, statement, operation_context,
                 transcript, sumcheck, error, 0U,
-                zksc_folded_state_within_budget(weighted_providers))) return false;
+                zksc_folded_state_within_budget(weighted_providers),
+                nullptr, nullptr, spill_directory)) return false;
         std::vector<FrWire> point;
         for (const auto& challenge : sumcheck.challenges)
             point.push_back(zkdl::fr_wire(challenge));
@@ -9306,21 +10748,35 @@ inline bool prove_padding_record(
         const std::vector<std::uint32_t> commitment_indices = {
             commitment_index, qpad_selector_index(record_index)};
         std::vector<SegmentCommitmentMaterial> terminal_materials;
+        std::vector<const SegmentCommitmentValidationReceipt*> terminal_receipts;
         if (segment_blinding_scalars != nullptr) {
             SegmentCommitmentMaterial tensor_material;
             if (!zktr_material_from_wire(
                     *commitment, *segment_blinding_scalars, tensor_material, error)) return false;
-            CommitmentWire selector_wire;
-            SegmentCommitmentMaterial selector_material;
-            if (!zktr_build_segment_commitment_material(
-                    "qpad/" + descriptor.id, 1U, selector_provider, generators,
-                    ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
-                    selector_wire, selector_material, error, nullptr, 0U, nullptr,
-                    authenticated_basis)) return false;
             if (!zkdl::cpu_g1_equal(selector_commitment,
                                     zkdl::cpu_g1_from_native(selector_wire.commitment))) {
                 if (error) *error = "Qpad selector segment material mismatch";
                 return false;
+            }
+            if (validation_receipts != nullptr) {
+                const auto tensor_receipt = validation_receipts->find(descriptor.id);
+                SegmentedTensorProvider committed_tensor_provider;
+                if (tensor_receipt == validation_receipts->end() ||
+                    !tensor->second->segmented(generators.size(),
+                                               committed_tensor_provider, error) ||
+                    !tensor_receipt->second.matches_context(
+                        descriptor.id, commitment->visibility,
+                        committed_tensor_provider, generators,
+                        ipa_blinding_generator, ipa_u_generator,
+                        authenticated_basis, *commitment, tensor_material, error) ||
+                    !selector_receipt.valid() ||
+                    !selector_receipt.matches_context(
+                        "qpad/" + descriptor.id, 1U, selector_provider,
+                        generators, ipa_blinding_generator, ipa_u_generator,
+                        authenticated_basis, selector_wire, selector_material,
+                        error)) return false;
+                terminal_receipts.push_back(&tensor_receipt->second);
+                terminal_receipts.push_back(&selector_receipt);
             }
             terminal_materials.push_back(std::move(tensor_material));
             terminal_materials.push_back(std::move(selector_material));
@@ -9336,7 +10792,8 @@ inline bool prove_padding_record(
                 sumcheck.final_q_blinder, FrWire{}, operation_context,
                 transcript, terminal, error,
                 segment_blinding_scalars != nullptr ? &terminal_materials : nullptr,
-                0U, nullptr, authenticated_basis)) return false;
+                0U, nullptr, authenticated_basis, msm_session,
+                validation_receipts != nullptr ? &terminal_receipts : nullptr)) return false;
         record = PaddingProofRecord{};
         record.tensor_id = descriptor.id;
         record.commitment_index = commitment_index;
@@ -9361,7 +10818,8 @@ inline bool verify_padding_record(
     const zkdl::CpuG1Point& ipa_blinding_generator,
     const zkdl::CpuG1Point& ipa_u_generator, const RelationStatement& statement,
     zkdl::Transcript& transcript, std::string* error = nullptr,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     try {
         SegmentedTensorProvider selector_provider;
         std::array<byte, 32U> selector_digest{};
@@ -9420,7 +10878,7 @@ inline bool verify_padding_record(
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
             zkdl::cpu_g1_from_native(sumcheck.final_claim_commitment), FrWire{},
             operation_context, transcript, terminal, error, nullptr, 0U,
-            authenticated_basis);
+            authenticated_basis, msm_session);
     } catch (const std::exception& exception) {
         if (error) *error = std::string("Qpad verifier failed: ") + exception.what();
         return false;
@@ -9432,7 +10890,10 @@ inline bool prove_padding_records(
     const std::map<std::string, const TensorWitness*>& tensor_map,
     const std::vector<CommitmentWire>& commitments, zkdl::Transcript& transcript,
     std::vector<PaddingProofRecord>& records, std::string* error = nullptr,
-    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr) {
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::map<std::string, SegmentCommitmentValidationReceipt>*
+        validation_receipts = nullptr) {
     records.clear();
     std::size_t index = 0U;
     for (const auto& descriptor : context.tensor_descriptors) {
@@ -9445,7 +10906,10 @@ inline bool prove_padding_records(
                 context.ipa_generators, context.ipa_blinding_generator,
                 context.ipa_u_generator, commitments, context.statement,
                 transcript, record, error, segment_blinding_scalars,
-                &context.ipa_generators)) return false;
+                &context.ipa_generators, msm_session,
+                validation_receipts,
+                context.sumcheck_spill_directory.empty()
+                    ? nullptr : &context.sumcheck_spill_directory)) return false;
         const std::vector<byte> encoded = record.serialize();
         transcript.absorb("gat.relation.padding", encoded);
         records.push_back(std::move(record));
@@ -9456,7 +10920,8 @@ inline bool prove_padding_records(
 
 inline bool verify_padding_records(
     const VerifierContext& context, const Proof& proof,
-    zkdl::Transcript& transcript, std::string* error = nullptr) {
+    zkdl::Transcript& transcript, std::string* error = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr) {
     std::vector<const TensorDescriptor*> expected;
     for (const auto& descriptor : context.tensor_descriptors) {
         if (qpad_record_required(descriptor.logical_shape,
@@ -9474,7 +10939,8 @@ inline bool verify_padding_records(
                                    context.ipa_blinding_generator,
                                    context.ipa_u_generator, context.statement,
                                    transcript, error,
-                                   &context.ipa_generators)) return false;
+                                   &context.ipa_generators,
+                                   msm_session)) return false;
         const std::vector<byte> encoded = proof.padding_records[index].serialize();
         transcript.absorb("gat.relation.padding", encoded);
     }
@@ -9497,7 +10963,11 @@ inline bool prove_authenticated_sorted_lookup(
     const RelationStatement& statement,
     zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr);
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    const std::vector<SegmentCommitmentValidationReceipt>* outer_receipts = nullptr,
+    const std::vector<CommitmentWire>* all_commitments = nullptr,
+    const std::string* spill_directory = nullptr);
 
 inline bool verify_authenticated_sorted_lookup(
     const zkdl::AuthenticatedSortedLookupDescriptor& descriptor,
@@ -9512,7 +10982,8 @@ inline bool verify_authenticated_sorted_lookup(
     const RelationStatement& statement,
     const zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error,
-    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr);
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
+    zkdl::CpuG1MsmSession* msm_session = nullptr);
 
 struct RelationProofProgress {
     using Clock = std::chrono::steady_clock;
@@ -9622,6 +11093,8 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         // immutable shares explicitly.  No prover-context mutation or dead
         // material vector is used as hidden state.
         std::map<std::string, std::vector<FrWire>> segment_blinding_scalars;
+        std::map<std::string, SegmentCommitmentValidationReceipt>
+            segment_commitment_receipts;
         if (context.sorted_lookup_descriptors.size() != context.sorted_lookup_providers.size() ||
             context.sorted_lookup_descriptors.size() != context.sorted_lookup_commitment_refs.size() ||
             context.sorted_lookup_descriptors.size() != context.sorted_lookup_outer_commitments.size() ||
@@ -9646,11 +11119,20 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                       "tensor_commitments=" + std::to_string(context.tensors.size()) +
                       " lookup_outer_groups=" + std::to_string(context.sorted_lookup_descriptors.size()));
         RelationSegmentProgressReporter commitment_progress("commitment");
+        const auto msm_prepare_start = std::chrono::steady_clock::now();
+        zkdl::CpuG1MsmSession msm_session(context.ipa_generators);
+        const double msm_prepare_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - msm_prepare_start).count();
+        if (context.relation_commitment_time_seconds != nullptr)
+            *context.relation_commitment_time_seconds += msm_prepare_seconds;
+        if (context.commitment_open_time_seconds != nullptr)
+            *context.commitment_open_time_seconds += msm_prepare_seconds;
         for (const auto& tensor : context.tensors) {
             SegmentedTensorProvider provider;
             if (!tensor.segmented(context.ipa_generators.size(), provider, error)) return false;
             CommitmentWire commitment;
             SegmentCommitmentMaterial material;
+            SegmentCommitmentValidationReceipt validation_receipt;
             const FrWire randomness = relation_blinding_scalar(tensor, context.blinding_scalars);
             const auto commitment_start = std::chrono::steady_clock::now();
             double commitment_crypto_seconds = 0.0;
@@ -9666,7 +11148,7 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                     context.ipa_blinding_generator, context.ipa_u_generator, randomness,
                     proof.statement, commitment, material, error,
                     &commitment_crypto_seconds, 0U, &segment_progress,
-                    &context.ipa_generators);
+                    &context.ipa_generators, &msm_session, &validation_receipt);
             const double commitment_seconds = std::chrono::duration<double>(
                 std::chrono::steady_clock::now() - commitment_start).count();
             if (context.commitment_open_time_seconds != nullptr)
@@ -9684,6 +11166,12 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
             }
             if (!commitment_built) return false;
             segment_blinding_scalars[tensor.id] = material.blinders;
+            if (!validation_receipt.valid()) {
+                if (error) *error = "tensor commitment did not produce its MSM validation receipt";
+                return false;
+            }
+            segment_commitment_receipts.emplace(tensor.id,
+                                                std::move(validation_receipt));
             proof.commitments.push_back(commitment);
         }
         std::vector<std::vector<zkdl::AuthenticatedSortedLookupCommitmentRef>> sorted_refs =
@@ -9693,6 +11181,8 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         std::vector<std::vector<FrWire>> sorted_blinders = context.sorted_lookup_outer_blinders;
         std::vector<std::vector<SegmentCommitmentMaterial>> sorted_materials;
         sorted_materials.resize(sorted_refs.size());
+        std::vector<std::vector<SegmentCommitmentValidationReceipt>> sorted_receipts(
+            sorted_refs.size());
         const auto sorted_outer_provider = [](
             const AuthenticatedSortedLookupProviderSet& providers,
             const zkdl::AuthenticatedSortedLookupCommitmentRef& ref,
@@ -9745,17 +11235,24 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                                            outer_provider))
                     throw std::invalid_argument("sorted-lookup outer provider role is not canonical");
                 SegmentCommitmentMaterial material;
+                SegmentCommitmentValidationReceipt validation_receipt;
                 material.blinders = context.sorted_lookup_outer_segment_blinders[lookup_index][role_index];
                 material.commitments = context.sorted_lookup_outer_segment_commitments[lookup_index][role_index];
                 if (!zktr_commitment_wire_from_material(
                         commitment.tensor_id, 3U, outer_provider, context.ipa_generators,
                         context.ipa_blinding_generator, context.ipa_u_generator,
                         proof.statement, material, commitment, error, 0U, nullptr,
-                        &context.ipa_generators) ||
+                        &context.ipa_generators, &msm_session, &validation_receipt) ||
                     !zkdl::cpu_g1_equal(
                         sorted_outer[lookup_index][role_index],
                         zkdl::cpu_g1_from_native(commitment.commitment)))
                     return false;
+                if (!validation_receipt.valid()) {
+                    if (error) *error = "sorted-lookup commitment did not produce its MSM validation receipt";
+                    return false;
+                }
+                sorted_receipts[lookup_index].push_back(
+                    std::move(validation_receipt));
                 sorted_materials[lookup_index].push_back(std::move(material));
                 proof.commitments.push_back(std::move(commitment));
             }
@@ -9773,7 +11270,8 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         absorb_hiding_records(transcript, proof.hiding_commitment_records);
         if (!prove_padding_records(context, tensor_map, proof.commitments,
                                    transcript, proof.padding_records, error,
-                                   &segment_blinding_scalars)) return false;
+                                   &segment_blinding_scalars, &msm_session,
+                                   &segment_commitment_receipts)) return false;
         const auto operation_phase_start = std::chrono::steady_clock::now();
         auto last_operation_progress = operation_phase_start;
         progress.set_phase("operation_proofs");
@@ -9817,7 +11315,9 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                                         context.ipa_u_generator,
                                         proof.commitments, context.statement,
                                         transcript, route, error, nullptr,
-                                        &segment_blinding_scalars)) return false;
+                                        &segment_blinding_scalars,
+                                        &context.ipa_generators,
+                                        &msm_session)) return false;
                 operation_proof.route_proof = route.serialize();
                 transcript.absorb("gat.relation.route", operation_proof.route_proof);
             } else if (!operation_proof.route_proof.empty()) {
@@ -9831,7 +11331,9 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                                      context.ipa_u_generator, proof.commitments,
                                      context.statement,
                                      transcript, fac, error,
-                                     &segment_blinding_scalars)) return false;
+                                     &segment_blinding_scalars,
+                                     &context.ipa_generators,
+                                     &msm_session)) return false;
                 operation_proof.fac_proof = fac.serialize();
                 transcript.absorb("gat.relation.fac", operation_proof.fac_proof);
             } else if (!operation_proof.fac_proof.empty()) {
@@ -9852,7 +11354,10 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                                               context.statement,
                                               transcript, payload, error,
                                               &segment_blinding_scalars,
-                                              &context.ipa_generators)) return false;
+                                              &context.ipa_generators, &msm_session,
+                                              &segment_commitment_receipts,
+                                              context.sumcheck_spill_directory.empty()
+                                                  ? nullptr : &context.sumcheck_spill_directory)) return false;
                 operation_proof.batch_proof = serialize_constraint_payload(payload);
                 transcript.absorb("gat.relation.batch", operation_proof.batch_proof);
             } else if (operation.batch_family != "authenticated_sorted_lookup" &&
@@ -9872,7 +11377,8 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                         context.blinding_scalars, context.ipa_generators,
                         context.ipa_blinding_generator, context.ipa_u_generator,
                         proof.commitments, context.statement, transcript, hidden, error,
-                        segment_blinding_scalars, &context.ipa_generators)) {
+                        segment_blinding_scalars, &context.ipa_generators,
+                        &msm_session, &segment_commitment_receipts)) {
                     if (error) {
                         const std::string detail = *error;
                         *error = "hidden-matmul proof failed phase=operation_proofs operation_id=" +
@@ -9901,7 +11407,10 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                         context.ipa_blinding_generator, context.ipa_u_generator,
                         proof.commitments, context.statement, transcript,
                         constraint, error, &segment_blinding_scalars,
-                        &context.ipa_generators)) return false;
+                        &context.ipa_generators, &msm_session,
+                        &segment_commitment_receipts,
+                        context.sumcheck_spill_directory.empty()
+                            ? nullptr : &context.sumcheck_spill_directory)) return false;
                 operation_proof.constraints.push_back(std::move(constraint));
             }
             if (consume_owner != nullptr) operation_proof.descriptor = std::move(consume_owner->operations[operation_index]); else operation_proof.descriptor = operation;
@@ -9940,7 +11449,10 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                     context.ipa_generators,
                     context.ipa_blinding_generator, context.ipa_u_generator,
                     context.statement, lookup, error,
-                    &context.ipa_generators)) {
+                    &context.ipa_generators, &msm_session,
+                    &sorted_receipts[lookup_index], &proof.commitments,
+                    context.sumcheck_spill_directory.empty()
+                        ? nullptr : &context.sumcheck_spill_directory)) {
                 if (error) {
                     const std::string detail = *error;
                     *error = "sorted-lookup proof failed phase=sorted_lookup operation_id=" +
@@ -9985,7 +11497,15 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         output_metadata.evaluation_commitment_index = 0x70000000U;
         HiddenMatMulOpeningSecrets output_opening;
         NativeOperationProgressReporter output_progress("public_output_opening", "public_Y");
-        if (!prove_hidden_segmented_opening(output_provider, proof.commitments[proof.public_output_commitment], output_material, output_point, context.ipa_generators, context.ipa_blinding_generator, context.ipa_u_generator, output_metadata, output_opening, error, &output_progress, &context.ipa_generators)) return false;
+        const auto output_receipt = segment_commitment_receipts.find("public_Y");
+        if (output_receipt == segment_commitment_receipts.end() ||
+            !prove_hidden_segmented_opening(
+                output_provider, proof.commitments[proof.public_output_commitment],
+                output_material, output_point, context.ipa_generators,
+                context.ipa_blinding_generator, context.ipa_u_generator,
+                output_metadata, output_opening, error, &output_progress,
+                &context.ipa_generators, &output_receipt->second, &msm_session))
+            return false;
         proof.public_output_opening = std::move(output_opening.proof);
         auto output_context = zksc_make_context(zkdl::PedersenProofContext::kOperationScalarValue, 1U, 0U, proof.public_output_commitment, zkdl::PedersenProofContext::kUnsetIndex, zkdl::cpu_ipa_basis_digest({}, context.ipa_blinding_generator, context.ipa_u_generator, 0U), output_metadata.descriptor_digest, context.statement);
         proof.public_output_binding = zkdl::cpu_open_pedersen_scalar_value_public(output_opening.value, output_opening.tau_blinder, zkdl::cpu_g1_from_native(proof.public_output_opening.tau), context.ipa_blinding_generator, context.ipa_u_generator, output_context).proof;
@@ -10048,6 +11568,7 @@ inline bool verify(
         return false;
     }
     if (proof.operations.size() != context.operations.size() || proof.commitments.empty()) return false;
+    zkdl::CpuG1MsmSession verifier_msm_session(context.ipa_generators);
     if (!relation_segment_commitments_valid(proof.statement, proof.commitments, error) ||
         (context.statement.segment_binding_version != 0U &&
          context.statement.segment_binding_version != proof.statement.segment_binding_version) ||
@@ -10097,7 +11618,8 @@ inline bool verify(
     zkdl::Transcript transcript("zkdl-gat-relation-v1");
     absorb_statement(transcript, proof.statement, proof.commitments);
     absorb_hiding_records(transcript, proof.hiding_commitment_records);
-    if (!verify_padding_records(context, proof, transcript, error)) return false;
+    if (!verify_padding_records(context, proof, transcript, error,
+                                &verifier_msm_session)) return false;
     for (size_t op_index = 0U; op_index < context.operations.size(); ++op_index) {
         const auto& expected_operation = context.operations[op_index];
         const auto& operation = proof.operations[op_index];
@@ -10138,7 +11660,9 @@ inline bool verify(
                                      context.ipa_generators,
                                      context.ipa_blinding_generator,
                                      context.ipa_u_generator, context.statement,
-                                     transcript, route, error)) return false;
+                                     transcript, route, error,
+                                     &context.ipa_generators,
+                                     &verifier_msm_session)) return false;
             transcript.absorb("gat.relation.route", operation.route_proof);
         } else if (!operation.route_proof.empty()) {
             if (error) *error = "non-route operation carries a sparse route proof";
@@ -10155,7 +11679,9 @@ inline bool verify(
                                   context.ipa_generators,
                                   context.ipa_blinding_generator,
                                   context.ipa_u_generator, context.statement,
-                                  transcript, fac, error)) return false;
+                                  transcript, fac, error,
+                                  &context.ipa_generators,
+                                  &verifier_msm_session)) return false;
             transcript.absorb("gat.relation.fac", operation.fac_proof);
         } else if (!operation.fac_proof.empty()) {
             if (error) *error = "operation carries an unexpected FAC4DNN proof";
@@ -10178,7 +11704,8 @@ inline bool verify(
                                    context.ipa_blinding_generator,
                                    context.ipa_u_generator, context.statement,
                                    transcript, error,
-                                   &context.ipa_generators)) return false;
+                                   &context.ipa_generators,
+                                   &verifier_msm_session)) return false;
             transcript.absorb("gat.relation.batch", operation.batch_proof);
         } else if (expected_operation.batch_family != "authenticated_sorted_lookup" &&
                    !operation.batch_proof.empty()) {
@@ -10200,7 +11727,7 @@ inline bool verify(
                     primitive_index, hidden, proof.commitments,
                     context.ipa_generators, context.ipa_blinding_generator,
                     context.ipa_u_generator, context.statement, transcript, error,
-                    &context.ipa_generators))
+                    &context.ipa_generators, &verifier_msm_session))
                 return false;
             transcript.absorb("gat.relation.primitive",
                               operation.primitive_proofs[primitive_index]);
@@ -10216,7 +11743,8 @@ inline bool verify(
                                        context.ipa_u_generator,
                                        context.statement,
                                        transcript, error,
-                                       &context.ipa_generators)) return false;
+                                       &context.ipa_generators,
+                                       &verifier_msm_session)) return false;
         }
     }
     if (proof.sorted_lookup_proofs.size() != context.sorted_lookup_descriptors.size() ||
@@ -10253,7 +11781,8 @@ inline bool verify(
                 context.ipa_generators,
                 context.ipa_blinding_generator, context.ipa_u_generator,
                 context.statement, lookup, error,
-                &context.ipa_generators)) return false;
+                &context.ipa_generators,
+                &verifier_msm_session)) return false;
         encoded = lookup.serialize();
         transcript.absorb("gat.relation.sorted_lookup", encoded);
     }
@@ -10279,7 +11808,11 @@ inline bool verify(
     if (!verify_public_tensor_values(output_public, proof.commitments, error)) return false;
     auto metadata = relation_opening_metadata(public_output_opening_descriptor(), proof.public_output_commitment, point, context.statement);
     metadata.evaluation_commitment_index = 0x70000000U;
-    if (!verify_hidden_segmented_opening(proof.public_output_opening, output_commitment, point, context.ipa_generators, context.ipa_blinding_generator, context.ipa_u_generator, metadata, error, &context.ipa_generators)) return false;
+    if (!verify_hidden_segmented_opening(
+            proof.public_output_opening, output_commitment, point,
+            context.ipa_generators, context.ipa_blinding_generator,
+            context.ipa_u_generator, metadata, error,
+            &context.ipa_generators, &verifier_msm_session)) return false;
     FrWire expected_public_y{};
     if (!provider.evaluate_mle(point, expected_public_y, error)) return false;
     const auto output_context = zksc_make_context(zkdl::PedersenProofContext::kOperationScalarValue, 1U, 0U, proof.public_output_commitment, zkdl::PedersenProofContext::kUnsetIndex, zkdl::cpu_ipa_basis_digest({}, context.ipa_blinding_generator, context.ipa_u_generator, 0U), metadata.descriptor_digest, context.statement);
@@ -10312,7 +11845,11 @@ inline bool prove_authenticated_sorted_lookup(
     const RelationStatement& statement,
     zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error,
-    const zkdl::CpuIpaBasisContext* authenticated_basis) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis,
+    zkdl::CpuG1MsmSession* msm_session,
+    const std::vector<SegmentCommitmentValidationReceipt>* outer_receipts,
+    const std::vector<CommitmentWire>* all_commitments,
+    const std::string* spill_directory) {
     try {
         NativeOperationProgressReporter lookup_progress("sorted_lookup_proof", descriptor.operation_id);
         if (!descriptor.valid(error) || descriptor.table_digest != statement.table_digest ||
@@ -10321,6 +11858,9 @@ inline bool prove_authenticated_sorted_lookup(
             commitment_refs.size() != outer_commitments.size() ||
             commitment_refs.size() != outer_blinders.size() ||
             commitment_refs.size() != outer_materials.size() || generators.empty() ||
+            (outer_receipts != nullptr &&
+             outer_receipts->size() != commitment_refs.size()) ||
+            (outer_receipts != nullptr && all_commitments == nullptr) ||
             !zkdl::cpu_pedersen_strict_g1(blinding_generator, error) ||
             !zkdl::cpu_pedersen_strict_g1(u_generator, error)) {
             if (error && error->empty()) *error = "invalid authenticated sorted-lookup prover inputs";
@@ -10565,8 +12105,65 @@ inline bool prove_authenticated_sorted_lookup(
             FrWire blinder{};
             std::uint32_t outer_index = std::numeric_limits<std::uint32_t>::max();
             SegmentCommitmentMaterial material;
+            const SegmentCommitmentValidationReceipt* receipt = nullptr;
         };
         std::map<std::string, State> states;
+        const auto validate_outer_commitment =
+            [&](std::size_t index, const SegmentedTensorProvider& provider,
+                const SegmentCommitmentValidationReceipt*& receipt) {
+                receipt = nullptr;
+                if (index >= commitment_refs.size() ||
+                    index >= outer_materials.size()) {
+                    if (error) *error = "sorted-lookup outer commitment role index is out of bounds";
+                    return false;
+                }
+                if (outer_receipts == nullptr || all_commitments == nullptr) {
+                    CommitmentWire checked;
+                    return zktr_commitment_wire_from_material(
+                               "sorted_lookup/material-check", 3U, provider,
+                               generators, blinding_generator, u_generator,
+                               statement, outer_materials[index], checked, error,
+                               descriptor.segment_size,
+                               &segment_commitment_progress, authenticated_basis,
+                               msm_session) &&
+                           zkdl::cpu_g1_equal(
+                               zkdl::cpu_g1_from_native(checked.commitment),
+                               outer_commitments[index]);
+                }
+                const auto& ref = commitment_refs[index];
+                if (ref.commitment_index >= all_commitments->size()) {
+                    if (error) *error = "sorted-lookup outer commitment index is out of bounds";
+                    return false;
+                }
+                const CommitmentWire& checked =
+                    (*all_commitments)[ref.commitment_index];
+                std::uint32_t generator_count = 0U;
+                if (!checked_relation_u32(
+                        generators.size(), generator_count,
+                        "sorted-lookup authenticated generator count", error) ||
+                    !segment_commitment_wire_shape_valid(checked, error) ||
+                    checked.visibility != 3U ||
+                    checked.domain_size != ref.logical_domain ||
+                    checked.segment_size != ref.segment_size ||
+                    checked.segment_count != ref.segment_count ||
+                    checked.srs_manifest_digest != statement.srs_digest ||
+                    checked.basis_digest != zktr_basis_digest_for_prefix(
+                        generators, blinding_generator, u_generator,
+                        generator_count,
+                        zkdl::cpu_ipa_padded_size(generator_count),
+                        authenticated_basis) ||
+                    !zkdl::cpu_g1_equal(
+                        zkdl::cpu_g1_from_native(checked.commitment),
+                        outer_commitments[index]) ||
+                    !(*outer_receipts)[index].matches_context(
+                        checked.tensor_id, checked.visibility, provider,
+                        generators, blinding_generator, u_generator,
+                        authenticated_basis, checked, outer_materials[index],
+                        error))
+                    return false;
+                receipt = &(*outer_receipts)[index];
+                return true;
+            };
         auto state_for = [&](const std::string& tag,
                                    const SegmentedTensorProvider& provider,
                                    State& state) mutable {
@@ -10580,20 +12177,11 @@ inline bool prove_authenticated_sorted_lookup(
                 const auto outer = outer_by_role.find(role);
                 if (outer == outer_by_role.end()) return false;
                 const std::size_t index = outer->second;
-                CommitmentWire checked;
-                if (!zktr_commitment_wire_from_material(
-                        "sorted_lookup/material-check", 3U, provider, generators,
-                        blinding_generator, u_generator, statement,
-                        outer_materials[index], checked, error,
-                        descriptor.segment_size, &segment_commitment_progress,
-                        authenticated_basis) ||
-                    !zkdl::cpu_g1_equal(
-                        zkdl::cpu_g1_from_native(checked.commitment),
-                        outer_commitments[index]))
-                    return false;
+                const SegmentCommitmentValidationReceipt* receipt = nullptr;
+                if (!validate_outer_commitment(index, provider, receipt)) return false;
                 state = State{outer_commitments[index], outer_blinders[index],
                               commitment_refs[index].commitment_index,
-                              outer_materials[index]};
+                              outer_materials[index], receipt};
             } else {
                 FrWire blinder = zkdl::cpu_fresh_csprng_scalar();
                 while (blinder == FrWire{}) blinder = zkdl::cpu_fresh_csprng_scalar();
@@ -10604,11 +12192,11 @@ inline bool prove_authenticated_sorted_lookup(
                         blinding_generator, u_generator, blinder, statement,
                         internal_wire, internal_material, error, nullptr,
                         descriptor.segment_size, &segment_commitment_progress,
-                        authenticated_basis)) return false;
+                        authenticated_basis, msm_session)) return false;
                 const auto commitment = zkdl::cpu_g1_from_native(internal_wire.commitment);
                 state = State{commitment, blinder,
                               std::numeric_limits<std::uint32_t>::max(),
-                              std::move(internal_material)};
+                              std::move(internal_material), nullptr};
             }
             states.emplace(tag, state);
             return true;
@@ -10685,7 +12273,9 @@ inline bool prove_authenticated_sorted_lookup(
             std::vector<FrWire> blinders;
             std::vector<std::uint32_t> indices, outer_indices;
             std::vector<SegmentCommitmentMaterial> terminal_materials;
+            std::vector<const SegmentCommitmentValidationReceipt*> terminal_receipts;
             terminal_materials.reserve(tags.size());
+            terminal_receipts.reserve(tags.size());
             failure_phase = "state_commitment";
             for (std::size_t index = 0U; index < tags.size(); ++index) {
                 lookup_progress.update("relation_provider_states", index + 1U,
@@ -10701,6 +12291,7 @@ inline bool prove_authenticated_sorted_lookup(
                 indices.push_back(relation_index);
                 outer_indices.push_back(state.outer_index);
                 terminal_materials.push_back(state.material);
+                terminal_receipts.push_back(state.receipt);
             }
             const std::string context = "gat.sorted_lookup.relation." + std::to_string(kind);
             std::vector<std::vector<zkdl::CpuG1Point>> provider_segments;
@@ -10734,7 +12325,8 @@ inline bool prove_authenticated_sorted_lookup(
                     blinding_generator, u_generator, initial_claim, statement, context,
                     transcript, sumcheck, error, descriptor.segment_size,
                     zksc_folded_state_within_budget(weighted_providers),
-                    "sorted_lookup_sumcheck", descriptor.operation_id.c_str())) {
+                    "sorted_lookup_sumcheck", descriptor.operation_id.c_str(),
+                    spill_directory)) {
                 return false;
             }
             std::vector<FrWire> point;
@@ -10754,7 +12346,7 @@ inline bool prove_authenticated_sorted_lookup(
                     sumcheck.final_q_blinder, FrWire{}, context, transcript,
                     terminal, error, &terminal_materials,
                     descriptor.segment_size, &lookup_progress,
-                    authenticated_basis)) return false;
+                    authenticated_basis, msm_session, &terminal_receipts)) return false;
             zkdl::AuthenticatedSortedLookupRelationProof wire;
             wire.kind = static_cast<zkdl::AuthenticatedSortedLookupRelationKind>(kind);
             wire.logical_domain = relation_providers.front().logical_domain();
@@ -10806,14 +12398,8 @@ inline bool prove_authenticated_sorted_lookup(
                 return false;
             }
             const std::size_t index = outer->second;
-            CommitmentWire checked;
-            if (!zktr_commitment_wire_from_material(
-                    "sorted_lookup/material-check", 3U, provider, generators,
-                    blinding_generator, u_generator, statement, outer_materials[index],
-                    checked, error, descriptor.segment_size,
-                    &segment_commitment_progress, authenticated_basis) ||
-                !zkdl::cpu_g1_equal(
-                    zkdl::cpu_g1_from_native(checked.commitment), outer_commitments[index])) {
+            const SegmentCommitmentValidationReceipt* receipt = nullptr;
+            if (!validate_outer_commitment(index, provider, receipt)) {
                 if (error && error->empty())
                     *error = std::string("sorted-lookup outer count scratch commitment mismatch: ") + role_name;
                 return false;
@@ -11132,7 +12718,8 @@ inline bool verify_authenticated_sorted_lookup(
     const RelationStatement& statement,
     const zkdl::AuthenticatedSortedLookupProof& proof,
     std::string* error,
-    const zkdl::CpuIpaBasisContext* authenticated_basis) {
+    const zkdl::CpuIpaBasisContext* authenticated_basis,
+    zkdl::CpuG1MsmSession* msm_session) {
     try {
         if (!descriptor.valid(error) || descriptor.table_digest != statement.table_digest ||
             !zktr_all_statement_digests_valid(statement, error) ||
@@ -11495,7 +13082,8 @@ inline bool verify_authenticated_sorted_lookup(
                     zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
                     zkdl::cpu_g1_from_native(sumcheck.final_claim_commitment), FrWire{},
                     context, transcript, terminal, error, nullptr,
-                    descriptor.segment_size, authenticated_basis)) return false;
+                    descriptor.segment_size, authenticated_basis,
+                    msm_session)) return false;
             std::vector<byte> encoded;
             serialize_authenticated_sorted_lookup_relation(wire, encoded);
             transcript.absorb(context + ".proof", encoded);

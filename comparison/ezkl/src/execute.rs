@@ -10,14 +10,16 @@ use crate::eth::register_vka_via_rv;
 use crate::eth::{get_contract_artifacts, verify_proof_via_solidity};
 use crate::gat_adapter::{
     build_model_for_run_args, load_dataset_with_manifest, load_relation_resources_with_manifest,
-    write_generated_metadata, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest,
-    FormalCliContract, GatOp, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
+    gat_settings_for_run_args, write_generated_metadata, ArtifactFile, ArtifactManifest, BoundCircuitRef, CoreRunManifest,
+    FormalCliContract, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
 };
 use crate::graph::input::GraphData;
 use crate::graph::modules::ModuleForwardResult;
 use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model, SupportedOp, Visibility};
 use crate::pfsys::{
-    create_keys, load_pk, load_vk, save_params, save_pk, swap_proof_commitments, Snark,
+    create_keys, create_keys_with_native_gate, load_pk,
+    load_pk_with_native_backing_budget_and_timing, load_vk, save_params, save_pk,
+    swap_proof_commitments, Snark,
 };
 use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
 use crate::pfsys::{
@@ -2202,9 +2204,9 @@ fn native_capacity_logrows_with_blinding(rows: usize) -> Result<u32, EZKLError> 
     Ok(ceil_log2)
 }
 
-fn build_canonical_gat_circuit(
+fn build_canonical_gat_settings(
     loaded: &crate::gat_adapter::LoadedGat,
-) -> Result<GraphCircuit, EZKLError> {
+) -> Result<(Model, GraphSettings), EZKLError> {
     println!(
         "EZKL_NATIVE_PHASE START stage=model_build dataset={} n_total={} n={} e={} graphs={} feature_dim={} classes={} layers={} hidden_heads={} output_heads={}",
         loaded.dataset,
@@ -2263,19 +2265,49 @@ fn build_canonical_gat_circuit(
         native_capacity_logrows_with_blinding(exact_table_total_rows)?;
     let exact_table_max_floor_logrows =
         native_capacity_logrows_with_blinding(max_exact_table_rows)?;
-    let selected_logrows = run_args
+    let mut selected_logrows = run_args
         .logrows
         .max(model_floor_logrows)
         .max(exact_table_total_floor_logrows)
-        .max(exact_table_max_floor_logrows);
+        .max(exact_table_max_floor_logrows)
+        .max(crate::graph::MIN_LOGROWS);
+    let mut settings = loop {
+        run_args.logrows = selected_logrows;
+        if selected_logrows > crate::graph::MAX_PUBLIC_SRS {
+            return Err(format!(
+                "canonical GAT setup requires logrows {}, exceeding official SRS maximum {}",
+                selected_logrows,
+                crate::graph::MAX_PUBLIC_SRS
+            )
+            .into());
+        }
+        run_args.validate().map_err(EZKLError::from)?;
+        let settings = gat_settings_for_run_args(&loaded.spec, &run_args).map_err(EZKLError::from)?;
+        let settings_minimum_logrows = [
+            settings.log2_total_instances_with_blinding(),
+            settings.module_constraint_logrows_with_blinding(),
+            settings.dynamic_lookup_and_shuffle_logrows_with_blinding(),
+            settings.min_dynamic_lookup_and_shuffle_logrows_with_blinding(),
+            crate::graph::MIN_LOGROWS,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(crate::graph::MIN_LOGROWS);
+        if selected_logrows < settings_minimum_logrows {
+            selected_logrows = settings_minimum_logrows;
+            continue;
+        }
+        break settings;
+    };
+    // The shape-only adapter computes full GraphSettings without materializing
+    // a witness or running GraphCircuit's expensive dummy synthesis.  Setup
+    // later reconstructs the native circuit from this exact settings object.
+    settings.run_args = run_args.clone();
     let domain_size = 1u64
         .checked_shl(selected_logrows)
         .ok_or_else(|| EZKLError::from("native GAT selected domain size overflow"))?;
-    let official_srs_domain_size = 1u64
-        .checked_shl(crate::graph::MAX_PUBLIC_SRS)
-        .ok_or_else(|| EZKLError::from("official native GAT SRS domain size overflow"))?;
     println!(
-        "EZKL_NATIVE_PHASE DONE stage=static_capacity_preflight dataset={} model_instance_module_floor_k={} exact_table_rows_total={} exact_table_total_floor_k={} exact_table_rows_max={} exact_table_max_floor_k={} selected_k={} domain={} official_srs_max_k={} official_srs_domain={}",
+        "EZKL_NATIVE_PHASE DONE stage=static_capacity_preflight dataset={} model_instance_module_floor_k={} exact_table_rows_total={} exact_table_total_floor_k={} exact_table_rows_max={} exact_table_max_floor_k={} selected_k={} domain={} official_srs_max_k={} geometry=shape_only_full_relation",
         loaded.dataset,
         model_floor_logrows,
         exact_table_total_rows,
@@ -2285,92 +2317,30 @@ fn build_canonical_gat_circuit(
         selected_logrows,
         domain_size,
         crate::graph::MAX_PUBLIC_SRS,
-        official_srs_domain_size,
     );
-    run_args.logrows = selected_logrows;
-    if run_args.logrows > crate::graph::MAX_PUBLIC_SRS {
-        return Err(format!(
-            "canonical GAT setup requires logrows {}, exceeding official SRS maximum {}",
-            run_args.logrows,
-            crate::graph::MAX_PUBLIC_SRS
-        )
-        .into());
-    }
-    run_args.validate().map_err(EZKLError::from)?;
-    let formal_inputs = gat_input_tensors(&loaded.spec)?;
-    let formal_params = gat_parameter_tensor(&loaded.spec)?;
-    let input_shapes = model.graph.input_shapes()?;
-    let output_shapes = model.graph.output_shapes()?;
-    let param_shapes = model.graph.param_shapes()?;
-    let input_scales = model.graph.get_input_scales();
-    let param_scales = model
-        .graph
-        .param_inputs
-        .iter()
-        .map(|index| {
-            model
-                .graph
-                .nodes
-                .get(index)
-                .and_then(|node| node.out_scales().first().copied())
-                .ok_or_else(|| EZKLError::from(format!("formal GAT parameter input {} has no scale metadata", index)))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let output_scales = model.graph.get_output_scales()?;
-    GatOp::validate_pre_synthesis(
-        &loaded.spec,
-        &input_shapes,
-        &output_shapes,
-        &param_shapes,
-        &input_scales,
-        &param_scales,
-        &output_scales,
-        &formal_inputs,
-        &formal_params,
-        run_args.input_scale,
-        run_args.param_scale,
-    )
-    .map_err(EZKLError::from)?;
     info!("canonical GAT relation logrows: {}", run_args.logrows);
     println!(
-        "EZKL_NATIVE_PHASE START stage=gen_params_dummy_layout dataset={} k={} domain={} public_input_tensors={} public_feature_values={} public_edge_values={}",
-        loaded.dataset,
-        run_args.logrows,
-        1u64 << run_args.logrows,
-        input_shapes.len(),
-        loaded.spec.graph.n_total * loaded.spec.feature_dim,
-        loaded.spec.graph.e * 2,
-    );
-    let circuit = GraphCircuit::new(model, &run_args)?;
-    let settings = circuit.settings();
-    let settings_minimum_logrows = [
-        settings.log2_total_instances_with_blinding(),
-        settings.module_constraint_logrows_with_blinding(),
-        settings.dynamic_lookup_and_shuffle_logrows_with_blinding(),
-        settings.min_dynamic_lookup_and_shuffle_logrows_with_blinding(),
-        crate::graph::MIN_LOGROWS,
-    ]
-    .into_iter()
-    .max()
-    .unwrap_or(crate::graph::MIN_LOGROWS);
-    if run_args.logrows < settings_minimum_logrows {
-        return Err(format!(
-            "canonical GAT settings require logrows at least {}, selected {}",
-            settings_minimum_logrows, run_args.logrows
-        )
-        .into());
-    }
-    println!(
-        "EZKL_NATIVE_PHASE DONE stage=gen_params_dummy_layout dataset={} elapsed_ms={:.3} num_rows={} total_assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
+        "EZKL_NATIVE_PHASE DONE stage=shape_only_gat_geometry dataset={} elapsed_ms={:.3} logical_rows={} logical_assignments={} dynamic_lookup_coord={} max_dynamic_input_len={} dynamic_lookups={}",
         loaded.dataset,
         shape_started.elapsed().as_secs_f64() * 1000.0,
-        circuit.settings().num_rows,
-        circuit.settings().total_assignments,
-        circuit.settings().dynamic_lookup_params.total_dynamic_col_size,
-        circuit.settings().dynamic_lookup_params.max_dynamic_input_len,
-        circuit.settings().dynamic_lookup_params.num_dynamic_lookups,
+        settings.num_rows,
+        settings.total_assignments,
+        settings.dynamic_lookup_params.total_dynamic_col_size,
+        settings.dynamic_lookup_params.max_dynamic_input_len,
+        settings.dynamic_lookup_params.num_dynamic_lookups,
     );
-    Ok(circuit)
+    Ok((model, settings))
+}
+
+fn build_canonical_gat_circuit(
+    loaded: &crate::gat_adapter::LoadedGat,
+) -> Result<GraphCircuit, EZKLError> {
+    let (model, settings) = build_canonical_gat_settings(loaded)?;
+    Ok(GraphCircuit::new_gat_witnessless_from_settings(
+        model,
+        settings,
+        CheckMode::UNSAFE,
+    ))
 }
 
 fn configure_canonical_constraint_system(circuit: &GraphCircuit) -> plonk::ConstraintSystem<Fr> {
@@ -2428,7 +2398,8 @@ fn selector_advice_product(
 #[cfg(any(feature = "gpu-accelerated", test))]
 fn table_expression_cardinality_upper(
     table: &[plonk::Expression<Fr>],
-    census: &plonk::NativeShapeCensus,
+    selector_activation_counts: &[u64],
+    fixed_value_assignment_counts: &[u64],
     domain_size: u64,
 ) -> Result<u64, EZKLError> {
     if table.len() >= 2
@@ -2450,10 +2421,9 @@ fn table_expression_cardinality_upper(
         if dynamic_table {
             let selector = table_selector
                 .ok_or_else(|| "native mv-lookup dynamic table has no activation selector".to_string())?;
-            let active_rows = *census
-                .selector_activation_counts
+            let active_rows = *selector_activation_counts
                 .get(selector)
-                .ok_or_else(|| "native mv-lookup table selector is outside the shape census".to_string())?;
+                .ok_or_else(|| "native mv-lookup table selector is outside the selector bound vector".to_string())?;
             return Ok(active_rows.saturating_add(1).min(domain_size));
         }
     }
@@ -2473,10 +2443,9 @@ fn table_expression_cardinality_upper(
                 if fixed_columns > 1 {
                     return Ok(domain_size);
                 }
-                let count = *census
-                    .fixed_value_assignment_counts
+                let count = *fixed_value_assignment_counts
                     .get(query.column_index())
-                    .ok_or_else(|| "native mv-lookup fixed table column is outside the shape census".to_string())?;
+                    .ok_or_else(|| "native mv-lookup fixed table column is outside the fixed-column bound vector".to_string())?;
                 populated_rows_upper = populated_rows_upper
                     .checked_add(count)
                     .ok_or_else(|| "native mv-lookup fixed table row bound overflow".to_string())?;
@@ -2491,6 +2460,21 @@ fn table_expression_cardinality_upper(
 fn native_mv_lookup_shape(
     cs: &plonk::ConstraintSystem<Fr>,
     census: &plonk::NativeShapeCensus,
+    domain_size: u64,
+) -> Result<NativeMvLookupShape, EZKLError> {
+    native_mv_lookup_shape_with_bounds(
+        cs,
+        &census.selector_activation_counts,
+        &census.fixed_value_assignment_counts,
+        domain_size,
+    )
+}
+
+#[cfg(feature = "gpu-accelerated")]
+fn native_mv_lookup_shape_with_bounds(
+    cs: &plonk::ConstraintSystem<Fr>,
+    selector_activation_counts_upper: &[u64],
+    fixed_value_assignment_counts_upper: &[u64],
     domain_size: u64,
 ) -> Result<NativeMvLookupShape, EZKLError> {
     let argument_count = u64::try_from(cs.lookups().len())
@@ -2510,7 +2494,12 @@ fn native_mv_lookup_shape(
         max_query_polynomials_per_argument = max_query_polynomials_per_argument.max(input_count);
         let table = lookup.table_expressions();
         if !table_groups.iter().any(|(expressions, _)| expressions == table) {
-            let bound = table_expression_cardinality_upper(table, census, domain_size)?;
+            let bound = table_expression_cardinality_upper(
+                table,
+                selector_activation_counts_upper,
+                fixed_value_assignment_counts_upper,
+                domain_size,
+            )?;
             if bound == 0 || bound > domain_size {
                 return Err("native mv-lookup table cardinality bound is out of domain".into());
             }
@@ -2560,15 +2549,18 @@ fn gat_prepare_admission(
 ) -> Result<String, EZKLError> {
     let output_path = output_dir.join("admission.json");
     let settings_path = output_dir.join("settings.json");
-    let compiled_path = output_dir.join("compiled.circuit");
-    for path in [&output_path, &settings_path, &compiled_path] {
+    for path in [&output_path, &settings_path] {
         if std::fs::symlink_metadata(path).is_ok() {
             return Err(format!("native GAT admission refuses to reuse output: {}", path.display()).into());
         }
     }
     std::fs::create_dir_all(&output_dir)?;
-    let circuit = build_canonical_gat_circuit(&loaded)?;
-    let settings = circuit.settings();
+    let (model, settings) = build_canonical_gat_settings(&loaded)?;
+    let circuit = GraphCircuit::new_gat_witnessless_from_settings(
+        model,
+        settings.clone(),
+        CheckMode::UNSAFE,
+    );
     let configure_started = Instant::now();
     println!(
         "EZKL_NATIVE_PHASE START stage=configure_constraint_system dataset={} k={} domain={}",
@@ -2586,37 +2578,32 @@ fn gat_prepare_admission(
     drop(selector_evaluation_cs);
 
     let logrows = settings.run_args.logrows;
-    let selector_count_started = Instant::now();
-    println!(
-        "EZKL_NATIVE_PHASE START stage=count_compressed_selector_columns dataset={} k={} domain={}",
-        loaded.dataset,
-        logrows,
-        1u64 << logrows,
-    );
-    // Admission needs the real native selector/copy shape, but GraphCircuit::new
-    // deliberately starts with placeholder inputs and empty params/outputs.
-    // Key generation uses the witnessless shape of the circuit, which fills
-    // params/outputs to their declared dimensions before synthesis.
-    let census_circuit = circuit.without_witnesses();
-    let shape_census = plonk::census_native_shape::<G1Affine, _>(logrows, &census_circuit)?;
     let domain_size = 1u64
         .checked_shl(logrows)
         .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
-    let lookup_shape = native_mv_lookup_shape(&cs, &shape_census, domain_size)?;
+    let selector_fixed_column_count_upper = cs.num_selectors();
+    let selector_activation_counts_upper = vec![domain_size; cs.num_selectors()];
+    let fixed_value_assignment_counts_upper = vec![domain_size; cs.num_fixed_columns()];
+    let lookup_shape = native_mv_lookup_shape_with_bounds(
+        &cs,
+        &selector_activation_counts_upper,
+        &fixed_value_assignment_counts_upper,
+        domain_size,
+    )?;
     let evaluation_shape = cap_native_selector_resource_shape(
         unshared_evaluation_shape,
         &cs,
-        shape_census.selector_fixed_column_count,
+        selector_fixed_column_count_upper,
     )?;
     let lookup_table_group_count = lookup_shape.table_cardinality_upper_bounds.len();
     let graph_witness_scalar_element_count = shape_scalar_elements(
-        &circuit.model().graph.input_shapes()?
+        &circuit.core.model.graph.input_shapes()?
             .into_iter()
-            .chain(circuit.model().graph.param_shapes()?)
-            .chain(circuit.model().graph.output_shapes()?)
+            .chain(circuit.core.model.graph.param_shapes()?)
+            .chain(circuit.core.model.graph.output_shapes()?)
             .collect::<Vec<_>>(),
     )?;
-    let selector_fixed_column_count = shape_census.selector_fixed_column_count;
+    let selector_fixed_column_count = selector_fixed_column_count_upper;
     let fixed_column_count_post_compression = cs
         .num_fixed_columns()
         .checked_add(selector_fixed_column_count)
@@ -2624,15 +2611,18 @@ fn gat_prepare_admission(
     let permutation_cells = (cs.num_permutation_columns() as u64)
         .checked_mul(1u64.checked_shl(logrows).ok_or_else(|| "native GAT domain size overflow".to_string())?)
         .ok_or_else(|| "native permutation cell count overflow".to_string())?;
-    let copy_successor_upper = shape_census
-        .permutation_copy_call_count
-        .checked_mul(2)
-        .ok_or_else(|| "native permutation copy successor bound overflow".to_string())?;
-    let permutation_successor_entry_count_upper = permutation_cells.min(copy_successor_upper);
+    // Before native synthesis the only exact, source-derived bound is one
+    // sparse-permutation record per domain cell. The mandatory keygen census
+    // below records the actual copy/record counts before committing the key.
+    let permutation_copy_call_count_upper = permutation_cells;
+    let permutation_successor_entry_count_upper = permutation_cells;
     let selector_activation_bitmap_bytes = u128::from(cs.num_selectors() as u64)
         .checked_mul((u128::from(1u64 << logrows) + 7) / 8)
         .ok_or_else(|| "selector activation bitmap byte count overflow".to_string())?;
-    let selector_activation_storage_bytes = shape_census.selector_activation_storage_bytes;
+    let selector_activation_storage_bytes_upper = selector_activation_bitmap_bytes
+        .checked_mul(2)
+        .and_then(|bytes| bytes.checked_add((cs.num_selectors() as u128) * 64))
+        .ok_or_else(|| "selector activation storage upper bound overflow".to_string())?;
     let fixed_polynomial_read_chunk_fields_upper = 16 * 1024usize;
     let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
     let fixed_polynomial_read_raw_chunk_bytes_upper =
@@ -2642,17 +2632,55 @@ fn gat_prepare_admission(
     let fixed_polynomial_read_heap_scratch_bytes_upper =
         fixed_polynomial_read_raw_chunk_bytes_upper
             + fixed_polynomial_read_decoded_chunk_bytes_upper;
+    let gat_transient_witness_bytes_upper =
+        crate::gat_adapter::op::gat_transient_witness_bytes_upper(&loaded.spec)?;
+    let advice_event_record_bytes_upper = 9usize
+        .checked_add(2usize.checked_mul(serialized_fr_bytes).ok_or_else(|| "advice event record width overflow".to_string())?)
+        .ok_or_else(|| "advice event record width overflow".to_string())?;
+    let advice_event_batch_size_upper = 8192usize;
+    let advice_event_decoded_entry_bytes_upper = std::mem::size_of::<plonk::Assigned<Fr>>()
+        .checked_add(std::mem::size_of::<usize>())
+        .and_then(|bytes| bytes.checked_add(std::mem::align_of::<plonk::Assigned<Fr>>()));
+    let advice_event_decoded_entry_bytes_upper = advice_event_decoded_entry_bytes_upper
+        .ok_or_else(|| "advice event decoded-entry width overflow".to_string())?;
+    let advice_event_read_buffer_bytes_upper = advice_event_batch_size_upper
+        .checked_mul(
+            advice_event_record_bytes_upper
+                .checked_add(advice_event_decoded_entry_bytes_upper)
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Fr>>()))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Fr, &mut Fr)>()))
+                .ok_or_else(|| "advice event read-buffer width overflow".to_string())?,
+        )
+        .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<Vec<u8>>()))
+        .ok_or_else(|| "advice event read-buffer byte count overflow".to_string())?;
+    // One `AssignedEventColumn` state and its record buffer are retained for
+    // every configured advice column during prover synthesis. `SpillLog`
+    // contributes a path, optional buffered file, byte counters and Arc; the
+    // explicit 64-byte allowance covers enum/alignment padding in that source
+    // field sum. The writer uses std's default 8 KiB BufWriter capacity.
+    let advice_event_column_metadata_bytes_upper = std::mem::size_of::<std::path::PathBuf>()
+        .checked_add(std::mem::size_of::<Option<std::io::BufWriter<std::fs::File>>>())
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<u64>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::sync::Arc<()>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<u8>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u64>()))
+        .and_then(|bytes| bytes.checked_add(64))
+        .ok_or_else(|| "advice event column metadata bound overflow".to_string())?;
+    let advice_event_writer_buffer_bytes_upper = 8192usize;
+    let advice_event_column_bytes_upper = advice_event_column_metadata_bytes_upper
+        .checked_add(advice_event_record_bytes_upper)
+        .and_then(|bytes| bytes.checked_add(advice_event_writer_buffer_bytes_upper))
+        .ok_or_else(|| "advice event per-column resident bound overflow".to_string())?;
     println!(
-        "EZKL_NATIVE_PHASE DONE stage=count_compressed_selector_columns dataset={} elapsed_ms={:.3} selectors={} selector_fixed_columns={} fixed_post_compression={} copy_calls={} successor_entries_upper={} activation_bitmap_bytes={} activation_storage_bytes={} activation_storage_kind=rle_bitmap_hybrid_v1",
+        "EZKL_NATIVE_PHASE DONE stage=static_native_shape_envelope dataset={} selectors={} selector_fixed_columns_upper={} fixed_post_compression_upper={} permutation_copy_calls_upper={} successor_entries_upper={} activation_bitmap_bytes_upper={} activation_storage_bytes_upper={} activation_storage_kind=rle_bitmap_hybrid_v1",
         loaded.dataset,
-        selector_count_started.elapsed().as_secs_f64() * 1000.0,
         cs.num_selectors(),
         selector_fixed_column_count,
         fixed_column_count_post_compression,
-        shape_census.permutation_copy_call_count,
+        permutation_copy_call_count_upper,
         permutation_successor_entry_count_upper,
         selector_activation_bitmap_bytes,
-        selector_activation_storage_bytes,
+        selector_activation_storage_bytes_upper,
     );
     let scalar_columns = cs.num_fixed_columns() + cs.num_advice_columns() + cs.num_instance_columns();
     let scalar_domain_bytes = u128::from(domain_size)
@@ -2699,7 +2727,7 @@ fn gat_prepare_admission(
     let fft_cache_entry_capacity = fft_cache_domain.fft_cache_entry_capacity();
     let shplonk_resource_cs = cs
         .clone()
-        .with_native_selector_resource_columns(shape_census.selector_fixed_column_count);
+        .with_native_selector_resource_columns(selector_fixed_column_count_upper);
     let shplonk_shape = plonk::native_shplonk_resource_shape::<Fr>(
         &shplonk_resource_cs,
         domain_size,
@@ -2755,7 +2783,9 @@ fn gat_prepare_admission(
     >();
     let shplonk_rotation_set_count = shplonk_shape.rotation_set_commitment_counts.len();
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-memory-model-v6",
+        "schema": "ezkl-halo2-static-envelope-v11",
+        "evidence_kind": "source_derived_upper_bounds_and_configured_geometry",
+        "coverage": "static_pre_setup_envelope; exact_native_selector_and_permutation_observations_are_required_from_keygen_receipt",
         "native_target_arch": std::env::consts::ARCH,
         "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
@@ -2818,17 +2848,34 @@ fn gat_prepare_admission(
         "shplonk_quotient_piece_count": shplonk_shape.quotient_piece_count,
         "graph_witness_scalar_element_count": graph_witness_scalar_element_count,
         "size_of_graph_witness_scalar_bytes": std::mem::size_of::<Fr>(),
+        "size_of_gat_valtype_bytes": std::mem::size_of::<crate::tensor::ValType<Fr>>(),
+        "gat_transient_witness_bytes_upper": gat_transient_witness_bytes_upper,
+        "gat_transient_witness_evidence_kind": "source-derived-conservative-live-tensor-envelope-v1",
+        "gat_transient_witness_formula_id": "whole-gat-retained-inputs-plus-max-live-head-phase-v1",
+        "advice_event_record_bytes_upper": advice_event_record_bytes_upper,
+        "advice_event_reservation_chunk_bytes": 1usize << 20,
+        "advice_event_batch_size_upper": advice_event_batch_size_upper,
+        "advice_event_decoded_entry_bytes_upper": advice_event_decoded_entry_bytes_upper,
+        "advice_event_read_buffer_bytes_upper": advice_event_read_buffer_bytes_upper,
+        "advice_event_column_metadata_bytes_upper": advice_event_column_metadata_bytes_upper,
+        "advice_event_writer_buffer_bytes_upper": advice_event_writer_buffer_bytes_upper,
+        "advice_event_column_bytes_upper": advice_event_column_bytes_upper,
+        "advice_event_latest_element_bytes": std::mem::size_of::<u64>(),
+        "advice_event_log_bound_evidence_kind": "cumulative_region_linear_cursor_upper_not_num_rows_or_proof_domain-v1",
         "cuda_uuid": device_capacity.0,
         "cuda_free_bytes_at_admission": device_capacity.1,
         "cuda_total_memory_bytes": device_capacity.2,
-        "selector_activation_bitmap_bytes": selector_activation_bitmap_bytes,
-        "selector_activation_storage_bytes": selector_activation_storage_bytes,
+        "selector_activation_bitmap_bytes_upper": selector_activation_bitmap_bytes,
+        "selector_activation_storage_bytes_upper": selector_activation_storage_bytes_upper,
         "selector_activation_storage_kind": "rle_bitmap_hybrid_v1",
         "fixed_polynomial_read_mode": "streamed_one_polynomial_chunked_v1",
         "fixed_polynomial_read_chunk_fields_upper": fixed_polynomial_read_chunk_fields_upper,
         "fixed_polynomial_read_raw_chunk_bytes_upper": fixed_polynomial_read_raw_chunk_bytes_upper,
         "fixed_polynomial_read_decoded_chunk_bytes_upper": fixed_polynomial_read_decoded_chunk_bytes_upper,
         "fixed_polynomial_read_heap_scratch_bytes_upper": fixed_polynomial_read_heap_scratch_bytes_upper,
+        "native_pk_read_buffer_capacity_bytes": *EZKL_BUF_CAPACITY,
+        "native_successor_read_cache_bytes": halo2_proofs::poly::NATIVE_SUCCESSOR_READ_CACHE_BYTES,
+        "native_target_bitmap_fixed_cache_bytes": halo2_proofs::poly::NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES,
     });
     println!(
         "EZKL_NATIVE_PHASE DONE stage=configure_constraint_system dataset={} elapsed_ms={:.3} advice={} fixed={} instance={} selectors={} lookups={} shuffles={} permutation_columns={} blinding_factors={}",
@@ -2844,12 +2891,10 @@ fn gat_prepare_admission(
         cs.blinding_factors(),
     );
     settings.save(&settings_path)?;
-    circuit.save(compiled_path.clone())?;
     let settings_sha256 = get_file_hash(&settings_path)?;
-    let compiled_circuit_sha256 = get_file_hash(&compiled_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 6,
+        "schema_version": 7,
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -2857,7 +2902,6 @@ fn gat_prepare_admission(
         "resource_manifest_sha256": loaded.resource_manifest_sha256,
         "relation_identity": relation_identity,
         "settings_sha256": settings_sha256,
-        "compiled_circuit_sha256": compiled_circuit_sha256,
         "logrows": logrows,
         "domain_size": domain_size,
         "max_public_srs_logrows": crate::graph::MAX_PUBLIC_SRS,
@@ -2874,9 +2918,9 @@ fn gat_prepare_admission(
             "minimum_rows": cs.minimum_rows(),
             "num_fixed_columns": cs.num_fixed_columns(),
             "num_custom_gate_groups": evaluation_shape.custom_gate_dependency_columns.len(),
-            "selector_fixed_column_count": selector_fixed_column_count,
+            "selector_fixed_column_count_upper": selector_fixed_column_count,
             "fixed_column_count_post_compression": fixed_column_count_post_compression,
-            "permutation_copy_call_count": shape_census.permutation_copy_call_count,
+            "permutation_copy_call_count_upper": permutation_copy_call_count_upper,
             "permutation_successor_entry_count_upper": permutation_successor_entry_count_upper,
             "num_advice_columns": cs.num_advice_columns(),
             "num_instance_columns": cs.num_instance_columns(),
@@ -2950,17 +2994,15 @@ fn load_native_admission_circuit(
 ) -> Result<(GraphCircuit, usize), EZKLError> {
     let admission_path = admission_dir.join("admission.json");
     let settings_path = admission_dir.join("settings.json");
-    let compiled_path = admission_dir.join("compiled.circuit");
     for (path, label) in [
         (&admission_path, "native admission receipt"),
         (&settings_path, "admitted settings"),
-        (&compiled_path, "admitted compiled circuit"),
     ] {
         require_formal_regular_file(path, label)?;
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(6)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(7)
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -2971,17 +3013,22 @@ fn load_native_admission_circuit(
     }
     if admission.get("settings_sha256").and_then(JsonValue::as_str)
         != Some(get_file_hash(&settings_path)?.as_str())
-        || admission.get("compiled_circuit_sha256").and_then(JsonValue::as_str)
-            != Some(get_file_hash(&compiled_path)?.as_str())
     {
-        return Err("native admission settings or compiled-circuit digest mismatch".into());
+        return Err("native admission settings digest mismatch".into());
     }
 
     let settings = GraphSettings::load(&settings_path)?;
-    let circuit = GraphCircuit::load(compiled_path)?;
-    if circuit.settings() != &settings {
-        return Err("native admission settings disagree with the compiled circuit".into());
-    }
+    let model = build_model_for_run_args(
+        loaded.spec.clone(),
+        RoundingMode::NearestTiesAway,
+        &settings.run_args,
+    )
+    .map_err(EZKLError::from)?;
+    let circuit = GraphCircuit::new_gat_witnessless_from_settings(
+        model,
+        settings.clone(),
+        CheckMode::UNSAFE,
+    );
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     let current_cs = configure_canonical_constraint_system(&circuit);
     let admission_cs = admission
@@ -2997,7 +3044,10 @@ fn load_native_admission_circuit(
             .map_err(|_| format!("native admission {} exceeds host index width", name).into())
     };
 
-    let selector_fixed = admission_count("selector_fixed_column_count")?;
+    let selector_fixed = admission_count("selector_fixed_column_count_upper")?;
+    if selector_fixed != current_cs.num_selectors() {
+        return Err("native admission selector-column upper bound is inconsistent".into());
+    }
     let (current_evaluation_cs, _) = current_cs
         .clone()
         .directly_convert_selectors_to_fixed(
@@ -3034,7 +3084,7 @@ fn load_native_admission_circuit(
 
     let precompression_fixed = admission_count("num_fixed_columns")?;
     let fixed_post_compression = admission_count("fixed_column_count_post_compression")?;
-    let permutation_copy_call_count = admission_count("permutation_copy_call_count")?;
+    let permutation_copy_call_count_upper = admission_count("permutation_copy_call_count_upper")?;
     let permutation_successor_entry_count_upper =
         admission_count("permutation_successor_entry_count_upper")?;
     if fixed_post_compression
@@ -3047,11 +3097,14 @@ fn load_native_admission_circuit(
     let admitted_permutation_cells = (current_cs.num_permutation_columns() as u128)
         .checked_mul(1u128 << settings.run_args.logrows)
         .ok_or_else(|| "native admission permutation cell count overflow".to_string())?;
-    let admitted_copy_bound = (permutation_copy_call_count as u128)
+    let admitted_copy_bound = (permutation_copy_call_count_upper as u128)
         .checked_mul(2)
         .ok_or_else(|| "native admission permutation copy bound overflow".to_string())?;
     let expected_successor_entry_count_upper =
         admitted_permutation_cells.min(admitted_copy_bound);
+    if permutation_copy_call_count_upper as u128 != admitted_permutation_cells {
+        return Err("native admission permutation-copy upper bound is inconsistent".into());
+    }
     if permutation_successor_entry_count_upper as u128 != expected_successor_entry_count_upper {
         return Err("native admission compact permutation successor bound is inconsistent".into());
     }
@@ -3080,9 +3133,13 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-memory-model-v6")
+        != Some("ezkl-halo2-static-envelope-v11")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
+        || memory_model.get("evidence_kind").and_then(JsonValue::as_str)
+            != Some("source_derived_upper_bounds_and_configured_geometry")
+        || memory_model.get("coverage").and_then(JsonValue::as_str)
+            != Some("static_pre_setup_envelope; exact_native_selector_and_permutation_observations_are_required_from_keygen_receipt")
     {
         return Err("native admission memory model version or polynomial reader mode is unsupported".into());
     }
@@ -3096,10 +3153,10 @@ fn load_native_admission_circuit(
     let expected_selector_bitmap_bytes = (current_cs.num_selectors() as u128)
         .checked_mul((n + 7) / 8)
         .ok_or_else(|| "native admission selector bitmap size overflow".to_string())?;
-    let selector_activation_storage_bytes = memory_model
-        .get("selector_activation_storage_bytes")
+    let selector_activation_storage_bytes_upper = memory_model
+        .get("selector_activation_storage_bytes_upper")
         .and_then(JsonValue::as_u64)
-        .ok_or_else(|| "native admission selector activation storage size is missing or invalid".to_string())?;
+        .ok_or_else(|| "native admission selector activation storage upper bound is missing or invalid".to_string())?;
     if memory_model
         .get("selector_activation_storage_kind")
         .and_then(JsonValue::as_str)
@@ -3107,23 +3164,17 @@ fn load_native_admission_circuit(
     {
         return Err("native admission selector activation storage representation is unsupported".into());
     }
-    // The census holds at most one dense bitmap per selector, plus one
-    // selector's old RLE backing while converting it, and the selector-set
-    // descriptors. Keep this independent receipt check deliberately
-    // conservative; the measured high-water value remains the admitted input.
+    // Static admission carries a source-derived dense bitmap ceiling and
+    // temporary promotion bound. Native keygen records the actual hybrid
+    // activation storage peak in its authenticated setup receipt.
     let max_selector_activation_storage_bytes = expected_selector_bitmap_bytes
         .checked_mul(2)
         .and_then(|bytes| {
             bytes.checked_add((current_cs.num_selectors() as u128).checked_mul(64)?)
         })
         .ok_or_else(|| "native admission selector activation storage bound overflow".to_string())?;
-    let min_selector_activation_storage_bytes = (current_cs.num_selectors() as u128)
-        .checked_mul(std::mem::size_of::<u64>() as u128)
-        .ok_or_else(|| "native admission selector activation descriptor bound overflow".to_string())?;
-    if u128::from(selector_activation_storage_bytes) < min_selector_activation_storage_bytes
-        || u128::from(selector_activation_storage_bytes) > max_selector_activation_storage_bytes
-    {
-        return Err("native admission selector activation storage bytes are outside the supported census bound".into());
+    if u128::from(selector_activation_storage_bytes_upper) != max_selector_activation_storage_bytes {
+        return Err("native admission selector activation storage upper bound is inconsistent".into());
     }
     let chunk_fields = 16 * 1024usize;
     let serialized_fr_bytes = Fr::default().to_repr().as_ref().len();
@@ -3319,6 +3370,10 @@ fn load_native_admission_circuit(
             std::mem::size_of::<(usize, usize)>() as u128,
         ),
         ("size_of_fr_bytes", std::mem::size_of::<Fr>() as u128),
+        (
+            "size_of_gat_valtype_bytes",
+            std::mem::size_of::<crate::tensor::ValType<Fr>>() as u128,
+        ),
         ("size_of_assigned_fr_bytes", std::mem::size_of::<plonk::Assigned<Fr>>() as u128),
         ("size_of_option_fr_bytes", std::mem::size_of::<Option<Fr>>() as u128),
         ("size_of_batch_invert_entry_bytes", batch_invert_entry_bytes),
@@ -3370,11 +3425,20 @@ fn load_native_admission_circuit(
         ),
     ];
     for (name, expected) in [
-        ("selector_activation_bitmap_bytes", expected_selector_bitmap_bytes),
+        ("selector_activation_bitmap_bytes_upper", expected_selector_bitmap_bytes),
         ("fixed_polynomial_read_chunk_fields_upper", chunk_fields as u128),
         ("fixed_polynomial_read_raw_chunk_bytes_upper", raw_chunk_bytes as u128),
         ("fixed_polynomial_read_decoded_chunk_bytes_upper", decoded_chunk_bytes as u128),
         ("fixed_polynomial_read_heap_scratch_bytes_upper", read_heap_bytes as u128),
+        ("native_pk_read_buffer_capacity_bytes", *EZKL_BUF_CAPACITY as u128),
+        (
+            "native_successor_read_cache_bytes",
+            halo2_proofs::poly::NATIVE_SUCCESSOR_READ_CACHE_BYTES as u128,
+        ),
+        (
+            "native_target_bitmap_fixed_cache_bytes",
+            halo2_proofs::poly::NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES as u128,
+        ),
     ]
     .into_iter()
     .chain(expected_memory_sizes)
@@ -3382,6 +3446,92 @@ fn load_native_admission_circuit(
         if memory_model.get(name).and_then(JsonValue::as_u64) != u64::try_from(expected).ok() {
             return Err(format!("native admission {} disagrees with the source memory bound", name).into());
         }
+    }
+    let advice_event_record_bytes_upper = 9usize
+        .checked_add(2 * Fr::default().to_repr().as_ref().len())
+        .ok_or_else(|| "native admission advice event record width overflow".to_string())?;
+    let advice_event_batch_size_upper = 8192usize;
+    let advice_event_decoded_entry_bytes_upper = std::mem::size_of::<plonk::Assigned<Fr>>()
+        .checked_add(std::mem::size_of::<usize>())
+        .and_then(|bytes| bytes.checked_add(std::mem::align_of::<plonk::Assigned<Fr>>()))
+        .ok_or_else(|| "native admission advice event decoded-entry width overflow".to_string())?;
+    let advice_event_read_buffer_bytes_upper = advice_event_batch_size_upper
+        .checked_mul(
+            advice_event_record_bytes_upper
+                .checked_add(advice_event_decoded_entry_bytes_upper)
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Option<Fr>>()))
+                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<(Fr, &mut Fr)>()))
+                .ok_or_else(|| "native admission advice event read-buffer width overflow".to_string())?,
+        )
+        .and_then(|bytes| bytes.checked_add(3 * std::mem::size_of::<Vec<u8>>()))
+        .ok_or_else(|| "native admission advice event read-buffer size overflow".to_string())?;
+    let advice_event_column_metadata_bytes_upper = std::mem::size_of::<std::path::PathBuf>()
+        .checked_add(std::mem::size_of::<Option<std::io::BufWriter<std::fs::File>>>())
+        .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<u64>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::sync::Arc<()>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<u8>>()))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<u64>()))
+        .and_then(|bytes| bytes.checked_add(64))
+        .ok_or_else(|| "native admission advice event metadata bound overflow".to_string())?;
+    let advice_event_writer_buffer_bytes_upper = 8192usize;
+    let advice_event_column_bytes_upper = advice_event_column_metadata_bytes_upper
+        .checked_add(advice_event_record_bytes_upper)
+        .and_then(|bytes| bytes.checked_add(advice_event_writer_buffer_bytes_upper))
+        .ok_or_else(|| "native admission advice event column bound overflow".to_string())?;
+    if memory_model
+        .get("gat_transient_witness_formula_id")
+        .and_then(JsonValue::as_str)
+        != Some("whole-gat-retained-inputs-plus-max-live-head-phase-v1")
+        || memory_model
+            .get("gat_transient_witness_evidence_kind")
+            .and_then(JsonValue::as_str)
+            != Some("source-derived-conservative-live-tensor-envelope-v1")
+        || memory_model
+            .get("gat_transient_witness_bytes_upper")
+            .and_then(JsonValue::as_u64)
+            != Some(crate::gat_adapter::op::gat_transient_witness_bytes_upper(&loaded.spec)?)
+        || memory_model
+            .get("advice_event_record_bytes_upper")
+            .and_then(JsonValue::as_u64)
+            != Some(advice_event_record_bytes_upper as u64)
+        || memory_model
+            .get("advice_event_reservation_chunk_bytes")
+            .and_then(JsonValue::as_u64)
+            != Some((1usize << 20) as u64)
+        || memory_model
+            .get("advice_event_batch_size_upper")
+            .and_then(JsonValue::as_u64)
+            != Some(advice_event_batch_size_upper as u64)
+        || memory_model
+            .get("advice_event_decoded_entry_bytes_upper")
+            .and_then(JsonValue::as_u64)
+            != Some(advice_event_decoded_entry_bytes_upper as u64)
+        || memory_model
+            .get("advice_event_read_buffer_bytes_upper")
+            .and_then(JsonValue::as_u64)
+            != Some(advice_event_read_buffer_bytes_upper as u64)
+            || memory_model
+                .get("advice_event_column_metadata_bytes_upper")
+                .and_then(JsonValue::as_u64)
+                != Some(advice_event_column_metadata_bytes_upper as u64)
+            || memory_model
+                .get("advice_event_writer_buffer_bytes_upper")
+                .and_then(JsonValue::as_u64)
+                != Some(advice_event_writer_buffer_bytes_upper as u64)
+            || memory_model
+                .get("advice_event_column_bytes_upper")
+                .and_then(JsonValue::as_u64)
+                != Some(advice_event_column_bytes_upper as u64)
+        || memory_model
+            .get("advice_event_latest_element_bytes")
+            .and_then(JsonValue::as_u64)
+            != Some(std::mem::size_of::<u64>() as u64)
+        || memory_model
+            .get("advice_event_log_bound_evidence_kind")
+            .and_then(JsonValue::as_str)
+            != Some("cumulative_region_linear_cursor_upper_not_num_rows_or_proof_domain-v1")
+    {
+        return Err("native admission GAT tensor live-bound disagrees with the canonical relation geometry".into());
     }
     let run_args = &settings.run_args;
     if !run_args.input_visibility.is_public()
@@ -3423,6 +3573,359 @@ fn load_native_admission_circuit(
     Ok((circuit, fixed_post_compression))
 }
 
+fn native_mem_available_bytes() -> Result<u64, EZKLError> {
+    let meminfo = std::fs::read_to_string("/proc/meminfo")?;
+    for line in meminfo.lines() {
+        let mut parts = line.split_whitespace();
+        if parts.next() == Some("MemAvailable:") {
+            let kib = parts
+                .next()
+                .ok_or_else(|| "MemAvailable is missing its byte count".to_string())?
+                .parse::<u64>()
+                .map_err(|_| "MemAvailable contains an invalid byte count".to_string())?;
+            return kib
+                .checked_mul(1024)
+                .ok_or_else(|| "MemAvailable byte count overflow".into());
+        }
+    }
+    Err("/proc/meminfo has no MemAvailable field for the native keygen gate".into())
+}
+
+fn native_keygen_preflight_json(preflight: &plonk::NativeKeygenPreflight) -> JsonValue {
+    serde_json::json!({
+        "logrows": preflight.logrows,
+        "domain_size": preflight.domain_size,
+        "extended_logrows": preflight.extended_logrows,
+        "constraint_degree": preflight.constraint_degree,
+        "advice_columns": preflight.advice_columns,
+        "fixed_columns": preflight.fixed_columns,
+        "instance_columns": preflight.instance_columns,
+        "permutation_columns": preflight.permutation_columns,
+        "selector_count": preflight.selector_count,
+        "lookup_count": preflight.lookup_count,
+        "shuffle_count": preflight.shuffle_count,
+        "blinding_factors": preflight.blinding_factors,
+        "fixed_lagrange_backing_bytes": preflight.fixed_lagrange_backing_bytes,
+        "selector_dense_bitmap_ceiling_bytes": preflight.selector_dense_bitmap_ceiling_bytes,
+        "selector_activation_container_bytes": preflight.selector_activation_container_bytes,
+        "selector_activation_initial_backing_bytes": preflight.selector_activation_initial_backing_bytes,
+        "one_selector_decode_bytes": preflight.one_selector_decode_bytes,
+        "one_selector_encoded_bytes": preflight.one_selector_encoded_bytes,
+        "permutation_logical_cells": preflight.permutation_logical_cells,
+        "permutation_data_virtual_bytes": preflight.permutation_data_virtual_bytes,
+        "permutation_directory_virtual_bytes": preflight.permutation_directory_virtual_bytes,
+        "permutation_allocation_bitmap_bytes": preflight.permutation_allocation_bitmap_bytes,
+        "permutation_bounded_cache_bytes": preflight.permutation_bounded_cache_bytes,
+    })
+}
+
+fn native_keygen_census_json(census: &plonk::NativeKeygenCensus) -> JsonValue {
+    serde_json::json!({
+        "preflight": native_keygen_preflight_json(&census.preflight),
+        "compressed_selector_columns": census.compressed_selector_columns,
+        "selector_activation_storage_current_bytes": census.selector_activation_storage_current_bytes,
+        "selector_activation_storage_peak_bytes": census.selector_activation_storage_peak_bytes,
+        "selector_activation_counts": census.selector_activation_counts,
+        "fixed_assignment_callback_counts": census.fixed_assignment_callback_counts,
+        "permutation_copy_calls": census.permutation_copy_calls,
+        "permutation_successor_edges": census.permutation_successor_edges,
+        "permutation_nondefault_records": census.permutation_nondefault_records,
+        "permutation_data_pages_allocated": census.permutation_data_pages_allocated,
+        "permutation_directory_pages_allocated": census.permutation_directory_pages_allocated,
+        "permutation_data_allocated_bytes": census.permutation_data_allocated_bytes,
+        "permutation_directory_allocated_bytes": census.permutation_directory_allocated_bytes,
+        "permutation_cache_bytes": census.permutation_cache_bytes,
+        "permutation_allocation_bitmap_bytes": census.permutation_allocation_bitmap_bytes,
+    })
+}
+
+fn native_keygen_budget_receipt(
+    loaded: &crate::gat_adapter::LoadedGat,
+    admission_dir: &Path,
+    output_dir: &Path,
+) -> Result<(JsonValue, String), EZKLError> {
+    let path = output_dir.join("native_keygen_budget.json");
+    require_formal_regular_file(&path, "native keygen resource budget receipt")?;
+    let receipt: JsonValue = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let admission_path = admission_dir.join("admission.json");
+    let settings_path = admission_dir.join("settings.json");
+    let executable = std::env::current_exe()?;
+    let session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
+        .map_err(|_| "formal native setup lacks the runner-authenticated session id")?;
+    let build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
+        .map_err(|_| "formal native setup lacks the authenticated build receipt digest")?;
+    let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
+        .map_err(|_| "formal native setup lacks the authenticated build environment digest")?;
+    let expected = [
+        ("schema", "ezkl.native-keygen-budget.v1".to_string()),
+        ("session_id", session_id),
+        ("dataset", loaded.dataset.clone()),
+        ("admission_sha256", get_file_hash(&admission_path)?),
+        ("settings_sha256", get_file_hash(&settings_path)?),
+        ("binary_sha256", get_file_hash(&executable)?),
+        ("resource_manifest_sha256", loaded.resource_manifest_sha256.clone()),
+        ("build_receipt_sha256", build_receipt_sha256),
+        ("build_environment_sha256", build_environment_sha256),
+    ];
+    for (name, value) in expected {
+        if receipt.get(name).and_then(JsonValue::as_str) != Some(value.as_str()) {
+            return Err(format!("native keygen budget {} does not match this authenticated setup", name).into());
+        }
+    }
+    for name in [
+        "host_available_bytes",
+        "host_os_diagnostic_reserve_bytes",
+        "setup_keygen_future_host_reserve_bytes",
+        "device_workspace_peak_bytes",
+        "disk_available_bytes",
+        "disk_required_known_bytes",
+        "permutation_successor_backing_file_upper_bytes",
+        "native_permutation_backing_budget_bytes",
+        "native_successor_read_cache_bytes",
+        "native_target_bitmap_fixed_cache_bytes",
+        "native_pk_read_buffer_capacity_bytes",
+        "gat_transient_witness_bytes_upper",
+    ] {
+        if receipt.get(name).and_then(JsonValue::as_u64).is_none() {
+            return Err(format!("native keygen budget {} is missing or invalid", name).into());
+        }
+    }
+    let gat_transient_witness_bytes_upper =
+        crate::gat_adapter::op::gat_transient_witness_bytes_upper(&loaded.spec)?;
+    if receipt["gat_transient_witness_bytes_upper"].as_u64()
+        != Some(gat_transient_witness_bytes_upper)
+    {
+        return Err("native keygen budget GAT witness workspace does not match the authenticated relation geometry".into());
+    }
+    if receipt.get("integrated_device").and_then(JsonValue::as_bool).is_none() {
+        return Err("native keygen budget integrated-device state is missing or invalid".into());
+    }
+    if receipt["native_successor_read_cache_bytes"].as_u64()
+        != u64::try_from(halo2_proofs::poly::NATIVE_SUCCESSOR_READ_CACHE_BYTES).ok()
+        || receipt["native_target_bitmap_fixed_cache_bytes"].as_u64()
+            != Some(halo2_proofs::poly::NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES)
+        || receipt["native_pk_read_buffer_capacity_bytes"].as_u64()
+            != u64::try_from(*EZKL_BUF_CAPACITY).ok()
+    {
+        return Err("native keygen budget PK-reader cache bounds do not match this compiled Halo2 source".into());
+    }
+    let host_available = receipt["host_available_bytes"].as_u64().unwrap_or(0);
+    let disk_available = receipt["disk_available_bytes"].as_u64().unwrap_or(0);
+    let disk_required = receipt["disk_required_known_bytes"].as_u64().unwrap_or(u64::MAX);
+    if host_available == 0 || disk_available == 0 || disk_required > disk_available {
+        return Err("native keygen budget has no admitted host or disk headroom".into());
+    }
+    Ok((receipt, get_file_hash(&path)?))
+}
+
+fn native_keygen_budget_for_preflight(
+    preflight: &plonk::NativeKeygenPreflight,
+    budget_receipt: &JsonValue,
+    model: &Model,
+    stage: &str,
+) -> Result<plonk::NativeKeygenBudget, std::io::Error> {
+    let fail = |message: String| std::io::Error::other(message);
+    let admitted_k = budget_receipt
+        .get("logrows")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| fail("native keygen budget lacks admitted k".into()))?;
+    let admitted_domain = budget_receipt
+        .get("domain_size")
+        .and_then(JsonValue::as_u64)
+        .ok_or_else(|| fail("native keygen budget lacks admitted domain".into()))?;
+    if u64::from(preflight.logrows) != admitted_k
+        || preflight.domain_size != admitted_domain
+        || !native_keygen_domains_within_capacity(preflight.logrows, preflight.extended_logrows)
+    {
+        return Err(fail(format!("{} native keygen domain exceeds admitted GAT/SRS geometry", stage)));
+    }
+    let integrated = budget_receipt
+        .get("integrated_device")
+        .and_then(JsonValue::as_bool)
+        .ok_or_else(|| fail("native keygen budget has malformed unified-device state".into()))?;
+    let device_headroom = if integrated {
+        budget_receipt["device_workspace_peak_bytes"].as_u64().unwrap_or(u64::MAX)
+    } else {
+        0
+    };
+    let host_snapshot = budget_receipt["host_available_bytes"].as_u64().unwrap_or(0);
+    let host_live = native_mem_available_bytes().map_err(|error| fail(error.to_string()))?;
+    let host = host_snapshot.min(host_live);
+    let os_reserve = budget_receipt["host_os_diagnostic_reserve_bytes"].as_u64().unwrap_or(u64::MAX);
+    let input_shapes = model.graph.input_shapes().map_err(|error| fail(error.to_string()))?;
+    let param_shapes = model.graph.param_shapes().map_err(|error| fail(error.to_string()))?;
+    let output_shapes = model.graph.output_shapes().map_err(|error| fail(error.to_string()))?;
+    let witnessless_elements = input_shapes
+        .iter()
+        .chain(param_shapes.iter())
+        .chain(output_shapes.iter())
+        .try_fold(0u64, |total, shape| {
+            let elements = shape.iter().try_fold(1u64, |count, dimension| {
+                count.checked_mul(u64::try_from(*dimension).ok()?)
+            })?;
+            total.checked_add(elements)
+        })
+        .ok_or_else(|| fail("witnessless GAT tensor shape byte count overflow".into()))?;
+    let witnessless_bytes = witnessless_elements
+        .checked_mul(std::mem::size_of::<halo2_proofs::circuit::Value<Fr>>() as u64)
+        .ok_or_else(|| fail("witnessless GAT tensor buffer byte count overflow".into()))?;
+    let future_keygen_reserve = budget_receipt["setup_keygen_future_host_reserve_bytes"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let gat_transient_reserve = budget_receipt["gat_transient_witness_bytes_upper"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let live_nonselector = preflight
+        // This mapped backing is counted as a conservative potential dirty
+        // host-residency upper bound, not as measured RSS.
+        .fixed_lagrange_backing_bytes
+        .checked_add(preflight.permutation_bounded_cache_bytes)
+        .and_then(|bytes| bytes.checked_add(preflight.one_selector_decode_bytes))
+        .and_then(|bytes| bytes.checked_add(preflight.one_selector_encoded_bytes))
+        .and_then(|bytes| bytes.checked_add(witnessless_bytes))
+        .and_then(|bytes| bytes.checked_add(future_keygen_reserve))
+        .and_then(|bytes| bytes.checked_add(gat_transient_reserve))
+        .and_then(|bytes| bytes.checked_add(device_headroom))
+        .and_then(|bytes| bytes.checked_add(os_reserve))
+        .ok_or_else(|| fail("native keygen preflight resident reserve overflow".into()))?;
+    let max_selector_activation_bytes = host.checked_sub(live_nonselector).ok_or_else(|| {
+        fail(format!(
+            "{} native keygen preflight needs at least {} resident bytes before selector activation, but live budget is {}",
+            stage, live_nonselector, host
+        ))
+    })?;
+    if max_selector_activation_bytes < preflight.selector_activation_initial_backing_bytes {
+        return Err(fail(format!(
+            "{} selector activation initial backing {} exceeds residual native pool {}",
+            stage, preflight.selector_activation_initial_backing_bytes, max_selector_activation_bytes
+        )));
+    }
+    let disk_budget = budget_receipt["native_permutation_backing_budget_bytes"]
+        .as_u64()
+        .unwrap_or(0);
+    let successor_upper = budget_receipt["permutation_successor_backing_file_upper_bytes"]
+        .as_u64()
+        .ok_or_else(|| fail("native keygen budget lacks its successor-file source bound".into()))?;
+    let source_backing_upper = preflight
+        .permutation_data_virtual_bytes
+        .checked_add(preflight.permutation_directory_virtual_bytes)
+        .and_then(|bytes| bytes.checked_add(successor_upper))
+        .ok_or_else(|| fail("native permutation source backing ceiling overflow".into()))?;
+    Ok(plonk::NativeKeygenBudget {
+        max_selector_activation_bytes,
+        max_permutation_backing_bytes: disk_budget.min(source_backing_upper),
+    })
+}
+
+/// Validate the separately bounded base SRS and extended quotient domains.
+/// The base domain uses the authenticated public SRS cap; the quotient domain
+/// is bounded by BN254 Fr's two-adicity, as in native Halo2 keygen.
+pub(crate) fn native_keygen_domains_within_capacity(base_logrows: u32, extended_logrows: u32) -> bool {
+    base_logrows <= crate::graph::MAX_PUBLIC_SRS && extended_logrows <= Fr::S
+}
+
+fn check_native_keygen_census_budget(
+    census: &plonk::NativeKeygenCensus,
+    budget_receipt: &JsonValue,
+    stage: &str,
+) -> Result<(), std::io::Error> {
+    let fail = |message: String| std::io::Error::other(message);
+    let disk_budget = budget_receipt["native_permutation_backing_budget_bytes"]
+        .as_u64()
+        .unwrap_or(0);
+    let successor_bytes = census
+        .permutation_successor_edges
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(4095))
+        .map(|bytes| bytes / 4096 * 4096)
+        .ok_or_else(|| fail("native page-rounded successor-store disk bound overflow".into()))?;
+    let permutation_backing = census
+        .permutation_data_allocated_bytes
+        .checked_add(census.permutation_directory_allocated_bytes)
+        .and_then(|bytes| bytes.checked_add(successor_bytes))
+        .ok_or_else(|| fail("native permutation backing byte count overflow".into()))?;
+    if permutation_backing > disk_budget {
+        return Err(fail(format!(
+            "{} exact native permutation backing {} exceeds authenticated disk budget {}",
+            stage, permutation_backing, disk_budget
+        )));
+    }
+    let host_live = native_mem_available_bytes().map_err(|error| fail(error.to_string()))?;
+    let host_snapshot = budget_receipt["host_available_bytes"].as_u64().unwrap_or(0);
+    let os_reserve = budget_receipt["host_os_diagnostic_reserve_bytes"].as_u64().unwrap_or(u64::MAX);
+    let device_headroom = if budget_receipt["integrated_device"].as_bool().unwrap_or(false) {
+        budget_receipt["device_workspace_peak_bytes"].as_u64().unwrap_or(u64::MAX)
+    } else {
+        0
+    };
+    let future_setup = budget_receipt["setup_keygen_future_host_reserve_bytes"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let gat_transient_reserve = budget_receipt["gat_transient_witness_bytes_upper"]
+        .as_u64()
+        .unwrap_or(u64::MAX);
+    let retained = future_setup
+        .checked_add(gat_transient_reserve)
+        .and_then(|bytes| bytes.checked_add(device_headroom))
+        .and_then(|bytes| bytes.checked_add(os_reserve))
+        .ok_or_else(|| fail("native keygen future resident resource count overflow".into()))?;
+    if retained > host_live.min(host_snapshot) {
+        return Err(fail(format!(
+            "{} native keygen future host/device workspace {} exceeds remaining shared physical pool {} (selector, permutation and fixed backing already reflected in current availability)",
+            stage, retained, host_live.min(host_snapshot)
+        )));
+    }
+    Ok(())
+}
+
+fn write_native_keygen_receipt(
+    output_dir: &Path,
+    loaded: &crate::gat_adapter::LoadedGat,
+    budget_sha256: &str,
+    census: &plonk::NativeKeygenCensus,
+    stage_budget_caps: &[JsonValue],
+    vk_sha256: &str,
+    pk_sha256: &str,
+) -> Result<(), EZKLError> {
+    let path = output_dir.join("native_keygen_receipt.json");
+    if std::fs::symlink_metadata(&path).is_ok() {
+        return Err("native keygen receipt already exists".into());
+    }
+    if stage_budget_caps.len() != 2
+        || stage_budget_caps[0].get("stage").and_then(JsonValue::as_str) != Some("vk")
+        || stage_budget_caps[1].get("stage").and_then(JsonValue::as_str) != Some("pk")
+    {
+        return Err("native keygen receipt requires separately measured VK and PK allocation caps".into());
+    }
+    let value = serde_json::json!({
+        "schema": "ezkl.native-keygen-receipt.v2",
+        "session_id": std::env::var("EZKL_FORMAL_SESSION_ID").unwrap_or_default(),
+        "dataset": loaded.dataset,
+        "relation_identity": native_admission_relation_identity(loaded)?,
+        "resource_manifest_sha256": loaded.resource_manifest_sha256,
+        "budget_receipt_sha256": budget_sha256,
+        "settings_sha256": get_file_hash(&output_dir.join("settings.json"))?,
+        "compiled_circuit_sha256": get_file_hash(&output_dir.join("compiled.circuit"))?,
+        "vk_sha256": vk_sha256,
+        "pk_sha256": pk_sha256,
+        "evidence_kind": "mandatory_vk_pk_native_keygen_synthesis_census",
+        "coverage": "one_actual_vk_synthesis_and_matching_pk_synthesis; exact_selector_and_permutation_counts",
+        "stage_budget_caps": stage_budget_caps,
+        "native_census": native_keygen_census_json(census),
+    });
+    let temporary = output_dir.join("native_keygen_receipt.json.tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, &path)?;
+    std::fs::File::open(output_dir)?.sync_all()?;
+    Ok(())
+}
+
 fn gat_prepare_setup(
     loaded: crate::gat_adapter::LoadedGat,
     output_dir: PathBuf,
@@ -3438,6 +3941,7 @@ fn gat_prepare_setup(
         "compiled.circuit",
         "pk.key",
         "vk.key",
+        "native_keygen_receipt.json",
         "gat_static_tables.json",
         "gat_integer_ledger.json",
         "circuit_ref.json",
@@ -3459,17 +3963,24 @@ fn gat_prepare_setup(
     }
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");
-    let (circuit, admitted_fixed_columns) = if let Some(admission_dir) = admission_dir.as_deref() {
-        let (circuit, fixed_columns) = load_native_admission_circuit(&loaded, admission_dir)?;
-        std::fs::copy(admission_dir.join("settings.json"), &settings_path)?;
-        std::fs::copy(admission_dir.join("compiled.circuit"), &compiled_path)?;
-        (circuit, Some(fixed_columns))
+    let circuit = if let Some(admission_dir) = admission_dir.as_deref() {
+        let (circuit, _) = load_native_admission_circuit(&loaded, admission_dir)?;
+        circuit
     } else {
-        let circuit = build_canonical_gat_circuit(&loaded)?;
-        circuit.settings().save(&settings_path)?;
-        circuit.save(compiled_path.clone())?;
-        (circuit, None)
+        build_canonical_gat_circuit(&loaded)?
     };
+    // The shape-only admission persists settings, not a second serialized
+    // circuit. Construct the setup circuit once from those settings and keep
+    // the compiled artifact's witness storage empty.
+    circuit.settings().save(&settings_path)?;
+    circuit.save(compiled_path.clone())?;
+    let (native_budget_receipt, native_budget_sha256) = native_keygen_budget_receipt(
+        &loaded,
+        admission_dir.as_deref().ok_or_else(|| {
+            "formal native GAT setup requires its shape-only admission directory".to_string()
+        })?,
+        &output_dir,
+    )?;
     let pk_path = output_dir.join("pk.key");
     let vk_path = output_dir.join("vk.key");
     let params = load_formal_kzg_params(
@@ -3478,12 +3989,54 @@ fn gat_prepare_setup(
         &srs_sha256,
     )?;
     let _native_spill = halo2_proofs::poly::native_spill_scope(&output_dir)?;
-    let pk = create_keys::<KZGCommitmentScheme<Bn256>, GraphCircuit>(&circuit, &params, false)?;
-    if admitted_fixed_columns.is_some_and(|expected| pk.get_vk().fixed_commitments().len() != expected) {
-        return Err("native proving-key fixed columns disagree with the admitted selector compression".into());
+    let mut keygen_stage_budget_caps = Vec::<JsonValue>::new();
+    let (pk, native_census) = create_keys_with_native_gate::<
+        KZGCommitmentScheme<Bn256>,
+        GraphCircuit,
+        _,
+        _,
+    >(
+        &circuit,
+        &params,
+        false,
+        |stage, preflight| {
+            let budget = native_keygen_budget_for_preflight(
+                preflight,
+                &native_budget_receipt,
+                circuit.model(),
+                stage,
+            )?;
+            keygen_stage_budget_caps.push(serde_json::json!({
+                "stage": stage,
+                "max_selector_activation_bytes": budget.max_selector_activation_bytes,
+                "max_permutation_backing_bytes": budget.max_permutation_backing_bytes,
+            }));
+            Ok(budget)
+        },
+        |stage, census| {
+            check_native_keygen_census_budget(census, &native_budget_receipt, stage)?;
+            Ok(())
+        },
+    )?;
+    let expected_fixed_columns = native_census
+        .preflight
+        .fixed_columns
+        .checked_add(native_census.compressed_selector_columns)
+        .ok_or_else(|| "native keygen fixed-column count overflow".to_string())?;
+    if pk.get_vk().fixed_commitments().len() != expected_fixed_columns {
+        return Err("native proving-key fixed columns disagree with the exact keygen census".into());
     }
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
     save_pk::<G1Affine>(&pk_path, &pk)?;
+    write_native_keygen_receipt(
+        &output_dir,
+        &loaded,
+        &native_budget_sha256,
+        &native_census,
+        &keygen_stage_budget_caps,
+        &get_file_hash(&vk_path)?,
+        &get_file_hash(&pk_path)?,
+    )?;
     write_generated_metadata(&loaded.spec, &output_dir).map_err(EZKLError::from)?;
     let settings_sha = get_file_hash(&settings_path)?;
     let compiled_sha = get_file_hash(&compiled_path)?;
@@ -4112,7 +4665,7 @@ fn gat_prepare_final(
     copy_external_file(&public_statement_path, &bound_statement_path)?;
     copy_external_file(&public_output_path, &bound_output_path)?;
     copy_external_file(&srs_path, &bound_srs_path)?;
-    let files: Vec<ArtifactFile> = [
+    let mut files: Vec<ArtifactFile> = [
         (&settings_path, "settings.json"),
         (&compiled_path, "compiled.circuit"),
         (&pk_path, "pk.key"),
@@ -4137,6 +4690,18 @@ fn gat_prepare_final(
         crate::gat_adapter::artifact_file(path, name.to_string()).map_err(EZKLError::from)
     })
     .collect::<Result<_, _>>()?;
+    if std::env::var_os("EZKL_FORMAL_SESSION_ID").is_some() {
+        for name in [
+            "setup_receipt.json",
+            "native_keygen_budget.json",
+            "native_keygen_receipt.json",
+            "native_prove_budget.json",
+        ] {
+            let path = output_dir.join(name);
+            require_formal_regular_file(&path, "formal native resource receipt")?;
+            files.push(crate::gat_adapter::artifact_file(&path, name.to_string()).map_err(EZKLError::from)?);
+        }
+    }
     let binary_path = std::env::current_exe()?;
     let binary_sha = get_file_hash(&binary_path)?;
     let source_sha = source_tree_hash(&loaded.baseline_root)?;
@@ -4392,6 +4957,412 @@ fn validate_native_cpu_proof_evidence(directory: &Path) -> Result<(), EZKLError>
     Ok(())
 }
 
+fn authenticated_native_prove_backing_budget(
+    output_dir: &Path,
+    compiled_circuit_path: &Path,
+    pk_path: &Path,
+) -> Result<u64, EZKLError> {
+    let regular = |path: &Path, label: &str| -> Result<(), EZKLError> {
+        require_formal_regular_file(path, label)
+    };
+    let setup_receipt_path = output_dir.join("setup_receipt.json");
+    let keygen_budget_path = output_dir.join("native_keygen_budget.json");
+    let keygen_receipt_path = output_dir.join("native_keygen_receipt.json");
+    let prove_budget_path = output_dir.join("native_prove_budget.json");
+    let settings_path = output_dir.join("settings.json");
+    let vk_path = output_dir.join("vk.key");
+    for (path, label) in [
+        (setup_receipt_path.as_path(), "formal setup receipt"),
+        (keygen_budget_path.as_path(), "native keygen budget receipt"),
+        (keygen_receipt_path.as_path(), "native keygen census receipt"),
+        (prove_budget_path.as_path(), "native prove backing budget receipt"),
+        (settings_path.as_path(), "formal settings"),
+        (compiled_circuit_path, "formal compiled circuit"),
+        (vk_path.as_path(), "formal verifying key"),
+        (pk_path, "formal proving key"),
+    ] {
+        regular(path, label)?;
+    }
+    let prove_budget: JsonValue = serde_json::from_slice(&std::fs::read(&prove_budget_path)?)?;
+    let setup_receipt: JsonValue = serde_json::from_slice(&std::fs::read(&setup_receipt_path)?)?;
+    let keygen_budget: JsonValue = serde_json::from_slice(&std::fs::read(&keygen_budget_path)?)?;
+    let keygen_receipt: JsonValue = serde_json::from_slice(&std::fs::read(&keygen_receipt_path)?)?;
+    let setup_sha256 = get_file_hash(&setup_receipt_path)?;
+    let keygen_budget_sha256 = get_file_hash(&keygen_budget_path)?;
+    let keygen_receipt_sha256 = get_file_hash(&keygen_receipt_path)?;
+    let current_exe_sha256 = get_file_hash(&std::env::current_exe()?)?;
+    let current_compiled_sha256 = get_file_hash(compiled_circuit_path)?;
+    let current_settings_sha256 = get_file_hash(&settings_path)?;
+    let current_vk_sha256 = get_file_hash(&vk_path)?;
+    let current_pk_sha256 = get_file_hash(pk_path)?;
+    let session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
+        .map_err(|_| "formal native proving lacks the runner-authenticated session id")?;
+    let build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
+        .map_err(|_| "formal native proving lacks the authenticated build receipt digest")?;
+    let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
+        .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
+    let expected_budget = [
+        ("schema", "ezkl.native-prove-budget.v1"),
+        ("session_id", session_id.as_str()),
+        ("setup_receipt_sha256", setup_sha256.as_str()),
+        ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
+        ("native_keygen_receipt_sha256", keygen_receipt_sha256.as_str()),
+        ("binary_sha256", current_exe_sha256.as_str()),
+        ("compiled_circuit_sha256", current_compiled_sha256.as_str()),
+        ("settings_sha256", current_settings_sha256.as_str()),
+        ("vk_sha256", current_vk_sha256.as_str()),
+        ("pk_sha256", current_pk_sha256.as_str()),
+        ("build_receipt_sha256", build_receipt_sha256.as_str()),
+        ("build_environment_sha256", build_environment_sha256.as_str()),
+    ];
+    for (name, value) in expected_budget {
+        if prove_budget.get(name).and_then(JsonValue::as_str) != Some(value) {
+            return Err(format!("native prove budget {} does not match this setup or binary", name).into());
+        }
+    }
+    let stage_caps = keygen_receipt
+        .get("stage_budget_caps")
+        .and_then(JsonValue::as_array)
+        .ok_or("native keygen census receipt lacks stage-specific allocation caps")?;
+    if stage_caps.len() != 2 {
+        return Err("native keygen census receipt must contain VK and PK allocation caps".into());
+    }
+    let native_census = keygen_receipt
+        .get("native_census")
+        .ok_or("native keygen receipt lacks its exact native census")?;
+    let preflight = native_census
+        .get("preflight")
+        .ok_or("native keygen census lacks its native preflight geometry")?;
+    let selector_initial = preflight
+        .get("selector_activation_initial_backing_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native keygen preflight lacks selector activation backing geometry")?;
+    let source_backing_upper = preflight
+        .get("permutation_data_virtual_bytes")
+        .and_then(JsonValue::as_u64)
+        .and_then(|bytes| bytes.checked_add(preflight.get("permutation_directory_virtual_bytes")?.as_u64()?))
+        .and_then(|bytes| bytes.checked_add(keygen_budget.get("permutation_successor_backing_file_upper_bytes")?.as_u64()?))
+        .ok_or("native keygen preflight has an invalid permutation backing ceiling")?;
+    let host_snapshot = keygen_budget
+        .get("host_available_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native keygen budget lacks its authenticated host snapshot")?;
+    let disk_snapshot = keygen_budget
+        .get("native_permutation_backing_budget_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native keygen budget lacks its authenticated disk backing budget")?;
+    let census_selector_peak = native_census
+        .get("selector_activation_storage_peak_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native keygen census lacks selector activation peak bytes")?;
+    let census_permutation_backing = native_census
+        .get("permutation_data_allocated_bytes")
+        .and_then(JsonValue::as_u64)
+        .and_then(|bytes| bytes.checked_add(native_census.get("permutation_directory_allocated_bytes")?.as_u64()?))
+        .and_then(|bytes| {
+            let successor_bytes = native_census
+                .get("permutation_successor_edges")?
+                .as_u64()?
+                .checked_mul(16)?
+                .checked_add(4095)?
+                / 4096
+                * 4096;
+            bytes.checked_add(successor_bytes)
+        })
+        .ok_or("native keygen census has invalid permutation backing bytes")?;
+    for (index, stage) in ["vk", "pk"].into_iter().enumerate() {
+        let cap = &stage_caps[index];
+        let selector_cap = cap.get("max_selector_activation_bytes").and_then(JsonValue::as_u64);
+        let permutation_cap = cap.get("max_permutation_backing_bytes").and_then(JsonValue::as_u64);
+        if cap.get("stage").and_then(JsonValue::as_str) != Some(stage)
+            || selector_cap.map(|value| value < selector_initial || value > host_snapshot).unwrap_or(true)
+            || permutation_cap.map(|value| value > disk_snapshot.min(source_backing_upper)).unwrap_or(true)
+        {
+            return Err(format!("native {} keygen allocation cap exceeds its authenticated source/resource envelope", stage.to_uppercase()).into());
+        }
+    }
+    let selector_cap = stage_caps
+        .iter()
+        .filter_map(|cap| cap.get("max_selector_activation_bytes").and_then(JsonValue::as_u64))
+        .min()
+        .ok_or("native keygen receipt has no finite selector activation cap")?;
+    let permutation_cap = stage_caps
+        .iter()
+        .filter_map(|cap| cap.get("max_permutation_backing_bytes").and_then(JsonValue::as_u64))
+        .min()
+        .ok_or("native keygen receipt has no finite permutation backing cap")?;
+    if census_selector_peak > selector_cap || census_permutation_backing > permutation_cap {
+        return Err("native VK/PK keygen census exceeds the stricter stage allocation cap".into());
+    }
+    let dataset = prove_budget
+        .get("dataset")
+        .and_then(JsonValue::as_str)
+        .ok_or("native prove budget lacks its dataset identity")?;
+    let relation_dataset = keygen_receipt
+        .get("relation_identity")
+        .and_then(|value| value.get("dataset"))
+        .and_then(JsonValue::as_str);
+    let keygen_dataset = keygen_receipt.get("dataset").and_then(JsonValue::as_str);
+    if keygen_dataset != Some(dataset)
+        || relation_dataset != Some(dataset)
+        || setup_receipt.get("dataset").and_then(JsonValue::as_str) != Some(dataset)
+        || setup_receipt.get("session_id").and_then(JsonValue::as_str) != Some(session_id.as_str())
+        || keygen_receipt.get("session_id").and_then(JsonValue::as_str) != Some(session_id.as_str())
+        || keygen_receipt.get("budget_receipt_sha256").and_then(JsonValue::as_str)
+            != Some(keygen_budget_sha256.as_str())
+        || setup_receipt.get("native_keygen_receipt_sha256").and_then(JsonValue::as_str)
+            != Some(keygen_receipt_sha256.as_str())
+    {
+        return Err("native prove budget dataset/session does not match authenticated setup and keygen receipts".into());
+    }
+    for (name, current) in [
+        ("settings.json", current_settings_sha256.as_str()),
+        ("compiled.circuit", current_compiled_sha256.as_str()),
+        ("vk.key", current_vk_sha256.as_str()),
+        ("pk.key", current_pk_sha256.as_str()),
+        ("native_keygen_budget.json", keygen_budget_sha256.as_str()),
+        ("native_keygen_receipt.json", keygen_receipt_sha256.as_str()),
+    ] {
+        if setup_receipt
+            .get("setup_files")
+            .and_then(|files| files.get(name))
+            .and_then(JsonValue::as_str)
+            != Some(current)
+        {
+            return Err(format!("formal setup receipt does not bind current {}", name).into());
+        }
+    }
+    for (name, value) in [
+        ("schema", Some("ezkl.native-keygen-receipt.v2")),
+        ("settings_sha256", Some(current_settings_sha256.as_str())),
+        ("compiled_circuit_sha256", Some(current_compiled_sha256.as_str())),
+        ("vk_sha256", Some(current_vk_sha256.as_str())),
+        ("pk_sha256", Some(current_pk_sha256.as_str())),
+        ("budget_receipt_sha256", Some(keygen_budget_sha256.as_str())),
+    ] {
+        if keygen_receipt.get(name).and_then(JsonValue::as_str) != value {
+            return Err(format!("native keygen census receipt has a stale {}", name).into());
+        }
+    }
+    let admission_sha256 = keygen_budget
+        .get("admission_sha256")
+        .and_then(JsonValue::as_str)
+        .ok_or("native keygen budget lacks its admission identity")?;
+    for (name, expected) in [
+        ("admission_sha256", Some(admission_sha256)),
+        ("resource_manifest_sha256", keygen_budget.get("resource_manifest_sha256").and_then(JsonValue::as_str)),
+        ("build_receipt_sha256", Some(build_receipt_sha256.as_str())),
+        ("build_environment_sha256", Some(build_environment_sha256.as_str())),
+    ] {
+        if prove_budget.get(name).and_then(JsonValue::as_str) != expected {
+            return Err(format!("native prove budget has a stale {}", name).into());
+        }
+    }
+    let max_backing = prove_budget
+        .get("max_total_backing_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks a finite backing limit")?;
+    let disk_available = prove_budget
+        .get("disk_available_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its disk snapshot")?;
+    let required = prove_budget
+        .get("disk_required_known_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its known disk reserve")?;
+    let read_backing_required = prove_budget
+        .get("native_pk_read_backing_required_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its source-derived PK-read backing requirement")?;
+    let read_host_scratch = prove_budget
+        .get("native_pk_read_host_scratch_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its PK-read host scratch upper bound")?;
+    let read_successor_cache = prove_budget
+        .get("native_pk_read_successor_cache_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its successor-cache resident bound")?;
+    let read_target_cache = prove_budget
+        .get("native_pk_read_target_bitmap_fixed_cache_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its target-bitmap fixed-cache bound")?;
+    let read_target_bitmap_allocations = prove_budget
+        .get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its target-bitmap allocation metadata bound")?;
+    let read_validation_buffers = prove_budget
+        .get("native_pk_read_validation_buffers_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its bounded validation-buffer bound")?;
+    let read_stream_buffer = prove_budget
+        .get("native_pk_read_stream_buffer_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its bounded PK stream-reader buffer bound")?;
+    let host_available = prove_budget
+        .get("host_available_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its shared host-memory snapshot")?;
+    let host_required = prove_budget
+        .get("host_required_known_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its known shared host-memory requirement")?;
+    let successor_edges = native_census
+        .get("permutation_successor_edges")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native keygen census lacks its exact successor count for PK-read admission")?;
+    let successor_reserved = successor_edges
+        .checked_mul(16)
+        .and_then(|bytes| bytes.checked_add(4095))
+        .map(|bytes| (bytes / 4096) * 4096)
+        .ok_or("native PK-read successor backing calculation overflow")?;
+    let target_bitmap_reserved = successor_edges
+        .checked_add(7)
+        .map(|bytes| bytes / 8)
+        .and_then(|bytes| bytes.checked_add(4095))
+        .map(|bytes| (bytes / 4096) * 4096)
+        .ok_or("native PK-read target bitmap backing calculation overflow")?;
+    let exact_read_backing = successor_reserved
+        .checked_add(target_bitmap_reserved)
+        .ok_or("native PK-read backing calculation overflow")?;
+    let exact_target_bitmap_allocation_bytes =
+        halo2_proofs::poly::native_target_bitmap_allocation_bitmap_bytes(successor_edges)
+            .ok_or("native PK-read target bitmap allocation metadata calculation overflow")?;
+    let exact_read_successor_cache = u64::try_from(halo2_proofs::poly::NATIVE_SUCCESSOR_READ_CACHE_BYTES)
+        .map_err(|_| "native successor read-cache size exceeds u64")?;
+    let exact_read_target_cache = halo2_proofs::poly::NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES;
+    let exact_read_validation_buffers = 4u64 * 4096 * 16;
+    let exact_read_stream_buffer = u64::try_from(*EZKL_BUF_CAPACITY)
+        .map_err(|_| "native PK stream-reader buffer size exceeds u64")?;
+    let exact_read_host_scratch = exact_read_successor_cache
+        .checked_add(exact_read_target_cache)
+        .and_then(|bytes| bytes.checked_add(exact_target_bitmap_allocation_bytes))
+        .and_then(|bytes| bytes.checked_add(exact_read_validation_buffers))
+        .and_then(|bytes| bytes.checked_add(exact_read_stream_buffer))
+        .ok_or("native PK-read host scratch calculation overflow")?;
+    if disk_available == 0
+        || host_available == 0
+        || host_required > host_available
+        || read_backing_required != exact_read_backing
+        || max_backing != exact_read_backing
+        || read_host_scratch != exact_read_host_scratch
+        || read_successor_cache != exact_read_successor_cache
+        || read_target_cache != exact_read_target_cache
+        || read_target_bitmap_allocations != exact_target_bitmap_allocation_bytes
+        || read_validation_buffers != exact_read_validation_buffers
+        || read_stream_buffer != exact_read_stream_buffer
+        || keygen_budget.get("native_successor_read_cache_bytes").and_then(JsonValue::as_u64)
+            != Some(exact_read_successor_cache)
+        || keygen_budget.get("native_target_bitmap_fixed_cache_bytes").and_then(JsonValue::as_u64)
+            != Some(exact_read_target_cache)
+        || keygen_budget.get("native_pk_read_buffer_capacity_bytes").and_then(JsonValue::as_u64)
+            != Some(exact_read_stream_buffer)
+        || host_required < exact_read_host_scratch
+        || required > disk_available
+    {
+        return Err("native prove host/disk limits do not match the source-derived PK reader resource bounds".into());
+    }
+    Ok(max_backing)
+}
+
+fn write_native_pk_read_timing_receipt(
+    output_dir: &Path,
+    pk_path: &Path,
+    timing: halo2_proofs::plonk::NativePkReadTiming,
+) -> Result<PathBuf, EZKLError> {
+    let path = output_dir.join("native_pk_read_timing.json");
+    let temporary = output_dir.join("native_pk_read_timing.json.tmp");
+    if std::fs::symlink_metadata(&path).is_ok() || std::fs::symlink_metadata(&temporary).is_ok() {
+        return Err("native PK read timing refuses to replace an existing attempt receipt".into());
+    }
+    let budget_path = output_dir.join("native_prove_budget.json");
+    require_formal_regular_file(&budget_path, "authenticated native prove budget")?;
+    let budget: JsonValue = serde_json::from_slice(&std::fs::read(&budget_path)?)?;
+    let required_string = |name: &str| -> Result<String, EZKLError> {
+        budget
+            .get(name)
+            .and_then(JsonValue::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("native prove budget lacks its {} identity", name).into())
+    };
+    let session_id = required_string("session_id")?;
+    let dataset = required_string("dataset")?;
+    let pk_sha256 = required_string("pk_sha256")?;
+    let binary_sha256 = required_string("binary_sha256")?;
+    let setup_receipt_sha256 = required_string("setup_receipt_sha256")?;
+    let keygen_budget_sha256 = required_string("native_keygen_budget_sha256")?;
+    let keygen_receipt_sha256 = required_string("native_keygen_receipt_sha256")?;
+    let admission_sha256 = required_string("admission_sha256")?;
+    let resource_manifest_sha256 = required_string("resource_manifest_sha256")?;
+    let build_receipt_sha256 = required_string("build_receipt_sha256")?;
+    let build_environment_sha256 = required_string("build_environment_sha256")?;
+    let settings_sha256 = required_string("settings_sha256")?;
+    let compiled_circuit_sha256 = required_string("compiled_circuit_sha256")?;
+    let vk_sha256 = required_string("vk_sha256")?;
+    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v1")
+        || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
+        || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
+        || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
+    {
+        return Err("native PK read timing does not match the authenticated formal attempt".into());
+    }
+    for (name, value) in [
+        ("admission_sha256", admission_sha256.as_str()),
+        ("resource_manifest_sha256", resource_manifest_sha256.as_str()),
+        ("build_receipt_sha256", build_receipt_sha256.as_str()),
+        ("build_environment_sha256", build_environment_sha256.as_str()),
+        ("settings_sha256", settings_sha256.as_str()),
+        ("compiled_circuit_sha256", compiled_circuit_sha256.as_str()),
+        ("vk_sha256", vk_sha256.as_str()),
+        ("pk_sha256", pk_sha256.as_str()),
+        ("binary_sha256", binary_sha256.as_str()),
+        ("setup_receipt_sha256", setup_receipt_sha256.as_str()),
+        ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
+        ("native_keygen_receipt_sha256", keygen_receipt_sha256.as_str()),
+    ] {
+        if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(format!("native prove budget {} identity is not SHA-256", name).into());
+        }
+    }
+    let read_ms = timing.artifact_read_validate.as_secs_f64() * 1000.0;
+    let sigma_ms = timing.sigma_rebuild.as_secs_f64() * 1000.0;
+    if !read_ms.is_finite() || !sigma_ms.is_finite() || read_ms <= 0.0 || sigma_ms <= 0.0 {
+        return Err("native PK read timing returned a nonfinite or invalid duration".into());
+    }
+    let value = serde_json::json!({
+        "schema": "ezkl.native-pk-read-timing.v1",
+        "operation": "authenticated_compact_native_pk_restore",
+        "session_id": session_id,
+        "dataset": dataset,
+        "native_prove_budget_sha256": get_file_hash(&budget_path)?,
+        "admission_sha256": admission_sha256,
+        "resource_manifest_sha256": resource_manifest_sha256,
+        "setup_receipt_sha256": setup_receipt_sha256,
+        "native_keygen_budget_sha256": keygen_budget_sha256,
+        "native_keygen_receipt_sha256": keygen_receipt_sha256,
+        "build_receipt_sha256": build_receipt_sha256,
+        "build_environment_sha256": build_environment_sha256,
+        "binary_sha256": binary_sha256,
+        "settings_sha256": settings_sha256,
+        "compiled_circuit_sha256": compiled_circuit_sha256,
+        "vk_sha256": vk_sha256,
+        "pk_sha256": pk_sha256,
+        "measurement_scope": "artifact_read_decode_digest_and_mapping_validation_excluding_sigma_rebuild; sigma_wall_elapsed_may_include_mapped_or_spill_io",
+        "artifact_read_validate_ms": read_ms,
+        "sigma_rebuild_wall_ms": sigma_ms,
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)?;
+    use std::io::Write;
+    file.write_all(&serde_json::to_vec_pretty(&value)?)?;
+    file.sync_all()?;
+    std::fs::rename(&temporary, &path)?;
+    std::fs::File::open(output_dir)?.sync_all()?;
+    Ok(path)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn prove(
     data_path: PathBuf,
@@ -4410,10 +5381,25 @@ pub(crate) fn prove(
     } else {
         None
     };
+    let native_prove_backing_budget = if formal_srs_sha256.is_some() {
+        let output_dir = pk_path
+            .parent()
+            .ok_or_else(|| "formal proving key has no output directory".to_string())?;
+        Some(authenticated_native_prove_backing_budget(
+            output_dir,
+            &compiled_circuit_path,
+            &pk_path,
+        )?)
+    } else {
+        None
+    };
     let data = GraphWitness::from_path(data_path)?;
     let mut circuit = GraphCircuit::load(compiled_circuit_path)?;
 
     circuit.load_graph_witness(&data)?;
+    if formal_srs_sha256.is_some() {
+        circuit.ensure_complete_gat_witness()?;
+    }
 
     let pretty_public_inputs = circuit.pretty_public_inputs(&data)?;
     let public_inputs = circuit.prepare_public_inputs(&data)?;
@@ -4430,7 +5416,27 @@ pub(crate) fn prove(
         .ok_or_else(|| "proving key path has no parent directory for native scratch".to_string())?;
     let _native_spill = halo2_proofs::poly::native_spill_scope(spill_parent)?;
 
-    let pk = load_pk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(pk_path, circuit.params())?;
+    let (pk, native_pk_read_timing) = if let Some(max_backing) = native_prove_backing_budget {
+        let (pk, timing) = load_pk_with_native_backing_budget_and_timing::<KZGCommitmentScheme<Bn256>, GraphCircuit>(
+            pk_path.clone(),
+            circuit.params(),
+            max_backing,
+        )?;
+        (pk, Some(timing))
+    } else {
+        (load_pk::<KZGCommitmentScheme<Bn256>, GraphCircuit>(pk_path.clone(), circuit.params())?, None)
+    };
+    let native_pk_read_timing_path = if let Some(timing) = native_pk_read_timing {
+        let output_dir = pk_path
+            .parent()
+            .ok_or_else(|| "formal proving key has no output directory for its timing receipt".to_string())?;
+        Some(write_native_pk_read_timing_receipt(output_dir, &pk_path, timing)?)
+    } else {
+        None
+    };
+    if native_pk_read_timing_path.is_some() && proof_path.is_none() {
+        return Err("formal compact PK restore timing requires a proof artifact destination".into());
+    }
 
     let params = match (formal_srs_sha256.as_deref(), srs_path.as_deref()) {
         (Some(digest), Some(path)) => load_formal_kzg_params(path, logrows, digest)?,
@@ -4505,6 +5511,15 @@ pub(crate) fn prove(
                 crate::gat_adapter::artifact_file(&proof_path, "proof.json".into())
                     .map_err(EZKLError::from)?,
             );
+            if let Some(timing_path) = native_pk_read_timing_path.as_deref() {
+                if artifact.files.iter().any(|file| file.path == "native_pk_read_timing.json") {
+                    return Err("artifact manifest already contains a native PK timing from another attempt".into());
+                }
+                artifact.files.push(
+                    crate::gat_adapter::artifact_file(timing_path, "native_pk_read_timing.json".into())
+                        .map_err(EZKLError::from)?,
+                );
+            }
             artifact.save(&artifact_path).map_err(EZKLError::from)?;
         }
     }

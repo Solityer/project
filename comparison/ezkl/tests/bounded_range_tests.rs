@@ -55,6 +55,100 @@ fn verify(value: i128, bounds: (i128, i128)) -> Result<(), String> {
     prover.verify().map_err(|errors| format!("mock prover constraints failed: {errors:?}"))
 }
 
+#[derive(Clone)]
+struct ProjectedBoundCircuit {
+    values: Vec<i128>,
+    max_degree: usize,
+    max_exp: i128,
+    max_aggregation_num: i128,
+}
+
+impl Circuit<Fp> for ProjectedBoundCircuit {
+    type Config = BaseConfig<Fp>;
+    type FloorPlanner = SimpleFloorPlanner;
+    type Params = TestParams;
+
+    fn without_witnesses(&self) -> Self {
+        Self {
+            values: vec![0; self.values.len()],
+            max_degree: self.max_degree,
+            max_exp: self.max_exp,
+            max_aggregation_num: self.max_aggregation_num,
+        }
+    }
+
+    fn configure(meta: &mut ConstraintSystem<Fp>) -> Self::Config {
+        let input = crate::tensor::VarTensor::new_advice(meta, K, 1, 128);
+        let index = crate::tensor::VarTensor::new_advice(meta, K, 1, 128);
+        let output = crate::tensor::VarTensor::new_advice(meta, K, 1, 128);
+        crate::tensor::VarTensor::constant_cols(meta, K, 128, false);
+        let mut config = BaseConfig::configure(
+            meta,
+            &[input.clone(), index.clone()],
+            &output,
+            crate::circuit::ops::chip::CheckMode::SAFE,
+        );
+        for range in [(-2, 2), (-1, 1), (0, 1), (0, 255)] {
+            config.configure_range_check(meta, &input, &index, range, K).unwrap();
+        }
+        config
+    }
+
+    fn synthesize(
+        &self,
+        mut config: Self::Config,
+        mut layouter: impl Layouter<Fp>,
+    ) -> Result<(), Error> {
+        config.layout_range_checks(&mut layouter).map_err(|_| Error::Synthesis)?;
+        layouter.assign_region(
+            || "authenticated GAT projected aggregation bound",
+            |region| {
+                let settings = RegionSettings::new(true, false, 256, 4);
+                let mut region = RegionCtx::new_with_settings(region, 0, 1, settings);
+                let values = self
+                    .values
+                    .iter()
+                    .map(|value| ValType::Value(Value::known(integer_rep_to_felt(*value))))
+                    .collect::<Vec<_>>();
+                let projected: ValTensor<Fp> =
+                    Tensor::from_vec(values, &[self.values.len()]).map_err(|_| Error::Synthesis)?.into();
+                let bounds = BoundFamily {
+                    max_exp: self.max_exp,
+                    max_aggregation_num: self.max_aggregation_num,
+                    ..BoundFamily::default()
+                };
+                GatOp::constrain_projected_bound(
+                    &config,
+                    &mut region,
+                    &projected,
+                    &bounds,
+                    self.max_degree,
+                )
+                .map_err(|_| Error::Synthesis)
+            },
+        )
+    }
+}
+
+fn verify_projected_bound(
+    values: Vec<i128>,
+    max_degree: usize,
+    max_exp: i128,
+    max_aggregation_num: i128,
+) -> Result<(), String> {
+    let circuit = ProjectedBoundCircuit {
+        values,
+        max_degree,
+        max_exp,
+        max_aggregation_num,
+    };
+    let prover = MockProver::run(K as u32, &circuit, vec![])
+        .map_err(|error| format!("projected-bound mock prover synthesis failed: {error:?}"))?;
+    prover
+        .verify()
+        .map_err(|errors| format!("projected-bound constraints failed: {errors:?}"))
+}
+
 #[test]
 fn wide_signed_ranges_accept_endpoints_and_reject_adjacent_values() {
     let signed = (-11_341_398_016, 11_341_398_016);
@@ -74,6 +168,30 @@ fn wide_signed_ranges_accept_endpoints_and_reject_adjacent_values() {
     }
     assert!(verify(arxiv.0 - 1, arxiv).is_err());
     assert!(verify(arxiv.1 + 1, arxiv).is_err());
+}
+
+pub(super) fn run_aggregation_budget_bounds_nonzero_projection_and_zero_projection_families() {
+    // A narrow quotient uses the configured direct interval check.
+    assert!(verify_projected_bound(vec![-2, 0, 2], 3, 1, 6).is_ok());
+    assert!(verify_projected_bound(vec![3], 3, 1, 6).is_err());
+
+    // D=3, max_exp=1, and max_aggregation_num=3600 imply |z|<=1200.
+    // This exercises the wide signed decomposition used by high-degree
+    // datasets while preserving the full projected value relation.
+    for values in [vec![-1_200, 0, 1_200], vec![-17, 5, 999]] {
+        assert!(verify_projected_bound(values, 3, 1, 3_600).is_ok());
+    }
+    assert!(verify_projected_bound(vec![1_201], 3, 1, 3_600).is_err());
+
+    // A zero numerator budget implies each projected cell is exactly zero;
+    // the equality remains in-circuit and does not replace any GAT arithmetic.
+    assert!(verify_projected_bound(vec![0, 0], 3, 1, 0).is_ok());
+    assert!(verify_projected_bound(vec![1], 3, 1, 0).is_err());
+}
+
+#[test]
+fn aggregation_budget_bounds_nonzero_projection_and_zero_projection_families() {
+    run_aggregation_budget_bounds_nonzero_projection_and_zero_projection_families();
 }
 
 #[test]

@@ -1,0 +1,4 @@
+timestamp=2026-10-12T09:36:42+08:00
+command=timeout 180s ./tests/segmented_lookup_fixture --sorted-receipt-only
+sorted_lookup_prefix_next_fixture=PASS cases=domain8_active7,domain4_active4,domain1_active1
+exit_code=0

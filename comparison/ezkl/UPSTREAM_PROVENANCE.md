@@ -23,16 +23,19 @@ locks the resolved dependency graph.
 
 ## Current source and canonical resource snapshots
 
-These digests were computed from the source/resource files present when this
-record was written. `scripts/formal_common.py::source_tree_hash()` hashes the
-baseline-local `src/`, `gat_adapter/`, `.cargo/`, `Cargo.toml`, `Cargo.lock`
-(when present), `build.rs`, and `rust-toolchain` files by canonical relative
-path and file SHA-256. The resource digest is the SHA-256 of the immutable
-resource manifest.
+The source digest below is a historical snapshot from this record's earlier
+state; it is stale after the GAT geometry, native Halo2 storage, setup/prove
+gates, and runner receipt changes listed below. Do not use it to authenticate a
+current artifact. `scripts/formal_common.py::source_tree_hash()` computes the
+current baseline-local identity at build/run time from canonical relative
+paths and file SHA-256, including `src/`, `gat_adapter/`, `.cargo/`, `vendor/`,
+`scripts/*.py`, `scripts/*.sh`, `Cargo.toml`, `Cargo.lock`, `build.rs`, and
+`rust-toolchain`. The resource digest below is the last recorded manifest
+snapshot and must be compared against the current run receipt.
 
 | object | identity |
 | --- | --- |
-| source tree hash | `5338e7ab8eb5a1f904a15ddc7dbfd5d424d3b08636c9e8662385973eb80a7242` |
+| source tree hash | historical only; stale pending the next source-matched build receipt |
 | resource manifest hash | `82f905232afc6f1690b4f30df7ab212ffe74602b79080a305a6af378674d80fc` |
 | canonical resource files | `59` |
 | canonical resource bytes | `202007204` |
@@ -57,12 +60,46 @@ The following identities are taken from the current official `Cargo.toml`:
 - `tract-onnx`: `https://github.com/sonos/tract/`, revision `37132e0397d0a73e5bd3a8615d932dabe44f6736`.
 - `pyo3-async-runtimes`: `https://github.com/PyO3/pyo3-async-runtimes`, version `0.27.0` with the declared Git source.
 
-Several dependencies are branch-based, and the current snapshot has no
-baseline-local `Cargo.lock`. Therefore these are declared source selectors,
-not resolved immutable dependency identities. A formal build must produce and
-retain a source-matched lockfile/build receipt; CPU and GPU must use the same
-resolved graph. The build receipt also binds the adapter contract, source-tree
-hash, and resource-manifest hash.
+Several dependencies are branch-based. A baseline-local `Cargo.lock` is now
+present and is included in the dynamic source-tree identity; the branch names
+remain declared source selectors, while the lockfile and source-matched build
+receipt identify the resolved graph used by a particular run. CPU and GPU
+builds must use the same resolved graph. The build receipt also binds the
+adapter contract, source-tree hash, and resource-manifest hash. This lockfile
+does not resolve the missing pristine ezkl upstream commit/tag/archive identity
+described above.
+
+## Tracked GAT/native adaptation areas
+
+The current completion pass adds no upstream version claim and keeps GAT logic
+inside the adapter boundary where possible. Its source areas are:
+
+- `gat_adapter/geometry.rs`, `gat_adapter/geometry_primitives.rs`, and
+  `gat_adapter/mod.rs`: deterministic shape-only GAT settings and geometry
+  primitives used to avoid a second full dummy synthesis during admission.
+- `gat_adapter/op.rs`: source-equivalent node-shared attention scoring,
+  edge-routed aggregation, nonzero multi-graph relation regression, and a
+  checked upper envelope for live GAT tensor buffers used by resource gates.
+- `src/graph/mod.rs` and `src/tensor/var.rs`: witnessless GAT keygen circuit
+  construction, complete-witness proof guard, and source-equivalent dummy
+  duplicate-offset semantics.
+- `vendor/halo2/halo2_proofs/src/plonk/keygen.rs`, `plonk.rs`,
+  `plonk/permutation.rs`, and `poly/spill.rs`: native keygen preflight/census
+  gates, bounded selector activation storage/serialization, sparse
+  permutation spill backing, compact formal PK serialization, authenticated
+  bounded PK restoration, and its non-overlapping read/σ-materialization
+  timing breakdown.
+- `src/execute.rs`, `src/pfsys/mod.rs`, `scripts/run_hybrid_formal.py`,
+  `scripts/run_single_dataset.py`, `scripts/formal_common.py`,
+  `scripts/collect_results.py`, and `scripts/finalization_capacity.py`:
+  authenticated per-stage resource gates, compact setup PK output, bounded
+  proving-key reload, session-bound timing and setup/prove receipts,
+  source-derived GAT and native advice-spill envelopes, serial result
+  checkpoints, and final-result validation of the receipt chain.
+
+The dynamic source-tree digest is the source identity for new builds and
+results. Existing keys, proofs, or receipts made before these changes are not
+compatible with the changed source identity.
 
 ## Adapter contract boundary
 
@@ -85,11 +122,18 @@ missing adapter wire-up as success.
 ## Open blockers
 
 1. Exact official ezkl upstream commit/tag/archive identity is unresolved.
-2. Branch-based Cargo dependencies are not captured in a baseline-local lockfile.
-3. Trusted official SRS files and operator-supplied SHA-256 digests are not
-   present in this checkout; `gen-srs`, dummy SRS, reduced SRS, and fabricated
-   hashes are rejected.
-4. A formal run also requires the adapter-generated contract, identity-bound
+2. Several Cargo dependencies use branch selectors. A baseline-local
+   `Cargo.lock` is present and included in the dynamic source identity; each
+   formal build receipt must still identify the exact resolved graph used.
+3. This checkout currently contains `resources/native_srs/kzg26.srs` and a
+   five-dataset manifest whose entries claim the native source SHA-256 was
+   verified. This provenance note does not independently rehash that 8 GiB
+   file; a fresh formal session reauthenticates it against the pinned native
+   hash source and refreshes/provisions only through `provision_srs.py` if
+   needed. Generated, dummy, reduced, and fabricated SRS material remains
+   rejected.
+4. A formal run requires the adapter-generated contract, identity-bound
    settings/compiled circuit/PK/VK artifacts, external public statement/Y, and
-   real GPU ICICLE/CUDA evidence. Until those exist, no result is a success and
-   no matrix-level readiness claim is made.
+   real GPU ICICLE/CUDA evidence. Static capacity and native keygen receipts do
+   not establish proof generation or independent verification; only five
+   verified result cells and the final validator establish experiment success.

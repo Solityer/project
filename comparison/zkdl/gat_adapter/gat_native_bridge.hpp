@@ -54,6 +54,62 @@ struct NativeRelationPlanMetrics {
     std::uint64_t padding_family_count = 0U;
     std::uint64_t family_segment_count = 0U;
     std::uint64_t primitive_opening_segment_count = 0U;
+    std::uint64_t constraint_opening_segment_count = 0U;
+    std::uint64_t padding_opening_segment_count = 0U;
+    std::uint64_t sorted_lookup_opening_segment_count = 0U;
+    std::uint64_t sparse_route_opening_count = 0U;
+    std::uint64_t fac_selector_opening_count = 0U;
+    std::uint64_t route_aggregate_input_segment_count = 0U;
+    std::uint64_t public_output_opening_segment_count = 0U;
+    std::uint64_t computed_hyrax_opening_count = 0U;
+    std::uint64_t retained_hyrax_opening_object_count = 0U;
+    std::uint64_t retained_hyrax_terminal_mirror_copy_count = 0U;
+    std::uint64_t total_hyrax_opening_segment_count = 0U;
+    struct HyraxOpeningSegmentBucket {
+        std::uint64_t logical_domain = 0U;
+        std::uint64_t segment_size = 0U;
+        std::uint64_t padded_generator_size = 0U;
+        std::uint64_t computed_opening_count = 0U;
+        std::uint64_t retained_object_count = 0U;
+        std::uint64_t terminal_mirror_copy_count = 0U;
+        std::uint64_t retained_round_vector_bytes_upper_bound = 0U;
+        std::uint64_t retained_point_vector_bytes_upper_bound = 0U;
+    };
+    std::vector<HyraxOpeningSegmentBucket> hyrax_opening_segment_domain_histogram;
+    std::uint64_t hyrax_round_vector_capacity_bytes_upper_bound = 0U;
+    std::uint64_t hyrax_point_vector_capacity_bytes_upper_bound = 0U;
+    std::uint64_t hyrax_opening_object_header_bytes_upper_bound = 0U;
+    std::uint64_t hyrax_maximum_single_opening_vector_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_folded_state_budget_bytes = 0U;
+    std::uint64_t sumcheck_cached_call_count = 0U;
+    std::uint64_t sumcheck_fallback_call_count = 0U;
+    std::uint64_t sumcheck_forced_cached_call_count = 0U;
+    std::uint64_t sumcheck_cached_provider_value_slots_upper_bound = 0U;
+    std::uint64_t sumcheck_fallback_provider_value_slots_upper_bound = 0U;
+    std::uint64_t sumcheck_spill_call_count = 0U;
+    std::uint64_t sumcheck_spill_provider_value_slots_upper_bound = 0U;
+    std::uint64_t sumcheck_spill_provider_scan_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_spill_provider_source_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_spill_storage_io_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_max_spill_disk_peak_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_max_spill_ram_peak_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_cached_provider_scan_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_fallback_provider_scan_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_max_folded_state_peak_bytes_upper_bound = 0U;
+    std::uint64_t sumcheck_max_streaming_peak_bytes_upper_bound = 0U;
+    struct SumcheckShapeBucket {
+        std::uint64_t logical_domain = 0U;
+        std::uint64_t segment_size = 0U;
+        std::uint64_t provider_count = 0U;
+        std::uint64_t cached_call_count = 0U;
+        std::uint64_t fallback_call_count = 0U;
+        std::uint64_t spill_call_count = 0U;
+        std::uint64_t forced_cached_call_count = 0U;
+        std::uint64_t cached_provider_value_slots_upper_bound = 0U;
+        std::uint64_t fallback_provider_value_slots_upper_bound = 0U;
+        std::uint64_t spill_provider_value_slots_upper_bound = 0U;
+    };
+    std::vector<SumcheckShapeBucket> sumcheck_shape_histogram;
     std::uint64_t operation_descriptor_bytes = 0U;
     std::uint64_t operation_descriptor_max_bytes = 0U;
     std::uint64_t sumcheck_body_max_bytes = 0U;
@@ -82,9 +138,33 @@ struct NativeRelationPlanMetrics {
     std::uint64_t segmented_sumcheck_live_peak_bytes_upper_bound = 0U;
 };
 
+struct NativeDescriptorShapeFootprint {
+    std::uint64_t operation_count = 0U;
+    std::uint64_t fac_binding_count = 0U;
+    std::uint64_t route_count = 0U;
+    std::uint64_t expected_unique_outer_map_bytes = 0U;
+    std::uint64_t expected_unique_active_mask_bytes = 0U;
+    std::uint64_t expected_feature_map_bytes = 0U;
+    std::uint64_t received_selector_array_bytes = 0U;
+    std::uint64_t ordinary_descriptor_capacity_bytes = 0U;
+    std::uint64_t descriptor_object_header_bytes = 0U;
+    std::uint64_t interner_metadata_bytes = 0U;
+    std::uint64_t selector_allocator_metadata_bytes = 0U;
+    std::uint64_t descriptor_compare_buffer_bytes = 0U;
+    std::uint64_t operation_descriptor_wire_bytes = 0U;
+    std::uint64_t operation_descriptor_max_bytes = 0U;
+    std::uint64_t operation_descriptor_resident_bytes_upper_bound = 0U;
+};
+
+bool zkdl_gat_native_descriptor_shape_footprint(const Config &config, const Graph &graph,
+                                                 const StaticTables &tables, const RelationPlan &plan,
+                                                 NativeDescriptorShapeFootprint *footprint,
+                                                 std::string *error);
+
 bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &graph,
                                            const StaticTables &tables, const RelationPlan &plan,
-                                           NativeRelationPlanMetrics *metrics, std::string *error);
+                                           NativeRelationPlanMetrics *metrics, std::string *error,
+                                           bool analysis_only_shape = false);
 
 #if defined(__GNUC__) || defined(__clang__)
 #define ZKDL_GAT_WEAK __attribute__((weak))

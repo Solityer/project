@@ -1048,6 +1048,33 @@ pub struct BoundFamily {
 }
 
 impl BoundFamily {
+    /// Derive the largest signed projected cell bound implied by the
+    /// authenticated aggregation numerator and the exact graph/lookup
+    /// factors.  The result deliberately rounds down: after constraining each
+    /// projected cell to this interval, every destination prefix is bounded
+    /// by `max_aggregation_num` without relying on host-computed witnesses.
+    pub fn projected_abs_bound(&self, max_degree: usize) -> Result<i128, String> {
+        let degree = i128::try_from(max_degree)
+            .map_err(|_| "maximum graph degree does not fit the integer ledger".to_string())?;
+        if degree <= 0 || self.max_exp <= 0 || self.max_aggregation_num < 0 {
+            return Err("projected bound requires positive degree/exp and non-negative aggregation numerator".into());
+        }
+        let factor = degree
+            .checked_mul(self.max_exp)
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "maximum degree times exponential bound overflows the integer ledger".to_string())?;
+        let bound = self.max_aggregation_num / factor;
+        let covered_numerator = factor
+            .checked_mul(bound)
+            .ok_or_else(|| "projected aggregation bound overflows the integer ledger".to_string())?;
+        if covered_numerator > self.max_aggregation_num {
+            return Err("derived projected bound exceeds the authenticated aggregation numerator".into());
+        }
+        Ok(bound)
+    }
+}
+
+impl BoundFamily {
     fn validate(&self, label: &str, field_half: &BigUint) -> Result<(), String> {
         if self.max_divisor <= 0 {
             return Err(format!("{} max_divisor must be positive", label));
@@ -1309,6 +1336,39 @@ impl CanonicalModel {
             out.extend(&head.bias);
         }
         out
+    }
+
+    /// Return the flattened private-parameter element count without copying
+    /// the model values into a second vector.
+    pub fn flattened_params_len(&self) -> Result<usize, String> {
+        let mut total = 0usize;
+        for layer in &self.hidden_layers {
+            for _head in &layer.heads {
+                for len in [
+                    layer.d_in.checked_mul(layer.d_head),
+                    Some(layer.d_head),
+                    Some(layer.d_head),
+                ] {
+                    total = total.checked_add(len.ok_or_else(|| "hidden parameter shape overflow".to_string())?)
+                        .ok_or_else(|| "flattened hidden parameter length overflow".to_string())?;
+                }
+            }
+        }
+        let current_dim = self.hidden_layers.last()
+            .and_then(|layer| layer.heads.len().checked_mul(layer.d_head))
+            .ok_or_else(|| "output parameter input dimension overflow".to_string())?;
+        for _head in &self.output_heads {
+            for len in [
+                current_dim.checked_mul(self.classes),
+                Some(self.classes),
+                Some(self.classes),
+                Some(self.classes),
+            ] {
+                total = total.checked_add(len.ok_or_else(|| "output parameter shape overflow".to_string())?)
+                    .ok_or_else(|| "flattened output parameter length overflow".to_string())?;
+            }
+        }
+        Ok(total)
     }
 }
 

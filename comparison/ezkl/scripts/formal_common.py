@@ -1858,7 +1858,77 @@ def require_positive_timings(timings: Any, label: str = "phase timings") -> dict
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             abort(f"{label}.{key} must be a positive finite duration")
         result[key] = float(value)
+    for key in ("pk_artifact_read_validate", "setup_pk_sigma_materialization"):
+        if key in timings:
+            value = timings[key]
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                abort(f"{label}.{key} must be a positive finite duration")
     return result
+
+
+def validate_native_pk_read_timing(
+    path: Path,
+    *,
+    session_id: str,
+    dataset: str,
+    native_prove_budget_sha256: str,
+    pk_sha256: str,
+) -> dict[str, Any]:
+    timing = load_json(path, "native PK read timing")
+    required = {
+        "schema",
+        "operation",
+        "session_id",
+        "dataset",
+        "native_prove_budget_sha256",
+        "admission_sha256",
+        "resource_manifest_sha256",
+        "setup_receipt_sha256",
+        "native_keygen_budget_sha256",
+        "native_keygen_receipt_sha256",
+        "build_receipt_sha256",
+        "build_environment_sha256",
+        "binary_sha256",
+        "settings_sha256",
+        "compiled_circuit_sha256",
+        "vk_sha256",
+        "pk_sha256",
+        "measurement_scope",
+        "artifact_read_validate_ms",
+        "sigma_rebuild_wall_ms",
+    }
+    require_exact_keys(timing, required, "native PK read timing")
+    expected = {
+        "schema": "ezkl.native-pk-read-timing.v1",
+        "operation": "authenticated_compact_native_pk_restore",
+        "session_id": session_id,
+        "dataset": dataset,
+        "native_prove_budget_sha256": native_prove_budget_sha256,
+        "pk_sha256": pk_sha256,
+        "measurement_scope": "artifact_read_decode_digest_and_mapping_validation_excluding_sigma_rebuild; sigma_wall_elapsed_may_include_mapped_or_spill_io",
+    }
+    if any(timing.get(name) != value for name, value in expected.items()):
+        abort("native PK read timing is not bound to this session, dataset, prove budget, and PK")
+    require_digest(timing["native_prove_budget_sha256"], "native PK read timing native_prove_budget_sha256")
+    for name in (
+        "setup_receipt_sha256",
+        "admission_sha256",
+        "resource_manifest_sha256",
+        "native_keygen_budget_sha256",
+        "native_keygen_receipt_sha256",
+        "build_receipt_sha256",
+        "build_environment_sha256",
+        "binary_sha256",
+        "settings_sha256",
+        "compiled_circuit_sha256",
+        "vk_sha256",
+    ):
+        require_digest(timing[name], f"native PK read timing {name}")
+    for name in ("artifact_read_validate_ms", "sigma_rebuild_wall_ms"):
+        duration = timing[name]
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            abort(f"native PK read timing {name} must be a positive finite wall duration")
+    return timing
 
 
 def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str, Any]:

@@ -49,6 +49,7 @@ from formal_common import (
     validate_canonical_public_inputs,
     validate_config,
     validate_native_proof_metrics,
+    validate_native_pk_read_timing,
     validate_native_verify_metrics,
     validate_gpu_evidence,
     validate_gpu_evidence_document,
@@ -206,7 +207,8 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         "selected_cuda_device", "build_receipt_sha256", "build_environment_sha256",
         "gpu_prover_record_sha256", "independent_verifier_log_sha256",
     }
-    unknown = set(result) - REQUIRED_RESULT_KEYS - {"backend", "execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields
+    formal_pk_timing_fields = {"native_pk_read_timing_sha256", "prove_command_wall_ms", "prove_wall_scope"}
+    unknown = set(result) - REQUIRED_RESULT_KEYS - {"backend", "execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields - formal_pk_timing_fields
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
     missing = REQUIRED_RESULT_KEYS - set(result)
@@ -221,6 +223,8 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
     if dataset not in DATASETS:
         abort(f"{path} has an unknown dataset")
     if formal:
+        if not formal_pk_timing_fields.issubset(result):
+            abort(f"{path} formal result omits its authenticated compact PK restore timing")
         if backend is not None or "execution_mode" in result or "phase_backends" in result:
             abort(f"{path} exposes a backend execution axis in the formal result")
         native_backend = result.get("native_backend")
@@ -280,6 +284,8 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         if sha256(verifier_log) != result["independent_verifier_log_sha256"]:
             abort(f"{path} independent verifier log identity is stale")
     else:
+        if formal_pk_timing_fields.intersection(result):
+            abort(f"{path} nonformal result contains formal compact PK restore timing fields")
         if expected_session_id is not None:
             abort(f"{path} is not bound to the active formal session")
         if backend not in BACKENDS:
@@ -397,6 +403,237 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
     ):
         if name not in artifact_records or artifact_records[name]["sha256"] != digest:
             abort(f"{path} artifact file {name} is not bound to the public boundary")
+    if formal:
+        native_receipt_names = ("setup_receipt.json", "native_keygen_budget.json", "native_keygen_receipt.json", "native_prove_budget.json")
+        if any(name not in artifact_records for name in native_receipt_names):
+            abort(f"{path} artifact manifest omits native setup/prove resource receipts")
+        setup_receipt = load_json(artifact_manifest.parent / native_receipt_names[0], "formal setup resource receipt")
+        keygen_budget = load_json(artifact_manifest.parent / native_receipt_names[1], "native keygen budget")
+        keygen_receipt = load_json(artifact_manifest.parent / native_receipt_names[2], "native keygen census receipt")
+        prove_budget = load_json(artifact_manifest.parent / native_receipt_names[3], "native proving-key read budget")
+        if any(not isinstance(value, dict) for value in (setup_receipt, keygen_budget, keygen_receipt, prove_budget)):
+            abort(f"{path} native resource receipts must be JSON objects")
+        receipt_digests = {name: artifact_records[name]["sha256"] for name in native_receipt_names}
+        pk_timing_path = artifact_manifest.parent / "native_pk_read_timing.json"
+        timing_file = artifact_records.get("native_pk_read_timing.json")
+        if timing_file is None or timing_file.get("sha256") != result["native_pk_read_timing_sha256"] or sha256(pk_timing_path) != result["native_pk_read_timing_sha256"]:
+            abort(f"{path} artifact manifest does not bind the native PK restore timing")
+        pk_timing = validate_native_pk_read_timing(
+            pk_timing_path,
+            session_id=session_id,
+            dataset=dataset,
+            native_prove_budget_sha256=receipt_digests["native_prove_budget.json"],
+            pk_sha256=result["pk_sha256"],
+        )
+        if any(
+            pk_timing.get(name) != value
+            for name, value in (
+                ("admission_sha256", prove_budget.get("admission_sha256")),
+                ("resource_manifest_sha256", result["resource_manifest_sha256"]),
+                ("setup_receipt_sha256", receipt_digests["setup_receipt.json"]),
+                ("native_keygen_budget_sha256", receipt_digests["native_keygen_budget.json"]),
+                ("native_keygen_receipt_sha256", receipt_digests["native_keygen_receipt.json"]),
+                ("build_receipt_sha256", result["build_receipt_sha256"]),
+                ("build_environment_sha256", result["build_environment_sha256"]),
+                ("binary_sha256", result["binary_sha256"]),
+                ("settings_sha256", result["settings_sha256"]),
+                ("compiled_circuit_sha256", result["compiled_circuit_sha256"]),
+                ("vk_sha256", result["vk_sha256"]),
+            )
+        ):
+            abort(f"{path} native PK restore timing disagrees with authenticated setup/build identities")
+        phase_timings = result["phase_timings_ms"]
+        if (
+            not math.isclose(phase_timings.get("pk_artifact_read_validate", float("nan")), pk_timing["artifact_read_validate_ms"], rel_tol=0.0, abs_tol=0.000001)
+            or not math.isclose(phase_timings.get("setup_pk_sigma_materialization", float("nan")), pk_timing["sigma_rebuild_wall_ms"], rel_tol=0.0, abs_tol=0.000001)
+        ):
+            abort(f"{path} phase timing does not preserve the measured PK restore subphases")
+        command_wall = result["prove_command_wall_ms"]
+        if isinstance(command_wall, bool) or not isinstance(command_wall, (int, float)) or not math.isfinite(command_wall) or command_wall <= 0:
+            abort(f"{path} native prove command wall duration is invalid")
+        residual = command_wall - pk_timing["artifact_read_validate_ms"] - pk_timing["sigma_rebuild_wall_ms"]
+        if residual > 0.0:
+            if result["prove_wall_scope"] != "outer_command_residual_excludes_pk_restore" or not math.isclose(
+                phase_timings["prove"], residual, rel_tol=0.0, abs_tol=0.001
+            ):
+                abort(f"{path} outer prove wall residual does not exactly exclude authenticated PK restore")
+        elif residual >= -0.01:
+            if result["prove_wall_scope"] != "outer_command_wall_with_pk_restore_overlap_within_0_01ms" or not math.isclose(
+                phase_timings["prove"], command_wall, rel_tol=0.0, abs_tol=0.001
+            ):
+                abort(f"{path} sub-resolution PK restore overlap is not transparently recorded")
+        else:
+            abort(f"{path} PK restore stages exceed its prove command wall time")
+        expected_setup = {
+            "schema": "ezkl.setup-reuse-receipt.v1",
+            "session_id": session_id,
+            "dataset": dataset,
+            "admission_sha256": prove_budget.get("admission_sha256"),
+            "native_keygen_receipt_sha256": receipt_digests["native_keygen_receipt.json"],
+        }
+        if any(setup_receipt.get(name) != value for name, value in expected_setup.items()):
+            abort(f"{path} setup receipt identity does not match its formal cell")
+        setup_files = setup_receipt.get("setup_files")
+        if not isinstance(setup_files, dict) or any(
+            setup_files.get(name) != digest
+            for name, digest in (
+                ("settings.json", result["settings_sha256"]),
+                ("compiled.circuit", result["compiled_circuit_sha256"]),
+                ("vk.key", result["vk_sha256"]),
+                ("pk.key", result["pk_sha256"]),
+                ("native_keygen_budget.json", receipt_digests["native_keygen_budget.json"]),
+                ("native_keygen_receipt.json", receipt_digests["native_keygen_receipt.json"]),
+            )
+        ):
+            abort(f"{path} setup receipt does not bind its exact key/circuit artifacts")
+        expected_keygen = {
+            "schema": "ezkl.native-keygen-receipt.v2",
+            "session_id": session_id,
+            "dataset": dataset,
+            "budget_receipt_sha256": receipt_digests["native_keygen_budget.json"],
+            "settings_sha256": result["settings_sha256"],
+            "compiled_circuit_sha256": result["compiled_circuit_sha256"],
+            "vk_sha256": result["vk_sha256"],
+            "pk_sha256": result["pk_sha256"],
+        }
+        if any(keygen_receipt.get(name) != value for name, value in expected_keygen.items()):
+            abort(f"{path} native keygen census receipt does not match its formal cell")
+        relation_identity = keygen_receipt.get("relation_identity")
+        if not isinstance(relation_identity, dict) or relation_identity.get("dataset") != dataset or relation_identity.get("resource_manifest_sha256") != result["resource_manifest_sha256"]:
+            abort(f"{path} native keygen relation identity does not match the canonical result")
+        expected_native_budget = {
+            "schema": "ezkl.native-keygen-budget.v1",
+            "session_id": session_id,
+            "dataset": dataset,
+            "admission_sha256": setup_receipt.get("admission_sha256"),
+            "settings_sha256": result["settings_sha256"],
+            "binary_sha256": result["binary_sha256"],
+            "resource_manifest_sha256": result["resource_manifest_sha256"],
+            "build_receipt_sha256": result["build_receipt_sha256"],
+            "build_environment_sha256": result["build_environment_sha256"],
+        }
+        if any(keygen_budget.get(name) != value for name, value in expected_native_budget.items()):
+            abort(f"{path} native keygen budget does not match its formal build/resource identity")
+        native_census = keygen_receipt.get("native_census")
+        if not isinstance(native_census, dict) or not isinstance(native_census.get("preflight"), dict):
+            abort(f"{path} native keygen receipt has no exact synthesis census")
+        preflight = native_census["preflight"]
+        stage_caps = keygen_receipt.get("stage_budget_caps")
+        if not isinstance(stage_caps, list) or len(stage_caps) != 2:
+            abort(f"{path} native keygen receipt has no VK/PK stage caps")
+        caps: dict[str, dict[str, int]] = {}
+        for index, stage in enumerate(("vk", "pk")):
+            value = stage_caps[index]
+            if not isinstance(value, dict) or value.get("stage") != stage:
+                abort(f"{path} native keygen stage caps are not ordered VK then PK")
+            selector_cap = value.get("max_selector_activation_bytes")
+            permutation_cap = value.get("max_permutation_backing_bytes")
+            if any(isinstance(cap, bool) or not isinstance(cap, int) or cap < 0 or cap >= 1 << 64 for cap in (selector_cap, permutation_cap)):
+                abort(f"{path} native {stage.upper()} allocation cap is invalid")
+            host_snapshot = keygen_budget.get("host_available_bytes")
+            disk_snapshot = keygen_budget.get("native_permutation_backing_budget_bytes")
+            selector_initial = preflight.get("selector_activation_initial_backing_bytes")
+            source_components = (
+                preflight.get("permutation_data_virtual_bytes"),
+                preflight.get("permutation_directory_virtual_bytes"),
+                keygen_budget.get("permutation_successor_backing_file_upper_bytes"),
+            )
+            if (
+                any(isinstance(bound, bool) or not isinstance(bound, int) or bound < 0 or bound > sys.maxsize for bound in (host_snapshot, disk_snapshot, selector_initial, *source_components))
+            ):
+                abort(f"{path} native {stage.upper()} resource ceiling is malformed")
+            source_backing_upper = sum(source_components)
+            if (
+                source_backing_upper > sys.maxsize
+                or selector_cap < selector_initial
+                or selector_cap > host_snapshot
+                or permutation_cap > min(disk_snapshot, source_backing_upper)
+            ):
+                abort(f"{path} native {stage.upper()} allocation cap exceeds its authenticated budget envelope")
+            caps[stage] = {"selector": selector_cap, "permutation": permutation_cap}
+        selector_peak = native_census.get("selector_activation_storage_peak_bytes")
+        permutation_values = [native_census.get(name) for name in ("permutation_data_allocated_bytes", "permutation_directory_allocated_bytes", "permutation_successor_edges")]
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in permutation_values):
+            abort(f"{path} native permutation census byte counts are invalid")
+        successor_logical_bytes = 16 * permutation_values[2]
+        successor_reserved_bytes = ((successor_logical_bytes + 4095) // 4096) * 4096
+        target_bitmap_virtual_bytes = (permutation_values[2] + 7) // 8
+        target_bitmap_reserved_bytes = ((target_bitmap_virtual_bytes + 4095) // 4096) * 4096
+        exact_pk_read_backing_bytes = successor_reserved_bytes + target_bitmap_reserved_bytes
+        permutation_backing = permutation_values[0] + permutation_values[1] + successor_reserved_bytes
+        if (
+            successor_reserved_bytes > sys.maxsize
+            or target_bitmap_reserved_bytes > sys.maxsize
+            or exact_pk_read_backing_bytes > sys.maxsize
+            or isinstance(selector_peak, bool)
+            or not isinstance(selector_peak, int)
+            or selector_peak < 0
+            or selector_peak > sys.maxsize
+            or selector_peak > min(caps["vk"]["selector"], caps["pk"]["selector"])
+            or permutation_backing < 0
+            or permutation_backing > sys.maxsize
+            or permutation_backing > min(caps["vk"]["permutation"], caps["pk"]["permutation"])
+        ):
+            abort(f"{path} native keygen census exceeds its VK/PK resource caps")
+        expected_prove = {
+            "schema": "ezkl.native-prove-budget.v1",
+            "session_id": session_id,
+            "dataset": dataset,
+            "admission_sha256": setup_receipt.get("admission_sha256"),
+            "setup_receipt_sha256": receipt_digests["setup_receipt.json"],
+            "native_keygen_budget_sha256": receipt_digests["native_keygen_budget.json"],
+            "native_keygen_receipt_sha256": receipt_digests["native_keygen_receipt.json"],
+            "binary_sha256": result["binary_sha256"],
+            "settings_sha256": result["settings_sha256"],
+            "compiled_circuit_sha256": result["compiled_circuit_sha256"],
+            "vk_sha256": result["vk_sha256"],
+            "pk_sha256": result["pk_sha256"],
+            "resource_manifest_sha256": result["resource_manifest_sha256"],
+            "build_receipt_sha256": result["build_receipt_sha256"],
+            "build_environment_sha256": result["build_environment_sha256"],
+        }
+        if any(prove_budget.get(name) != value for name, value in expected_prove.items()):
+            abort(f"{path} native prove budget does not bind its setup, keygen, and binary identities")
+        for name in (
+            "disk_available_bytes",
+            "disk_required_known_bytes",
+            "native_pk_read_backing_required_bytes",
+            "max_total_backing_bytes",
+            "host_available_bytes",
+            "host_required_known_bytes",
+            "native_pk_read_host_scratch_upper_bytes",
+            "native_pk_read_successor_cache_upper_bytes",
+            "native_pk_read_target_bitmap_fixed_cache_upper_bytes",
+            "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
+            "native_pk_read_validation_buffers_upper_bytes",
+            "native_pk_read_stream_buffer_upper_bytes",
+        ):
+            value = prove_budget.get(name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
+                abort(f"{path} native prove budget has invalid {name}")
+        target_bitmap_page_count = (target_bitmap_reserved_bytes // 4096)
+        target_bitmap_allocation_upper = (target_bitmap_page_count + 7) // 8
+        expected_read_host_scratch = (
+            prove_budget["native_pk_read_successor_cache_upper_bytes"]
+            + prove_budget["native_pk_read_target_bitmap_fixed_cache_upper_bytes"]
+            + target_bitmap_allocation_upper
+            + prove_budget["native_pk_read_validation_buffers_upper_bytes"]
+            + prove_budget["native_pk_read_stream_buffer_upper_bytes"]
+        )
+        if (
+            prove_budget["disk_required_known_bytes"] > prove_budget["disk_available_bytes"]
+            or prove_budget["native_pk_read_backing_required_bytes"] != exact_pk_read_backing_bytes
+            or prove_budget["max_total_backing_bytes"] != exact_pk_read_backing_bytes
+            or prove_budget["native_pk_read_target_bitmap_allocation_bitmap_upper_bytes"] != target_bitmap_allocation_upper
+            or prove_budget["native_pk_read_validation_buffers_upper_bytes"] != 4 * 4096 * 16
+            or prove_budget["native_pk_read_successor_cache_upper_bytes"] != keygen_budget.get("native_successor_read_cache_bytes")
+            or prove_budget["native_pk_read_target_bitmap_fixed_cache_upper_bytes"] != keygen_budget.get("native_target_bitmap_fixed_cache_bytes")
+            or prove_budget["native_pk_read_stream_buffer_upper_bytes"] != keygen_budget.get("native_pk_read_buffer_capacity_bytes")
+            or prove_budget["native_pk_read_host_scratch_upper_bytes"] != expected_read_host_scratch
+            or prove_budget["native_pk_read_host_scratch_upper_bytes"] > prove_budget["host_required_known_bytes"]
+            or prove_budget["host_required_known_bytes"] > prove_budget["host_available_bytes"]
+        ):
+            abort(f"{path} native PK reader resources do not fit the authenticated host/disk envelope")
     core_path = path.parent / "core_run_manifest.json"
     core = load_json(core_path, "core run manifest")
     require_exact_keys(

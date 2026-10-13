@@ -221,6 +221,7 @@ pub struct RegionCtx<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Ha
     assigned_constants: ConstantsMap<F>,
     challenges: Vec<Value<F>>,
     max_dynamic_input_len: usize,
+    ordered_dummy_loop: bool,
 }
 
 impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a, F> {
@@ -345,6 +346,7 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             assigned_constants: HashMap::new(),
             challenges: vec![],
             max_dynamic_input_len: 0,
+            ordered_dummy_loop: false,
         }
     }
 
@@ -365,6 +367,7 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             assigned_constants: HashMap::new(),
             challenges: vec![],
             max_dynamic_input_len: 0,
+            ordered_dummy_loop: false,
         }
     }
 
@@ -418,6 +421,7 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             assigned_constants: HashMap::new(),
             challenges: vec![Value::unknown(); NUM_MAX_EINSUM_CHALLENGES],
             max_dynamic_input_len: 0,
+            ordered_dummy_loop: false,
         }
     }
 
@@ -443,7 +447,17 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             assigned_constants: HashMap::new(),
             challenges,
             max_dynamic_input_len: 0,
+            ordered_dummy_loop: false,
         }
+    }
+
+    /// Temporarily select deterministic, ordered dummy-loop accounting.
+    ///
+    /// Live region loops are already sequential. The canonical GAT adapter
+    /// uses this only while estimating its GraphSettings so the shape pass
+    /// sees the same sequence of duplication offsets as live synthesis.
+    pub fn set_ordered_dummy_loop(&mut self, ordered: bool) -> bool {
+        std::mem::replace(&mut self.ordered_dummy_loop, ordered)
     }
 
     /// Apply a function in a loop to the region
@@ -454,7 +468,9 @@ impl<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash> RegionCtx<'a
             + Send
             + Sync,
     ) -> Result<(), CircuitError> {
-        if self.is_dummy() {
+        if self.is_dummy() && self.ordered_dummy_loop {
+            self.real_loop(output, inner_loop_function)?;
+        } else if self.is_dummy() {
             self.dummy_loop(output, inner_loop_function)?;
         } else {
             self.real_loop(output, inner_loop_function)?;

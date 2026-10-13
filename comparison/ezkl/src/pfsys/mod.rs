@@ -12,8 +12,14 @@ use crate::circuit::CheckMode;
 use crate::graph::GraphWitness;
 use crate::{EZKL_BUF_CAPACITY, EZKL_KEY_FORMAT};
 use halo2_proofs::plonk::{
-    create_proof, keygen_pk, keygen_vk_custom, verify_proof, Circuit, ProvingKey, VerifyingKey,
+    create_proof, keygen_pk, keygen_vk_custom,
+    keygen_vk_custom_with_native_gate, verify_proof, Circuit, NativeKeygenBudget,
+    NativeKeygenCensus, NativeKeygenPreflight, NativePkReadTiming, ProvingKey, VerifyingKey,
 };
+#[cfg(not(feature = "formal-gpu"))]
+use halo2_proofs::plonk::keygen_pk_with_native_gate;
+#[cfg(feature = "formal-gpu")]
+use halo2_proofs::plonk::keygen_pk_with_native_gate_compact_artifact;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params, ParamsProver, Prover, Verifier};
 use halo2_proofs::poly::VerificationStrategy;
 use halo2_proofs::transcript::{EncodedChallenge, TranscriptReadBuffer, TranscriptWriterBuffer};
@@ -450,6 +456,104 @@ where
     Ok(pk)
 }
 
+/// Create EZKL's native keypair while allowing the formal runner to gate the
+/// actual Halo2 allocations and record the mandatory keygen synthesis census.
+/// VK and PK each synthesize once as required by Halo2; their source-derived
+/// geometry and observed census must agree exactly before the PK is accepted.
+pub fn create_keys_with_native_gate<Scheme, C, Before, After>(
+    circuit: &C,
+    params: &Scheme::ParamsProver,
+    disable_selector_compression: bool,
+    mut before_assembly: Before,
+    mut after_synthesis: After,
+) -> Result<(ProvingKey<Scheme::Curve>, NativeKeygenCensus), halo2_proofs::plonk::Error>
+where
+    Scheme: CommitmentScheme,
+    C: Circuit<Scheme::Scalar>,
+    Scheme::Scalar: FromUniformBytes<64>,
+    Before: FnMut(&str, &NativeKeygenPreflight) -> io::Result<NativeKeygenBudget>,
+    After: FnMut(&str, &NativeKeygenCensus) -> io::Result<()>,
+{
+    let empty_circuit = <C as Circuit<Scheme::Scalar>>::without_witnesses(circuit);
+    let mut vk_preflight = None;
+    let mut vk_census = None;
+
+    let now = Instant::now();
+    trace!("preparing VK with native resource gate");
+    let vk = keygen_vk_custom_with_native_gate(
+        params,
+        &empty_circuit,
+        !disable_selector_compression,
+        |preflight| {
+            let budget = before_assembly("vk", preflight)?;
+            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
+                return Err(io::Error::other("native VK keygen allocation caps must be finite"));
+            }
+            vk_preflight = Some(preflight.clone());
+            Ok(budget)
+        },
+        |census| {
+            after_synthesis("vk", census)?;
+            vk_census = Some(census.clone());
+            Ok(())
+        },
+    )?;
+    let elapsed = now.elapsed();
+    info!("VK with native resource gate took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
+
+    let expected_preflight = vk_preflight.ok_or(halo2_proofs::plonk::Error::Synthesis)?;
+    let expected_census = vk_census.ok_or(halo2_proofs::plonk::Error::Synthesis)?;
+    let now = Instant::now();
+    trace!("preparing PK with native resource gate");
+    #[cfg(feature = "formal-gpu")]
+    let pk = keygen_pk_with_native_gate_compact_artifact(
+        params,
+        vk,
+        &empty_circuit,
+        |preflight| {
+            if preflight != &expected_preflight {
+                return Err(io::Error::other("native VK/PK keygen preflight geometry changed"));
+            }
+            let budget = before_assembly("pk", preflight)?;
+            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
+                return Err(io::Error::other("native PK keygen allocation caps must be finite"));
+            }
+            Ok(budget)
+        },
+        |census| {
+            if census != &expected_census {
+                return Err(io::Error::other("native VK/PK keygen synthesis census changed"));
+            }
+            after_synthesis("pk", census)
+        },
+    )?;
+    #[cfg(not(feature = "formal-gpu"))]
+    let pk = keygen_pk_with_native_gate(
+        params,
+        vk,
+        &empty_circuit,
+        |preflight| {
+            if preflight != &expected_preflight {
+                return Err(io::Error::other("native VK/PK keygen preflight geometry changed"));
+            }
+            let budget = before_assembly("pk", preflight)?;
+            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
+                return Err(io::Error::other("native PK keygen allocation caps must be finite"));
+            }
+            Ok(budget)
+        },
+        |census| {
+            if census != &expected_census {
+                return Err(io::Error::other("native VK/PK keygen synthesis census changed"));
+            }
+            after_synthesis("pk", census)
+        },
+    )?;
+    let elapsed = now.elapsed();
+    info!("PK with native resource gate took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
+    Ok((pk, expected_census))
+}
+
 /// a wrapper around halo2's create_proof
 #[allow(clippy::too_many_arguments)]
 pub fn create_proof_circuit<
@@ -700,6 +804,64 @@ where
     let elapsed = start.elapsed();
     info!("loaded proving key in {:?}", elapsed);
     Ok(pk)
+}
+
+/// Loads a formal native proving key while bounding the temporary sparse
+/// permutation backing and target-membership validation store. The legacy
+/// loader above remains available to nonformal callers.
+pub fn load_pk_with_native_backing_budget<Scheme: CommitmentScheme, C: Circuit<Scheme::Scalar>>(
+    path: PathBuf,
+    params: <C as Circuit<Scheme::Scalar>>::Params,
+    max_total_backing_bytes: u64,
+) -> Result<ProvingKey<Scheme::Curve>, PfsysError>
+where
+    Scheme::Curve: SerdeObject + CurveAffine,
+    Scheme::Scalar: PrimeField + SerdeObject + FromUniformBytes<64>,
+{
+    debug!("loading proving key with native backing budget from {:?}", path);
+    let start = instant::Instant::now();
+    let f = File::open(path.clone()).map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    let mut reader = BufReader::with_capacity(*EZKL_BUF_CAPACITY, f);
+    let pk = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget::<_, C>(
+        &mut reader,
+        serde_format_from_str(&EZKL_KEY_FORMAT),
+        max_total_backing_bytes,
+        params,
+    )
+    .map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    let elapsed = start.elapsed();
+    info!("loaded proving key with native backing budget in {:?}", elapsed);
+    Ok(pk)
+}
+
+/// Loads a formal compact native proving key under its authenticated backing
+/// budget and returns the non-overlapping artifact-validation and sigma
+/// materialization wall-time breakdown. The legacy and untimed loaders remain
+/// available to nonformal callers.
+pub fn load_pk_with_native_backing_budget_and_timing<
+    Scheme: CommitmentScheme,
+    C: Circuit<Scheme::Scalar>,
+>(
+    path: PathBuf,
+    params: <C as Circuit<Scheme::Scalar>>::Params,
+    max_total_backing_bytes: u64,
+) -> Result<(ProvingKey<Scheme::Curve>, NativePkReadTiming), PfsysError>
+where
+    Scheme::Curve: SerdeObject + CurveAffine,
+    Scheme::Scalar: PrimeField + SerdeObject + FromUniformBytes<64>,
+{
+    debug!("loading proving key with native backing budget and timing from {:?}", path);
+    let f = File::open(path.clone()).map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    let mut reader = BufReader::with_capacity(*EZKL_BUF_CAPACITY, f);
+    let loaded = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget_and_timing::<_, C>(
+        &mut reader,
+        serde_format_from_str(&EZKL_KEY_FORMAT),
+        max_total_backing_bytes,
+        params,
+    )
+    .map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    info!("loaded proving key with native backing budget and timing");
+    Ok(loaded)
 }
 
 /// Saves a [ProvingKey] to `path`.
@@ -953,6 +1115,373 @@ mod tests {
             SOURCE_K,
         )
         .is_err());
+    }
+
+    #[cfg(feature = "formal-gpu")]
+    #[test]
+    fn full_ezkl_repair_batch() {
+        use crate::graph::{GraphCircuit, GraphWitness, NodeType, SupportedOp};
+        use halo2_proofs::poly::kzg::multiopen::{ProverSHPLONK, VerifierSHPLONK};
+        use halo2_proofs::poly::kzg::strategy::SingleStrategy;
+        use halo2_proofs::transcript::{Blake2bRead, Blake2bWrite, Challenge255};
+        use rand::rngs::OsRng;
+        use std::process::{Command, Stdio};
+        crate::gat_adapter::run_geometry_and_mock_regressions();
+        assert!(crate::execute::native_keygen_domains_within_capacity(26, 28));
+        assert!(crate::execute::native_keygen_domains_within_capacity(25, 27));
+        assert!(!crate::execute::native_keygen_domains_within_capacity(27, 28));
+        assert!(!crate::execute::native_keygen_domains_within_capacity(26, 29));
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let temp = Builder::new().prefix("ezkl-repair-batch").tempdir().unwrap();
+        let _spill = halo2_proofs::poly::native_spill_scope(temp.path()).unwrap();
+        let fixture = root.join("tests/fixtures/gat_lookup_reuse");
+        let compiled = GraphCircuit::load(fixture.join("compiled.circuit")).unwrap();
+        let witness = GraphWitness::from_path(fixture.join("witness.json")).unwrap();
+        let mut run_args = compiled.settings().run_args.clone();
+        run_args.logrows = 13;
+        let mut gat_spec = compiled.model().graph.nodes.values().find_map(|node| match node {
+            NodeType::Node(node) => match &node.opkind { SupportedOp::Gat(op) => Some(op.spec.clone()), _ => None },
+            NodeType::SubGraph { .. } => None,
+        }).expect("tiny fixture includes the canonical GAT operation");
+        run_args.param_scale = gat_spec.scales.s_w_hidden[0][0];
+        assert_eq!((gat_spec.graph.n_total, gat_spec.graph.n, gat_spec.graph.e, gat_spec.feature_dim, gat_spec.graph.g_batch), (1, 1, 1, 1, 1));
+        assert_eq!(gat_spec.model.hidden_layers.iter().map(|layer| layer.heads.len()).collect::<Vec<_>>(), vec![8, 8]);
+        assert_eq!(gat_spec.model.output_heads.len(), 2);
+        assert_eq!(gat_spec.model.classes, 1);
+        assert_eq!(gat_spec.model.flattened_params_len().unwrap(), 126);
+        assert_eq!(gat_spec.ledger.max_score_abs, 2_048);
+        assert_eq!(witness.inputs.iter().map(Vec::len).collect::<Vec<_>>(), vec![1, 1, 1, 1, 2, 2]);
+        assert_eq!(witness.params.iter().map(Vec::len).collect::<Vec<_>>(), vec![126]);
+        assert_eq!(witness.outputs.iter().map(Vec::len).collect::<Vec<_>>(), vec![1]);
+        let original_ledger = gat_spec.ledger.clone();
+        let original_scales = gat_spec.scales.clone();
+        let original_tables = gat_spec.tables.clone();
+        let original_model_binding = gat_spec.model_binding.clone();
+        let original_graph = gat_spec.graph.clone();
+        // The committed tiny artifact predates ledger-closed table domains.
+        // Regenerate only its exact tables from the unchanged fixture ledger,
+        // graph degree, and scales by calling the production resource
+        // generator's canonical row and digest routines.
+        let table_rebuild = r#"import json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+sys.path.insert(0,str(root/'scripts'))
+import generate_gat_resources as gen
+data=json.load(sys.stdin)
+tables=data['tables']; ledger=data['ledger']; scales=data['scales']; graph=data['graph']
+score=int(ledger['max_score_abs'])
+delta=max(int(ledger['max_delta']),max(2*int(family['max_score_abs']) for family in ledger['families']))
+if score < 0 or delta < 0:
+    raise ValueError('tiny fixture ledger has a negative score/delta bound')
+lrelu_output=max(abs(gen.table_value({'function_id':'lrelu'},-score)),abs(gen.table_value({'function_id':'lrelu'},score)))
+exp_high=max(delta,2*lrelu_output)
+exp_zero=gen.table_value({'function_id':'exp_neg'},0)
+elu_high=0
+for family in ledger['families']:
+    if family['is_output']:
+        continue
+    layer=int(family['layer']); head=int(family['head'])
+    numerator=int(family['max_aggregation_num']) * (1 << int(scales['s_agg_pre'][layer]))
+    minimum_divisor=exp_zero * (1 << int(scales['s_h_prime'][layer][head]))
+    if minimum_divisor <= 0:
+        raise ValueError('tiny fixture hidden denominator is not positive')
+    elu_high=max(elu_high,gen.round_ratio_away(numerator,minimum_divisor))
+degrees={}
+for start,end in zip(graph['edge_ptr'],graph['edge_ptr'][1:]):
+    counts={}
+    for dst in graph['dst'][start:end]:
+        counts[dst]=counts.get(dst,0)+1
+    degrees.update(counts)
+max_degree=max(degrees.values(),default=0)
+max_relu=max(2*lrelu_output,max_degree)
+def table(key,low,high,expected_function):
+    old=tables[key]
+    if old['function_id'] != expected_function:
+        raise ValueError(f"unexpected {key} table function {old['function_id']!r}")
+    return gen.make_table(old['table_id'],old['function_id'],old['domain_id'],old['generator_id'],old['input_scale'],old['output_scale'],low,high)
+rebuilt={
+  'lrelu':table('lrelu',-score,score,'lrelu'),
+  'exp':table('exp',0,exp_high,'exp_neg'),
+  'elu':table('elu',-elu_high,elu_high,'elu'),
+  'max_relu':table('max_relu',-max_relu,max_relu,'max_relu'),
+  'static_tables_id':tables['static_tables_id'],
+  'backend_aux_tables_id':tables['backend_aux_tables_id'],
+}
+rebuilt['static_tables_digest']=gen.static_tables_digest(rebuilt)
+# The canonical resource generator represents rows by interval and function;
+# CanonicalGat's Rust schema stores the same exact rows explicitly.
+for key in gen.TABLE_ORDER:
+    table=rebuilt[key]
+    table['rows']=[[input_value,output_value] for input_value,output_value in gen.iter_table_rows(table)]
+    del table['row_count']
+print(json.dumps(rebuilt,separators=(',',':')))
+"#;
+        let table_input = serde_json::json!({
+            "tables": &gat_spec.tables,
+            "ledger": &gat_spec.ledger,
+            "scales": &gat_spec.scales,
+            "graph": &gat_spec.graph,
+        });
+        let python_for_tables = std::env::var_os("EZKL_REPAIR_TEST_PYTHON").unwrap_or_else(|| "python3".into());
+        let mut child = Command::new(python_for_tables)
+            .arg("-c")
+            .arg(table_rebuild)
+            .arg(&root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Python is required for canonical tiny-fixture table regeneration");
+        serde_json::to_writer(child.stdin.take().unwrap(), &table_input).unwrap();
+        let generated = child.wait_with_output().unwrap();
+        assert!(
+            generated.status.success(),
+            "canonical tiny-fixture table regeneration failed: {}",
+            String::from_utf8_lossy(&generated.stderr),
+        );
+        gat_spec.tables = serde_json::from_slice::<crate::gat_adapter::schema::StaticTables>(&generated.stdout)
+            .expect("production table generator returned malformed exact tables");
+        assert_eq!(gat_spec.scales, original_scales, "table refresh must preserve fixed-point scales");
+        for (label, before, after) in [
+            ("lrelu", &original_tables.lrelu, &gat_spec.tables.lrelu),
+            ("exp", &original_tables.exp, &gat_spec.tables.exp),
+            ("elu", &original_tables.elu, &gat_spec.tables.elu),
+            ("max_relu", &original_tables.max_relu, &gat_spec.tables.max_relu),
+        ] {
+            assert_eq!(before.table_id, after.table_id, "{} table id must remain fixed", label);
+            assert_eq!(before.input_scale, after.input_scale, "{} table input scale must remain fixed", label);
+            assert_eq!(before.output_scale, after.output_scale, "{} table output scale must remain fixed", label);
+            assert_eq!(before.function_id, after.function_id, "{} function id must remain fixed", label);
+            assert_eq!(before.domain_id, after.domain_id, "{} domain id must remain fixed", label);
+            assert_eq!(before.generator_id, after.generator_id, "{} generator id must remain fixed", label);
+        }
+        assert_eq!(original_tables.static_tables_id, gat_spec.tables.static_tables_id);
+        assert_eq!(original_tables.backend_aux_tables_id, gat_spec.tables.backend_aux_tables_id);
+        assert_eq!(gat_spec.model_binding, original_model_binding, "table refresh must not change the private-model binding");
+        assert_eq!(gat_spec.graph, original_graph, "table refresh must not change graph/topology");
+
+        // This checked-in compile artifact predates full ledger/table closure:
+        // its output families claim score=2048 but delta=32, and every family
+        // claims table_output=32. Close only those stale under-bounds against
+        // the unchanged score families and actual shared-table rows, using the
+        // same common-table ledger semantics as the production generator.
+        let table_output_floor = [
+            &gat_spec.tables.lrelu,
+            &gat_spec.tables.exp,
+            &gat_spec.tables.elu,
+            &gat_spec.tables.max_relu,
+        ]
+        .into_iter()
+        .flat_map(|table| table.rows.iter().map(|(_, output)| output.checked_abs().expect("canonical table output absolute value")))
+        .max()
+        .expect("regenerated canonical tables contain rows");
+        for family in &mut gat_spec.ledger.families {
+            let required_delta = family.max_score_abs.checked_mul(2).expect("canonical GAT score-difference bound");
+            family.max_delta = family.max_delta.max(required_delta);
+            family.max_table_output_abs = family.max_table_output_abs.max(table_output_floor);
+        }
+        gat_spec.ledger.max_delta = gat_spec
+            .ledger
+            .families
+            .iter()
+            .map(|family| family.max_delta)
+            .fold(gat_spec.ledger.max_delta, i128::max);
+        gat_spec.ledger.max_table_output_abs = gat_spec.ledger.max_table_output_abs.max(table_output_floor);
+        assert!(gat_spec.ledger.max_delta >= original_ledger.max_delta);
+        assert!(gat_spec.ledger.max_table_output_abs >= original_ledger.max_table_output_abs);
+        assert_eq!(gat_spec.ledger.max_score_abs, original_ledger.max_score_abs);
+        assert_eq!(gat_spec.ledger.max_exp, original_ledger.max_exp);
+        assert_eq!(gat_spec.ledger.max_sum, original_ledger.max_sum);
+        assert_eq!(gat_spec.ledger.max_aggregation_num, original_ledger.max_aggregation_num);
+        assert_eq!(gat_spec.ledger.max_dividend_abs, original_ledger.max_dividend_abs);
+        assert_eq!(gat_spec.ledger.max_aux_abs, original_ledger.max_aux_abs);
+        assert_eq!(gat_spec.ledger.max_divisor, original_ledger.max_divisor);
+        assert_eq!(gat_spec.ledger.field_modulus, original_ledger.field_modulus);
+        assert_eq!(gat_spec.ledger.ledger_id, original_ledger.ledger_id);
+        assert_eq!(gat_spec.ledger.families.len(), original_ledger.families.len());
+        for (before, after) in original_ledger.families.iter().zip(&gat_spec.ledger.families) {
+            assert_eq!((before.layer, before.head, before.is_output), (after.layer, after.head, after.is_output));
+            assert!(after.max_delta >= before.max_delta);
+            assert!(after.max_table_output_abs >= before.max_table_output_abs);
+            assert!(after.max_delta >= after.max_score_abs.checked_mul(2).expect("canonical GAT score-difference bound"));
+            assert!(after.max_table_output_abs >= table_output_floor);
+            assert_eq!(after.max_score_abs, before.max_score_abs);
+            assert_eq!(after.max_weight_abs, before.max_weight_abs);
+            assert_eq!(after.max_attention_abs, before.max_attention_abs);
+            assert_eq!(after.max_bias_abs, before.max_bias_abs);
+            assert_eq!(after.max_exp, before.max_exp);
+            assert_eq!(after.max_sum, before.max_sum);
+            assert_eq!(after.max_aggregation_num, before.max_aggregation_num);
+            assert_eq!(after.max_dividend_abs, before.max_dividend_abs);
+            assert_eq!(after.max_aux_abs, before.max_aux_abs);
+            assert_eq!(after.max_divisor, before.max_divisor);
+        }
+        gat_spec.ledger.refresh_digest().unwrap();
+        assert_eq!(gat_spec.ledger_identity.id, gat_spec.ledger.ledger_id);
+        gat_spec.ledger_identity.digest = crate::gat_adapter::schema::sha256_digest(&gat_spec.ledger.canonical_bytes()).unwrap();
+        eprintln!(
+            "EZKL_TEST_FIXTURE_LEDGER_CLOSURE old_max_delta={} new_max_delta={} old_max_table_output_abs={} new_max_table_output_abs={} shared_table_output_floor={}",
+            original_ledger.max_delta,
+            gat_spec.ledger.max_delta,
+            original_ledger.max_table_output_abs,
+            gat_spec.ledger.max_table_output_abs,
+            table_output_floor,
+        );
+        gat_spec.validate_for_compile().expect("canonical tiny fixture tables and widened ledger must close the full unchanged GAT relation and fixed scales");
+        assert_eq!((gat_spec.tables.lrelu.input_min, gat_spec.tables.lrelu.input_max), (-2_048, 2_048));
+        assert_eq!(gat_spec.tables.exp.input_max, gat_spec.ledger.max_delta);
+        assert_eq!(gat_spec.ledger.max_delta, 4_096);
+        assert_eq!(gat_spec.ledger.max_table_output_abs, 4_096);
+        assert_eq!((gat_spec.tables.max_relu.input_min, gat_spec.tables.max_relu.input_max), (-4_096, 4_096));
+        assert_eq!(gat_spec.tables.max_relu.rows.len(), 8_193);
+        let max_table_rows = [
+            gat_spec.tables.lrelu.rows.len(),
+            gat_spec.tables.exp.rows.len(),
+            gat_spec.tables.elu.rows.len(),
+            gat_spec.tables.max_relu.rows.len(),
+        ].into_iter().max().expect("tiny GAT fixture has registered tables");
+        let table_rows = [
+            ("lrelu", gat_spec.tables.lrelu.rows.len()),
+            ("exp", gat_spec.tables.exp.rows.len()),
+            ("elu", gat_spec.tables.elu.rows.len()),
+            ("max_relu", gat_spec.tables.max_relu.rows.len()),
+        ];
+        let rows_with_blinding = max_table_rows.checked_add(crate::graph::RESERVED_BLINDING_ROWS).unwrap();
+        assert!(max_table_rows <= (1usize << 14) - crate::graph::RESERVED_BLINDING_ROWS);
+        let table_logrows = rows_with_blinding.checked_next_power_of_two().unwrap().trailing_zeros();
+        let model = crate::gat_adapter::build_model_for_run_args(
+            gat_spec.clone(),
+            crate::gat_adapter::RoundingMode::NearestTiesAway,
+            &run_args,
+        ).unwrap();
+        let module_logrows = crate::graph::GraphSettings::required_logrows_for_model(&model, &run_args).unwrap();
+        let test_logrows = 13_u32.max(table_logrows).max(module_logrows);
+        assert!(test_logrows <= 14, "tiny fixture needs k={} from table_rows_max={}, table_floor={}, module_floor={}; review capacity before any larger test SRS", test_logrows, max_table_rows, table_logrows, module_logrows);
+        eprintln!(
+            "EZKL_TEST_FIXTURE table_rows={:?} table_rows_max={} reserved_rows={} table_logrows={} module_logrows={} test_logrows={}",
+            table_rows,
+            max_table_rows,
+            crate::graph::RESERVED_BLINDING_ROWS,
+            table_logrows,
+            module_logrows,
+            test_logrows,
+        );
+        run_args.logrows = test_logrows;
+        let params = ParamsKZG::<Bn256>::setup(test_logrows, OsRng);
+        let zero_cap_result = create_keys_with_native_gate::<KZGCommitmentScheme<Bn256>, _, _, _>(
+            &CopyCycleCircuit { mismatch: false },
+            &params,
+            false,
+            |_, _| Ok(NativeKeygenBudget { max_selector_activation_bytes: 0, max_permutation_backing_bytes: 0 }),
+            |_, _| Ok(()),
+        );
+        assert!(zero_cap_result.is_err(), "native keygen must reject a zero permutation allocation cap");
+        // Match formal setup: derive complete GAT settings without invoking
+        // GraphCircuit::new's additional full dummy layout.
+        let settings = crate::gat_adapter::gat_settings_for_run_args(&gat_spec, &run_args).unwrap();
+        let setup_circuit = GraphCircuit::new_gat_witnessless_from_settings(
+            model.clone(),
+            settings.clone(),
+            run_args.check_mode,
+        );
+        let mut circuit = GraphCircuit::new_from_settings(model, settings, run_args.check_mode).unwrap();
+        circuit.load_graph_witness(&witness).unwrap();
+        circuit.ensure_complete_gat_witness().unwrap();
+        assert!(circuit.settings().run_args.output_visibility.is_public());
+        let public_inputs = circuit.prepare_public_inputs(&witness).unwrap();
+        let output_count = witness.outputs.iter().map(Vec::len).sum::<usize>();
+        assert!(output_count > 0 && output_count <= public_inputs.len());
+        let mut native_stages = Vec::new();
+        let (compact_pk, census) = create_keys_with_native_gate::<KZGCommitmentScheme<Bn256>, _, _, _>(
+            &setup_circuit,
+            &params,
+            false,
+            |_, preflight| {
+                assert_eq!(preflight.logrows, test_logrows);
+                assert_eq!(preflight.domain_size, 1 << test_logrows);
+                Ok(NativeKeygenBudget { max_selector_activation_bytes: 256 * 1024 * 1024, max_permutation_backing_bytes: 256 * 1024 * 1024 })
+            },
+            |stage, native| {
+                assert_eq!(native.preflight.logrows, test_logrows);
+                native_stages.push((stage.to_owned(), native.clone()));
+                Ok(())
+            },
+        ).unwrap();
+        assert_eq!(native_stages.len(), 2);
+        assert!(census.permutation_copy_calls > 0);
+        assert!(census.selector_activation_storage_peak_bytes > 0);
+        let compact_bytes = compact_pk.to_bytes(SerdeFormat::RawBytes);
+        let pk_path = temp.path().join("tiny-gat.pk");
+        save_pk(&pk_path, &compact_pk).unwrap();
+        assert!(std::fs::metadata(&pk_path).unwrap().len() > 0);
+        drop(compact_pk);
+        assert!(load_pk_with_native_backing_budget::<KZGCommitmentScheme<Bn256>, GraphCircuit>(pk_path.clone(), circuit.params(), 0).is_err());
+        let (restored_pk, timing) = load_pk_with_native_backing_budget_and_timing::<KZGCommitmentScheme<Bn256>, GraphCircuit>(
+            pk_path,
+            circuit.params(),
+            64 * 1024 * 1024,
+        ).unwrap();
+        assert!(timing.artifact_read_validate.as_secs_f64() > 0.0);
+        assert!(timing.sigma_rebuild.as_secs_f64() > 0.0);
+        assert_eq!(compact_bytes, restored_pk.to_bytes(SerdeFormat::RawBytes));
+        let instance_columns: &[&[Fr]] = &[&public_inputs];
+        let instances: &[&[&[Fr]]] = &[instance_columns];
+        let mut transcript = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(vec![]);
+        halo2_proofs::plonk::create_proof::<KZGCommitmentScheme<Bn256>, ProverSHPLONK<_>, _, _, _, _>(
+            &params,
+            &restored_pk,
+            &[circuit],
+            instances,
+            OsRng,
+            &mut transcript,
+        ).unwrap();
+        let proof = transcript.finalize();
+        assert!(!proof.is_empty());
+        let verify = |statement: &[Fr]| {
+            let columns: &[&[Fr]] = &[statement];
+            let verifier_instances: &[&[&[Fr]]] = &[columns];
+            let verifier_params = params.verifier_params();
+            let mut reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(proof.as_slice());
+            halo2_proofs::plonk::verify_proof::<KZGCommitmentScheme<Bn256>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+                verifier_params,
+                restored_pk.get_vk(),
+                SingleStrategy::new(verifier_params),
+                verifier_instances,
+                &mut reader,
+                params.n(),
+            )
+        };
+        assert!(verify(&public_inputs).is_ok(), "independent native verifier rejected the GAT public statement");
+        let mut tampered_public = public_inputs.clone();
+        let tampered_logit_index = tampered_public.len() - output_count;
+        tampered_public[tampered_logit_index] += Fr::from(1u64);
+        assert!(verify(&tampered_public).is_err(), "native verifier accepted an altered public logit");
+        let python = r#"import ast,json,sys
+from pathlib import Path
+root=Path(sys.argv[1])
+sys.path.insert(0,str(root/'scripts'))
+from formal_common import ContractError,validate_native_pk_read_timing
+for relative in ('scripts/run_hybrid_formal.py','scripts/run_single_dataset.py','scripts/formal_common.py','scripts/collect_results.py','scripts/finalization_capacity.py'):
+    ast.parse((root/relative).read_text(),filename=relative)
+digest='ab'*32
+pk='cd'*32
+session='00112233445566778899aabbccddeeff'
+timing={'schema':'ezkl.native-pk-read-timing.v1','operation':'authenticated_compact_native_pk_restore','session_id':session,'dataset':'tiny_gat_test','native_prove_budget_sha256':digest,'admission_sha256':digest,'resource_manifest_sha256':digest,'setup_receipt_sha256':digest,'native_keygen_budget_sha256':digest,'native_keygen_receipt_sha256':digest,'build_receipt_sha256':digest,'build_environment_sha256':digest,'binary_sha256':digest,'settings_sha256':digest,'compiled_circuit_sha256':digest,'vk_sha256':digest,'pk_sha256':pk,'measurement_scope':'artifact_read_decode_digest_and_mapping_validation_excluding_sigma_rebuild; sigma_wall_elapsed_may_include_mapped_or_spill_io','artifact_read_validate_ms':1.25,'sigma_rebuild_wall_ms':2.5}
+path=Path(sys.argv[2])/'native_pk_read_timing.json'
+path.write_text(json.dumps(timing))
+validate_native_pk_read_timing(path,session_id=session,dataset='tiny_gat_test',native_prove_budget_sha256=digest,pk_sha256=pk)
+timing['pk_sha256']='ef'*32
+path.write_text(json.dumps(timing))
+try:
+    validate_native_pk_read_timing(path,session_id=session,dataset='tiny_gat_test',native_prove_budget_sha256=digest,pk_sha256=pk)
+except ContractError:
+    pass
+else:
+    raise AssertionError('native PK timing validator accepted a mismatched artifact identity')
+"#;
+        let python_executable = std::env::var_os("EZKL_REPAIR_TEST_PYTHON").unwrap_or_else(|| "python3".into());
+        let status = Command::new(python_executable).arg("-c").arg(python).arg(&root).arg(temp.path()).status().expect("Python is required for the formal source/receipt regression");
+        assert!(status.success(), "formal Python source/receipt regression failed");
     }
 
     #[test]

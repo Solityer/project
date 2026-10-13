@@ -1,0 +1,16 @@
+timestamp=2026-10-12T09:19:01+08:00
+command=timeout 180s ./tests/segmented_lookup_fixture
+segmented_fixture stage=descriptor-cow status=PASS reason=descriptor copies share backing, writes detach, and wire bytes stay canonical
+segmented_fixture stage=shared-small-layout status=PASS reason=logical domain 8 uses canonical shared segment size 4 across two segments
+segmented_fixture stage=shared-small-commitment status=PASS reason=both segments committed using the declared common S
+segmented_fixture stage=shared-small-independent-verify status=PASS reason=canonical shared-S terminal proof survived fresh serialization and independent verification
+segmented_fixture stage=shared-small-tamper status=PASS reason=mutated first-segment Hyrax commitment rejected
+segmented_fixture stage=shared-small-tamper status=PASS reason=aggregate terminal commitment must match all weighted segment taus
+segmented_fixture stage=shared-small-tamper status=PASS reason=mutated nonzero-index segment tau rejected by fresh verifier
+segmented_fixture stage=prepared-msm-receipt status=PASS reason=raw bytes match; scalar and material mutations are rejected
+segmented_fixture stage=qpad-selector status=PASS reason=one segment-material build retains exact aggregate and scalar digest bytes
+segmented_fixture stage=prepared-msm-timing status=PASS basis_points=65553 pippenger_chunks=5 raw_seconds=0.313539 prepared_build_seconds=0.155034 prepared_basis_bytes=6293088 workspace_bytes=1638400 prepared_sum_seconds=0.0568947
+segmented_fixture stage=prepared-msm-chunks status=PASS reason=zero, partial, and parallel five-chunk MSMs match raw outputs
+sorted_lookup_receipt_fixture=FAIL error=tiny sorted-lookup proof failed: sorted-lookup relation kind=4 phase=sumcheck: segmented ZkSumcheck fold-state domain is not pair aligned
+segmented_fixture stage=sorted-receipt status=FAIL reason=tiny authenticated sorted lookup with receipts failed
+exit_code=1

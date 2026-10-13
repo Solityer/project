@@ -1,0 +1,19 @@
+{
+  "active_stage": "prepare",
+  "completed_stages": [],
+  "failure": "zkGPT local prepare phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/0770c18cde9a9bcba425711882465366/prepare.stderr.log",
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906071,
+    "owner_pid": 1588526,
+    "owner_start_ticks": 22021603,
+    "owner_token_sha256": "23c9258f9649469d7c9d949caf6c73ac0658821ca3d0948922ec9368731a0a85",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "0770c18cde9a9bcba425711882465366"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "0770c18cde9a9bcba425711882465366",
+  "started_unix_ns": 1791771576200121024,
+  "status": "FAILED",
+  "updated_unix_ns": 1791772110890351203
+}

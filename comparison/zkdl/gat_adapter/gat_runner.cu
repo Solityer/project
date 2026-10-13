@@ -37,6 +37,7 @@
 #include <type_traits>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <openssl/bn.h>
@@ -378,6 +379,112 @@ std::string json_quote_config(const std::string &value) {
     return result;
 }
 
+void append_native_shape_counts_json(
+    std::ostream &output, const NativeRelationPlanMetrics &metrics) {
+    output << ",\"native_constraint_opening_segment_count\":"
+           << metrics.constraint_opening_segment_count
+           << ",\"native_padding_opening_segment_count\":"
+           << metrics.padding_opening_segment_count
+           << ",\"native_sorted_lookup_opening_segment_count\":"
+           << metrics.sorted_lookup_opening_segment_count
+           << ",\"native_sparse_route_opening_count\":"
+           << metrics.sparse_route_opening_count
+           << ",\"native_fac_selector_opening_count\":"
+           << metrics.fac_selector_opening_count
+           << ",\"native_route_aggregate_input_segment_count\":"
+           << metrics.route_aggregate_input_segment_count
+           << ",\"native_public_output_opening_segment_count\":"
+           << metrics.public_output_opening_segment_count
+           << ",\"native_computed_hyrax_opening_count\":"
+           << metrics.computed_hyrax_opening_count
+           << ",\"native_retained_hyrax_opening_object_count\":"
+           << metrics.retained_hyrax_opening_object_count
+           << ",\"native_retained_hyrax_terminal_mirror_copy_count\":"
+           << metrics.retained_hyrax_terminal_mirror_copy_count
+           << ",\"native_total_hyrax_opening_segment_count\":"
+           << metrics.total_hyrax_opening_segment_count
+           << ",\"native_hyrax_round_vector_capacity_bytes_upper_bound\":"
+           << metrics.hyrax_round_vector_capacity_bytes_upper_bound
+           << ",\"native_hyrax_point_vector_capacity_bytes_upper_bound\":"
+           << metrics.hyrax_point_vector_capacity_bytes_upper_bound
+           << ",\"native_hyrax_opening_object_header_bytes_upper_bound\":"
+           << metrics.hyrax_opening_object_header_bytes_upper_bound
+           << ",\"native_hyrax_maximum_single_opening_vector_bytes_upper_bound\":"
+           << metrics.hyrax_maximum_single_opening_vector_bytes_upper_bound
+           << ",\"native_hyrax_opening_segment_domain_histogram\":[";
+    for (std::size_t index = 0U;
+         index < metrics.hyrax_opening_segment_domain_histogram.size(); ++index) {
+        if (index != 0U) output << ',';
+        const auto &bucket = metrics.hyrax_opening_segment_domain_histogram[index];
+        output << "{\"logical_domain\":" << bucket.logical_domain
+               << ",\"segment_size\":" << bucket.segment_size
+               << ",\"padded_generator_size\":" << bucket.padded_generator_size
+               << ",\"computed_opening_count\":" << bucket.computed_opening_count
+               << ",\"retained_object_count\":" << bucket.retained_object_count
+               << ",\"terminal_mirror_copy_count\":" << bucket.terminal_mirror_copy_count
+               << ",\"retained_round_vector_bytes_upper_bound\":"
+               << bucket.retained_round_vector_bytes_upper_bound
+               << ",\"retained_point_vector_bytes_upper_bound\":"
+               << bucket.retained_point_vector_bytes_upper_bound << '}';
+    }
+    output << "],\"native_sumcheck_metrics_scope\":\"segmented_calls_only\""
+           << ",\"native_hidden_matmul_unsegmented_sumcheck_call_count\":"
+           << metrics.primitive_count
+           << ",\"native_sumcheck_folded_state_budget_bytes\":"
+           << metrics.sumcheck_folded_state_budget_bytes
+           << ",\"native_sumcheck_cached_call_count\":"
+           << metrics.sumcheck_cached_call_count
+           << ",\"native_sumcheck_fallback_call_count\":"
+           << metrics.sumcheck_fallback_call_count
+           << ",\"native_sumcheck_spill_call_count\":"
+           << metrics.sumcheck_spill_call_count
+           << ",\"native_sumcheck_forced_cached_call_count\":"
+           << metrics.sumcheck_forced_cached_call_count
+           << ",\"native_sumcheck_cached_provider_value_slots_upper_bound\":"
+           << metrics.sumcheck_cached_provider_value_slots_upper_bound
+           << ",\"native_sumcheck_fallback_provider_value_slots_upper_bound\":"
+           << metrics.sumcheck_fallback_provider_value_slots_upper_bound
+           << ",\"native_sumcheck_cached_provider_scan_bytes_upper_bound\":"
+           << metrics.sumcheck_cached_provider_scan_bytes_upper_bound
+           << ",\"native_sumcheck_fallback_provider_scan_bytes_upper_bound\":"
+           << metrics.sumcheck_fallback_provider_scan_bytes_upper_bound
+           << ",\"native_sumcheck_spill_provider_value_slots_upper_bound\":"
+           << metrics.sumcheck_spill_provider_value_slots_upper_bound
+           << ",\"native_sumcheck_spill_provider_scan_bytes_upper_bound\":"
+           << metrics.sumcheck_spill_provider_scan_bytes_upper_bound
+           << ",\"native_sumcheck_spill_provider_source_bytes_upper_bound\":"
+           << metrics.sumcheck_spill_provider_source_bytes_upper_bound
+           << ",\"native_sumcheck_spill_storage_io_bytes_upper_bound\":"
+           << metrics.sumcheck_spill_storage_io_bytes_upper_bound
+           << ",\"native_sumcheck_max_spill_disk_peak_bytes_upper_bound\":"
+           << metrics.sumcheck_max_spill_disk_peak_bytes_upper_bound
+           << ",\"native_sumcheck_max_spill_ram_peak_bytes_upper_bound\":"
+           << metrics.sumcheck_max_spill_ram_peak_bytes_upper_bound
+           << ",\"native_sumcheck_max_folded_state_peak_bytes_upper_bound\":"
+           << metrics.sumcheck_max_folded_state_peak_bytes_upper_bound
+           << ",\"native_sumcheck_max_streaming_peak_bytes_upper_bound\":"
+           << metrics.sumcheck_max_streaming_peak_bytes_upper_bound
+           << ",\"native_sumcheck_shape_histogram\":[";
+    for (std::size_t index = 0U; index < metrics.sumcheck_shape_histogram.size(); ++index) {
+        if (index != 0U) output << ',';
+        const auto &bucket = metrics.sumcheck_shape_histogram[index];
+        output << "{\"logical_domain\":" << bucket.logical_domain
+               << ",\"segment_size\":" << bucket.segment_size
+               << ",\"provider_count\":" << bucket.provider_count
+               << ",\"cached_call_count\":" << bucket.cached_call_count
+               << ",\"fallback_call_count\":" << bucket.fallback_call_count
+               << ",\"spill_call_count\":" << bucket.spill_call_count
+               << ",\"forced_cached_call_count\":" << bucket.forced_cached_call_count
+               << ",\"cached_provider_value_slots_upper_bound\":"
+               << bucket.cached_provider_value_slots_upper_bound
+               << ",\"fallback_provider_value_slots_upper_bound\":"
+               << bucket.fallback_provider_value_slots_upper_bound
+               << ",\"spill_provider_value_slots_upper_bound\":"
+               << bucket.spill_provider_value_slots_upper_bound << '}';
+    }
+    output << ']';
+}
+
 std::string config_identity_digest(const std::map<std::string, std::string> &values) {
     std::string canonical = "{";
     bool first = true;
@@ -554,6 +661,101 @@ std::string json_fragment(const std::string &text, const std::string &key, char 
     fail("unterminated JSON field: " + key);
 }
 
+std::vector<std::string> json_object_array(const std::string &text, const std::string &key,
+                                           std::size_t maximum_values = 1U << 16U) {
+    const std::string fragment = json_fragment(text, key, '[', ']');
+    std::vector<std::string> objects;
+    std::size_t index = 1U;
+    const auto skip_space = [&]() {
+        while (index < fragment.size() && std::isspace(static_cast<unsigned char>(fragment[index]))) ++index;
+    };
+    skip_space();
+    while (index + 1U < fragment.size() && fragment[index] != ']') {
+        if (fragment[index] != '{') fail("analysis-only planned JSON array contains a non-object: " + key);
+        const std::size_t begin = index;
+        bool quoted = false, escaped = false;
+        std::size_t depth = 0U;
+        for (; index < fragment.size(); ++index) {
+            const char current = fragment[index];
+            if (quoted) {
+                if (escaped) escaped = false;
+                else if (current == '\\') escaped = true;
+                else if (current == '"') quoted = false;
+                continue;
+            }
+            if (current == '"') { quoted = true; continue; }
+            if (current == '{') ++depth;
+            else if (current == '}') {
+                if (depth == 0U) fail("analysis-only planned JSON object depth underflow: " + key);
+                if (--depth == 0U) {
+                    ++index;
+                    objects.push_back(fragment.substr(begin, index - begin));
+                    break;
+                }
+            }
+        }
+        if (depth != 0U || objects.size() > maximum_values)
+            fail("analysis-only planned JSON object array is truncated or exceeds its bound: " + key);
+        skip_space();
+        if (index < fragment.size() && fragment[index] == ',') { ++index; skip_space(); }
+        else if (index < fragment.size() && fragment[index] != ']')
+            fail("analysis-only planned JSON object array separator is invalid: " + key);
+    }
+    if (objects.empty()) fail("analysis-only planned JSON object array is empty: " + key);
+    return objects;
+}
+
+std::map<std::string, u64> json_u64_object(const std::string &text, const std::string &key,
+                                           std::size_t maximum_values = 1U << 20U) {
+    const std::string fragment = json_fragment(text, key, '{', '}');
+    std::map<std::string, u64> result;
+    std::size_t index = 1U;
+    const auto skip_space = [&]() {
+        while (index < fragment.size() && std::isspace(static_cast<unsigned char>(fragment[index]))) ++index;
+    };
+    skip_space();
+    while (index + 1U < fragment.size() && fragment[index] != '}') {
+        if (fragment[index] != '"') fail("analysis-only planned numeric object key is invalid: " + key);
+        const std::size_t key_begin = ++index;
+        const auto key_end = fragment.find('"', key_begin);
+        if (key_end == std::string::npos) fail("analysis-only planned numeric object key is unterminated: " + key);
+        const std::string item_key = fragment.substr(key_begin, key_end - key_begin);
+        index = key_end + 1U;
+        skip_space();
+        if (index >= fragment.size() || fragment[index++] != ':')
+            fail("analysis-only planned numeric object has no key separator: " + key);
+        skip_space();
+        const std::size_t value_begin = index;
+        while (index < fragment.size() && fragment[index] >= '0' && fragment[index] <= '9') ++index;
+        if (value_begin == index) fail("analysis-only planned numeric object value is not unsigned: " + key);
+        const u64 value = parse_u64(fragment.substr(value_begin, index - value_begin), key + "/" + item_key);
+        if (!result.emplace(item_key, value).second || result.size() > maximum_values)
+            fail("analysis-only planned numeric object has duplicate keys or exceeds its bound: " + key);
+        skip_space();
+        if (index < fragment.size() && fragment[index] == ',') { ++index; skip_space(); }
+        else if (index < fragment.size() && fragment[index] != '}')
+            fail("analysis-only planned numeric object separator is invalid: " + key);
+    }
+    if (result.empty()) fail("analysis-only planned numeric object is empty: " + key);
+    return result;
+}
+
+std::vector<u64> json_u64_array(const std::string &text, const std::string &key,
+                                std::size_t maximum_values = 16U) {
+    const std::string fragment = json_fragment(text, key, '[', ']');
+    std::vector<u64> values;
+    std::stringstream stream(fragment.substr(1U, fragment.size() - 2U));
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item = trim(item);
+        if (item.empty()) continue;
+        if (values.size() >= maximum_values) fail("analysis-only planned integer array exceeds its bound: " + key);
+        values.push_back(parse_u64(item, "analysis-only planned " + key));
+    }
+    if (values.empty()) fail("analysis-only planned integer array is empty: " + key);
+    return values;
+}
+
 std::string json_scalar(const std::string &text, const std::string &key) {
     const std::string marker = "\"" + key + "\"";
     const auto marker_pos = text.find(marker);
@@ -588,6 +790,164 @@ std::vector<i64> json_i64_array(const std::string &text, const std::string &key,
     if (values.empty()) fail("JSON array is empty: " + key);
     return values;
 }
+
+struct StaticTableDescriptorShape {
+    std::map<std::string, std::string> scalars;
+    std::set<std::string> arrays;
+    std::map<std::string, u64> array_element_counts;
+};
+
+class JsonShapeReader {
+  public:
+    explicit JsonShapeReader(const std::filesystem::path &path) : input_(path, std::ios::binary) {
+        if (!input_) fail("cannot open static table descriptor for shape scan: " + path.string());
+    }
+
+    StaticTableDescriptorShape read_static_table_descriptor() {
+        StaticTableDescriptorShape result;
+        expect('{');
+        skip_space();
+        if (peek() == '}') fail("static table descriptor shape has no fields");
+        for (;;) {
+            const std::string key = read_string();
+            expect(':');
+            if (key == "lrelu" || key == "elu" || key == "exp") {
+                const u64 element_count = read_integer_array_count();
+                if (!result.arrays.insert(key).second)
+                    fail("duplicate static table array in shape scan: " + key);
+                result.array_element_counts.emplace(key, element_count);
+            } else {
+                std::string value;
+                if (peek() == '"') value = read_string();
+                else value = read_integer_token();
+                if (!result.scalars.emplace(key, std::move(value)).second)
+                    fail("duplicate static table scalar in shape scan: " + key);
+            }
+            skip_space();
+            const int separator = get();
+            if (separator == '}') break;
+            if (separator != ',') fail("malformed static table descriptor object");
+            skip_space();
+        }
+        skip_space();
+        if (peek() != std::char_traits<char>::eof())
+            fail("static table descriptor has trailing bytes after its JSON object");
+        return result;
+    }
+
+  private:
+    int peek() { return input_.peek(); }
+    int get() { return input_.get(); }
+
+    void skip_space() {
+        while (peek() != std::char_traits<char>::eof() &&
+               std::isspace(static_cast<unsigned char>(peek()))) get();
+    }
+
+    void expect(char expected) {
+        skip_space();
+        if (get() != expected) fail(std::string("malformed static table descriptor: expected '") + expected + "'");
+    }
+
+    void skip_value() {
+        skip_space();
+        const int first = peek();
+        if (first == std::char_traits<char>::eof()) fail("static table descriptor value is truncated");
+        if (first == '"') {
+            (void)read_string();
+            return;
+        }
+        if (first == '[' || first == '{') {
+            std::vector<char> closers;
+            bool quoted = false;
+            bool escaped = false;
+            for (;;) {
+                const int next = get();
+                if (next == std::char_traits<char>::eof()) fail("unterminated static table descriptor array/object");
+                if (quoted) {
+                    if (escaped) escaped = false;
+                    else if (next == '\\') escaped = true;
+                    else if (next == '"') quoted = false;
+                    continue;
+                }
+                if (next == '"') quoted = true;
+                else if (next == '[') closers.push_back(']');
+                else if (next == '{') closers.push_back('}');
+                else if (next == ']' || next == '}') {
+                    if (closers.empty() || closers.back() != next)
+                        fail("mismatched static table descriptor array/object delimiter");
+                    closers.pop_back();
+                    if (closers.empty()) return;
+                }
+                if (closers.size() > 32U) fail("static table descriptor nesting exceeds its shape bound");
+            }
+        }
+        (void)read_integer_token();
+    }
+
+    u64 read_integer_array_count() {
+        expect('[');
+        skip_space();
+        if (peek() == ']') {
+            get();
+            return 0U;
+        }
+        u64 count = 0U;
+        for (;;) {
+            (void)read_integer_token();
+            if (count == std::numeric_limits<u64>::max())
+                fail("static table descriptor array element count overflows");
+            ++count;
+            skip_space();
+            const int separator = get();
+            if (separator == ']') return count;
+            if (separator != ',') fail("malformed integer array in static table descriptor");
+        }
+    }
+
+    std::string read_string() {
+        expect('"');
+        std::string value;
+        for (;;) {
+            const int next = get();
+            if (next == std::char_traits<char>::eof()) fail("unterminated static table descriptor string");
+            if (next == '"') return value;
+            if (next == '\\') {
+                const int escaped = get();
+                if (escaped == '"' || escaped == '\\' || escaped == '/') value.push_back(static_cast<char>(escaped));
+                else if (escaped == 'b') value.push_back('\b');
+                else if (escaped == 'f') value.push_back('\f');
+                else if (escaped == 'n') value.push_back('\n');
+                else if (escaped == 'r') value.push_back('\r');
+                else if (escaped == 't') value.push_back('\t');
+                else fail("unsupported escape in static table descriptor identity string");
+            } else {
+                if (static_cast<unsigned char>(next) < 0x20U) fail("control byte in static table descriptor string");
+                value.push_back(static_cast<char>(next));
+            }
+            if (value.size() > 4096U) fail("static table descriptor identity string exceeds its bound");
+        }
+    }
+
+    std::string read_integer_token() {
+        skip_space();
+        std::string token;
+        if (peek() == '-') token.push_back(static_cast<char>(get()));
+        while (peek() >= '0' && peek() <= '9') {
+            token.push_back(static_cast<char>(get()));
+            if (token.size() > 32U) fail("static table descriptor integer token is too long");
+        }
+        if (token.empty() || token == "-") fail("static table descriptor contains a non-integer scalar");
+        if (peek() != ',' && peek() != '}' && peek() != ']' &&
+            peek() != std::char_traits<char>::eof() &&
+            !std::isspace(static_cast<unsigned char>(peek())))
+            fail("static table descriptor integer has a non-canonical suffix");
+        (void)parse_i64(token, "static table descriptor integer");
+        return token;
+    }
+
+    std::ifstream input_;
+};
 
 std::vector<std::string> json_objects(const std::string &text, const std::string &key, u64 maximum_objects = kMaxLedgerFamilies) {
     const auto fragment = json_fragment(text, key, '[', ']');
@@ -1268,6 +1628,16 @@ StaticTables load_static_table_descriptor(const Config &config) {
     tables.lrelu = json_i64_array(text, "lrelu");
     tables.elu = json_i64_array(text, "elu");
     tables.exp = json_i64_array(text, "exp");
+    tables.lrelu_rows = tables.lrelu.size();
+    tables.elu_rows = tables.elu.size();
+    tables.exp_rows = tables.exp.size();
+    tables.lrelu_value_min = tables.lrelu.front();
+    tables.lrelu_value_max = tables.lrelu.back();
+    tables.elu_value_min = tables.elu.front();
+    tables.elu_value_max = tables.elu.back();
+    tables.exp_value_min = tables.exp.back();
+    tables.exp_value_max = tables.exp.front();
+    tables.metadata_only = false;
     tables.descriptor_digest = authenticated_asset_digest(config, config.static_table_descriptor_path);
     require_authentication_file(config, config.sorted_lookup_descriptor_path, "sorted lookup descriptor");
     const auto lookup_text = file_text(config.sorted_lookup_descriptor_path);
@@ -1285,6 +1655,151 @@ StaticTables load_static_table_descriptor(const Config &config) {
     tables.sorted_lookup_descriptor_digest = authenticated_asset_digest(config, config.sorted_lookup_descriptor_path);
     tables.authenticated = true;
     validate_static_tables(config, &tables);
+    return tables;
+}
+
+StaticTables load_static_table_descriptor_shape(const Config &config) {
+    require_authentication_file(config, config.static_table_descriptor_path,
+                                "static table descriptor");
+    const auto parsed = JsonShapeReader(config.static_table_descriptor_path)
+                            .read_static_table_descriptor();
+    const auto scalar = [&](const std::string &key) -> const std::string & {
+        const auto found = parsed.scalars.find(key);
+        if (found == parsed.scalars.end())
+            fail("analysis-only static table descriptor scalar is missing: " + key);
+        return found->second;
+    };
+    const std::set<std::string> expected_arrays = {"elu", "exp", "lrelu"};
+    if (parsed.arrays != expected_arrays)
+        fail("analysis-only static table descriptor arrays do not match the canonical schema");
+
+    StaticTables tables;
+    tables.quant_cfg_id = scalar("quant_cfg_id");
+    tables.generator_id = scalar("generator_id");
+    tables.version = scalar("version");
+    tables.scale_id = scalar("scale_id");
+    tables.domain_id = scalar("domain_id");
+    tables.row_order = scalar("row_order");
+    tables.padding_rule = scalar("padding_rule");
+    tables.spec_hash = scalar("spec_hash");
+    tables.digest = scalar("digest");
+    tables.lrelu_min = parse_i64(scalar("lrelu_min"), "static table lrelu_min");
+    tables.lrelu_max = parse_i64(scalar("lrelu_max"), "static table lrelu_max");
+    tables.elu_min = parse_i64(scalar("elu_min"), "static table elu_min");
+    tables.elu_max = parse_i64(scalar("elu_max"), "static table elu_max");
+    tables.exp_max = parse_decimal_u64(scalar("exp_max"), "static table exp_max");
+    tables.lrelu_padded_domain = parse_decimal_u64(scalar("lrelu_padded_domain"), "lrelu padded domain");
+    tables.elu_padded_domain = parse_decimal_u64(scalar("elu_padded_domain"), "elu padded domain");
+    tables.exp_padded_domain = parse_decimal_u64(scalar("exp_padded_domain"), "exp padded domain");
+
+    const std::set<std::string> expected_scalars = {
+        "digest", "domain_id", "elu_max", "elu_min", "elu_padded_domain", "exp_max",
+        "exp_padded_domain", "generator_id", "lrelu_max", "lrelu_min",
+        "lrelu_padded_domain", "padding_rule", "quant_cfg_id", "row_order", "scale_id",
+        "schema", "spec_hash", "static_table_id", "version"};
+    if (parsed.scalars.size() != expected_scalars.size())
+        fail("analysis-only static table descriptor has unknown metadata fields");
+    for (const auto &key : expected_scalars)
+        if (parsed.scalars.find(key) == parsed.scalars.end())
+            fail("analysis-only static table descriptor scalar is missing: " + key);
+    if (scalar("schema") != "zkDL_gat_static_table_descriptor_v1" ||
+        scalar("static_table_id") != config.static_table_id ||
+        tables.quant_cfg_id != config.quant_cfg_id ||
+        tables.generator_id != "zkDL_baseline_local_static_table_generator_v1" ||
+        tables.version != "v1" || tables.row_order != "ascending_index_min_to_max" ||
+        tables.padding_rule != "next_power_of_two_zero_v1" || tables.scale_id.empty() ||
+        tables.domain_id != "range_bits:" + std::to_string(config.range_bits) ||
+        !is_digest(tables.spec_hash) || !is_digest(tables.digest))
+        fail("analysis-only static table descriptor identity is unsupported or unauthenticated");
+
+    const u64 lrelu_rows = checked_domain_rows(tables.lrelu_min, tables.lrelu_max, "LeakyReLU");
+    const u64 elu_rows = checked_domain_rows(tables.elu_min, tables.elu_max, "ELU");
+    if (tables.exp_max >= kMaxStaticTableRows)
+        fail("BLOCKED: analysis-only ExpMap table domain is too large");
+    const u64 exp_rows = tables.exp_max + 1U;
+    if (parsed.array_element_counts.at("lrelu") != lrelu_rows ||
+        parsed.array_element_counts.at("elu") != elu_rows ||
+        parsed.array_element_counts.at("exp") != exp_rows)
+        fail("analysis-only static table streamed element counts do not match canonical row counts");
+    if (config.range_bits == 0U || config.range_bits > 25U ||
+        config.range_bits >= 63U)
+        fail("BLOCKED: analysis-only static table range_bits is outside the canonical generator bound");
+    const i64 input_bound = static_cast<i64>(1ULL << config.range_bits);
+    const i64 expected_lrelu_min = -input_bound;
+    const i64 expected_exp_max = checked_i128(static_cast<__int128>(input_bound) -
+        static_cast<__int128>(round_div(-input_bound, 5, "analysis-only LReLU output minimum")),
+        "analysis-only ExpMap input maximum");
+    const auto next_power_of_two = [](u64 value) {
+        if (value == 0U || value > kMaxStaticTableRows)
+            fail("analysis-only static table row count is out of bounds");
+        u64 padded = 1U;
+        while (padded < value) padded <<= 1U;
+        return padded;
+    };
+    if (tables.lrelu_min != expected_lrelu_min || tables.lrelu_max != input_bound ||
+        tables.elu_min != expected_lrelu_min || tables.elu_max != input_bound ||
+        tables.exp_max != static_cast<u64>(expected_exp_max) ||
+        lrelu_rows > kMaxStaticTableRows || elu_rows > kMaxStaticTableRows ||
+        exp_rows == 0U || exp_rows > kMaxStaticTableRows ||
+        tables.lrelu_padded_domain != next_power_of_two(lrelu_rows) ||
+        tables.elu_padded_domain != next_power_of_two(elu_rows) ||
+        tables.exp_padded_domain != next_power_of_two(exp_rows))
+        fail("analysis-only static table dimensions do not match the canonical generator shape");
+
+    std::ostringstream spec;
+    spec << config.static_table_id << "\n"
+         << tables.generator_id << "\n"
+         << tables.version << "\n"
+         << tables.scale_id << "\n"
+         << tables.domain_id << "\n"
+         << tables.row_order << "\n"
+         << tables.padding_rule << "\n"
+         << config.range_bits << "\n"
+         << tables.lrelu_min << "\n"
+         << tables.lrelu_max << "\n"
+         << tables.exp_max << "\n"
+         << tables.lrelu_padded_domain << "\n"
+         << tables.elu_padded_domain << "\n"
+         << tables.exp_padded_domain << "\n";
+    if (tables.spec_hash != sha256_text(spec.str()))
+        fail("analysis-only static table specification hash mismatch");
+
+    tables.lrelu_rows = lrelu_rows;
+    tables.elu_rows = elu_rows;
+    tables.exp_rows = exp_rows;
+    // The input-domain endpoints safely contain the monotone LeakyReLU and
+    // ELU outputs.  The authenticated generator bounds ExpMap outputs to
+    // [1, 16]. These intervals only overestimate lookup key widths.
+    tables.lrelu_value_min = tables.lrelu_min;
+    tables.lrelu_value_max = tables.lrelu_max;
+    tables.elu_value_min = tables.elu_min;
+    tables.elu_value_max = tables.elu_max;
+    tables.exp_value_min = 1;
+    tables.exp_value_max = 16;
+    tables.metadata_only = true;
+    tables.descriptor_digest = authenticated_asset_digest(config,
+                                                           config.static_table_descriptor_path);
+    if (sha256_file(config.static_table_descriptor_path) != tables.descriptor_digest)
+        fail("analysis-only static table descriptor differs from its authenticated asset digest");
+
+    require_authentication_file(config, config.sorted_lookup_descriptor_path,
+                                "sorted lookup descriptor");
+    const auto lookup_text = file_text(config.sorted_lookup_descriptor_path);
+    if (json_scalar(lookup_text, "schema") != "zkDL_gat_sorted_lookup_descriptor_v1" ||
+        json_u64_value(lookup_text, "version") != 1U ||
+        json_scalar(lookup_text, "key_encoding") != "packed_pair_u128" ||
+        json_scalar(lookup_text, "source_root") != "baseline-local" ||
+        lookup_text.find("/chi/") != std::string::npos ||
+        lookup_text.find("expanded-chi") != std::string::npos ||
+        json_scalar(lookup_text, "static_table_digest") != tables.descriptor_digest)
+        fail("analysis-only sorted lookup descriptor identity is unsupported");
+    tables.sorted_lookup_descriptor =
+        std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string();
+    tables.sorted_lookup_descriptor_digest =
+        authenticated_asset_digest(config, config.sorted_lookup_descriptor_path);
+    if (sha256_file(config.sorted_lookup_descriptor_path) != tables.sorted_lookup_descriptor_digest)
+        fail("analysis-only sorted lookup descriptor differs from its authenticated asset digest");
+    tables.authenticated = true;
     return tables;
 }
 
@@ -1665,7 +2180,8 @@ Backend parse_backend(const std::string &value) {
     fail("backend must be cpu or gpu");
 }
 
-Config load_config(const std::filesystem::path &path, bool admission_only) {
+Config load_config(const std::filesystem::path &path, bool admission_only,
+                   bool allow_analysis_only_planned) {
     const auto absolute = std::filesystem::absolute(path).lexically_normal();
     if (absolute.parent_path().filename() != "configs") fail("config must be in baseline-local configs/");
     const auto values = read_kv(absolute);
@@ -1758,18 +2274,22 @@ Config load_config(const std::filesystem::path &path, bool admission_only) {
     config.srs_id = required("srs_id");
     config.srs_path = local_path(config.baseline_root, required("srs_path"), "srs_path").string();
     config.srs_manifest_digest = required("srs_manifest_digest");
-    if (config.srs_manifest_digest != "UNAVAILABLE" && !is_digest(config.srs_manifest_digest))
+    if (config.srs_manifest_digest != "UNAVAILABLE" && !is_digest(config.srs_manifest_digest) &&
+        !(admission_only && allow_analysis_only_planned && config.srs_manifest_digest == "CEREMONY_REQUIRED"))
         fail("srs_manifest_digest must be SHA-256 or explicit UNAVAILABLE");
     config.model_registry_path = local_path(config.baseline_root, required("model_registry_path"), "model_registry_path");
     config.model_blinder_sidecar_path = local_path(config.baseline_root, required("model_blinder_sidecar_path"), "model_blinder_sidecar_path");
     config.model_blinder_sidecar_digest = required("model_blinder_sidecar_digest");
-    if (config.model_blinder_sidecar_digest != "UNAVAILABLE" && !is_digest(config.model_blinder_sidecar_digest))
+    if (config.model_blinder_sidecar_digest != "UNAVAILABLE" && !is_digest(config.model_blinder_sidecar_digest) &&
+        !(admission_only && allow_analysis_only_planned && config.model_blinder_sidecar_digest == "CEREMONY_REQUIRED"))
         fail("model_blinder_sidecar_digest must be SHA-256 or explicit UNAVAILABLE");
     config.opening_mode = required("opening_mode");
     config.binding_mode = required("binding_mode");
     config.security_profile_id = required("security_profile_id");
     config.verifier_registry_digest = required("verifier_registry_digest");
-    if (!is_digest(config.verifier_registry_digest) && !(admission_only && config.verifier_registry_digest == "UNAVAILABLE"))
+    if (!is_digest(config.verifier_registry_digest) &&
+        !(admission_only && config.verifier_registry_digest == "UNAVAILABLE") &&
+        !(admission_only && allow_analysis_only_planned && config.verifier_registry_digest == "CEREMONY_REQUIRED"))
         fail("verifier_registry_digest must be SHA-256");
     config.range_bits = parse_u64(required("range_bits"), "range_bits");
     config.batch_graphs = values.count("batch_graphs") ? parse_u64(values.at("batch_graphs"), "batch_graphs") : 1;
@@ -2225,19 +2745,171 @@ Graph load_graph(const Config &config) {
     return graph;
 }
 
+Graph load_graph_shape_for_resource_plan(const Config &config, u64 *raw_edge_records,
+                                         u64 *csr_max_in_degree) {
+    const auto directory = config.cache_root / config.dataset;
+    const auto metadata_path = directory / "meta.cfg";
+    if (std::filesystem::is_symlink(metadata_path) || !std::filesystem::is_regular_file(metadata_path))
+        fail("BLOCKED: analysis-only resource plan metadata is missing or not a regular file");
+    const auto metadata = read_kv(metadata_path);
+    const auto metadata_value = [&](const std::string &key) -> std::string {
+        const auto iterator = metadata.find(key);
+        if (iterator == metadata.end()) fail("analysis-only resource metadata key missing: " + key);
+        return iterator->second;
+    };
+    if (metadata_value("name") != config.dataset) fail("analysis-only resource metadata dataset mismatch");
+    Graph graph;
+    graph.total_nodes = parse_decimal_u64(metadata_value("num_nodes"), "num_nodes");
+    graph.nodes = graph.total_nodes;
+    graph.features = parse_decimal_u64(metadata_value("num_features"), "num_features");
+    graph.graphs = metadata.count("graph_count") ? parse_decimal_u64(metadata.at("graph_count"), "graph_count") : 1U;
+    if (metadata_value("input_preprocess_id") != config.input_preprocess_id ||
+        (metadata.count("num_classes") && parse_decimal_u64(metadata.at("num_classes"), "num_classes") != config.architecture.classes) ||
+        (metadata.count("task_type") && metadata.at("task_type") != config.task_type) ||
+        (metadata.count("report_unit") && metadata.at("report_unit") != config.report_unit))
+        fail("analysis-only resource metadata does not match the checked config");
+    if (graph.nodes == 0U || graph.nodes > kMaxNativeDomain || graph.features == 0U ||
+        graph.features > kMaxNativeDomain || graph.graphs == 0U || graph.graphs > kMaxNativeDomain ||
+        config.architecture.input_dims.front() != graph.features ||
+        (config.dataset != "ppi" && graph.graphs != 1U))
+        fail("BLOCKED: analysis-only resource graph dimensions exceed the supported config");
+
+    graph.node_ptr = {0U, graph.nodes};
+    if (config.dataset == "ppi") {
+        graph.node_ptr.clear();
+        std::ifstream node_ptr_file(directory / "node_ptr.txt");
+        if (!node_ptr_file) fail("BLOCKED: analysis-only resource plan is missing PPI node_ptr");
+        std::string token;
+        while (node_ptr_file >> token)
+            graph.node_ptr.push_back(parse_decimal_u64(token, "PPI node_ptr"));
+        if (!node_ptr_file.eof() || graph.node_ptr.size() != graph.graphs + 1U ||
+            graph.node_ptr.empty() || graph.node_ptr.front() != 0U || graph.node_ptr.back() != graph.nodes)
+            fail("BLOCKED: analysis-only resource PPI node_ptr shape is invalid");
+        for (std::size_t index = 1U; index < graph.node_ptr.size(); ++index)
+            if (graph.node_ptr[index] <= graph.node_ptr[index - 1U] || graph.node_ptr[index] > graph.nodes)
+                fail("BLOCKED: analysis-only resource PPI node_ptr is not strictly increasing");
+    }
+
+    const auto edge_path = directory / "edges.txt";
+    if (std::filesystem::is_symlink(edge_path) || !std::filesystem::is_regular_file(edge_path))
+        fail("BLOCKED: analysis-only resource edge file is missing or not a regular file");
+    std::ifstream edges(edge_path);
+    if (!edges) fail("cannot open edge file for analysis-only resource count");
+    u64 raw_count = 0U;
+    u64 normalized_count = 0U;
+    struct EdgeKey {
+        u64 graph;
+        u64 source;
+        u64 destination;
+        bool operator==(const EdgeKey &other) const noexcept {
+            return graph == other.graph && source == other.source && destination == other.destination;
+        }
+    };
+    struct EdgeKeyHash {
+        std::size_t operator()(const EdgeKey &key) const noexcept {
+            const auto mix = [](u64 value) {
+                value ^= value >> 30U;
+                value *= 0xbf58476d1ce4e5b9ULL;
+                value ^= value >> 27U;
+                value *= 0x94d049bb133111ebULL;
+                return value ^ (value >> 31U);
+            };
+            u64 value = mix(key.graph + 0x9e3779b97f4a7c15ULL);
+            value ^= mix(key.source + 0x243f6a8885a308d3ULL) + 0x9e3779b97f4a7c15ULL + (value << 6U) + (value >> 2U);
+            value ^= mix(key.destination + 0x13198a2e03707344ULL) + 0x9e3779b97f4a7c15ULL + (value << 6U) + (value >> 2U);
+            return static_cast<std::size_t>(value);
+        }
+    };
+    std::unordered_set<EdgeKey, EdgeKeyHash> seen;
+    if (config.deduplicate_edges) seen.reserve(1U << 20U);
+    std::vector<std::uint32_t> normalized_in_degree(static_cast<std::size_t>(graph.nodes), 0U);
+    const auto append_shape_edge = [&](u64 gid, u64 source, u64 destination) {
+        if (config.deduplicate_edges && !seen.insert(EdgeKey{gid, source, destination}).second) return;
+        if (normalized_count >= kMaxNativeDomain / 2U)
+            fail("BLOCKED: analysis-only normalized edge count exceeds native sparse-route domain bound");
+        auto &degree = normalized_in_degree.at(static_cast<std::size_t>(destination));
+        if (degree == std::numeric_limits<std::uint32_t>::max())
+            fail("BLOCKED: analysis-only normalized CSR degree exceeds u32 bound");
+        ++degree;
+        ++normalized_count;
+    };
+    std::string line;
+    while (std::getline(edges, line)) {
+        line = trim(line);
+        if (line.empty()) continue;
+        std::stringstream row(line);
+        std::string token;
+        u64 columns = 0U;
+        u64 first = 0U, second = 0U, third = 0U;
+        while (row >> token) {
+            const u64 value = parse_decimal_u64(token, "edge id/endpoint");
+            if (columns == 0U) first = value;
+            else if (columns == 1U) second = value;
+            else if (columns == 2U) third = value;
+            if (columns == std::numeric_limits<u64>::max()) fail("edge row has too many columns");
+            ++columns;
+        }
+        const u64 expected_columns = config.dataset == "ppi" ? 3U : 2U;
+        if (columns != expected_columns ||
+            (config.dataset == "ppi" && (first >= graph.graphs || second >= graph.nodes || third >= graph.nodes)) ||
+            (config.dataset != "ppi" && (first >= graph.nodes || second >= graph.nodes)))
+            fail("malformed edge row in analysis-only resource count");
+        const u64 gid = config.dataset == "ppi" ? first : 0U;
+        const u64 source = config.dataset == "ppi" ? second : first;
+        const u64 destination = config.dataset == "ppi" ? third : second;
+        if (config.dataset == "ppi" &&
+            (source < graph.node_ptr.at(gid) || source >= graph.node_ptr.at(gid + 1U) ||
+             destination < graph.node_ptr.at(gid) || destination >= graph.node_ptr.at(gid + 1U)))
+            fail("PPI global edge endpoint ownership mismatch in analysis-only resource count");
+        if (raw_count == std::numeric_limits<u64>::max()) fail("raw edge record count overflows");
+        ++raw_count;
+        append_shape_edge(gid, source, destination);
+        if (config.symmetrize_edges) append_shape_edge(gid, destination, source);
+    }
+    if (!edges.eof()) fail("I/O failure while counting raw edge records");
+    for (u64 node = 0U; node < graph.nodes; ++node) {
+        u64 gid = 0U;
+        if (config.dataset == "ppi")
+            gid = static_cast<u64>(std::upper_bound(graph.node_ptr.begin(), graph.node_ptr.end(), node) -
+                                   graph.node_ptr.begin() - 1);
+        append_shape_edge(gid, node, node);
+    }
+    graph.edges = normalized_count;
+    if (graph.edges == 0U || graph.edges > kMaxNativeDomain / 2U)
+        fail("BLOCKED: analysis-only normalized edge count exceeds the native sparse-route domain");
+    const u64 max_in_degree = static_cast<u64>(*std::max_element(
+        normalized_in_degree.begin(), normalized_in_degree.end()));
+
+    // RelationPlan consumes only these public vector lengths. Their contents,
+    // graph endpoints, feature rows, normalized graph, and witness are neither
+    // constructed nor made available to a proof/admission path here.
+    graph.node_ptr.resize(static_cast<std::size_t>(graph.graphs + 1U));
+    graph.edge_ptr.resize(static_cast<std::size_t>(graph.graphs + 1U));
+    graph.node_edge_ptr.resize(static_cast<std::size_t>(graph.nodes + 1U));
+    if (raw_edge_records) *raw_edge_records = raw_count;
+    if (csr_max_in_degree) *csr_max_in_degree = max_in_degree;
+    return graph;
+}
+
 StaticTables build_static_tables(const Config &config, const Graph &graph) {
     (void)graph;
     return load_static_table_descriptor(config);
 }
 
-RelationPlan build_relation_plan(const Config &config, const Graph &graph, const StaticTables &tables) {
+static RelationPlan build_relation_plan_internal(const Config &config, const Graph &graph,
+                                                 const StaticTables &tables,
+                                                 const IntegerBoundLedger *planned_ledger) {
     RelationPlan plan;
-    if (!tables.authenticated) fail("BLOCKED: relation plan cannot use unauthenticated static tables");
+    const bool planned_analysis_only = planned_ledger != nullptr;
+    if ((!planned_analysis_only && !tables.authenticated) ||
+        (planned_analysis_only && (tables.authenticated || !tables.metadata_only ||
+                                   planned_ledger->authenticated || !planned_ledger->analysis_only_planned)))
+        fail("BLOCKED: relation plan inputs do not match the selected authenticated/planned mode");
     plan.static_table_descriptor_digest = tables.descriptor_digest;
-    plan.integer_bound_ledger = load_integer_bound_ledger(config, tables);
+    plan.integer_bound_ledger = planned_analysis_only ? *planned_ledger : load_integer_bound_ledger(config, tables);
     plan.scale_chain_digest = config.scale_chain_digest;
-    plan.integer_bound_ledger_digest = plan.integer_bound_ledger.digest;
-    plan.integer_bound_ledger_descriptor_digest = plan.integer_bound_ledger.descriptor_digest;
+    plan.integer_bound_ledger_digest = planned_analysis_only ? "ANALYSIS_ONLY_PLANNED" : plan.integer_bound_ledger.digest;
+    plan.integer_bound_ledger_descriptor_digest = planned_analysis_only ? "ANALYSIS_ONLY_PLANNED" : plan.integer_bound_ledger.descriptor_digest;
     const auto power_of_two = [](u64 value) {
         if (value == 0U || value > kMaxNativeDomain) fail("relation plan logical dimension exceeds native domain bound");
         u64 padded = 1;
@@ -2247,9 +2919,9 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         }
         return padded;
     };
-    plan.sorted_lookup.schema = "authenticated_sorted_lookup_plan_v1";
+    plan.sorted_lookup.schema = planned_analysis_only ? "analysis_only_planned_sorted_lookup_shape_v1" : "authenticated_sorted_lookup_plan_v1";
     plan.sorted_lookup.version = 1U;
-    plan.sorted_lookup.descriptor_path = tables.sorted_lookup_descriptor;
+    plan.sorted_lookup.descriptor_path = planned_analysis_only ? std::string() : tables.sorted_lookup_descriptor;
     plan.sorted_lookup.descriptor_digest = tables.sorted_lookup_descriptor_digest;
     plan.sorted_lookup.table_digest = tables.descriptor_digest;
     plan.sorted_lookup.segment_size = 1ULL << 18U;
@@ -2280,13 +2952,14 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         }
         return product;
     };
-    const auto add_sorted_lookup_query = [&](const std::string &operation, const std::string &table_ref, const std::vector<i64> &table_values,
-                                             i64 table_input_min, u64 query_rows) {
-        if (table_values.empty() || query_rows == 0U) fail("sorted lookup has empty logical domain: " + operation);
-        const auto table_min = *std::min_element(table_values.begin(), table_values.end());
-        const auto table_max = *std::max_element(table_values.begin(), table_values.end());
-        const u64 x_range = static_cast<u64>(table_values.size() - 1U);
-        const u64 y_range = static_cast<u64>(table_max - table_min);
+    const auto add_sorted_lookup_query = [&](const std::string &operation, const std::string &table_ref,
+                                             u64 table_rows, i64 table_input_min,
+                                             i64 table_output_min, i64 table_output_max,
+                                             u64 query_rows) {
+        if (table_rows == 0U || query_rows == 0U || table_output_min > table_output_max)
+            fail("sorted lookup has empty logical/output domain: " + operation);
+        const u64 x_range = table_rows - 1U;
+        const u64 y_range = static_cast<u64>(static_cast<__int128>(table_output_max) - table_output_min);
         const std::uint32_t x_bits = bit_width(x_range);
         const std::uint32_t y_bits = bit_width(y_range);
         if (x_bits == 0U || y_bits == 0U || x_bits > 127U || y_bits > 127U || x_bits > 127U - y_bits)
@@ -2308,7 +2981,7 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         query.query_prefix_ref = operation + "/query/prefix";
         query.commitment_role_map = "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,"
                                     "merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
-        query.table_logical_rows = table_values.size();
+        query.table_logical_rows = table_rows;
         query.table_domain = power_of_two(query.table_logical_rows);
         query.query_logical_rows = query_rows;
         query.query_domain = power_of_two(query_rows);
@@ -2420,21 +3093,21 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         add_tensor(stage + "/trace/maximum", "witness", "node-major-little-endian", "node", {graph.nodes}, {"maximum"}, order, "destination_group_max", 1);
         add_tensor(stage + "/trace/denominator", "witness", "node-major-little-endian", "node", {graph.nodes}, {"sum"}, order, "destination_group_sum", 1);
         add_tensor(stage + "/trace/max_selector", "witness", "edge-major-little-endian", "edge", {graph.edges}, {"max_selector"}, order, "max_arg_selector", 1);
-        add_tensor(stage + "/trace/range_bits", "witness", "edge-major-little-endian", "bit", {graph.edges, table_index_bit_width(tables.exp.size())}, {"range"}, order,
+        add_tensor(stage + "/trace/range_bits", "witness", "edge-major-little-endian", "bit", {graph.edges, table_index_bit_width(tables.exp_row_count())}, {"range"}, order,
                    "range_bit_decomposition", 1);
         for (const auto &name : {std::string("lrelu_idx"), std::string("exp_idx")}) {
             add_tensor(stage + "/trace/" + name, "witness", "edge-or-node-major-little-endian", "lookup", std::vector<u64>{graph.edges}, {name}, order,
                        "indexed_public_table", 1);
         }
         add_tensor(stage + "/trace/lrelu_bits", "witness", "lookup-query-bit-major", "bit",
-                   {graph.edges, table_index_bit_width(tables.lrelu.size())}, {"lrelu_bits"}, order, "lookup_index_bits", 1);
+                   {graph.edges, table_index_bit_width(tables.lrelu_row_count())}, {"lrelu_bits"}, order, "lookup_index_bits", 1);
         add_tensor(stage + "/trace/exp_bits", "witness", "lookup-query-bit-major", "bit",
-                   {graph.edges, table_index_bit_width(tables.exp.size())}, {"exp_bits"}, order, "lookup_index_bits", 1);
+                   {graph.edges, table_index_bit_width(tables.exp_row_count())}, {"exp_bits"}, order, "lookup_index_bits", 1);
         if (!output) {
             add_tensor(stage + "/trace/elu_idx", "witness", "node-major-little-endian", "lookup", {graph.nodes, out_dim}, {"elu_idx"}, order,
                        "indexed_public_table", 1);
             add_tensor(stage + "/trace/elu_bits", "witness", "lookup-query-bit-major", "bit",
-                       {graph.nodes, out_dim, table_index_bit_width(tables.elu.size())}, {"elu_bits"}, order,
+                       {graph.nodes, out_dim, table_index_bit_width(tables.elu_row_count())}, {"elu_bits"}, order,
                        "lookup_index_bits", 1);
         }
         const std::string value = stage + "/trace/" + (output ? "y_prime" : "h_prime");
@@ -2483,11 +3156,11 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
     add_tensor("edge_ptr", "public", "graph-major-little-endian", "graph", {graph.edge_ptr.size()}, {"edge_ptr"}, "graph-major", "ppi_edge_boundary", 1);
     add_tensor("node_edge_ptr", "public", "node-major-little-endian", "node", {graph.node_edge_ptr.size()}, {"node_edge_ptr"}, "node-major",
                "destination_segment_boundary", 1);
-    add_tensor("static_lrelu", "public", "table-index-major", "table", {static_cast<u64>(tables.lrelu.size())}, {"T_LReLU"}, "canonical-table-row-order",
+    add_tensor("static_lrelu", "public", "table-index-major", "table", {tables.lrelu_row_count()}, {"T_LReLU"}, "canonical-table-row-order",
                "static_table:lrelu", 1);
-    add_tensor("static_elu", "public", "table-index-major", "table", {static_cast<u64>(tables.elu.size())}, {"T_ELU"}, "canonical-table-row-order",
+    add_tensor("static_elu", "public", "table-index-major", "table", {tables.elu_row_count()}, {"T_ELU"}, "canonical-table-row-order",
                "static_table:elu", 1);
-    add_tensor("static_exp", "public", "table-index-major", "table", {static_cast<u64>(tables.exp.size())}, {"T_exp"}, "canonical-table-row-order",
+    add_tensor("static_exp", "public", "table-index-major", "table", {tables.exp_row_count()}, {"T_exp"}, "canonical-table-row-order",
                "static_table:exp", 1);
     add_tensor("output_head_count", "public", "scalar", "constant", {1}, {"K_out"}, "canonical-constant", "public_scalar", 1);
 
@@ -2641,13 +3314,15 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
         plan.tensor_families.push_back(std::move(family));
     };
     if (config.range_bits == 0U || config.range_bits >= 31U) fail("relation operation views require a bounded range_bits width");
-    const u64 delta_range_bits = table_index_bit_width(tables.exp.size());
+    const u64 delta_range_bits = table_index_bit_width(tables.exp_row_count());
     const auto edge_shape = [&](u64 width = 1U) { return width == 1U ? std::vector<u64>{graph.edges} : std::vector<u64>{graph.edges, width}; };
     const auto node_shape = [&](u64 width = 1U) { return width == 1U ? std::vector<u64>{graph.nodes} : std::vector<u64>{graph.nodes, width}; };
     const auto append_round_views = [&](const std::string &operation, u64 width) {
         const auto shape = node_shape(width);
         const auto padded_feature_shape = node_shape(power_of_two(width));
-        const auto range_widths = signed_round_bounds::derive(config, plan.integer_bound_ledger, operation);
+        const auto range_widths = planned_analysis_only
+            ? signed_round_bounds::derive_planned(config, plan.integer_bound_ledger, operation)
+            : signed_round_bounds::derive(config, plan.integer_bound_ledger, operation);
         for (const auto &role : {"signed_numerator", "signed_quotient", "a", "q_abs", "r", "delta", "sigma", "z", "a_inverse", "divisor_inverse"})
             append_view(operation + "/view/" + std::string(role), shape, "signed_round_div:" + std::string(role), "node");
         // Main aggregation divisions carry both the source's unscaled node
@@ -2670,14 +3345,18 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
                 append_view(operation + "/view/range/" + value.first + "/" + std::to_string(bit), shape,
                             "signed_round_div:range:" + value.first, "node");
     };
-    const auto append_table_views = [&](const std::string &operation, const std::string &table_ref, bool edge_domain, u64 feature_width,
-                                        const std::vector<i64> &table_values, i64 table_input_min) {
+    const auto append_table_views = [&](const std::string &operation, const std::string &table_ref,
+                                        bool edge_domain, u64 feature_width, u64 table_rows,
+                                        i64 table_input_min, i64 table_output_min,
+                                        i64 table_output_max) {
         const auto shape = edge_domain ? edge_shape(feature_width) : node_shape(feature_width);
-        add_sorted_lookup_query(operation, table_ref, table_values, table_input_min, shape_product(shape, operation + ".query"));
+        add_sorted_lookup_query(operation, table_ref, table_rows, table_input_min,
+                                table_output_min, table_output_max,
+                                shape_product(shape, operation + ".query"));
         append_view(operation + "/view/query", shape, "indexed_public_table:query", "lookup");
         append_view(operation + "/view/index", shape, "indexed_public_table:index", "lookup");
         append_view(operation + "/view/output0", shape, "indexed_public_table:output", "lookup");
-        const u64 depth = table_index_bit_width(table_values.size());
+        const u64 depth = table_index_bit_width(table_rows);
         for (u64 bit = 0U; bit < depth; ++bit) append_view(operation + "/view/bit/" + std::to_string(bit), shape, "indexed_public_table:bit", "lookup");
     };
     const auto append_stage_views = [&](const std::string &stage, u64 width, bool output) {
@@ -2729,10 +3408,17 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
 
         append_round_views(stage + "/signed_round_div", width);
         const std::string table_lrelu = stage + "/leaky_relu";
-        append_table_views(table_lrelu, "static_lrelu", true, 1U, tables.lrelu, tables.lrelu_min);
+        append_table_views(table_lrelu, "static_lrelu", true, 1U,
+                           tables.lrelu_row_count(), tables.lrelu_min,
+                           tables.lrelu_value_min, tables.lrelu_value_max);
         const std::string table_exp = stage + "/exp_map";
-        append_table_views(table_exp, "static_exp", true, 1U, tables.exp, 0);
-        if (!output) append_table_views(stage + "/elu", "static_elu", false, width, tables.elu, tables.elu_min);
+        append_table_views(table_exp, "static_exp", true, 1U,
+                           tables.exp_row_count(), 0,
+                           tables.exp_value_min, tables.exp_value_max);
+        if (!output)
+            append_table_views(stage + "/elu", "static_elu", false, width,
+                               tables.elu_row_count(), tables.elu_min,
+                               tables.elu_value_min, tables.elu_value_max);
         if (output) {
             append_round_views(stage + "/output_scale_alignment", width);
             const std::string bias = stage + "/output_bias";
@@ -2840,6 +3526,16 @@ RelationPlan build_relation_plan(const Config &config, const Graph &graph, const
     plan.schema_digest = sha256_text(plan.schema_id + "\n" + plan.proof_scope + "\n" + plan.binding_rule + "\n" + plan.sorted_lookup.plan_digest + "\n" +
                                      config.config_digest + "\n" + config.config_binding_digest + "\n");
     return plan;
+}
+
+RelationPlan build_relation_plan(const Config &config, const Graph &graph, const StaticTables &tables) {
+    return build_relation_plan_internal(config, graph, tables, nullptr);
+}
+
+static RelationPlan build_relation_plan_planned(const Config &config, const Graph &graph,
+                                                const StaticTables &tables,
+                                                const IntegerBoundLedger &ledger) {
+    return build_relation_plan_internal(config, graph, tables, &ledger);
 }
 
 bool relation_plan_complete(const RelationPlan &relation, std::string *error) {
@@ -4254,6 +4950,7 @@ namespace {
 struct CliOptions {
     std::string command;
     std::filesystem::path config;
+    std::filesystem::path planned_shape;
     std::filesystem::path run_dir;
     std::filesystem::path statement;
     std::filesystem::path proof;
@@ -4263,8 +4960,8 @@ struct CliOptions {
 };
 
 void usage() {
-    std::cerr << "usage: gat_runner <inspect|admit|prepare|run|prove|verify> --config FILE "
-                 "[--backend cpu|gpu] [--run-dir DIR]\n";
+    std::cerr << "usage: gat_runner <inspect|admit|resource-plan|prepare|run|prove|verify> --config FILE "
+                 "[--backend cpu|gpu] [--run-dir DIR] [--planned-shape ANALYSIS_ONLY_JSON]\n";
 }
 
 CliOptions parse_cli(int argc, char **argv) {
@@ -4274,16 +4971,18 @@ CliOptions parse_cli(int argc, char **argv) {
     }
     CliOptions options;
     options.command = argv[1];
-    const std::set<std::string> commands = {"inspect", "admit", "prepare", "run", "prove", "verify"};
+    const std::set<std::string> commands = {"inspect", "admit", "resource-plan", "prepare", "run", "prove", "verify"};
     if (!commands.count(options.command)) fail("unknown command: " + options.command);
     for (int i = 2; i < argc; ++i) {
         const std::string argument = argv[i];
-        if (argument == "--config" || argument == "--run-dir" || argument == "--statement" || argument == "--proof" || argument == "--envelope" ||
+        if (argument == "--config" || argument == "--planned-shape" || argument == "--run-dir" || argument == "--statement" || argument == "--proof" || argument == "--envelope" ||
             argument == "--backend") {
             if (++i >= argc) fail("missing value for " + argument);
             const std::string value = argv[i];
             if (argument == "--config")
                 options.config = value;
+            else if (argument == "--planned-shape")
+                options.planned_shape = value;
             else if (argument == "--run-dir")
                 options.run_dir = value;
             else if (argument == "--statement")
@@ -4301,6 +5000,8 @@ CliOptions parse_cli(int argc, char **argv) {
         }
     }
     if (options.config.empty()) fail("--config is required");
+    if (!options.planned_shape.empty() && options.command != "resource-plan")
+        fail("--planned-shape is allowed only for resource-plan");
     if ((options.command == "run" || options.command == "prove") && !options.has_backend) { fail("--backend is required for " + options.command); }
     return options;
 }
@@ -4964,8 +5665,9 @@ int admit(const Config &config) {
               << ",\"native_maximum_route_edge_domain\":" << plan_metrics.maximum_route_edge_domain
               << ",\"native_maximum_route_selector_factor_elements\":" << plan_metrics.maximum_route_selector_factor_elements
               << ",\"native_route_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.route_sumcheck_live_peak_bytes_upper_bound
-              << ",\"native_segmented_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.segmented_sumcheck_live_peak_bytes_upper_bound
-              << ",\"sorted_lookup_query_count\":" << relation.sorted_lookup.queries.size()
+              << ",\"native_segmented_sumcheck_live_peak_bytes_upper_bound\":" << plan_metrics.segmented_sumcheck_live_peak_bytes_upper_bound;
+    append_native_shape_counts_json(std::cout, plan_metrics);
+    std::cout << ",\"sorted_lookup_query_count\":" << relation.sorted_lookup.queries.size()
               << ",\"maximum_sorted_lookup_merge_logical_rows\":" << maximum_sorted_lookup_merge_logical_rows
               << ",\"sorted_lookup_outer_commitment_count\":" << sorted_lookup_outer_commitment_count
               << ",\"sorted_lookup_outer_segment_count\":" << sorted_lookup_outer_segment_count
@@ -4991,6 +5693,928 @@ int admit(const Config &config) {
         std::cout << graph.edge_ptr[index];
     }
     std::cout << "]}\n";
+    return 0;
+}
+
+struct AnalysisPlannedShape {
+    StaticTables tables;
+    IntegerBoundLedger ledger;
+    std::string document;
+    std::string sha256;
+    std::map<std::string, u64> family_domains;
+    u64 family_domain_count = 0U;
+    std::string family_domain_sha256;
+    std::string metadata_sha256;
+    std::string edge_file_sha256;
+    std::string node_ptr_file_sha256;
+    std::string checkpoint_manifest_sha256;
+    std::string checkpoint_tensor_export_sha256;
+    u64 raw_edge_rows = 0U;
+    u64 max_quantized_model_abs = 0U;
+    u64 checkpoint_tensor_count = 0U;
+};
+
+AnalysisPlannedShape load_analysis_planned_shape(const Config &config,
+                                                const Graph &graph,
+                                                u64 raw_edge_records,
+                                                u64 csr_max_in_degree,
+                                                const std::filesystem::path &path) {
+    if (path.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path))
+        fail("BLOCKED: analysis-only planned-shape sidecar is missing, symlinked, or not regular");
+    const u64 sidecar_bytes = std::filesystem::file_size(path);
+    if (sidecar_bytes == 0U || sidecar_bytes > (16U << 20U))
+        fail("BLOCKED: analysis-only planned-shape sidecar exceeds its bounded metadata size");
+    AnalysisPlannedShape result;
+    result.document = file_text(path);
+    result.sha256 = sha256_file(path);
+    const auto &document = result.document;
+    if (json_string_field(document, "schema") != "zkdl_analysis_only_planned_shape_v1" ||
+        json_string_field(document, "status") != "ANALYSIS_ONLY_PLANNED" ||
+        json_string_field(document, "dataset") != config.dataset ||
+        json_string_field(document, "config_sha256") != sha256_file(config.config_path) ||
+        json_string_field(document, "scale_chain_sha256") != config.scale_chain_digest ||
+        json_scalar(document, "prepared_resources_claimed") != "false" ||
+        json_scalar(document, "authenticated_resource_digests_present") != "false")
+        fail("BLOCKED: planned-shape sidecar identity/status does not bind this analysis config");
+    for (const auto *forbidden : {"static_table_descriptor_digest", "sorted_lookup_descriptor_digest",
+                                  "integer_bound_ledger_digest", "srs_manifest_digest",
+                                  "verifier_registry_digest", "model_blinder_sidecar_digest"}) {
+        if (document.find(std::string("\"") + forbidden + "\"") != std::string::npos)
+            fail("BLOCKED: planned-shape sidecar contains an authenticated resource identity field");
+    }
+
+    const auto input_identity = json_fragment(document, "input_identity", '{', '}');
+    const auto dataset_dir = config.cache_root / config.dataset;
+    const auto metadata_path = dataset_dir / "meta.cfg";
+    const auto edge_path = dataset_dir / "edges.txt";
+    const auto manifest_path = config.checkpoint_bundle / "manifest.json";
+    const auto tensor_export_path = config.checkpoint_bundle / "tensors.txt";
+    result.metadata_sha256 = sha256_file(metadata_path);
+    result.edge_file_sha256 = sha256_file(edge_path);
+    result.node_ptr_file_sha256 = config.dataset == "ppi" ? sha256_file(dataset_dir / "node_ptr.txt") : std::string();
+    result.checkpoint_manifest_sha256 = sha256_file(manifest_path);
+    result.checkpoint_tensor_export_sha256 = sha256_file(tensor_export_path);
+    if (json_string_field(input_identity, "metadata_sha256") != result.metadata_sha256 ||
+        json_string_field(input_identity, "edge_file_sha256") != result.edge_file_sha256 ||
+        json_scalar(input_identity, "node_ptr_file_sha256") !=
+            (config.dataset == "ppi" ? result.node_ptr_file_sha256 : std::string("null")) ||
+        json_string_field(input_identity, "checkpoint_manifest_sha256") != result.checkpoint_manifest_sha256 ||
+        json_string_field(input_identity, "checkpoint_tensor_export_sha256") != result.checkpoint_tensor_export_sha256)
+        fail("BLOCKED: planned-shape source hashes do not match current graph/checkpoint files");
+
+    const auto source_identity = json_fragment(document, "analysis_source_identity", '{', '}');
+    const auto require_source_hash = [&](const std::string &field, const std::filesystem::path &source) {
+        if (json_string_field(source_identity, field) != sha256_file(source))
+            fail("BLOCKED: planned-shape source identity is stale: " + field);
+    };
+    require_source_hash("planner_sha256", config.baseline_root / "scripts/prepare_form_resources.py");
+    require_source_hash("resource_report_sha256", config.baseline_root / "scripts/analysis_only_resource_report.py");
+    require_source_hash("formal_phase_sha256", config.baseline_root / "scripts/formal_phase.py");
+    require_source_hash("formal_runner_sha256", config.baseline_root / "scripts/formal_runner.py");
+
+    const auto graph_shape = json_fragment(document, "graph", '{', '}');
+    if (json_u64_field(graph_shape, "nodes") != graph.nodes ||
+        json_u64_field(graph_shape, "normalized_edges") != graph.edges ||
+        json_u64_field(graph_shape, "graphs") != graph.graphs ||
+        json_u64_field(graph_shape, "csr_max_in_degree") != csr_max_in_degree ||
+        json_u64_field(graph_shape, "features") != graph.features ||
+        json_u64_field(graph_shape, "classes") != config.architecture.classes ||
+        json_u64_field(graph_shape, "raw_edge_rows") != raw_edge_records)
+        fail("BLOCKED: planned graph shape differs from exact native graph normalization");
+    result.raw_edge_rows = raw_edge_records;
+
+    const auto checkpoint = json_fragment(document, "checkpoint", '{', '}');
+    const auto checkpoint_manifest = file_text(manifest_path);
+    expect_manifest(checkpoint_manifest, config);
+    result.checkpoint_tensor_count = json_u64_field(checkpoint_manifest, "tensor_count");
+    result.max_quantized_model_abs = json_u64_field(checkpoint, "max_quantized_model_abs");
+    if (result.checkpoint_tensor_count == 0U ||
+        json_u64_field(checkpoint, "tensor_count") != result.checkpoint_tensor_count ||
+        result.max_quantized_model_abs == 0U || result.max_quantized_model_abs > static_cast<u64>(std::numeric_limits<i64>::max()))
+        fail("BLOCKED: planned checkpoint count or quantized bound is invalid");
+    const auto checkpoint_shapes = manifest_tensor_shapes(checkpoint_manifest);
+    if (checkpoint_shapes.size() != result.checkpoint_tensor_count)
+        fail("BLOCKED: current checkpoint manifest shape index is incomplete");
+
+    const auto table = json_fragment(document, "table_plan", '{', '}');
+    auto &tables = result.tables;
+    tables.quant_cfg_id = json_string_field(table, "quant_cfg_id");
+    tables.generator_id = json_string_field(table, "generator_id");
+    tables.version = json_string_field(table, "version");
+    tables.scale_id = json_string_field(table, "scale_id");
+    tables.domain_id = json_string_field(table, "domain_id");
+    tables.row_order = json_string_field(table, "row_order");
+    tables.padding_rule = json_string_field(table, "padding_rule");
+    tables.spec_hash = json_string_field(table, "spec_hash");
+    tables.lrelu_min = json_i64_value(table, "lrelu_min");
+    tables.lrelu_max = json_i64_value(table, "lrelu_max");
+    tables.elu_min = json_i64_value(table, "elu_min");
+    tables.elu_max = json_i64_value(table, "elu_max");
+    tables.exp_max = json_u64_value(table, "exp_max");
+    tables.lrelu_rows = json_u64_field(table, "lrelu_rows");
+    tables.elu_rows = json_u64_field(table, "elu_rows");
+    tables.exp_rows = json_u64_field(table, "exp_rows");
+    tables.lrelu_padded_domain = json_u64_field(table, "lrelu_padded_domain");
+    tables.elu_padded_domain = json_u64_field(table, "elu_padded_domain");
+    tables.exp_padded_domain = json_u64_field(table, "exp_padded_domain");
+    tables.lrelu_value_min = json_i64_value(table, "lrelu_value_min");
+    tables.lrelu_value_max = json_i64_value(table, "lrelu_value_max");
+    tables.elu_value_min = json_i64_value(table, "elu_value_min");
+    tables.elu_value_max = json_i64_value(table, "elu_value_max");
+    tables.exp_value_min = json_i64_value(table, "exp_value_min");
+    tables.exp_value_max = json_i64_value(table, "exp_value_max");
+    tables.metadata_only = true;
+    tables.authenticated = false;
+    tables.descriptor_digest.clear();
+    tables.digest.clear();
+    tables.sorted_lookup_descriptor.clear();
+    tables.sorted_lookup_descriptor_digest.clear();
+    if (json_string_field(table, "schema") != "zkDL_gat_static_table_descriptor_v1" ||
+        json_string_field(table, "static_table_id") != config.static_table_id ||
+        tables.quant_cfg_id != config.quant_cfg_id ||
+        tables.generator_id != "zkDL_baseline_local_static_table_generator_v1" ||
+        tables.version != "v1" ||
+        tables.scale_id != "scale_chain:s_delta=256,s_agg_pre=16,s_agg=16,s_exp=16" ||
+        tables.domain_id != "range_bits:" + std::to_string(config.range_bits) ||
+        tables.row_order != "ascending_index_min_to_max" ||
+        tables.padding_rule != "next_power_of_two_zero_v1" || !is_digest(tables.spec_hash))
+        fail("BLOCKED: planned static-table metadata has unknown source shape or identity");
+    if (config.range_bits == 0U || config.range_bits > 25U || config.range_bits >= 63U)
+        fail("BLOCKED: planned static-table range_bits is outside native bounds");
+    const i64 input_bound = static_cast<i64>(1ULL << config.range_bits);
+    const i64 expected_min = -input_bound;
+    const u64 expected_exp_max = static_cast<u64>(checked_i128(
+        static_cast<__int128>(input_bound) - round_div(-input_bound, 5, "planned LReLU minimum"),
+        "planned ExpMap maximum"));
+    const auto next_power = [](u64 value) {
+        if (value == 0U || value > kMaxStaticTableRows) fail("planned static-table rows exceed native bounds");
+        u64 padded = 1U;
+        while (padded < value) padded <<= 1U;
+        return padded;
+    };
+    if (tables.lrelu_min != expected_min || tables.lrelu_max != input_bound ||
+        tables.elu_min != expected_min || tables.elu_max != input_bound ||
+        tables.exp_max != expected_exp_max ||
+        tables.lrelu_rows != checked_domain_rows(tables.lrelu_min, tables.lrelu_max, "planned LReLU") ||
+        tables.elu_rows != checked_domain_rows(tables.elu_min, tables.elu_max, "planned ELU") ||
+        tables.exp_rows != tables.exp_max + 1U ||
+        tables.lrelu_padded_domain != next_power(tables.lrelu_rows) ||
+        tables.elu_padded_domain != next_power(tables.elu_rows) ||
+        tables.exp_padded_domain != next_power(tables.exp_rows) ||
+        tables.lrelu_value_min != static_cast<i64>(std::round(-static_cast<double>(input_bound) * 0.2)) ||
+        tables.lrelu_value_max != tables.lrelu_max ||
+        tables.elu_value_min != static_cast<i64>(std::round((std::exp(-static_cast<double>(input_bound) / 16.0) - 1.0) * 16.0)) ||
+        tables.elu_value_max != tables.elu_max ||
+        tables.exp_value_min != std::max<i64>(1, static_cast<i64>(std::round(
+            std::exp(-static_cast<double>(tables.exp_max) / 256.0) * 16.0))) || tables.exp_value_max != 16)
+        fail("BLOCKED: planned table rows/ranges/padding differ from the canonical generator shape");
+    std::ostringstream spec;
+    spec << config.static_table_id << "\n" << tables.generator_id << "\n" << tables.version << "\n"
+         << tables.scale_id << "\n" << tables.domain_id << "\n" << tables.row_order << "\n"
+         << tables.padding_rule << "\n" << config.range_bits << "\n" << tables.lrelu_min << "\n"
+         << tables.lrelu_max << "\n" << tables.exp_max << "\n" << tables.lrelu_padded_domain << "\n"
+         << tables.elu_padded_domain << "\n" << tables.exp_padded_domain << "\n";
+    if (tables.spec_hash != sha256_text(spec.str()))
+        fail("BLOCKED: planned static-table spec hash does not match canonical table dimensions");
+
+    const auto ledger_plan = json_fragment(document, "ledger_plan", '{', '}');
+    auto &ledger = result.ledger;
+    ledger.ledger_id = json_string_field(ledger_plan, "ledger_id");
+    ledger.degree_bound_id = json_string_field(ledger_plan, "degree_bound_id");
+    ledger.quant_cfg_id = json_string_field(ledger_plan, "quant_cfg_id");
+    ledger.static_table_id = json_string_field(ledger_plan, "static_table_id");
+    ledger.field_modulus = json_string_field(ledger_plan, "field_modulus");
+    ledger.scale_chain_digest = json_string_field(ledger_plan, "scale_chain_sha256");
+    ledger.static_table_descriptor_digest.clear();
+    ledger.digest.clear();
+    ledger.descriptor_digest.clear();
+    ledger.authenticated = false;
+    ledger.analysis_only_planned = true;
+    if (json_string_field(ledger_plan, "schema") != "zkDL_gat_integer_bound_ledger_v1" ||
+        ledger.ledger_id.empty() || ledger.degree_bound_id.empty() ||
+        ledger.quant_cfg_id != config.quant_cfg_id || ledger.static_table_id != config.static_table_id ||
+        ledger.field_modulus != scalar_modulus_decimal() || ledger.scale_chain_digest != config.scale_chain_digest)
+        fail("BLOCKED: planned integer-bound ledger metadata does not bind current config");
+    const auto family_objects = json_object_array(ledger_plan, "families", kMaxLedgerFamilies);
+    const auto set_family_i64 = [&](const std::string &object, const std::string &key) {
+        const i64 value = json_i64_value(object, key);
+        validate_field_bound(value, "planned ledger " + key);
+        return value;
+    };
+    std::vector<std::string> expected_family_ids;
+    for (std::size_t layer = 0U; layer < config.architecture.hidden_heads.size(); ++layer)
+        for (u64 head = 0U; head < config.architecture.hidden_heads[layer]; ++head)
+            expected_family_ids.push_back("hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head));
+    for (u64 head = 0U; head < config.architecture.output_heads; ++head)
+        expected_family_ids.push_back("output/head" + std::to_string(head));
+    if (family_objects.size() != expected_family_ids.size())
+        fail("BLOCKED: planned ledger family count differs from the configured architecture");
+    for (std::size_t index = 0U; index < family_objects.size(); ++index) {
+        const auto &object = family_objects[index];
+        IntegerBoundFamily family;
+        family.family_id = json_string_field(object, "family_id");
+        family.layer = json_u64_field(object, "layer_index");
+        family.head = json_u64_field(object, "head_index");
+        family.output = json_u64_field(object, "output") != 0U;
+        if (family.family_id != expected_family_ids[index] ||
+            family.output != (family.family_id.rfind("output/", 0U) == 0U))
+            fail("BLOCKED: planned ledger family identity/order is not canonical");
+        family.max_input_abs = set_family_i64(object, "max_input_abs");
+        family.max_weight_abs = set_family_i64(object, "max_weight_abs");
+        family.max_attention_abs = set_family_i64(object, "max_attention_abs");
+        family.max_bias_abs = set_family_i64(object, "max_bias_abs");
+        family.max_score_abs = set_family_i64(object, "max_score_abs");
+        family.max_table_output_abs = set_family_i64(object, "max_table_output_abs");
+        family.max_delta = set_family_i64(object, "max_delta");
+        family.max_exp = set_family_i64(object, "max_exp");
+        family.max_sum = set_family_i64(object, "max_sum");
+        family.max_aggregate_num = set_family_i64(object, "max_aggregate_num");
+        family.max_dividend_abs = set_family_i64(object, "max_dividend_abs");
+        family.max_aux_abs = set_family_i64(object, "max_aux_abs");
+        family.max_divisor = set_family_i64(object, "max_divisor");
+        family.max_field_product_abs = set_family_i64(object, "max_field_product_abs");
+        if (family.max_weight_abs <= 0 || family.max_attention_abs <= 0 ||
+            family.max_divisor <= 0 || family.layer >= config.architecture.hidden_dims.size() + 1U ||
+            family.head >= (family.output ? config.architecture.output_heads : config.architecture.hidden_heads.at(family.layer)))
+            fail("BLOCKED: planned ledger family bounds/coordinates are outside canonical ranges");
+        ledger.families.push_back(std::move(family));
+    }
+    const auto maxima = json_fragment(ledger_plan, "maxima", '{', '}');
+    ledger.max_score_abs = json_i64_value(maxima, "max_score_abs");
+    ledger.max_table_output_abs = json_i64_value(maxima, "max_table_output_abs");
+    ledger.max_delta = json_i64_value(maxima, "max_delta");
+    ledger.max_exp = json_i64_value(maxima, "max_exp");
+    ledger.max_sum = json_i64_value(maxima, "max_sum");
+    ledger.max_aggregate_num = json_i64_value(maxima, "max_aggregate_num");
+    ledger.max_dividend_abs = json_i64_value(maxima, "max_dividend_abs");
+    ledger.max_aux_abs = json_i64_value(maxima, "max_aux_abs");
+    ledger.max_divisor = json_i64_value(maxima, "max_divisor");
+    for (const auto &family : ledger.families)
+        if (family.max_score_abs > ledger.max_score_abs || family.max_table_output_abs > ledger.max_table_output_abs ||
+            family.max_delta > ledger.max_delta || family.max_exp > ledger.max_exp || family.max_sum > ledger.max_sum ||
+            family.max_aggregate_num > ledger.max_aggregate_num || family.max_dividend_abs > ledger.max_dividend_abs ||
+            family.max_aux_abs > ledger.max_aux_abs || family.max_divisor > ledger.max_divisor)
+            fail("BLOCKED: planned ledger family exceeds a declared global maximum");
+
+    result.family_domains = json_u64_object(document, "family_domains");
+    result.family_domain_count = json_u64_field(document, "family_domain_count");
+    result.family_domain_sha256 = json_string_field(document, "family_domain_sha256");
+    if (result.family_domain_count != result.family_domains.size() || !is_digest(result.family_domain_sha256))
+        fail("BLOCKED: planned family domain map/count/hash is malformed");
+    std::ostringstream family_domain_json;
+    family_domain_json << '{';
+    bool first = true;
+    for (const auto &entry : result.family_domains) {
+        if (!first) family_domain_json << ',';
+        first = false;
+        family_domain_json << json_quote_config(entry.first) << ':' << entry.second;
+    }
+    family_domain_json << '}';
+    if (sha256_text(family_domain_json.str()) != result.family_domain_sha256)
+        fail("BLOCKED: planned family domain map hash mismatch");
+    return result;
+}
+
+int analysis_only_resource_plan(const Config &config,
+                                const std::filesystem::path &planned_shape_path) {
+    u64 raw_edge_records = 0U;
+    u64 csr_max_in_degree = 0U;
+    const Graph graph = load_graph_shape_for_resource_plan(config, &raw_edge_records,
+                                                           &csr_max_in_degree);
+    const bool planned_mode = !planned_shape_path.empty();
+    AnalysisPlannedShape planned_shape;
+    StaticTables tables;
+    RelationPlan plan;
+    if (planned_mode) {
+        planned_shape = load_analysis_planned_shape(config, graph, raw_edge_records,
+                                                    csr_max_in_degree, planned_shape_path);
+        tables = planned_shape.tables;
+        plan = build_relation_plan_planned(config, graph, tables, planned_shape.ledger);
+    } else {
+        tables = load_static_table_descriptor_shape(config);
+        plan = build_relation_plan(config, graph, tables);
+    }
+    std::string relation_error;
+    if (!planned_mode && !relation_plan_complete(plan, &relation_error))
+        fail("BLOCKED: analysis-only resource plan metadata is incomplete: " + relation_error);
+    if (planned_mode) {
+        if (plan.schema_id != "zkDL_gat_inference_v1" || plan.proof_scope != "full_gat_forward" ||
+            plan.binding_rule != "fac4dnn_reindex_v1" || plan.operation_families.empty() ||
+            plan.tensor_families.empty() || plan.sorted_lookup.queries.empty() ||
+            plan.integer_bound_ledger.authenticated || !plan.integer_bound_ledger.analysis_only_planned ||
+            tables.authenticated || !tables.metadata_only)
+            fail("BLOCKED: planned relation shape unexpectedly entered an authenticated resource path");
+        const auto planned_lookup = json_fragment(planned_shape.document, "sorted_lookup_plan", '{', '}');
+        if (json_u64_field(planned_lookup, "segment_size") != (1ULL << 18U))
+            fail("BLOCKED: analytic sorted-lookup basis segment size differs from native profile");
+        const auto planned_queries = json_object_array(planned_lookup, "query_families", 1U << 16U);
+        if (planned_queries.size() != plan.sorted_lookup.queries.size())
+            fail("BLOCKED: planned sorted-lookup query count differs from native shape plan");
+        const auto planned_table_families = json_object_array(planned_lookup, "table_families", 16U);
+        if (planned_table_families.size() != 3U)
+            fail("BLOCKED: analytic sorted-lookup plan does not contain its three canonical tables");
+        std::map<std::string, std::string> queries_by_id;
+        std::map<std::string, const SortedLookupQueryPlan *> native_queries_by_table;
+        u64 query_rows_total = 0U;
+        u64 table_domain_total = 0U;
+        u64 query_domain_total = 0U;
+        u64 merge_domain_total = 0U;
+        u64 scratch_record_payload_total = 0U;
+        u64 scratch_bytes_total = 0U;
+        u64 scratch_bytes_max_single_file = 0U;
+        constexpr std::string_view sorted_roles =
+            "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
+        const auto add_plan_total = [&](u64 &total, u64 value, const std::string &label) {
+            if (value > std::numeric_limits<u64>::max() - total)
+                fail("BLOCKED: analytic sorted-lookup total overflows: " + label);
+            total += value;
+        };
+        for (const auto &object : planned_queries) {
+            const std::string id = json_string_field(object, "operation_id");
+            if (id.empty() || !queries_by_id.emplace(id, object).second)
+                fail("BLOCKED: planned sorted-lookup operation identifiers are empty or duplicated");
+        }
+        for (const auto &query : plan.sorted_lookup.queries) {
+            const auto found = queries_by_id.find(query.operation_id);
+            if (found == queries_by_id.end())
+                fail("BLOCKED: native sorted-lookup operation is absent from analytic plan: " + query.operation_id);
+            const auto &object = found->second;
+            const auto query_shape = json_u64_array(object, "query_shape");
+            u64 query_shape_product = 1U;
+            for (const u64 axis : query_shape) {
+                if (axis == 0U || query_shape_product > kMaxNativeDomain / axis)
+                    fail("BLOCKED: planned sorted-lookup query shape overflows native bounds");
+                query_shape_product *= axis;
+            }
+            if (json_string_field(object, "table_ref") != query.table_ref ||
+                json_string_field(object, "operation") !=
+                    (query.table_ref == "static_lrelu" ? "leaky_relu" :
+                     query.table_ref == "static_exp" ? "exp_map" :
+                     query.table_ref == "static_elu" ? "elu" : "") ||
+                json_u64_field(object, "table_rows") != query.table_logical_rows ||
+                json_u64_field(object, "query_rows") != query.query_logical_rows ||
+                query_shape_product != query.query_logical_rows ||
+                json_u64_field(object, "table_domain") != query.table_domain ||
+                json_u64_field(object, "query_domain") != query.query_domain ||
+                json_u64_field(object, "merge_rows") != query.merge_logical_rows ||
+                json_u64_field(object, "merge_domain") != query.merge_domain ||
+                json_u64_field(object, "segment_size") != query.segment_size ||
+                json_u64_field(object, "table_segment_count") != query.table_segment_count ||
+                json_u64_field(object, "query_segment_count") != query.query_segment_count ||
+                json_u64_field(object, "merge_segment_count") != query.merge_segment_count ||
+                json_u64_field(object, "x_bits") != query.x_bits ||
+                json_u64_field(object, "y_bits") != query.y_bits ||
+                json_string_field(object, "key_max_u128") != query.key_max_u128)
+                fail("BLOCKED: native sorted-lookup dimensions/key widths differ from analytic plan: " + query.operation_id);
+            const auto record_domains = query.table_domain + query.query_domain + query.merge_domain;
+            u64 record_payload_bytes = 0U;
+            if (!checked_multiply_u64(record_domains, 107U, record_payload_bytes))
+                fail("BLOCKED: analytic sorted-lookup record payload overflows: " + query.operation_id);
+            const u64 record_header_bytes = 124U + query.operation_id.size() +
+                static_cast<u64>(sorted_roles.size()) + query.key_max_u128.size();
+            if (record_payload_bytes > std::numeric_limits<u64>::max() - record_header_bytes)
+                fail("BLOCKED: analytic sorted-lookup record file size overflows: " + query.operation_id);
+            const u64 record_file_bytes = record_payload_bytes + record_header_bytes;
+            if (json_u64_field(object, "scratch_header_bytes") != record_header_bytes ||
+                json_u64_field(object, "scratch_record_payload_bytes") != record_payload_bytes ||
+                json_u64_field(object, "scratch_bytes_upper_bound") != record_file_bytes)
+                fail("BLOCKED: sorted-lookup scratch byte fields differ from native record sizing: " + query.operation_id);
+            add_plan_total(query_rows_total, query.query_logical_rows, "query rows");
+            add_plan_total(table_domain_total, query.table_domain, "table domains");
+            add_plan_total(query_domain_total, query.query_domain, "query domains");
+            add_plan_total(merge_domain_total, query.merge_domain, "merge domains");
+            add_plan_total(scratch_record_payload_total, record_payload_bytes, "scratch payload");
+            add_plan_total(scratch_bytes_total, record_file_bytes, "scratch bytes");
+            scratch_bytes_max_single_file = std::max(scratch_bytes_max_single_file, record_file_bytes);
+            native_queries_by_table.emplace(query.table_ref, &query);
+        }
+        if (json_u64_field(planned_lookup, "query_count") != planned_queries.size() ||
+            json_u64_field(planned_lookup, "query_rows_total") != query_rows_total ||
+            json_u64_field(planned_lookup, "table_domain_total") != table_domain_total ||
+            json_u64_field(planned_lookup, "query_domain_total") != query_domain_total ||
+            json_u64_field(planned_lookup, "merge_domain_total") != merge_domain_total ||
+            json_u64_field(planned_lookup, "scratch_record_payload_bytes_total") != scratch_record_payload_total ||
+            json_u64_field(planned_lookup, "scratch_bytes_total") != scratch_bytes_total ||
+            json_u64_field(planned_lookup, "scratch_bytes_max_single_file") != scratch_bytes_max_single_file)
+            fail("BLOCKED: sorted-lookup aggregate scratch/profile totals differ from native query shapes");
+        std::set<std::string> seen_table_refs;
+        for (const auto &object : planned_table_families) {
+            const std::string table_ref = json_string_field(object, "table_ref");
+            const auto query_it = native_queries_by_table.find(table_ref);
+            if (query_it == native_queries_by_table.end() || !seen_table_refs.insert(table_ref).second)
+                fail("BLOCKED: analytic sorted-lookup table family is unknown or duplicated: " + table_ref);
+            const auto &query = *query_it->second;
+            i64 input_min = 0, input_max = 0, output_min = 0, output_max = 0;
+            std::string operation;
+            if (table_ref == "static_lrelu") {
+                input_min = tables.lrelu_min; input_max = tables.lrelu_max;
+                output_min = tables.lrelu_value_min; output_max = tables.lrelu_value_max;
+                operation = "leaky_relu";
+            } else if (table_ref == "static_elu") {
+                input_min = tables.elu_min; input_max = tables.elu_max;
+                output_min = tables.elu_value_min; output_max = tables.elu_value_max;
+                operation = "elu";
+            } else if (table_ref == "static_exp") {
+                input_min = 0; input_max = static_cast<i64>(tables.exp_max);
+                output_min = tables.exp_value_min; output_max = tables.exp_value_max;
+                operation = "exp_map";
+            } else {
+                fail("BLOCKED: analytic sorted-lookup table family is outside the native table set");
+            }
+            if (json_string_field(object, "operation") != operation ||
+                json_u64_field(object, "logical_rows") != query.table_logical_rows ||
+                json_u64_field(object, "padded_domain") != query.table_domain ||
+                !json_bool_value(object, "sorted_unique") ||
+                json_i64_value(object, "input_min") != input_min ||
+                json_i64_value(object, "input_max") != input_max ||
+                json_i64_value(object, "output_min") != output_min ||
+                json_i64_value(object, "output_max") != output_max ||
+                json_u64_field(object, "x_bits") != query.x_bits ||
+                json_u64_field(object, "y_bits") != query.y_bits ||
+                json_string_field(object, "key_encoding") != "packed_pair_u128" ||
+                json_string_field(object, "key_max_u128") != query.key_max_u128 ||
+                json_string_field(object, "padding_rule") != "zero_after_logical_rows_v1")
+                fail("BLOCKED: analytic sorted-lookup table endpoints/layout differ from native table metadata: " + table_ref);
+        }
+        if (seen_table_refs.size() != 3U)
+            fail("BLOCKED: analytic sorted-lookup plan omitted a canonical table family");
+        if (planned_shape.family_domains.size() != plan.tensor_families.size() + 1U ||
+            planned_shape.family_domains.find("*") == planned_shape.family_domains.end())
+            fail("BLOCKED: planned SRS family map does not match native relation family inventory");
+        u64 maximum_relation_domain = 1U;
+        for (const auto &family : plan.tensor_families) {
+            u64 domain = 1U;
+            for (const auto axis : family.padded_shape) {
+                if (!checked_multiply_u64(domain, axis, domain) || domain > kMaxNativeDomain)
+                    fail("BLOCKED: native planned family domain overflows: " + family.id);
+            }
+            const auto expected = planned_shape.family_domains.find(family.id);
+            if (expected == planned_shape.family_domains.end() || expected->second != domain)
+                fail("BLOCKED: native relation family domain differs from analytic plan: " + family.id);
+            maximum_relation_domain = std::max(maximum_relation_domain, domain);
+        }
+        if (planned_shape.family_domains.at("*") < maximum_relation_domain)
+            fail("BLOCKED: planned wildcard SRS domain is below a relation family domain");
+    }
+
+    // Resource sizing uses public checkpoint shape metadata only.  Validate
+    // every declared model tensor against the current config architecture so
+    // model/SRS counts cannot silently omit a tensor or fall back to zero.
+    const auto checkpoint_manifest_path = config.checkpoint_bundle / "manifest.json";
+    if (std::filesystem::is_symlink(checkpoint_manifest_path) ||
+        !std::filesystem::is_regular_file(checkpoint_manifest_path))
+        fail("BLOCKED: analysis-only checkpoint manifest is missing or symlinked");
+    const auto checkpoint_manifest = file_text(checkpoint_manifest_path);
+    expect_manifest(checkpoint_manifest, config);
+    const auto checkpoint_shapes = manifest_tensor_shapes(checkpoint_manifest);
+    const u64 checkpoint_manifest_tensor_count = json_u64_field(checkpoint_manifest, "tensor_count");
+    if (checkpoint_manifest_tensor_count == 0U ||
+        checkpoint_shapes.size() != checkpoint_manifest_tensor_count)
+        fail("BLOCKED: analysis-only checkpoint tensor index/count mismatch");
+    if (planned_mode && checkpoint_manifest_tensor_count != planned_shape.checkpoint_tensor_count)
+        fail("BLOCKED: native checkpoint manifest count differs from planned checkpoint identity");
+
+    NativeDescriptorShapeFootprint footprint;
+    if (!zkdl_gat_native_descriptor_shape_footprint(config, graph, tables, plan,
+                                                    &footprint, &relation_error))
+        fail(relation_error.empty() ? "analysis-only descriptor shape footprint failed" : relation_error);
+    NativeRelationPlanMetrics native_metrics;
+    if (!zkdl_gat_native_relation_plan_metrics(config, graph, tables, plan,
+                                               &native_metrics, &relation_error, true))
+        fail(relation_error.empty() ? "analysis-only typed resource metrics failed" : relation_error);
+
+    const auto checked_sum = [](u64 left, u64 right, const std::string &label) {
+        if (right > std::numeric_limits<u64>::max() - left)
+            fail("BLOCKED: analysis-only resource count overflows: " + label);
+        return left + right;
+    };
+    const auto checked_product = [](u64 left, u64 right, const std::string &label) {
+        u64 product = 0U;
+        if (!checked_multiply_u64(left, right, product))
+            fail("BLOCKED: analysis-only resource count overflows: " + label);
+        return product;
+    };
+    const auto next_power_of_two = [](u64 value, const std::string &label) {
+        if (value == 0U || value > kMaxNativeDomain)
+            fail("BLOCKED: analysis-only resource domain is invalid: " + label);
+        u64 padded = 1U;
+        while (padded < value) {
+            if (padded > kMaxNativeDomain / 2U)
+                fail("BLOCKED: analysis-only resource padded domain overflows: " + label);
+            padded <<= 1U;
+        }
+        return padded;
+    };
+
+    constexpr u64 srs_basis_domain = 1ULL << 18U;
+    u64 logical_family_elements = 0U;
+    u64 private_family_storage_bytes = 0U;
+    u64 maximum_padded_family_domain = 0U;
+    u64 public_y_padded_domain = 0U;
+    u64 static_table_padded_elements = 0U;
+    for (const auto &family : plan.tensor_families) {
+        u64 logical_elements = 1U, padded_domain = 1U;
+        if (family.logical_shape.empty() || family.logical_shape.size() != family.padded_shape.size())
+            fail("BLOCKED: analysis-only resource plan encountered malformed family axes: " + family.id);
+        for (std::size_t axis = 0U; axis < family.logical_shape.size(); ++axis) {
+            if (family.logical_shape[axis] == 0U || family.padded_shape[axis] < family.logical_shape[axis])
+                fail("BLOCKED: analysis-only resource plan encountered invalid family axis: " + family.id);
+            logical_elements = checked_product(logical_elements, family.logical_shape[axis], family.id + " logical elements");
+            padded_domain = checked_product(padded_domain, family.padded_shape[axis], family.id + " padded domain");
+        }
+        logical_family_elements = checked_sum(logical_family_elements, logical_elements, "logical family elements");
+        maximum_padded_family_domain = std::max(maximum_padded_family_domain, padded_domain);
+        if (family.visibility != "public") {
+            const u64 encoded = checked_sum(checked_product(logical_elements, 32U, "private family rows"),
+                                            24U, "private family header");
+            private_family_storage_bytes = checked_sum(private_family_storage_bytes, encoded,
+                                                       "private family storage");
+        }
+        if (family.id == "public_Y") {
+            if (family.visibility != "public")
+                fail("BLOCKED: analysis-only public_Y is not declared public");
+            public_y_padded_domain = padded_domain;
+        }
+    }
+    if (public_y_padded_domain == 0U)
+        fail("BLOCKED: analysis-only resource plan lacks public_Y family");
+    for (const u64 domain : {tables.lrelu_padded_domain, tables.elu_padded_domain,
+                             tables.exp_padded_domain})
+        static_table_padded_elements = checked_sum(static_table_padded_elements, domain,
+                                                   "static-table padded elements");
+    const u64 static_table_rows = checked_sum(
+        checked_sum(tables.lrelu_row_count(), tables.elu_row_count(), "static-table rows"),
+        tables.exp_row_count(), "static-table rows");
+    // json_i64_array uses repeated vector push_back.  The pinned libstdc++
+    // growth rule reserves at most the next geometric capacity, bounded here
+    // by 2x the authenticated streamed row count without allocating the rows.
+    const u64 static_table_raw_capacity_upper =
+        checked_product(static_table_rows, 2U, "static-table raw capacity upper bound");
+
+    u64 sorted_scratch_bytes = 0U;
+    u64 maximum_sorted_scratch_bytes = 0U;
+    u64 maximum_sorted_merge_rows = 0U;
+    constexpr std::string_view sorted_roles =
+        "table_key,query_x,query_y,query_key,query_prefix,merge_key,merge_delta,merge_marker,merge_inverse,merge_prefix,merge_bits,merge_delta_bits,query_bits";
+    for (const auto &query : plan.sorted_lookup.queries) {
+        const u64 record_domains = checked_sum(
+            checked_sum(query.table_domain, query.query_domain, "sorted lookup domains"),
+            query.merge_domain, "sorted lookup domains");
+        const u64 domain_bytes = checked_product(record_domains, 107U, "sorted lookup scratch domains");
+        const u64 header = checked_sum(124U, checked_sum(query.operation_id.size(),
+            checked_sum(sorted_roles.size(), query.key_max_u128.size(), "sorted lookup header"),
+            "sorted lookup header"), "sorted lookup header");
+        const u64 scratch = checked_sum(domain_bytes, header, "sorted lookup record scratch");
+        sorted_scratch_bytes = checked_sum(sorted_scratch_bytes, scratch, "sorted lookup scratch total");
+        maximum_sorted_scratch_bytes = std::max(maximum_sorted_scratch_bytes, scratch);
+        maximum_sorted_merge_rows = std::max(maximum_sorted_merge_rows, query.merge_logical_rows);
+    }
+
+    u64 relation_srs_segment_count = 0U;
+    u64 maximum_relation_srs_domain = 1U;
+    for (const auto &family : plan.tensor_families) {
+        u64 domain = 1U;
+        for (const u64 axis : family.padded_shape)
+            domain = checked_product(domain, axis, family.id + " SRS domain");
+        maximum_relation_srs_domain = std::max(maximum_relation_srs_domain, domain);
+        const u64 segments = (domain + srs_basis_domain - 1U) / srs_basis_domain;
+        relation_srs_segment_count = checked_sum(relation_srs_segment_count, segments,
+                                                 "relation family SRS segment count");
+    }
+
+    u64 model_parameter_elements = 0U;
+    u64 model_tensor_count = 0U;
+    u64 model_commitment_segment_count = 0U;
+    u64 maximum_model_padded_domain = 1U;
+    std::map<std::string, std::vector<u64>> expected_model_shapes;
+    std::vector<std::pair<std::string, u64>> model_tensor_domains;
+    const auto add_model_tensor = [&](const std::string &name,
+                                      std::initializer_list<u64> axes,
+                                      const std::string &label) {
+        u64 logical = 1U, domain = 1U;
+        std::size_t rank = 0U;
+        std::vector<u64> logical_shape;
+        logical_shape.reserve(axes.size());
+        for (const auto axis : axes) {
+            if (axis == 0U) fail("BLOCKED: analysis-only model tensor has an empty axis: " + label);
+            logical_shape.push_back(axis);
+            logical = checked_product(logical, axis, label + " element count");
+            if (!(axes.size() == 3U && rank == 0U && axis == 1U))
+                domain = checked_product(domain, next_power_of_two(axis, label), label + " padded domain");
+            ++rank;
+        }
+        if (!expected_model_shapes.emplace(name, logical_shape).second)
+            fail("BLOCKED: analysis-only architecture contains a duplicate model tensor: " + name);
+        const auto manifest_shape = checkpoint_shapes.find(name);
+        if (manifest_shape == checkpoint_shapes.end() || manifest_shape->second != logical_shape)
+            fail("BLOCKED: checkpoint tensor shape/index differs from canonical architecture: " + name);
+        model_parameter_elements = checked_sum(model_parameter_elements, logical,
+                                               "model parameter elements");
+        model_tensor_count = checked_sum(model_tensor_count, 1U, "model tensor count");
+        maximum_model_padded_domain = std::max(maximum_model_padded_domain, domain);
+        model_tensor_domains.emplace_back(name, domain);
+        model_commitment_segment_count = checked_sum(model_commitment_segment_count,
+            (domain + srs_basis_domain - 1U) / srs_basis_domain,
+            "model commitment segment count");
+    };
+    u64 model_input_width = graph.features;
+    for (std::size_t layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
+        const u64 dimension = config.architecture.hidden_dims.at(layer);
+        const u64 heads = config.architecture.hidden_heads.at(layer);
+        for (u64 head = 0U; head < heads; ++head) {
+            const std::string prefix = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head) + "/";
+            add_model_tensor(prefix + "seq/kernel", {1U, model_input_width, dimension}, "hidden projection");
+            add_model_tensor(prefix + "attn_src/kernel", {1U, dimension, 1U}, "hidden source attention");
+            add_model_tensor(prefix + "attn_dst/kernel", {1U, dimension, 1U}, "hidden destination attention");
+        }
+        model_input_width = checked_product(heads, dimension, "hidden concatenated width");
+    }
+    const u64 classes = config.architecture.classes;
+    for (u64 head = 0U; head < config.architecture.output_heads; ++head) {
+        const std::string prefix = "output/head" + std::to_string(head) + "/";
+        add_model_tensor(prefix + "seq/kernel", {1U, model_input_width, classes}, "output projection");
+        add_model_tensor(prefix + "attn_src/kernel", {1U, classes, 1U}, "output source attention");
+        add_model_tensor(prefix + "attn_dst/kernel", {1U, classes, 1U}, "output destination attention");
+        add_model_tensor(prefix + "output_bias", {classes}, "output bias");
+    }
+    if (expected_model_shapes.size() != checkpoint_shapes.size() ||
+        expected_model_shapes.size() != checkpoint_manifest_tensor_count)
+        fail("BLOCKED: checkpoint tensor index has tensors outside the canonical architecture");
+
+    const u64 wildcard_srs_domain = std::max(maximum_relation_srs_domain,
+                                             maximum_model_padded_domain);
+    if (planned_mode) {
+        if (planned_shape.family_domains.at("*") != wildcard_srs_domain)
+            fail("BLOCKED: planned wildcard SRS domain does not match relation/model family domains");
+        const auto srs_plan = json_fragment(planned_shape.document, "srs_plan", '{', '}');
+        constexpr u64 expected_srs_basis_domain = 1ULL << 18U;
+        const u64 expected_srs_frame_bytes = checked_sum(
+            40U, checked_product(expected_srs_basis_domain, 48U,
+                                 "planned SRS basis frame"),
+            "planned SRS frame");
+        if (json_u64_field(srs_plan, "basis_domain") != expected_srs_basis_domain ||
+            json_u64_field(srs_plan, "frame_bytes") != expected_srs_frame_bytes)
+            fail("BLOCKED: planned SRS basis/frame differs from the native source profile");
+        const auto srs_families = json_fragment(srs_plan, "families", '{', '}');
+        std::size_t srs_family_records = 0U;
+        for (std::size_t position = 0U;
+             (position = srs_families.find("\"logical_domain\"", position)) != std::string::npos;
+             position += sizeof("\"logical_domain\"") - 1U)
+            ++srs_family_records;
+        if (srs_family_records != planned_shape.family_domains.size())
+            fail("BLOCKED: planned SRS family count differs from the exact family-domain map");
+        u64 expected_max_segment_count = 0U;
+        for (const auto &entry : planned_shape.family_domains) {
+            const auto planned_family = json_fragment(srs_families, entry.first, '{', '}');
+            const u64 segment_count = (entry.second + expected_srs_basis_domain - 1U) /
+                                      expected_srs_basis_domain;
+            if (json_u64_field(planned_family, "logical_domain") != entry.second ||
+                json_u64_field(planned_family, "segment_size") != expected_srs_basis_domain ||
+                json_u64_field(planned_family, "segment_count") != segment_count)
+                fail("BLOCKED: planned SRS domain/segment count differs for family " + entry.first);
+            expected_max_segment_count = std::max(expected_max_segment_count, segment_count);
+        }
+        const u64 expected_preflight_srs_bytes = checked_sum(
+            checked_sum(expected_srs_frame_bytes, 2U * (40U + 48U),
+                        "planned SRS auxiliary frames"),
+            checked_product(static_cast<u64>(planned_shape.family_domains.size()), 4096U,
+                            "planned SRS family manifest"),
+            "planned SRS materialized bytes");
+        if (json_u64_field(srs_plan, "max_segment_count") != expected_max_segment_count ||
+            json_u64_field(srs_plan, "estimated_materialized_bytes") != expected_preflight_srs_bytes)
+            fail("BLOCKED: planned SRS totals differ from native family-domain sizing");
+    }
+    const u64 srs_domain_count = checked_sum(
+        checked_sum(plan.tensor_families.size(), model_tensor_count, "SRS family count"),
+        1U, "SRS wildcard family count");
+    const u64 srs_segment_count = checked_sum(
+        checked_sum(relation_srs_segment_count, model_commitment_segment_count,
+                    "SRS concrete family segments"),
+        (wildcard_srs_domain + srs_basis_domain - 1U) / srs_basis_domain,
+        "SRS wildcard segments");
+    const u64 srs_frame_bytes = checked_sum(40U,
+        checked_product(srs_basis_domain, 48U, "SRS basis frame"), "SRS frame");
+    const u64 srs_materialized_bytes = checked_sum(
+        checked_sum(srs_frame_bytes, 2U * (40U + 48U), "SRS auxiliary frames"),
+        checked_product(srs_domain_count, 4096U, "SRS family manifest reservation"),
+        "SRS materialized bytes");
+
+    u64 cache_file_count = 0U;
+    u64 checkpoint_file_count = 0U;
+    const auto count_regular_files = [&](const std::filesystem::path &root, u64 &count,
+                                         u64 &total_bytes, const std::string &label) {
+        if (std::filesystem::is_symlink(root) || !std::filesystem::is_directory(root))
+            fail("BLOCKED: analysis-only resource file inventory is missing: " + root.string());
+        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
+            if (entry.is_symlink()) fail("BLOCKED: analysis-only resource inventory contains a symlink: " + entry.path().string());
+            if (entry.is_regular_file()) {
+                count = checked_sum(count, 1U, label + " count");
+                total_bytes = checked_sum(total_bytes, entry.file_size(), label + " bytes");
+            }
+            else if (!entry.is_directory()) fail("BLOCKED: analysis-only resource inventory contains a special file");
+        }
+    };
+    u64 cache_file_bytes = 0U, checkpoint_file_bytes = 0U;
+    count_regular_files(config.cache_root / config.dataset, cache_file_count,
+                        cache_file_bytes, "cache inventory");
+    count_regular_files(config.checkpoint_bundle, checkpoint_file_count,
+                        checkpoint_file_bytes, "checkpoint inventory");
+    const u64 relation_plan_text_base_bytes = serialize_plan_text(plan, tables).size();
+    u64 planned_identifier_text_reserve_bytes = 0U;
+    if (planned_mode) {
+        const auto digest_text_reserve = [&](const std::string &value) -> u64 {
+            return value.size() < 64U ? static_cast<u64>(64U - value.size()) : 0U;
+        };
+        planned_identifier_text_reserve_bytes = checked_sum(
+            checked_sum(digest_text_reserve(plan.static_table_descriptor_digest),
+                        digest_text_reserve(plan.integer_bound_ledger_digest),
+                        "planned relation identifier text reserve"),
+            checked_sum(
+                checked_sum(digest_text_reserve(plan.integer_bound_ledger_descriptor_digest),
+                            digest_text_reserve(plan.sorted_lookup.descriptor_digest),
+                            "planned relation identifier text reserve"),
+                checked_sum(digest_text_reserve(plan.sorted_lookup.table_digest),
+                            digest_text_reserve(tables.digest),
+                            "planned relation identifier text reserve"),
+                "planned relation identifier text reserve"),
+            "planned relation identifier text reserve");
+        const auto formal_sorted_descriptor =
+            std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string();
+        planned_identifier_text_reserve_bytes = checked_sum(
+            planned_identifier_text_reserve_bytes,
+            static_cast<u64>(formal_sorted_descriptor.size()),
+            "planned sorted-descriptor path text reserve");
+    }
+    const u64 relation_plan_text_bytes = checked_sum(
+        relation_plan_text_base_bytes, planned_identifier_text_reserve_bytes,
+        "relation plan text capacity");
+    const u64 native_static_table_raw_i64_bytes_upper =
+        checked_product(static_table_raw_capacity_upper, sizeof(i64), "static-table raw bytes");
+    const u64 native_static_table_padded_field_bytes =
+        checked_product(static_table_padded_elements, 32U, "static-table padded field bytes");
+
+    u64 padded_edge_domain = 1U;
+    while (padded_edge_domain < graph.edges) {
+        if (padded_edge_domain > kMaxNativeDomain / 2U)
+            fail("BLOCKED: analysis-only padded edge domain exceeds native bound");
+        padded_edge_domain <<= 1U;
+    }
+    const auto source_path = [&](const std::string &relative) {
+        const auto path = config.baseline_root / relative;
+        if (std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path))
+            fail("BLOCKED: analysis-only source provenance file is missing: " + path.string());
+        return sha256_file(path);
+    };
+    const auto metadata_path = config.cache_root / config.dataset / "meta.cfg";
+    const auto edge_path = config.cache_root / config.dataset / "edges.txt";
+    const auto node_ptr_path = config.cache_root / config.dataset / "node_ptr.txt";
+    const auto checkpoint_tensor_export_path = config.checkpoint_bundle / "tensors.txt";
+    const std::string config_file_digest = sha256_file(config.config_path);
+    const std::string metadata_digest = sha256_file(metadata_path);
+    const std::string edge_file_digest = sha256_file(edge_path);
+    const std::string node_ptr_file_digest = config.dataset == "ppi" ? sha256_file(node_ptr_path) : std::string();
+    const std::string checkpoint_tensor_export_digest = sha256_file(checkpoint_tensor_export_path);
+    const std::string planner_source_digest = source_path("scripts/prepare_form_resources.py");
+    const std::string runner_source_digest = source_path("gat_adapter/gat_runner.cu");
+    const std::string resource_report_digest = source_path("scripts/analysis_only_resource_report.py");
+    const std::string formal_phase_digest = source_path("scripts/formal_phase.py");
+    const std::string formal_runner_digest = source_path("scripts/formal_runner.py");
+    const std::string bridge_header_digest = source_path("gat_adapter/gat_native_bridge.hpp");
+    const std::string native_source_digest = source_path("gat_adapter/gat_native_core.cu");
+    const std::string native_header_digest = source_path("gat_adapter/gat_native_core.cuh");
+    const std::string proof_header_digest = source_path("zkrelation-proof.cuh");
+
+    std::cout << "{\"schema\":\"zkdl_analysis_only_resource_plan_v1\",\"status\":"
+              << json_quote_config(planned_mode ? "ANALYSIS_ONLY_PLANNED" : "ANALYSIS_ONLY")
+              << ",\"dataset\":" << json_quote_config(config.dataset)
+              << ",\"config_sha256\":" << json_quote_config(config_file_digest)
+              << ",\"metadata_sha256\":" << json_quote_config(metadata_digest)
+              << ",\"raw_edge_file_sha256\":" << json_quote_config(edge_file_digest)
+              << ",\"node_ptr_file_sha256\":"
+              << (config.dataset == "ppi" ? json_quote_config(node_ptr_file_digest) : "null")
+              << ",\"checkpoint_tensor_export_sha256\":" << json_quote_config(checkpoint_tensor_export_digest)
+              << ",\"scale_chain_sha256\":" << json_quote_config(config.scale_chain_digest)
+              << ",\"planner_source_sha256\":" << json_quote_config(planner_source_digest)
+              << ",\"gat_runner_source_sha256\":" << json_quote_config(runner_source_digest)
+              << ",\"analysis_resource_report_sha256\":" << json_quote_config(resource_report_digest)
+              << ",\"formal_phase_source_sha256\":" << json_quote_config(formal_phase_digest)
+              << ",\"formal_runner_source_sha256\":" << json_quote_config(formal_runner_digest)
+              << ",\"native_bridge_header_sha256\":" << json_quote_config(bridge_header_digest)
+              << ",\"native_core_source_sha256\":" << json_quote_config(native_source_digest)
+              << ",\"native_core_header_sha256\":" << json_quote_config(native_header_digest)
+              << ",\"relation_proof_header_sha256\":" << json_quote_config(proof_header_digest);
+    if (planned_mode) {
+        std::cout << ",\"planned_shape_sha256\":" << json_quote_config(planned_shape.sha256)
+                  << ",\"planned_metadata_status\":\"ANALYSIS_ONLY_PLANNED\""
+                  << ",\"planned_identifier_text_reserve_bytes\":" << planned_identifier_text_reserve_bytes
+                  << ",\"prepared_resources_claimed\":false"
+                  << ",\"authenticated_resource_digests_present\":false";
+    } else {
+        std::cout << ",\"static_table_descriptor_digest\":" << json_quote_config(tables.descriptor_digest)
+                  << ",\"sorted_lookup_descriptor_digest\":" << json_quote_config(tables.sorted_lookup_descriptor_digest)
+                  << ",\"integer_bound_ledger_digest\":" << json_quote_config(plan.integer_bound_ledger_digest)
+                  << ",\"relation_registry_digest\":" << json_quote_config(plan.registry_digest);
+    }
+    std::cout << ",\"edge_count_basis\":\"exact_load_graph_normalization_with_configured_symmetry_dedup_and_self_loops\""
+              << ",\"raw_edge_record_count\":" << raw_edge_records
+              << ",\"nodes\":" << graph.nodes << ",\"features\":" << graph.features
+              << ",\"classes\":" << config.architecture.classes
+              << ",\"graphs\":" << graph.graphs << ",\"normalized_edge_count\":" << graph.edges
+              << ",\"csr_max_in_degree\":" << csr_max_in_degree
+              << ",\"padded_edge_domain\":" << padded_edge_domain
+              << ",\"tensor_family_count\":" << plan.tensor_families.size()
+              << ",\"operation_count\":" << footprint.operation_count
+              << ",\"fac_binding_count\":" << footprint.fac_binding_count
+              << ",\"route_count\":" << footprint.route_count
+              << ",\"expected_unique_outer_map_bytes\":" << footprint.expected_unique_outer_map_bytes
+              << ",\"expected_unique_active_mask_bytes\":" << footprint.expected_unique_active_mask_bytes
+              << ",\"expected_feature_map_bytes_upper_bound\":" << footprint.expected_feature_map_bytes
+              << ",\"received_selector_array_bytes_upper_bound\":" << footprint.received_selector_array_bytes
+              << ",\"ordinary_descriptor_capacity_bytes_both_trees\":" << footprint.ordinary_descriptor_capacity_bytes
+              << ",\"descriptor_object_header_bytes\":" << footprint.descriptor_object_header_bytes
+              << ",\"operation_descriptor_wire_bytes\":" << footprint.operation_descriptor_wire_bytes
+              << ",\"max_operation_descriptor_wire_bytes\":" << footprint.operation_descriptor_max_bytes
+              << ",\"descriptor_compare_buffer_bytes\":" << footprint.descriptor_compare_buffer_bytes
+              << ",\"operation_descriptor_resident_bytes_upper_bound\":"
+              << footprint.operation_descriptor_resident_bytes_upper_bound
+              << ",\"model_parameter_elements\":" << model_parameter_elements
+              << ",\"model_commitment_segment_count\":" << model_commitment_segment_count
+              << ",\"sorted_lookup_query_count\":" << plan.sorted_lookup.queries.size()
+              << ",\"logical_family_elements\":" << logical_family_elements
+              << ",\"maximum_padded_family_domain\":" << maximum_padded_family_domain
+              << ",\"private_family_storage_upper_bound_bytes\":" << private_family_storage_bytes
+              << ",\"sorted_lookup_scratch_upper_bound_bytes\":" << sorted_scratch_bytes
+              << ",\"maximum_sorted_lookup_scratch_bytes\":" << maximum_sorted_scratch_bytes
+              << ",\"maximum_sorted_lookup_merge_logical_rows\":" << maximum_sorted_merge_rows
+              << ",\"native_primitive_count\":" << native_metrics.primitive_count
+              << ",\"native_constraint_count\":" << native_metrics.constraint_count
+              << ",\"native_route_count\":" << native_metrics.route_count
+              << ",\"native_fac_binding_count\":" << native_metrics.fac_binding_count
+              << ",\"native_padding_family_count\":" << native_metrics.padding_family_count
+              << ",\"native_family_segment_count\":" << native_metrics.family_segment_count
+              << ",\"native_primitive_opening_segment_count\":" << native_metrics.primitive_opening_segment_count
+              << ",\"native_operation_descriptor_bytes\":" << native_metrics.operation_descriptor_bytes
+              << ",\"native_operation_descriptor_max_bytes\":" << native_metrics.operation_descriptor_max_bytes
+              << ",\"native_sumcheck_body_max_bytes\":" << native_metrics.sumcheck_body_max_bytes
+              << ",\"native_terminal_relation_body_max_bytes\":" << native_metrics.terminal_relation_body_max_bytes
+              << ",\"native_constraint_body_max_bytes\":" << native_metrics.constraint_body_max_bytes
+              << ",\"native_padding_record_body_max_bytes\":" << native_metrics.padding_record_body_max_bytes
+              << ",\"native_hidden_matmul_body_max_bytes\":" << native_metrics.hidden_matmul_body_max_bytes
+              << ",\"native_sparse_route_body_max_bytes\":" << native_metrics.sparse_route_body_max_bytes
+              << ",\"native_fac_line8_body_max_bytes\":" << native_metrics.fac_line8_body_max_bytes
+              << ",\"native_sorted_lookup_relation_body_max_bytes\":" << native_metrics.sorted_lookup_relation_body_max_bytes
+              << ",\"native_sorted_lookup_proof_body_max_bytes\":" << native_metrics.sorted_lookup_proof_body_max_bytes
+              << ",\"native_relation_proof_sections_wire_bytes_upper_bound\":" << native_metrics.relation_proof_sections_wire_bytes_upper_bound
+              << ",\"native_proof_wire_bytes_upper_bound\":" << native_metrics.proof_wire_bytes_upper_bound
+              << ",\"native_public_y_padded_domain_elements\":" << public_y_padded_domain
+              << ",\"native_static_table_raw_i64_capacity_elements_upper_bound\":" << static_table_raw_capacity_upper
+              << ",\"native_static_table_raw_i64_capacity_elements\":" << static_table_raw_capacity_upper
+              << ",\"native_static_table_padded_field_elements\":" << static_table_padded_elements
+              << ",\"native_static_table_raw_i64_bytes_upper_bound\":" << native_static_table_raw_i64_bytes_upper
+              << ",\"native_static_table_padded_field_bytes\":" << native_static_table_padded_field_bytes
+              << ",\"native_commitment_section_wire_bytes_upper_bound\":" << native_metrics.commitment_section_wire_bytes_upper_bound
+              << ",\"native_operation_descriptor_resident_bytes_upper_bound\":" << footprint.operation_descriptor_resident_bytes_upper_bound
+              << ",\"native_trace_i64_payload_bytes\":" << native_metrics.trace_i64_payload_bytes
+              << ",\"native_trace_field_payload_bytes\":" << native_metrics.trace_field_payload_bytes
+              << ",\"native_trace_u8_payload_bytes\":" << native_metrics.trace_u8_payload_bytes
+              << ",\"native_trace_object_metadata_bytes\":" << native_metrics.trace_object_metadata_bytes
+              << ",\"native_trace_forward_live_peak_bytes_upper_bound\":" << native_metrics.trace_forward_live_peak_bytes_upper_bound
+              << ",\"native_maximum_route_source_domain\":" << native_metrics.maximum_route_source_domain
+              << ",\"native_maximum_route_edge_domain\":" << native_metrics.maximum_route_edge_domain
+              << ",\"native_maximum_route_selector_factor_elements\":" << native_metrics.maximum_route_selector_factor_elements
+              << ",\"native_route_sumcheck_live_peak_bytes_upper_bound\":" << native_metrics.route_sumcheck_live_peak_bytes_upper_bound
+              << ",\"native_segmented_sumcheck_live_peak_bytes_upper_bound\":" << native_metrics.segmented_sumcheck_live_peak_bytes_upper_bound;
+    append_native_shape_counts_json(std::cout, native_metrics);
+    std::cout << ",\"relation_plan_text_bytes\":" << relation_plan_text_bytes
+              << ",\"checkpoint_tensor_count\":" << checkpoint_manifest_tensor_count
+              << ",\"srs_basis_domain\":" << srs_basis_domain
+              << ",\"srs_frame_bytes\":" << srs_frame_bytes
+              << ",\"srs_family_count\":" << srs_domain_count
+              << ",\"srs_segment_count\":" << srs_segment_count
+              << ",\"srs_materialized_bytes_upper_bound\":" << srs_materialized_bytes
+              << ",\"model_tensor_count\":" << model_tensor_count
+              << ",\"cache_file_count\":" << cache_file_count
+              << ",\"cache_file_bytes\":" << cache_file_bytes
+              << ",\"checkpoint_file_count\":" << checkpoint_file_count
+              << ",\"checkpoint_file_bytes\":" << checkpoint_file_bytes
+              << ",\"checkpoint_manifest_sha256\":" << json_quote_config(sha256_file(checkpoint_manifest_path))
+              << ",\"srs_family_domains\":["
+              << "{\"id\":\"*\",\"logical_domain\":" << wildcard_srs_domain
+              << ",\"segment_count\":" << ((wildcard_srs_domain + srs_basis_domain - 1U) / srs_basis_domain) << "}";
+    for (const auto &family : plan.tensor_families) {
+        u64 domain = 1U;
+        for (const u64 axis : family.padded_shape) domain = checked_product(domain, axis, family.id + " output domain");
+        std::cout << ",{\"id\":" << json_quote_config(family.id)
+                  << ",\"logical_domain\":" << domain
+                  << ",\"segment_count\":" << ((domain + srs_basis_domain - 1U) / srs_basis_domain) << "}";
+    }
+    for (const auto &model_tensor : model_tensor_domains) {
+        std::cout << ",{\"id\":" << json_quote_config(model_tensor.first)
+                  << ",\"logical_domain\":" << model_tensor.second
+                  << ",\"segment_count\":" << ((model_tensor.second + srs_basis_domain - 1U) / srs_basis_domain) << "}";
+    }
+    std::cout << "],\"proof_artifact_created\":false,\"dataset_prepared\":false,\"formal_admission_run\":false"
+              << ",\"independent_verification_run\":false,\"result_collection_run\":false}\n";
     return 0;
 }
 
@@ -5094,7 +6718,10 @@ int verify_only(const Config &config, const CliOptions &options) {
 int main(int argc, char **argv) {
     try {
         const auto options = zkdl_gat::parse_cli(argc, argv);
-        const auto config = zkdl_gat::load_config(options.config, options.command == "admit");
+        const bool planned_shape_mode = options.command == "resource-plan" && !options.planned_shape.empty();
+        const auto config = zkdl_gat::load_config(options.config,
+                                                  options.command == "admit" || options.command == "resource-plan",
+                                                  planned_shape_mode);
         if (options.command == "inspect") {
             std::cout << "dataset=" << config.dataset << " baseline_root=" << config.baseline_root.string()
                       << " checkpoint_bundle=" << config.checkpoint_bundle.string()
@@ -5102,6 +6729,8 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (options.command == "admit") return zkdl_gat::admit(config);
+        if (options.command == "resource-plan")
+            return zkdl_gat::analysis_only_resource_plan(config, options.planned_shape);
         if (options.command == "prepare") return zkdl_gat::prepare(config, options);
         if (options.command == "run" || options.command == "prove") return zkdl_gat::produce(config, options);
         return zkdl_gat::verify_only(config, options);

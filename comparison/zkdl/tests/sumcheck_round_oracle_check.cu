@@ -1,9 +1,12 @@
 #include "../zkrelation-proof.cuh"
 
 #include <algorithm>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <stdlib.h>
+#include <unistd.h>
 
 namespace {
 
@@ -195,6 +198,136 @@ void check_tiny_sumcheck_proof_roundtrip() {
     report_stage("tiny_transcript_replay_done");
 }
 
+void check_spilled_sumcheck_round_differential() {
+    constexpr std::uint32_t kDomain = 256U;
+    constexpr std::uint32_t kBasis = 64U;
+    constexpr std::uint32_t kDegree = 2U;
+    struct PrivateTempDirectory {
+        std::filesystem::path path;
+        ~PrivateTempDirectory() {
+            std::error_code ignored;
+            std::filesystem::remove_all(path, ignored);
+        }
+    } temporary;
+    std::string pattern =
+        (std::filesystem::current_path() / "tests" / ".sumcheck-spill-XXXXXX").string();
+    std::vector<char> mutable_pattern(pattern.begin(), pattern.end());
+    mutable_pattern.push_back('\0');
+    const char* created = ::mkdtemp(mutable_pattern.data());
+    require(created != nullptr, "could not create the private Sumcheck spill fixture directory");
+    temporary.path = created;
+
+    const auto descriptor = make_descriptor(kDegree);
+    const auto values = make_values(kDomain / 2U);
+    std::vector<SegmentedTensorProvider> providers;
+    std::string error;
+    require(make_segmented_tensor_providers(values, kBasis, providers, &error),
+            "could not create spill differential providers: " + error);
+
+    std::vector<std::vector<FrWire>> memory_state;
+    ZkSumcheckFoldedSpillFile spilled_state;
+    std::vector<FrWire> prior_challenges;
+    zkdl::Transcript memory_transcript("sumcheck-forced-spill-differential-v1");
+    zkdl::Transcript spill_transcript("sumcheck-forced-spill-differential-v1");
+    const std::string operation = "sumcheck/forced-spill-differential";
+    const std::uint32_t rounds = log2_exact(kDomain);
+    for (std::uint32_t round = 0U; round < rounds; ++round) {
+        std::vector<FrWire> memory_evaluations;
+        std::vector<FrWire> spilled_evaluations;
+        if (round == 0U) {
+            require(zksc_segmented_round_evaluations(
+                        descriptor, providers, kDegree, round, prior_challenges,
+                        memory_evaluations, &error),
+                    "memory Sumcheck round-zero evaluation failed: " + error);
+            spilled_evaluations = memory_evaluations;
+        } else {
+            require(zksc_folded_round_evaluations(
+                        descriptor, memory_state, kDegree, memory_evaluations,
+                        &error, round),
+                    "memory folded-state evaluation failed: " + error);
+            require(zksc_spilled_round_evaluations(
+                        descriptor, spilled_state, kDegree, spilled_evaluations,
+                        &error, round),
+                    "disk folded-state evaluation failed: " + error);
+        }
+        require_same_wire(spilled_evaluations, memory_evaluations,
+                          "forced spill evaluations round=" + std::to_string(round));
+
+        std::vector<Fr_t> memory_values, spill_values;
+        memory_values.reserve(memory_evaluations.size());
+        spill_values.reserve(spilled_evaluations.size());
+        for (const auto& value : memory_evaluations)
+            memory_values.push_back(zkdl::fr_value(value));
+        for (const auto& value : spilled_evaluations)
+            spill_values.push_back(zkdl::fr_value(value));
+        const std::string evaluation_label = "sumcheck.round." + std::to_string(round) + ".evaluations";
+        const std::string challenge_label = "sumcheck.round." + std::to_string(round) + ".challenge";
+        memory_transcript.absorb_fr(evaluation_label, memory_values);
+        spill_transcript.absorb_fr(evaluation_label, spill_values);
+        const FrWire memory_challenge = zkdl::fr_wire(memory_transcript.challenge(challenge_label));
+        const FrWire spill_challenge = zkdl::fr_wire(spill_transcript.challenge(challenge_label));
+        require(memory_challenge == spill_challenge,
+                "forced spill transcript challenge differs at round " + std::to_string(round));
+
+        if (round == 0U) {
+            require(zksc_segmented_fold_state_initialize(
+                        providers, memory_challenge, memory_state, &error,
+                        round + 1U),
+                    "memory folded-state initialization failed: " + error);
+            require(zksc_spilled_fold_state_initialize(
+                        providers, spill_challenge, operation, temporary.path.string(),
+                        round + 1U, spilled_state, &error),
+                    "disk folded-state initialization failed: " + error);
+        } else {
+            for (auto& tensor : memory_state)
+                require(zksc_fold_values_in_place(tensor, memory_challenge, &error,
+                                                   round + 1U),
+                        "memory folded-state round failed: " + error);
+            require(zksc_spilled_fold_state(
+                        spill_challenge, spilled_state, round + 1U, &error),
+                    "disk folded-state round failed: " + error);
+        }
+        prior_challenges.push_back(memory_challenge);
+    }
+
+    std::vector<FrWire> memory_terminal, spill_terminal, provider_terminal;
+    memory_terminal.reserve(memory_state.size());
+    for (const auto& tensor : memory_state) {
+        require(tensor.size() == 1U, "memory terminal has the wrong folded shape");
+        memory_terminal.push_back(tensor.front());
+    }
+    require(zksc_spilled_terminal_values(
+                spilled_state, rounds, spill_terminal, &error),
+            "disk Sumcheck terminal read failed: " + error);
+    require(zksc_segmented_terminal_values(
+                providers, prior_challenges, provider_terminal, &error),
+            "provider Sumcheck terminal evaluation failed: " + error);
+    require_same_wire(spill_terminal, memory_terminal,
+                      "forced spill terminal memory equality");
+    require_same_wire(spill_terminal, provider_terminal,
+                      "forced spill terminal provider equality");
+    require(memory_transcript.digest() == spill_transcript.digest(),
+            "forced spill final transcript bytes differ");
+
+    ZkSumcheckFoldedSpillFile malformed;
+    require(ZkSumcheckFoldedSpillFile::create(
+                temporary.path.string(), "sumcheck/noncanonical-fixture", 4U,
+                1U, 1U, 0U, malformed, &error),
+            "could not create malformed spill rejection fixture: " + error);
+    FrWire noncanonical{};
+    noncanonical.fill(std::numeric_limits<std::uint32_t>::max());
+    error.clear();
+    require(malformed.append_values(&noncanonical, 1U, &error) &&
+                malformed.finish(&error),
+            "could not complete the malformed spill input fixture: " + error);
+    FrWire decoded{};
+    error.clear();
+    require(!malformed.read_values(
+                0U, 1U, &decoded, 1U, "sumcheck/noncanonical-fixture", 4U,
+                1U, 1U, 0U, &error) && !error.empty(),
+            "disk spill reader accepted a non-canonical FrWire value");
+}
+
 void check_full_routes(std::uint32_t degree) {
     constexpr std::size_t kRows = 8192U;
     constexpr std::size_t kBasis = 8192U;
@@ -289,12 +422,16 @@ int main() {
         report_stage("scratch_shape_start");
         check_scratch_shape_failclosed();
         report_stage("scratch_shape_done");
+        report_stage("forced_spill_differential_start");
+        check_spilled_sumcheck_round_differential();
+        report_stage("forced_spill_differential_done");
         check_tiny_sumcheck_proof_roundtrip();
         check_full_routes(2U);
         check_full_routes(4U);
         std::cout << "sumcheck_round_oracle_check=PASS threshold=4095/4096 "
                      "nonzero_row_begin=PASS degrees=2/4 "
                      "provider/cache_wire_equality=PASS tiny_proof_verify=PASS "
+                     "forced_spill_round_transcript_terminal=PASS "
                      "scratch_shape_failclosed=PASS shape_failclosed=PASS\n";
         return 0;
     } catch (const std::exception& error) {

@@ -561,6 +561,13 @@ where
     Scheme::Scalar: PrimeField + WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
     Scheme::ParamsProver: Send + Sync,
 {
+    if !pk.permutation.polys_materialized() {
+        return Err(Error::NativeStorage(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "compact native proving key must be reloaded and sigma polynomials materialized before proof creation",
+        )));
+    }
+
     #[cfg(feature = "counter")]
     {
         use crate::{FFT_COUNTER, MSM_COUNTER};

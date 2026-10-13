@@ -25,7 +25,9 @@ use crate::{
 pub enum Reduction {
     /// Random linear combination with powers of challenge along the axis
     RLC {
+        /// Einsum expression describing this reduction step.
         expression: String,
+        /// Output axis reduced with the random linear-combination challenge.
         axis: char,
         /// Uniquely identifying index of input tensor to be reduced
         input_index: TensorIndex,
@@ -33,9 +35,12 @@ pub enum Reduction {
         input_phase: usize,
         /// phase of output tensor
         output_phase: usize,
+        /// Challenge position for this axis in the einsum output expression.
         challenge_index: usize,
     },
+    /// A direct multiplication or sum-contraction reduction step.
     Contraction {
+        /// Einsum expression describing this contraction step.
         expression: String,
         /// when axis is `None`, the contraction is pairwise multiplication
         axis: Option<char>,
@@ -51,6 +56,12 @@ pub enum Reduction {
 #[derive(Clone, Copy, Debug)]
 pub struct TensorIndex(usize);
 
+impl TensorIndex {
+    pub fn index(self) -> usize {
+        self.0
+    }
+}
+
 impl<T: PrimeField + TensorType + PartialOrd> Index<TensorIndex> for Vec<ValTensor<T>> {
     type Output = ValTensor<T>;
 
@@ -60,6 +71,7 @@ impl<T: PrimeField + TensorType + PartialOrd> Index<TensorIndex> for Vec<ValTens
 }
 
 impl Reduction {
+    /// Return the einsum expression for this reduction step.
     pub fn expression(&self) -> &str {
         match self {
             Reduction::Contraction { expression, .. } => expression,
@@ -67,6 +79,7 @@ impl Reduction {
         }
     }
 
+    /// Return the indices of input tensors consumed by this reduction step.
     pub fn input_indices(&self) -> Vec<TensorIndex> {
         match self {
             Reduction::Contraction { input_indices, .. } => input_indices.clone(),
@@ -74,6 +87,7 @@ impl Reduction {
         }
     }
 
+    /// Return the witness phase assigned to the reduction output.
     pub fn output_phase(&self) -> usize {
         match self {
             Reduction::Contraction { output_phase, .. } => *output_phase,
@@ -82,6 +96,10 @@ impl Reduction {
     }
 }
 
+/// Plan the ordered reduction steps for the input side of an einsum expression.
+///
+/// The expression must use the `inputs->output` form; malformed reductions return a circuit
+/// error when detected by the planner.
 pub fn input_reductions(expression: &str) -> Result<Vec<Reduction>, CircuitError> {
     let (input_exprs, output_expr) = expression.split_once("->").unwrap();
     let input_exprs: Vec<_> = input_exprs.split(",").map(|eq| eq.to_string()).collect();

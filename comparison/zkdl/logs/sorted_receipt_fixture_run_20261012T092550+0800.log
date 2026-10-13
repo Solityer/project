@@ -1,0 +1,4 @@
+timestamp=2026-10-12T09:25:50+08:00
+command=timeout 180s ./tests/segmented_lookup_fixture --sorted-receipt-only
+sorted_lookup_receipt_fixture=FAIL error=tiny sorted-lookup proof failed: sorted-lookup relation kind=4 phase=sumcheck: Pedersen scalar commitment mismatch
+exit_code=1

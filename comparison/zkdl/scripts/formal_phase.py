@@ -706,6 +706,15 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "native_trace_forward_live_peak_bytes_upper_bound",
             "native_route_sumcheck_live_peak_bytes_upper_bound",
             "native_segmented_sumcheck_live_peak_bytes_upper_bound",
+            "native_sumcheck_fallback_call_count",
+            "native_sumcheck_cached_call_count",
+            "native_sumcheck_spill_call_count",
+            "native_sumcheck_spill_provider_value_slots_upper_bound",
+            "native_sumcheck_spill_provider_scan_bytes_upper_bound",
+            "native_sumcheck_spill_provider_source_bytes_upper_bound",
+            "native_sumcheck_spill_storage_io_bytes_upper_bound",
+            "native_sumcheck_max_spill_disk_peak_bytes_upper_bound",
+            "native_sumcheck_max_spill_ram_peak_bytes_upper_bound",
             "native_maximum_route_source_domain",
             "native_maximum_route_edge_domain",
             "native_maximum_route_selector_factor_elements",
@@ -724,6 +733,22 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         operation_descriptor_bytes = int(admission["native_operation_descriptor_bytes"])
         if proof_bytes == 0 or operation_descriptor_bytes > proof_bytes:
             raise PhaseError(f"native admission returned an invalid proof/descriptor wire bound for {dataset}")
+        spill_call_count = int(admission["native_sumcheck_spill_call_count"])
+        spill_fallback_count = int(admission["native_sumcheck_fallback_call_count"])
+        spill_disk_peak = int(admission["native_sumcheck_max_spill_disk_peak_bytes_upper_bound"])
+        spill_ram_peak = int(admission["native_sumcheck_max_spill_ram_peak_bytes_upper_bound"])
+        spill_io_bytes = int(admission["native_sumcheck_spill_storage_io_bytes_upper_bound"])
+        spill_source_bytes = int(admission["native_sumcheck_spill_provider_source_bytes_upper_bound"])
+        if ((spill_call_count == 0) != (spill_disk_peak == 0) or
+                (spill_call_count == 0) != (spill_ram_peak == 0) or
+                (spill_call_count == 0) != (spill_io_bytes == 0) or
+                (spill_call_count == 0) != (spill_source_bytes == 0) or
+                spill_disk_peak > (1 << 37) or spill_ram_peak > (1 << 30)):
+            raise PhaseError(f"native admission returned an inconsistent Sumcheck spill envelope for {dataset}")
+        if spill_fallback_count != 0:
+            raise PhaseError(f"native Sumcheck still reports an unbounded in-memory fallback for {dataset}")
+        if spill_ram_peak > int(admission["native_segmented_sumcheck_live_peak_bytes_upper_bound"]):
+            raise PhaseError(f"native Sumcheck phase RAM bound omits its spill working set for {dataset}")
         nodes = int(admission["nodes"])
         edges = int(admission["edges"])
         graphs = int(admission["graphs"])
@@ -757,7 +782,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
                     receipt_bytes + cell_log_limit)
         # The cell peak includes the source-sized private witness files and
         # sorted T/Q/S scratch while they coexist with retained outputs.
-        additional = retained + family_bytes + sorted_bytes
+        additional = retained + family_bytes + sorted_bytes + spill_disk_peak
 
         graph_memory = (nodes * features * 8 + edges * 8 + nodes * 48 +
                         (graphs + 1) * 16 + (nodes + 1) * 8)
@@ -773,20 +798,23 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         sorting_workspace = _checked_capacity_sum(
             _checked_capacity_product(max_merge_rows, 256, "sorted lookup workspace"),
             8 * mib, label="sorted lookup workspace")
-        # CPU G1 MSM uses BLST Pippenger in fixed 16,384-point chunks.  The
-        # affine-point array, scalar-pointer array, and BLST scratch are
-        # source-bounded by cpu_g1_msm_workspace_bound_bytes(); the native
-        # helper fails closed if that linked-library bound exceeds this
-        # 16-MiB profile allowance.  Count it in each phase that executes G1
-        # arithmetic, including independent verification.
-        cpu_g1_msm_workspace = 16 * mib
+        # CPU G1 MSM uses BLST Pippenger in fixed 16,384-point chunks.  Include
+        # the maximum 20-worker caller/pool scratch, the prepared affine basis,
+        # per-segment receipts, per-family receipt metadata, and sorted-lookup
+        # receipt references.  512 MiB covers 20 x the 16-MiB workspace bound
+        # plus the known basis/receipt payloads and allocator headroom.  Count
+        # it in each phase that executes G1 arithmetic, including independent
+        # verification.
+        cpu_g1_msm_workspace = 512 * mib
         # A retained typed Proof and serialization buffer coexist.  For
         # non-descriptor proof payloads, the source-wire payload is multiplied
         # by the native/wire point ratio (Jacobian G1 is at most 3x its
         # 48-byte canonical encoding) plus the serialized byte vector.  Native
-        # descriptor backing capacity, context/proof headers, allocator reserve,
-        # and the per-operation absorb temporary are accounted separately;
-        # retain exactly one serialized descriptor copy here.
+        # descriptor resident capacity includes one interned canonical
+        # expected tree, a conservative unshared decoded tree for the received
+        # proof, both header arrays, and two maximum-wire comparison buffers.
+        # Keep the separately retained serialized descriptor bytes in the
+        # proof object/wire bound below.
         proof_object_and_wire = public_payload["other_proof_object_and_wire_bytes"]
         srs_memory = _checked_capacity_product(srs_bytes, 4, "materialized SRS memory")
         model_and_graph = _checked_capacity_sum(
@@ -863,6 +891,12 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         host_peak = max(common_phase_peak_bytes.values())
         datasets[dataset] = {
             "additional_disk_peak_bytes": additional,
+            "sumcheck_spill_call_count": spill_call_count,
+            "sumcheck_fallback_call_count": spill_fallback_count,
+            "sumcheck_spill_disk_peak_bytes_upper_bound": spill_disk_peak,
+            "sumcheck_spill_ram_peak_bytes_upper_bound": spill_ram_peak,
+            "sumcheck_spill_provider_source_bytes_upper_bound": spill_source_bytes,
+            "sumcheck_spill_storage_io_bytes_upper_bound": spill_io_bytes,
             "cell_retained_artifact_bytes_upper_bound": retained,
             "host_peak_bytes": host_peak,
             "device_peak_bytes": 0,

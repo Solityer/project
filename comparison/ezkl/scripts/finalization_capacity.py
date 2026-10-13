@@ -739,6 +739,7 @@ def _small_metadata_paths(output_root: Path) -> dict[str, Path]:
             "artifact_manifest.json",
             "core_run_manifest.json",
             "native_proof_metrics.json",
+            "native_pk_read_timing.json",
             "native_verify_metrics.json",
             "gpu_prover_record.json",
         ):
