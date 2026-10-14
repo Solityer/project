@@ -3,9 +3,83 @@ use std::fmt::Debug;
 use super::commitment::{Blind, MSM};
 use crate::{
     arithmetic::eval_polynomial,
-    poly::{Coeff, Polynomial},
+    plonk::FixedColumnSource,
+    poly::{Coeff, EvaluationDomain, Polynomial},
 };
 use halo2curves::CurveAffine;
+use std::io;
+
+/// A polynomial source used by the native prover. Most queries borrow an
+/// already materialized coefficient polynomial. Native permutation queries
+/// instead retain the authenticated sparse copy mapping and materialize one
+/// sigma polynomial only when the opening scheme consumes it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ProverPolynomial<'com, C: CurveAffine> {
+    Dense(&'com Polynomial<C::Scalar, Coeff>),
+    FixedColumn {
+        source: &'com FixedColumnSource<C::Scalar>,
+        domain: &'com EvaluationDomain<C::Scalar>,
+    },
+    PermutationSigma {
+        key: &'com crate::plonk::permutation::ProvingKey<C>,
+        domain: &'com EvaluationDomain<C::Scalar>,
+        omega_powers: &'com [C::Scalar],
+        column: usize,
+    },
+    MvLookup {
+        source: &'com crate::plonk::mv_lookup::prover::LookupPolynomialSource<C>,
+        kind: crate::plonk::mv_lookup::prover::LookupPolynomialKind,
+    },
+}
+
+impl<'com, C: CurveAffine> ProverPolynomial<'com, C> {
+    pub(crate) fn materialize(&self) -> io::Result<Polynomial<C::Scalar, Coeff>>
+    where
+        C::Scalar: group::ff::WithSmallOrderMulGroup<3>,
+    {
+        match self {
+            Self::Dense(poly) => poly.try_clone(),
+            Self::FixedColumn { source, domain } => {
+                let lagrange = source.materialize_lagrange()?;
+                domain.lagrange_to_coeff(lagrange).spill()
+            }
+            Self::PermutationSigma {
+                key,
+                domain,
+                omega_powers,
+                column,
+            } => key.sigma_coeff(domain, *column, omega_powers),
+            Self::MvLookup { source, kind } => source.materialize_coeff(*kind),
+        }
+    }
+
+    fn same_source(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Dense(left), Self::Dense(right)) => std::ptr::eq(*left, *right),
+            (
+                Self::FixedColumn { source: left, .. },
+                Self::FixedColumn { source: right, .. },
+            ) => std::ptr::eq(*left, *right),
+            (
+                Self::PermutationSigma {
+                    key: left_key,
+                    column: left_column,
+                    ..
+                },
+                Self::PermutationSigma {
+                    key: right_key,
+                    column: right_column,
+                    ..
+                },
+            ) => std::ptr::eq(*left_key, *right_key) && left_column == right_column,
+            (
+                Self::MvLookup { source: left_source, kind: left_kind },
+                Self::MvLookup { source: right_source, kind: right_kind },
+            ) => std::ptr::eq(*left_source, *right_source) && left_kind == right_kind,
+            _ => false,
+        }
+    }
+}
 
 pub trait Query<F>: Sized + Clone + Send + Sync {
     type Commitment: PartialEq + Copy + Send + Sync;
@@ -22,7 +96,10 @@ pub struct ProverQuery<'com, C: CurveAffine> {
     /// Point at which polynomial is queried
     pub(crate) point: C::Scalar,
     /// Coefficients of polynomial
-    pub(crate) poly: &'com Polynomial<C::Scalar, Coeff>,
+    pub(crate) poly: ProverPolynomial<'com, C>,
+    /// Deferred sources carry the evaluation already absorbed into the
+    /// transcript. Dense sources compute it from their borrowed coefficients.
+    pub(crate) eval: Option<C::Scalar>,
     /// Blinding factor of polynomial
     pub(crate) blind: Blind<C::Scalar>,
 }
@@ -37,20 +114,84 @@ where
         poly: &'com Polynomial<C::Scalar, Coeff>,
         blind: Blind<C::Scalar>,
     ) -> Self {
-        ProverQuery { point, poly, blind }
+        ProverQuery {
+            point,
+            poly: ProverPolynomial::Dense(poly),
+            eval: None,
+            blind,
+        }
+    }
+
+    pub(crate) fn new_permutation_sigma(
+        point: C::Scalar,
+        key: &'com crate::plonk::permutation::ProvingKey<C>,
+        domain: &'com EvaluationDomain<C::Scalar>,
+        omega_powers: &'com [C::Scalar],
+        column: usize,
+        eval: C::Scalar,
+    ) -> Self {
+        ProverQuery {
+            point,
+            poly: ProverPolynomial::PermutationSigma {
+                key,
+                domain,
+                omega_powers,
+                column,
+            },
+            eval: Some(eval),
+            blind: Blind::default(),
+        }
+    }
+
+    pub(crate) fn new_mv_lookup(
+        point: C::Scalar,
+        source: &'com crate::plonk::mv_lookup::prover::LookupPolynomialSource<C>,
+        kind: crate::plonk::mv_lookup::prover::LookupPolynomialKind,
+        eval: C::Scalar,
+        blind: Blind<C::Scalar>,
+    ) -> Self {
+        ProverQuery {
+            point,
+            poly: ProverPolynomial::MvLookup { source, kind },
+            eval: Some(eval),
+            blind,
+        }
+    }
+
+    pub(crate) fn new_fixed_column(
+        point: C::Scalar,
+        source: &'com FixedColumnSource<C::Scalar>,
+        domain: &'com EvaluationDomain<C::Scalar>,
+        eval: C::Scalar,
+    ) -> Self {
+        ProverQuery {
+            point,
+            poly: ProverPolynomial::FixedColumn { source, domain },
+            eval: Some(eval),
+            blind: Blind::default(),
+        }
     }
 }
 
 #[doc(hidden)]
 #[derive(Copy, Clone)]
 pub struct PolynomialPointer<'com, C: CurveAffine> {
-    pub(crate) poly: &'com Polynomial<C::Scalar, Coeff>,
+    pub(crate) poly: ProverPolynomial<'com, C>,
     pub(crate) blind: Blind<C::Scalar>,
 }
 
 impl<'com, C: CurveAffine> PartialEq for PolynomialPointer<'com, C> {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::eq(self.poly, other.poly)
+        self.poly.same_source(&other.poly)
+    }
+}
+
+impl<'com, C: CurveAffine> PolynomialPointer<'com, C> {
+    pub(crate) fn materialize(&self) -> io::Result<Polynomial<C::Scalar, Coeff>>
+    where
+        C::Scalar: group::ff::WithSmallOrderMulGroup<3>,
+    {
+        self.poly.materialize()
     }
 }
 
@@ -62,7 +203,18 @@ impl<'com, C: CurveAffine> Query<C::Scalar> for ProverQuery<'com, C> {
         self.point
     }
     fn get_eval(&self) -> Self::Eval {
-        eval_polynomial(&self.poly[..], self.get_point())
+        self.eval.unwrap_or_else(|| match self.poly {
+            ProverPolynomial::Dense(poly) => eval_polynomial(&poly[..], self.get_point()),
+            ProverPolynomial::PermutationSigma { .. } => {
+                panic!("deferred permutation query is missing its transcript evaluation")
+            }
+            ProverPolynomial::MvLookup { .. } => {
+                panic!("deferred mv-lookup query is missing its transcript evaluation")
+            }
+            ProverPolynomial::FixedColumn { .. } => {
+                panic!("deferred fixed-column query is missing its transcript evaluation")
+            }
+        })
     }
     fn get_commitment(&self) -> Self::Commitment {
         PolynomialPointer {

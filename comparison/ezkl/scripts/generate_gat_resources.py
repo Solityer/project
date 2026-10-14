@@ -957,6 +957,7 @@ def build_ledger(
     table_output = max(lrelu_output, elu_output, max_relu_input)
     s_out_pre = scale_value(scales, "s_out_pre")
     families: list[dict[str, Any]] = []
+    output_head_post_bounds: list[int] = []
     classes = int(checkpoint["C"])
     exp_zero_output = int(bound_plan["exp_zero_output"])
     for planned in bound_plan["families"]:
@@ -974,6 +975,13 @@ def build_ledger(
         if minimum_divisor <= 0:
             raise ValueError("the reachable exponential denominator must be positive")
         quotient = round_ratio_away(numerator * recovery_scale, minimum_divisor)
+        if planned["is_output"]:
+            # The native relation adds each public output bias after this
+            # head's recovery division, then sums heads before the final
+            # arithmetic-mean division. Keep each family dividend above as
+            # the true pre-bias division bound; collect the post-bias result
+            # separately for the final global dividend bound.
+            output_head_post_bounds.append(quotient + int(planned["bias"]))
         aux = max(
             max_relu_input,
             2 * dividend + divisor,
@@ -999,6 +1007,29 @@ def build_ledger(
                 "max_divisor": divisor,
             }
         )
+    output_heads = int(checkpoint["K_out"])
+    if output_heads <= 0 or len(output_head_post_bounds) != output_heads:
+        raise ValueError("output head bounds do not match the authenticated checkpoint head count")
+
+    # The final output relation computes sum(head_output_h) / output_heads.
+    # Each head_output_h is bounded by its own recovered quotient plus its
+    # authenticated bias absolute bound, so use the triangle bound across all
+    # heads rather than the largest per-head bound.
+    final_dividend_abs = sum(output_head_post_bounds)
+    final_quotient_abs = round_ratio_away(final_dividend_abs, output_heads)
+    final_aux_abs = max(
+        2 * final_dividend_abs + output_heads,
+        2 * output_heads * (final_quotient_abs + 1),
+    )
+    field_half = (int(BN254_MODULUS) - 1) // 2
+    for label, value in (
+        ("final output dividend", final_dividend_abs),
+        ("final output quotient", final_quotient_abs),
+        ("final output auxiliary", final_aux_abs),
+        ("final output divisor", output_heads),
+    ):
+        if value < 0 or value > I128_MAX or value >= field_half:
+            raise ValueError(f"{label} does not satisfy the signed-i128 BN254 no-wrap bound")
     fields = (
         "max_score_abs",
         "max_table_output_abs",
@@ -1011,6 +1042,12 @@ def build_ledger(
         "max_divisor",
     )
     ledger = {key: max(int(family[key]) for family in families) for key in fields}
+    # The global ledger also covers the final post-bias head sum and its
+    # nearest-ties-away division. Per-family entries remain the exact bounds
+    # for their respective pre-bias aggregation divisions.
+    ledger["max_dividend_abs"] = max(ledger["max_dividend_abs"], final_dividend_abs)
+    ledger["max_aux_abs"] = max(ledger["max_aux_abs"], final_aux_abs)
+    ledger["max_divisor"] = max(ledger["max_divisor"], output_heads)
     ledger["max_table_output_abs"] = max(ledger["max_table_output_abs"], table_output)
     ledger["field_modulus"] = BN254_MODULUS
     ledger["ledger_id"] = f"ledger:gat:{dataset}:v1"

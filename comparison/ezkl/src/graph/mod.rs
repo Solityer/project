@@ -501,6 +501,9 @@ pub struct GraphSettings {
     pub input_types: Option<Vec<InputType>>,
     /// Model outputs types (if any)
     pub output_types: Option<Vec<InputType>>,
+    /// Version of the adapter-owned compact GAT bounded-range gadget, when
+    /// the settings were generated for the canonical formal GAT path.
+    pub gat_range_gadget_version: Option<u32>,
 }
 
 impl Serialize for GraphSettings {
@@ -511,7 +514,7 @@ impl Serialize for GraphSettings {
         if serializer.is_human_readable() {
             // JSON format - use flattened fields for backwards compatibility
             use serde::ser::SerializeStruct;
-            let mut state = serializer.serialize_struct("GraphSettings", 22)?;
+            let mut state = serializer.serialize_struct("GraphSettings", 23)?;
             state.serialize_field("run_args", &self.run_args)?;
             state.serialize_field("num_rows", &self.num_rows)?;
             state.serialize_field("total_assignments", &self.total_assignments)?;
@@ -553,11 +556,12 @@ impl Serialize for GraphSettings {
             state.serialize_field("timestamp", &self.timestamp)?;
             state.serialize_field("input_types", &self.input_types)?;
             state.serialize_field("output_types", &self.output_types)?;
+            state.serialize_field("gat_range_gadget_version", &self.gat_range_gadget_version)?;
             state.end()
         } else {
             // Binary format (bincode) - use nested struct format
             use serde::ser::SerializeTuple;
-            let mut state = serializer.serialize_tuple(19)?;
+            let mut state = serializer.serialize_tuple(20)?;
             state.serialize_element(&self.run_args)?;
             state.serialize_element(&self.num_rows)?;
             state.serialize_element(&self.total_assignments)?;
@@ -577,6 +581,7 @@ impl Serialize for GraphSettings {
             state.serialize_element(&self.timestamp)?;
             state.serialize_element(&self.input_types)?;
             state.serialize_element(&self.output_types)?;
+            state.serialize_element(&self.gat_range_gadget_version)?;
             state.end()
         }
     }
@@ -618,6 +623,7 @@ impl<'de> Deserialize<'de> for GraphSettings {
             Timestamp,
             InputTypes,
             OutputTypes,
+            GatRangeGadgetVersion,
             // Legacy nested struct fields for backwards compatibility
             DynamicLookupParams,
             ShuffleParams,
@@ -658,6 +664,7 @@ impl<'de> Deserialize<'de> for GraphSettings {
                 let mut timestamp = None;
                 let mut input_types = None;
                 let mut output_types = None;
+                let mut gat_range_gadget_version = None;
 
                 while let Some(key) = map.next_key()? {
                     match key {
@@ -793,6 +800,12 @@ impl<'de> Deserialize<'de> for GraphSettings {
                             }
                             output_types = map.next_value()?;
                         }
+                        Field::GatRangeGadgetVersion => {
+                            if gat_range_gadget_version.is_some() {
+                                return Err(de::Error::duplicate_field("gat_range_gadget_version"));
+                            }
+                            gat_range_gadget_version = Some(map.next_value()?);
+                        }
                         // Handle legacy nested struct fields for backwards compatibility
                         Field::DynamicLookupParams => {
                             let legacy_params: DynamicLookupParams = map.next_value()?;
@@ -872,6 +885,7 @@ impl<'de> Deserialize<'de> for GraphSettings {
                     timestamp,
                     input_types,
                     output_types,
+                    gat_range_gadget_version: gat_range_gadget_version.unwrap_or(None),
                 })
             }
 
@@ -939,6 +953,8 @@ impl<'de> Deserialize<'de> for GraphSettings {
                 let output_types = seq
                     .next_element()?
                     .ok_or_else(|| Error::invalid_length(18, &self))?;
+                let gat_range_gadget_version: Option<u32> =
+                    seq.next_element()?.unwrap_or(None);
 
                 Ok(GraphSettings {
                     run_args,
@@ -960,6 +976,7 @@ impl<'de> Deserialize<'de> for GraphSettings {
                     timestamp,
                     input_types,
                     output_types,
+                    gat_range_gadget_version,
                 })
             }
         }
@@ -990,13 +1007,14 @@ impl<'de> Deserialize<'de> for GraphSettings {
                 "timestamp",
                 "input_types",
                 "output_types",
+                "gat_range_gadget_version",
                 "dynamic_lookup_params",
                 "shuffle_params",
             ];
             deserializer.deserialize_struct("GraphSettings", FIELDS, GraphSettingsVisitor)
         } else {
             // Binary format (bincode) - use tuple deserialization
-            deserializer.deserialize_tuple(19, GraphSettingsVisitor)
+            deserializer.deserialize_tuple(20, GraphSettingsVisitor)
         }
     }
 }
@@ -1059,7 +1077,14 @@ impl GraphSettings {
         let max_range = self
             .required_range_checks
             .iter()
-            .map(|x| x.1 - x.0)
+            .filter_map(|range| {
+                let span = range.1.checked_sub(range.0)?;
+                if self.gat_range_gadget_version.is_some() && span > 1023 {
+                    None
+                } else {
+                    Some(span)
+                }
+            })
             .max()
             .unwrap_or(0);
 
@@ -1222,6 +1247,13 @@ impl GraphSettings {
     ///
     pub fn available_col_size(&self) -> usize {
         let base = 2u32;
+        if self.gat_range_gadget_version
+            == Some(crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION)
+        {
+            return (base.pow(self.run_args.logrows) as usize).saturating_sub(
+                crate::gat_adapter::range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE + 1,
+            );
+        }
         if let Some(num_blinding_factors) = self.num_blinding_factors {
             base.pow(self.run_args.logrows) as usize - num_blinding_factors - 1
         } else {
@@ -2227,6 +2259,12 @@ impl Circuit<Fp> for GraphCircuit {
             None
         };
 
+        if params.gat_range_gadget_version
+            == Some(crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION)
+        {
+            crate::gat_adapter::geometry::set_native_lookup_degree_slack(cs);
+        }
+
         debug!(
             "degree: {}, log2_ceil of degrees: {:?}",
             cs.degree(),
@@ -2644,6 +2682,7 @@ pub mod tests {
             timestamp: Some(123456789),
             input_types: None,
             output_types: None,
+            gat_range_gadget_version: None,
         };
 
         // Test 1: JSON serialization roundtrip with flattened format

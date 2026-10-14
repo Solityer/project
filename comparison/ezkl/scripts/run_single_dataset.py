@@ -783,6 +783,13 @@ def main(
             native_prove_budget_sha256=native_prove_budget_sha256,
             pk_sha256=sha256(pk),
         )
+        if not math.isclose(
+            float(native_pk_read_timing["pk_materialize_ms"]),
+            float(proof_metrics["pk_materialize_time_ms"]),
+            rel_tol=0.0,
+            abs_tol=0.000001,
+        ):
+            abort("native proof metrics do not count the authenticated PK materialization exactly once")
         timing_file = next(
             (record for record in artifact["files"] if record["path"] == "native_pk_read_timing.json"),
             None,
@@ -895,22 +902,26 @@ def main(
         abort("formal proof did not persist its authenticated native PK restore timing")
     record_stage("verify", verify_stage_inputs, verify_stage_outputs, verify_ms)
     pk_read_validate_ms = 0.0
-    pk_sigma_rebuild_ms = 0.0
+    pk_materialize_ms = 0.0
+    pk_sigma_source_prepare_ms = 0.0
     prove_wall_scope = "outer_command_wall"
-    prove_phase_ms = prove_ms
+    prove_command_residual_ms = prove_ms
+    prove_phase_ms = float(proof_metrics["prove_time_ms"])
     if native_pk_read_timing is not None:
         pk_read_validate_ms = float(native_pk_read_timing["artifact_read_validate_ms"])
-        pk_sigma_rebuild_ms = float(native_pk_read_timing["sigma_rebuild_wall_ms"])
-        prove_residual = prove_ms - pk_read_validate_ms - pk_sigma_rebuild_ms
+        pk_materialize_ms = float(native_pk_read_timing["pk_materialize_ms"])
+        pk_sigma_source_prepare_ms = float(native_pk_read_timing["sigma_deferred_source_prepare_wall_ms"])
+        prove_residual = prove_ms - pk_read_validate_ms - pk_sigma_source_prepare_ms
         if prove_residual > 0.0:
-            prove_phase_ms = prove_residual
-            prove_wall_scope = "outer_command_residual_excludes_pk_restore"
+            prove_command_residual_ms = prove_residual
+            prove_wall_scope = "outer_command_residual_excludes_artifact_read_and_sigma_prepare_includes_pk_materialize"
         elif prove_residual >= -0.01:
             # The process wall clock and native stage clocks have independent
-            # resolution/start boundaries. Preserve all raw values and label
-            # the sub-millisecond overlap instead of clamping a negative phase.
-            prove_phase_ms = prove_ms
-            prove_wall_scope = "outer_command_wall_with_pk_restore_overlap_within_0_01ms"
+            # resolution/start boundaries. Preserve the small negative outer
+            # residual while the paper Prove metric remains the native timer
+            # plus the independently measured PK materialization.
+            prove_command_residual_ms = prove_residual
+            prove_wall_scope = "outer_command_subphase_overlap_within_0_01ms_includes_pk_materialize"
         else:
             abort(
                 "native PK restore subphases exceed the measured proving-command wall time by "
@@ -991,7 +1002,8 @@ def main(
             **(
                 {
                     "pk_artifact_read_validate": round(pk_read_validate_ms, 6),
-                    "setup_pk_sigma_materialization": round(pk_sigma_rebuild_ms, 6),
+                    "pk_materialize": round(pk_materialize_ms, 6),
+                    "setup_pk_sigma_deferred_source_prepare": round(pk_sigma_source_prepare_ms, 6),
                 }
                 if native_pk_read_timing is not None
                 else {}
@@ -1004,6 +1016,7 @@ def main(
         result["native_pk_read_timing_sha256"] = sha256(native_pk_read_timing_path)
         result["prove_command_wall_ms"] = round(prove_ms, 6)
         result["prove_wall_scope"] = prove_wall_scope
+        result["prove_command_residual_excluding_pk_artifact_read_and_sigma_prepare_ms"] = round(prove_command_residual_ms, 6)
         if args.backend == "gpu":
             result["selected_cuda_device"] = selected_cuda_device
             result["build_receipt_sha256"] = build_receipt_sha256

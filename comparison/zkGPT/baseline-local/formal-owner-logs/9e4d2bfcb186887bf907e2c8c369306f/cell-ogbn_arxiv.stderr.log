@@ -9,3 +9,6 @@
 [ogbn_arxiv/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=1.81132e+06
 [ogbn_arxiv/prover] gat_adapter_prover_stage: begin
 [ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-build
+[ogbn_arxiv/prover] gat_adapter_prover_stage: witness
+[ogbn_arxiv/prover] gat_adapter_prover_stage: generators
+[ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-prove

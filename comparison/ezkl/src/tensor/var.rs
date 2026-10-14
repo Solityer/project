@@ -46,6 +46,15 @@ pub enum VarTensor {
 }
 
 impl VarTensor {
+    /// Number of allocated advice blocks for a tensor capacity using the
+    /// repository's established one-block duplication buffer.
+    #[doc(hidden)]
+    pub fn advice_blocks_for_capacity(capacity: usize, max_assignments: usize) -> usize {
+        let mut modulo = (capacity / max_assignments) + 1;
+        modulo = ((capacity + modulo) / max_assignments) + 1;
+        modulo
+    }
+
     /// Returns the name of the tensor variant as a static string
     pub fn name(&self) -> &'static str {
         match self {
@@ -138,12 +147,44 @@ impl VarTensor {
         num_inner_cols: usize,
         capacity: usize,
     ) -> Self {
-        let max_rows = Self::max_rows(cs, logrows);
-        let max_assignments = Self::max_rows(cs, logrows) * num_inner_cols;
+        let blinding_factors = cs.blinding_factors();
+        Self::new_advice_with_blinding_factors(
+            cs,
+            logrows,
+            num_inner_cols,
+            capacity,
+            blinding_factors,
+        )
+    }
 
-        let mut modulo = (capacity / max_assignments) + 1;
+    /// Creates blinded advice columns using an authenticated conservative
+    /// blinding-factor reserve. This is used by the versioned GAT layout,
+    /// whose later-configured range gates add advice rotations after the main
+    /// tensors are allocated.
+    pub fn new_advice_with_blinding_factors<F: PrimeField>(
+        cs: &mut ConstraintSystem<F>,
+        logrows: usize,
+        num_inner_cols: usize,
+        capacity: usize,
+        reserved_blinding_factors: usize,
+    ) -> Self {
+        let actual_blinding_factors = cs.blinding_factors();
+        assert!(
+            reserved_blinding_factors >= actual_blinding_factors,
+            "advice allocation reserve {} is below the current Halo2 blinding-factor count {}",
+            reserved_blinding_factors,
+            actual_blinding_factors
+        );
+        let domain = 1usize
+            .checked_shl(logrows as u32)
+            .expect("advice allocation domain overflows usize");
+        let max_rows = domain
+            .checked_sub(reserved_blinding_factors + 1)
+            .expect("advice allocation reserve exceeds the domain");
+        let max_assignments = max_rows * num_inner_cols;
+
         // we add a buffer for duplicated rows (we get at most 1 duplicated row per column)
-        modulo = ((capacity + modulo) / max_assignments) + 1;
+        let modulo = Self::advice_blocks_for_capacity(capacity, max_assignments);
         let mut advices = vec![];
 
         if modulo > 1 {
@@ -184,12 +225,41 @@ impl VarTensor {
         num_inner_cols: usize,
         capacity: usize,
     ) -> Self {
-        let max_rows = Self::max_rows(cs, logrows);
-        let max_assignments = Self::max_rows(cs, logrows) * num_inner_cols;
+        let blinding_factors = cs.blinding_factors();
+        Self::new_advice_in_second_phase_with_blinding_factors(
+            cs,
+            logrows,
+            num_inner_cols,
+            capacity,
+            blinding_factors,
+        )
+    }
 
-        let mut modulo = (capacity / max_assignments) + 1;
+    /// Second-phase counterpart to `new_advice_with_blinding_factors`.
+    pub fn new_advice_in_second_phase_with_blinding_factors<F: PrimeField>(
+        cs: &mut ConstraintSystem<F>,
+        logrows: usize,
+        num_inner_cols: usize,
+        capacity: usize,
+        reserved_blinding_factors: usize,
+    ) -> Self {
+        let actual_blinding_factors = cs.blinding_factors();
+        assert!(
+            reserved_blinding_factors >= actual_blinding_factors,
+            "second-phase advice allocation reserve {} is below the current Halo2 blinding-factor count {}",
+            reserved_blinding_factors,
+            actual_blinding_factors
+        );
+        let domain = 1usize
+            .checked_shl(logrows as u32)
+            .expect("second-phase advice allocation domain overflows usize");
+        let max_rows = domain
+            .checked_sub(reserved_blinding_factors + 1)
+            .expect("second-phase advice allocation reserve exceeds the domain");
+        let max_assignments = max_rows * num_inner_cols;
+
         // we add a buffer for duplicated rows (we get at most 1 duplicated row per column)
-        modulo = ((capacity + modulo) / max_assignments) + 1;
+        let modulo = Self::advice_blocks_for_capacity(capacity, max_assignments);
         let mut advices = vec![];
 
         if modulo > 1 {

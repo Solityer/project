@@ -1,6 +1,6 @@
 use super::super::{
     circuit::Expression, ChallengeBeta, ChallengeGamma, ChallengeTheta, ChallengeX, Error,
-    ProvingKey,
+    FixedColumnSource, ProvingKey,
 };
 use super::Argument;
 use crate::helpers::SerdeCurveAffine;
@@ -130,7 +130,7 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         domain: &EvaluationDomain<C::Scalar>,
         theta: ChallengeTheta<C>,
         advice_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
-        fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed_values: &'a [FixedColumnSource<C::Scalar>],
         instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         challenges: &'a [C::Scalar],
         mut rng: R,
@@ -403,35 +403,35 @@ impl<C: CurveAffine> Evaluated<C> {
 
         iter::empty()
             // Open lookup product commitments at x
-            .chain(Some(ProverQuery {
-                point: *x,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                *x,
+                &self.constructed.product_poly,
+                self.constructed.product_blind,
+            )))
             // Open lookup input commitments at x
-            .chain(Some(ProverQuery {
-                point: *x,
-                poly: &self.constructed.permuted_input_poly,
-                blind: self.constructed.permuted_input_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                *x,
+                &self.constructed.permuted_input_poly,
+                self.constructed.permuted_input_blind,
+            )))
             // Open lookup table commitments at x
-            .chain(Some(ProverQuery {
-                point: *x,
-                poly: &self.constructed.permuted_table_poly,
-                blind: self.constructed.permuted_table_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                *x,
+                &self.constructed.permuted_table_poly,
+                self.constructed.permuted_table_blind,
+            )))
             // Open lookup input commitments at x_inv
-            .chain(Some(ProverQuery {
-                point: x_inv,
-                poly: &self.constructed.permuted_input_poly,
-                blind: self.constructed.permuted_input_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                x_inv,
+                &self.constructed.permuted_input_poly,
+                self.constructed.permuted_input_blind,
+            )))
             // Open lookup product commitments at x_next
-            .chain(Some(ProverQuery {
-                point: x_next,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                x_next,
+                &self.constructed.product_poly,
+                self.constructed.product_blind,
+            )))
     }
 }
 

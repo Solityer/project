@@ -39,6 +39,7 @@ use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Cursor, Write};
 use std::ops::Deref;
 use std::path::PathBuf;
+use std::sync::Arc;
 use thiserror::Error as thisError;
 
 #[cfg(feature = "python-bindings")]
@@ -821,11 +822,13 @@ where
     debug!("loading proving key with native backing budget from {:?}", path);
     let start = instant::Instant::now();
     let f = File::open(path.clone()).map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    let backing = Arc::new(f.try_clone().map_err(|e| PfsysError::LoadPk(format!("{}", e)))?);
     let mut reader = BufReader::with_capacity(*EZKL_BUF_CAPACITY, f);
-    let pk = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget::<_, C>(
+    let (pk, _) = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget_and_timing_from_file::<_, C>(
         &mut reader,
         serde_format_from_str(&EZKL_KEY_FORMAT),
         max_total_backing_bytes,
+        backing,
         params,
     )
     .map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
@@ -835,9 +838,9 @@ where
 }
 
 /// Loads a formal compact native proving key under its authenticated backing
-/// budget and returns the non-overlapping artifact-validation and sigma
-/// materialization wall-time breakdown. The legacy and untimed loaders remain
-/// available to nonformal callers.
+/// budget and returns the non-overlapping artifact-validation, PK
+/// materialization, and deferred-sigma-source preparation wall-time breakdown.
+/// The legacy and untimed loaders remain available to nonformal callers.
 pub fn load_pk_with_native_backing_budget_and_timing<
     Scheme: CommitmentScheme,
     C: Circuit<Scheme::Scalar>,
@@ -852,11 +855,13 @@ where
 {
     debug!("loading proving key with native backing budget and timing from {:?}", path);
     let f = File::open(path.clone()).map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
+    let backing = Arc::new(f.try_clone().map_err(|e| PfsysError::LoadPk(format!("{}", e)))?);
     let mut reader = BufReader::with_capacity(*EZKL_BUF_CAPACITY, f);
-    let loaded = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget_and_timing::<_, C>(
+    let loaded = ProvingKey::<Scheme::Curve>::read_with_native_backing_budget_and_timing_from_file::<_, C>(
         &mut reader,
         serde_format_from_str(&EZKL_KEY_FORMAT),
         max_total_backing_bytes,
+        backing,
         params,
     )
     .map_err(|e| PfsysError::LoadPk(format!("{}", e)))?;
@@ -1422,7 +1427,8 @@ print(json.dumps(rebuilt,separators=(',',':')))
             64 * 1024 * 1024,
         ).unwrap();
         assert!(timing.artifact_read_validate.as_secs_f64() > 0.0);
-        assert!(timing.sigma_rebuild.as_secs_f64() > 0.0);
+        assert_eq!(timing.sigma_rebuild, std::time::Duration::ZERO);
+        assert!(timing.sigma_deferred_source_prepare.as_secs_f64() >= 0.0);
         assert_eq!(compact_bytes, restored_pk.to_bytes(SerdeFormat::RawBytes));
         let instance_columns: &[&[Fr]] = &[&public_inputs];
         let instances: &[&[&[Fr]]] = &[instance_columns];
@@ -1466,7 +1472,7 @@ for relative in ('scripts/run_hybrid_formal.py','scripts/run_single_dataset.py',
 digest='ab'*32
 pk='cd'*32
 session='00112233445566778899aabbccddeeff'
-timing={'schema':'ezkl.native-pk-read-timing.v1','operation':'authenticated_compact_native_pk_restore','session_id':session,'dataset':'tiny_gat_test','native_prove_budget_sha256':digest,'admission_sha256':digest,'resource_manifest_sha256':digest,'setup_receipt_sha256':digest,'native_keygen_budget_sha256':digest,'native_keygen_receipt_sha256':digest,'build_receipt_sha256':digest,'build_environment_sha256':digest,'binary_sha256':digest,'settings_sha256':digest,'compiled_circuit_sha256':digest,'vk_sha256':digest,'pk_sha256':pk,'measurement_scope':'artifact_read_decode_digest_and_mapping_validation_excluding_sigma_rebuild; sigma_wall_elapsed_may_include_mapped_or_spill_io','artifact_read_validate_ms':1.25,'sigma_rebuild_wall_ms':2.5}
+timing={'schema':'ezkl.native-pk-read-timing.v2','operation':'authenticated_compact_native_pk_restore','session_id':session,'dataset':'tiny_gat_test','native_prove_budget_sha256':digest,'admission_sha256':digest,'resource_manifest_sha256':digest,'setup_receipt_sha256':digest,'native_keygen_budget_sha256':digest,'native_keygen_receipt_sha256':digest,'build_receipt_sha256':digest,'build_environment_sha256':digest,'binary_sha256':digest,'settings_sha256':digest,'compiled_circuit_sha256':digest,'vk_sha256':digest,'pk_sha256':pk,'measurement_scope':'artifact_read_decode_digest_and_mapping_validation; deferred_sigma_source_descriptor_preparation; lazy_sigma_materialization_is_included_in_native_prove_wall','artifact_read_validate_ms':1.25,'sigma_deferred_source_prepare_wall_ms':0.0}
 path=Path(sys.argv[2])/'native_pk_read_timing.json'
 path.write_text(json.dumps(timing))
 validate_native_pk_read_timing(path,session_id=session,dataset='tiny_gat_test',native_prove_budget_sha256=digest,pk_sha256=pk)

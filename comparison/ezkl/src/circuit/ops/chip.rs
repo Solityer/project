@@ -19,6 +19,7 @@ use crate::{
         table::{Range, RangeCheck, Table},
     },
     tensor::{Tensor, TensorType, ValTensor, VarTensor},
+    gat_adapter::range_gadget::GatRangeChecks,
 };
 use std::{collections::BTreeMap, marker::PhantomData};
 
@@ -270,6 +271,8 @@ pub struct BaseConfig<F: PrimeField + TensorType + PartialOrd> {
     pub dynamic_lookups: DynamicLookups,
     /// [Selector]s for the range checks
     pub range_checks: RangeChecks<F>,
+    /// Adapter-owned compact bounded-range selectors for canonical GAT.
+    pub gat_range_checks: GatRangeChecks,
     /// [Selector]s for the shuffles
     pub shuffles: Shuffles,
     /// Einsum-specific configuration
@@ -291,6 +294,7 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> BaseConfig<F> {
             einsums: Some(einsum::Einsums::<F>::dummy(col_size, num_inner_cols)),
             shuffles: Shuffles::dummy(col_size, num_inner_cols),
             range_checks: RangeChecks::dummy(col_size, num_inner_cols),
+            gat_range_checks: GatRangeChecks::default(),
             check_mode: CheckMode::SAFE,
             shared_table_inputs: vec![],
             _marker: PhantomData,
@@ -306,6 +310,7 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> BaseConfig<F> {
             einsums: None,
             shuffles: Shuffles::dummy(col_size, num_inner_cols),
             range_checks: RangeChecks::dummy(col_size, num_inner_cols),
+            gat_range_checks: GatRangeChecks::default(),
             check_mode: CheckMode::SAFE,
             shared_table_inputs: vec![],
             _marker: PhantomData,
@@ -441,6 +446,7 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> BaseConfig<F> {
             einsums: None,
             shuffles: Shuffles::default(),
             range_checks: RangeChecks::default(),
+            gat_range_checks: GatRangeChecks::default(),
             shared_table_inputs: vec![],
             check_mode,
             _marker: PhantomData,
@@ -725,11 +731,35 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> BaseConfig<F> {
     where
         F: Field,
     {
-        self.einsums = Some(einsum::Einsums::configure_universal(
+        self.configure_einsums_with_blinding_factors(
             cs,
             analysis,
             num_inner_cols,
             logrows,
+            None,
+        )
+    }
+
+    /// Configures einsum gates using an explicit blinding-factor reserve when sizing usable rows.
+    ///
+    /// When `reserved_blinding_factors` is `None`, row sizing follows the legacy configuration.
+    pub fn configure_einsums_with_blinding_factors(
+        &mut self,
+        cs: &mut ConstraintSystem<F>,
+        analysis: &EinsumAnalysis,
+        num_inner_cols: usize,
+        logrows: usize,
+        reserved_blinding_factors: Option<usize>,
+    ) -> Result<(), CircuitError>
+    where
+        F: Field,
+    {
+        self.einsums = Some(einsum::Einsums::configure_universal_with_blinding_factors(
+            cs,
+            analysis,
+            num_inner_cols,
+            logrows,
+            reserved_blinding_factors,
         ));
         Ok(())
     }

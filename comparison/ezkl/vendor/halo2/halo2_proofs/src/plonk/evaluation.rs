@@ -1,4 +1,4 @@
-use crate::plonk::{permutation, Any, ProvingKey};
+use crate::plonk::{permutation, Any, FixedColumnSource, ProvingKey};
 
 #[cfg(feature = "mv-lookup")]
 use crate::plonk::mv_lookup as lookup;
@@ -493,6 +493,33 @@ fn load_cosets<F: WithSmallOrderMulGroup<3>>(
     Ok(cosets)
 }
 
+/// Expand only the fixed columns used by the active constraint group. Compact
+/// fixed sources become one Lagrange column, then one coefficient column, and
+/// immediately become the required coset before either intermediate is dropped.
+fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
+    domain: &EvaluationDomain<F>,
+    sources: &[FixedColumnSource<F>],
+    columns: &BTreeSet<usize>,
+) -> io::Result<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> {
+    let mut cosets = (0..sources.len())
+        .map(|_| Polynomial::from_vec(Vec::new()))
+        .collect::<Vec<_>>();
+    for &column in columns {
+        let source = sources.get(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "constraint references an absent fixed source",
+            )
+        })?;
+        let lagrange = source.materialize_lagrange()?;
+        let coeff = domain.lagrange_to_coeff(lagrange).spill()?;
+        let coset = domain.coeff_to_extended_spilled(&coeff)?;
+        drop(coeff);
+        cosets[column] = coset;
+    }
+    Ok(cosets)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn evaluate_graph_group<C: CurveAffine>(
     graph: &GraphEvaluator<C>,
@@ -510,7 +537,7 @@ fn evaluate_graph_group<C: CurveAffine>(
 ) -> io::Result<()> {
     let dependencies = graph.column_dependencies();
     let domain = &pk.vk.domain;
-    let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)?;
+    let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)?;
     let advice = load_cosets(domain, advice_polys, &dependencies.advice)?;
     let instance = load_cosets(domain, instance_polys, &dependencies.instance)?;
     parallelize(&mut values[..], |h, start| {
@@ -785,6 +812,8 @@ impl<C: CurveAffine> Evaluator<C> {
             // Permutation boundary and copy constraints.
             let sets = &permutation.sets;
             if !sets.is_empty() {
+                let sigma_omega_powers = permutation::omega_powers(domain)
+                    .map_err(super::Error::NativeStorage)?;
                 let chunk_len = pk.vk.cs.degree() - 2;
                 let column_groups = p.columns.chunks(chunk_len).collect::<Vec<_>>();
                 if sets.len() != column_groups.len() {
@@ -867,24 +896,36 @@ impl<C: CurveAffine> Evaluator<C> {
                     drop(z);
 
                     for column in columns {
-                        let source = match column.column_type() {
-                            Any::Advice(_) => &advice[column.index()],
-                            Any::Fixed => &pk.fixed_polys[column.index()],
-                            Any::Instance => &instance[column.index()],
+                        let source_coset = match column.column_type() {
+                            Any::Advice(_) => domain
+                                .coeff_to_extended_spilled(&advice[column.index()])
+                                .map_err(super::Error::NativeStorage)?,
+                            Any::Fixed => {
+                                let lagrange = pk.fixed_values[column.index()]
+                                    .materialize_lagrange()
+                                    .map_err(super::Error::NativeStorage)?;
+                                let coeff = domain
+                                    .lagrange_to_coeff(lagrange)
+                                    .spill()
+                                    .map_err(super::Error::NativeStorage)?;
+                                let coset = domain
+                                    .coeff_to_extended_spilled(&coeff)
+                                    .map_err(super::Error::NativeStorage)?;
+                                drop(coeff);
+                                coset
+                            }
+                            Any::Instance => domain
+                                .coeff_to_extended_spilled(&instance[column.index()])
+                                .map_err(super::Error::NativeStorage)?,
                         };
-                        let source_coset = domain
-                            .coeff_to_extended_spilled(source)
+                        let sigma_poly = pk
+                            .permutation
+                            .sigma_coeff(domain, column_index, &sigma_omega_powers[..])
                             .map_err(super::Error::NativeStorage)?;
-                        let sigma_poly =
-                            pk.permutation.polys().get(column_index).ok_or_else(|| {
-                                super::Error::NativeStorage(io::Error::new(
-                                    io::ErrorKind::InvalidData,
-                                    "permutation sigma polynomial is missing",
-                                ))
-                            })?;
                         let sigma_coset = domain
-                            .coeff_to_extended_spilled(sigma_poly)
+                            .coeff_to_extended_spilled(&sigma_poly)
                             .map_err(super::Error::NativeStorage)?;
+                        drop(sigma_poly);
 
                         parallelize(&mut left[..], |out, start| {
                             for (offset, value) in out.iter_mut().enumerate() {
@@ -932,18 +973,28 @@ impl<C: CurveAffine> Evaluator<C> {
                 for graph in input_graphs.iter().chain(std::iter::once(table_graph)) {
                     dependencies.extend(&graph.column_dependencies());
                 }
-                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
                     .map_err(super::Error::NativeStorage)?;
                 let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
                     .map_err(super::Error::NativeStorage)?;
                 let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
                     .map_err(super::Error::NativeStorage)?;
+                let phi_poly = lookup
+                    .source
+                    .materialize_coeff(lookup::prover::LookupPolynomialKind::GrandSum)
+                    .map_err(super::Error::NativeStorage)?;
                 let phi_coset = domain
-                    .coeff_to_extended_spilled(&lookup.phi_poly)
+                    .coeff_to_extended_spilled(&phi_poly)
+                    .map_err(super::Error::NativeStorage)?;
+                drop(phi_poly);
+                let m_poly = lookup
+                    .source
+                    .materialize_coeff(lookup::prover::LookupPolynomialKind::Multiplicity)
                     .map_err(super::Error::NativeStorage)?;
                 let m_coset = domain
-                    .coeff_to_extended_spilled(&lookup.m_poly)
+                    .coeff_to_extended_spilled(&m_poly)
                     .map_err(super::Error::NativeStorage)?;
+                drop(m_poly);
                 const LOOKUP_ROW_CHUNK: usize = 4096;
                 (&mut values[..])
                     .par_chunks_mut(LOOKUP_ROW_CHUNK)
@@ -1041,7 +1092,7 @@ impl<C: CurveAffine> Evaluator<C> {
             for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
                 let graph = &self.lookups[lookup_index];
                 let dependencies = graph.column_dependencies();
-                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
                     .map_err(super::Error::NativeStorage)?;
                 let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
                     .map_err(super::Error::NativeStorage)?;
@@ -1101,7 +1152,7 @@ impl<C: CurveAffine> Evaluator<C> {
                 let shuffle_graph = &self.shuffles[2 * shuffle_index + 1];
                 let mut dependencies = input_graph.column_dependencies();
                 dependencies.extend(&shuffle_graph.column_dependencies());
-                let fixed = load_cosets(domain, &pk.fixed_polys, &dependencies.fixed)
+                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
                     .map_err(super::Error::NativeStorage)?;
                 let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
                     .map_err(super::Error::NativeStorage)?;
@@ -1427,7 +1478,7 @@ pub fn evaluate<F: Field, B: Basis>(
     expression: &Expression<F>,
     size: usize,
     rot_scale: i32,
-    fixed: &[Polynomial<F, B>],
+    fixed: &[FixedColumnSource<F>],
     advice: &[Polynomial<F, B>],
     instance: &[Polynomial<F, B>],
     challenges: &[F],
@@ -1442,7 +1493,7 @@ pub fn evaluate<F: Field, B: Basis>(
                 &|_| panic!("virtual selectors are removed during optimization"),
                 &|query| {
                     fixed[query.column_index]
-                        [get_rotation_idx(idx, query.rotation.0, rot_scale, isize)]
+                        .value(get_rotation_idx(idx, query.rotation.0, rot_scale, isize))
                 },
                 &|query| {
                     advice[query.column_index]

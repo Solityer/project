@@ -862,10 +862,9 @@ mod sparse_assembly_tests {
             "verification-key sigma commitments differ"
         );
 
-        // Exercise the serialized production PK path, including reconstruction
-        // of coefficient-basis sigma polynomials. Compare every loaded native
-        // sigma row and its KZG commitment against the same dense native map
-        // used to construct the VK above.
+        // Exercise the serialized production PK path. Deferred sigma sources
+        // must reconstruct the exact coefficient polynomial and commitment
+        // from the authenticated sparse mapping when consumed.
         let native_pk = sparse
             .build_pk(&params, &domain, &argument)
             .expect("construct sparse permutation proving key");
@@ -876,7 +875,6 @@ mod sparse_assembly_tests {
 
         #[cfg(feature = "formal-permutation-spill")]
         {
-            assert!(native_pk.polys_materialized());
             let mut compact_assembly = Assembly::new(n, &argument).unwrap();
             for (left_col, left_row, right_col, right_row) in operations {
                 compact_assembly
@@ -886,12 +884,11 @@ mod sparse_assembly_tests {
             let compact_pk = compact_assembly
                 .build_pk_compact_artifact(&params, &domain, &argument)
                 .expect("construct compact artifact PK without sigma IFFT");
-            assert!(!compact_pk.polys_materialized());
             let mut compact_encoded = Vec::new();
             compact_pk
                 .write(&mut compact_encoded, SerdeFormat::RawBytes)
                 .expect("serialize compact artifact PK");
-            assert_eq!(compact_encoded, encoded, "compact and eager native PK wire bytes match");
+            assert_eq!(compact_encoded, encoded, "compact and native PK wire bytes match");
         }
 
         let mut reader = Cursor::new(encoded.clone());
@@ -908,21 +905,23 @@ mod sparse_assembly_tests {
             .write(&mut roundtripped, SerdeFormat::RawBytes)
             .expect("reserialize sparse permutation proving key");
         assert_eq!(roundtripped, encoded, "raw successor payload is canonical");
-        assert_eq!(loaded.polys().len(), columns.len());
-        #[cfg(feature = "formal-permutation-spill")]
-        for column in 0..columns.len() {
-            assert_eq!(
-                &native_pk.polys()[column][..],
-                &loaded.polys()[column][..],
-                "validated compact reload restores the eager sigma coefficients for column {column}",
-            );
-        }
 
         let mut omega_powers = vec![Fr::ONE; n];
         for row in 1..n {
             omega_powers[row] = omega_powers[row - 1] * domain.get_omega();
         }
         for column in 0..columns.len() {
+            let native_coeff = native_pk
+                .sigma_coeff(&domain, column, &omega_powers)
+                .expect("materialize native sigma coefficient source");
+            let loaded_coeff = loaded
+                .sigma_coeff(&domain, column, &omega_powers)
+                .expect("materialize reloaded sigma coefficient source");
+            assert_eq!(
+                &native_coeff[..],
+                &loaded_coeff[..],
+                "deferred compact reload reconstructs native sigma coefficients for column {column}",
+            );
             let sigma = loaded
                 .sigma_lagrange(&domain, column, &omega_powers)
                 .expect("rehydrate native sigma in Lagrange basis");
@@ -932,7 +931,7 @@ mod sparse_assembly_tests {
                     * omega_powers[target_row];
                 assert_eq!(sigma[row], expected, "rehydrated sigma ({column}, {row})");
                 assert_eq!(
-                    crate::arithmetic::eval_polynomial(&loaded.polys()[column], omega_powers[row]),
+                    crate::arithmetic::eval_polynomial(&loaded_coeff[..], omega_powers[row]),
                     expected,
                     "rehydrated coefficient sigma ({column}, {row})",
                 );

@@ -21,7 +21,7 @@ _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_SCHEMA = "ezkl_capacity_source_identity_v1"
 _FORMAT_ID = "halo2_native_pk_fixed_values_plus_fixed_polys_v1"
-_FORMULA_ID = "fixed_values_plus_fixed_polys_minimum_columns_v1"
+_FORMULA_ID = "fixed_values_plus_fixed_polys_witnessless_selector_census_v2"
 _FIELD_BYTES = 32
 _FORMAT_SOURCES = (
     "vendor/halo2/halo2_proofs/src/plonk.rs",
@@ -254,18 +254,22 @@ def _fixed_payload_bounds(admission: dict[str, Any]) -> dict[str, Any]:
     if dataset not in DATASETS or not isinstance(cs, dict) or not isinstance(memory, dict):
         abort("resource-capacity Admission lacks its canonical dataset/geometry")
     fixed = _integer(cs.get("num_fixed_columns"), f"{dataset} fixed columns", minimum=1)
-    selectors = _integer(cs.get("num_selectors"), f"{dataset} selectors")
+    selectors = _integer(cs.get("num_selectors"), f"{dataset} virtual selectors")
+    selector_columns = _integer(cs.get("selector_fixed_column_count_upper"), f"{dataset} compressed selector columns")
     degree = _integer(cs.get("degree"), f"{dataset} degree", minimum=1)
     rows = _integer(admission.get("domain_size"), f"{dataset} domain", minimum=1)
     field_bytes = _integer(memory.get("size_of_fr_bytes"), f"{dataset} field width", minimum=1)
     if field_bytes != _FIELD_BYTES:
         abort(f"{dataset} Admission field width differs from the authenticated native format")
-    # Retain this legacy receipt field verbatim and verify its source meaning.
+    if selector_columns > selectors:
+        abort(f"{dataset} witnessless selector census exceeds the configured virtual-selector count")
+    # The production witnessless selector census counts the exact fixed
+    # columns emitted by the shared native compression plan.
     old_column_field = _integer(cs.get("fixed_column_count_post_compression"), f"{dataset} legacy fixed-column field", minimum=1)
-    source_upper_columns = fixed + selectors
+    source_upper_columns = fixed + selector_columns
     if old_column_field != source_upper_columns:
-        abort(f"{dataset} legacy fixed-column field disagrees with the admitted selector upper bound")
-    min_columns = fixed + (selectors + degree - 1) // degree
+        abort(f"{dataset} fixed-column count disagrees with the witnessless selector census")
+    min_columns = source_upper_columns
     floor_bytes = 2 * min_columns * rows * field_bytes
     upper_bytes = 2 * source_upper_columns * rows * field_bytes
     if max(floor_bytes, upper_bytes) > sys.maxsize:
@@ -277,21 +281,22 @@ def _fixed_payload_bounds(admission: dict[str, Any]) -> dict[str, Any]:
         "fixed_payload_lower_bound": {
             "formula_id": _FORMULA_ID,
             "format_id": _FORMAT_ID,
-            "minimum_fixed_column_count": min_columns,
+            "census_fixed_column_count": min_columns,
             "uncompressed_fixed_columns": fixed,
-            "selectors": selectors,
+            "virtual_selectors": selectors,
+            "compressed_selector_columns": selector_columns,
             "degree": degree,
             "domain_rows": rows,
             "serialized_field_bytes": field_bytes,
             "payload_copies": 2,
-            "formula": "2 * (fixed_columns + ceil(selectors / degree)) * domain_rows * field_bytes",
-            "scope": "only native proving-key fixed_values plus fixed_polys payload; not a Halo2 protocol or optimized-format lower bound",
+            "formula": "2 * (fixed_columns + census_compressed_selector_columns) * domain_rows * field_bytes",
+            "scope": "exact native fixed_values plus fixed_polys payload from the witnessless selector census; excludes other key material",
         },
         "source_model_fixed_payload_upper_bound_bytes": upper_bytes,
         "source_model_fixed_payload_upper_bound": {
             "column_count_upper": source_upper_columns,
-            "evidence_kind": "admission selector-count source upper bound under the authenticated native format",
-            "formula": "2 * (fixed_columns + selectors) * domain_rows * field_bytes",
+            "evidence_kind": "witnessless native selector-compression census under the authenticated native format",
+            "formula": "2 * (fixed_columns + census_compressed_selector_columns) * domain_rows * field_bytes",
         },
     }
 

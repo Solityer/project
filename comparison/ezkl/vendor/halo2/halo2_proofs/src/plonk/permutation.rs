@@ -8,6 +8,7 @@ use crate::{
     SerdeFormat,
 };
 use ff::{Field, PrimeField};
+use group::ff::WithSmallOrderMulGroup;
 
 pub(crate) mod keygen;
 pub(crate) mod prover;
@@ -17,6 +18,8 @@ pub use keygen::Assembly;
 
 use std::io;
 use std::marker::PhantomData;
+use std::fs::File;
+use std::sync::Arc;
 #[cfg(feature = "formal-permutation-spill")]
 use crate::poly::NativeSuccessorStore;
 
@@ -138,6 +141,18 @@ impl SuccessorEntries {
 
 const MAPPING_PERSONAL: &[u8; 16] = b"EZKL-PermMap-v1!";
 
+pub(crate) fn omega_powers<F: WithSmallOrderMulGroup<3>>(
+    domain: &EvaluationDomain<F>,
+) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+    let n = usize::try_from(domain.get_n()).map_err(|_| invalid_mapping("native domain size does not fit usize"))?;
+    let mut powers = Polynomial::mapped_filled(n, F::ONE)?;
+    let omega = domain.get_omega();
+    for row in 1..n {
+        powers[row] = powers[row - 1] * omega;
+    }
+    Ok(powers)
+}
+
 /// A permutation argument.
 #[derive(Debug, Clone)]
 pub struct Argument {
@@ -252,11 +267,6 @@ pub(crate) struct ProvingKey<C: CurveAffine> {
     /// Sorted nonidentity source -> successor flat-cell mappings. Unlisted
     /// source cells map to themselves, exactly as native Assembly does.
     successors: SuccessorEntries,
-    /// Reconstructed native sigma coefficient polynomials. These are mapped
-    /// under the active proof-session spill scope and are not serialized.
-    polys: Vec<Polynomial<C::Scalar, Coeff>>,
-    /// False only for compact mapping-only keys awaiting a validated reload.
-    polys_materialized: bool,
     _marker: PhantomData<C>,
 }
 
@@ -293,6 +303,45 @@ where
         expected_columns: &[Column<Any>],
         max_total_backing_bytes: u64,
     ) -> io::Result<(Self, std::time::Duration)> {
+        Self::read_internal(
+            reader,
+            _format,
+            domain,
+            expected_columns,
+            max_total_backing_bytes,
+            None,
+        )
+    }
+
+    /// Reads a compact mapping whose payload is held in the authenticated PK
+    /// file. The section offset points at the first permutation-domain word.
+    pub(super) fn read_with_backing<R: io::Read>(
+        reader: &mut R,
+        format: SerdeFormat,
+        domain: &EvaluationDomain<C::Scalar>,
+        expected_columns: &[Column<Any>],
+        max_total_backing_bytes: u64,
+        backing: Arc<File>,
+        section_offset: u64,
+    ) -> io::Result<(Self, std::time::Duration)> {
+        Self::read_internal(
+            reader,
+            format,
+            domain,
+            expected_columns,
+            max_total_backing_bytes,
+            Some((backing, section_offset)),
+        )
+    }
+
+    fn read_internal<R: io::Read>(
+        reader: &mut R,
+        _format: SerdeFormat,
+        domain: &EvaluationDomain<C::Scalar>,
+        expected_columns: &[Column<Any>],
+        max_total_backing_bytes: u64,
+        file_backing: Option<(Arc<File>, u64)>,
+    ) -> io::Result<(Self, std::time::Duration)> {
         let mut state = mapping_hasher();
         let domain_size = read_hashed_u64(reader, &mut state)?;
         let column_count = read_hashed_u64(reader, &mut state)?;
@@ -316,34 +365,110 @@ where
                 "successor entry count exceeds permutation domain",
             ));
         }
-        let mut successors = SuccessorEntries::new_for_read(edge_count, max_total_backing_bytes)?;
+        let bits_per_index = packed_index_width(max_cells);
+        if edge_count > 0 && bits_per_index == 0 {
+            return Err(invalid_mapping("nonempty successor mapping has a zero-width index"));
+        }
+        let section_header_bytes = 24u64
+            .checked_add(column_count.checked_mul(10).ok_or_else(|| invalid_mapping("permutation section header size overflow"))?)
+            .ok_or_else(|| invalid_mapping("permutation section header size overflow"))?;
+        let packed_payload_offset = match &file_backing {
+            Some((_, section_offset)) => Some(
+                section_offset
+                    .checked_add(section_header_bytes)
+                    .ok_or_else(|| invalid_mapping("packed successor file offset overflow"))?,
+            ),
+            None => None,
+        };
+        let mut fallback_successors = if packed_payload_offset.is_none() {
+            Some(SuccessorEntries::new_for_read(edge_count, max_total_backing_bytes)?)
+        } else {
+            None
+        };
         let mut previous_source = None;
         const READ_CHUNK_PAIRS: usize = 4096;
-        let mut raw = Vec::new();
-        raw.try_reserve_exact(READ_CHUNK_PAIRS * 16).map_err(|error| {
+        let max_chunk_bytes = READ_CHUNK_PAIRS
+            .checked_mul(2)
+            .and_then(|count| count.checked_mul(usize::from(bits_per_index)))
+            .and_then(|bits| bits.checked_add(7))
+            .map(|bits| bits / 8)
+            .ok_or_else(|| invalid_mapping("packed successor chunk size overflow"))?;
+        let mut packed = Vec::new();
+        packed.try_reserve_exact(max_chunk_bytes).map_err(|error| {
             io::Error::new(io::ErrorKind::OutOfMemory, format!("cannot reserve bounded successor input buffer: {error}"))
+        })?;
+        let mut decoded_pairs = Vec::new();
+        decoded_pairs.try_reserve_exact(READ_CHUNK_PAIRS * 16).map_err(|error| {
+            io::Error::new(io::ErrorKind::OutOfMemory, format!("cannot reserve bounded decoded successor buffer: {error}"))
         })?;
         let mut start = 0u64;
         while start < edge_count {
             let pairs = usize::try_from((edge_count - start).min(READ_CHUNK_PAIRS as u64))
                 .map_err(|_| invalid_mapping("successor read chunk length overflow"))?;
-            let byte_len = pairs.checked_mul(16).ok_or_else(|| invalid_mapping("successor read chunk size overflow"))?;
-            raw.resize(byte_len, 0);
-            reader.read_exact(&mut raw)?;
-            state.update(&raw);
-            for pair in raw.chunks_exact(16) {
-                let source = u64::from_le_bytes(pair[..8].try_into().unwrap());
-                let target = u64::from_le_bytes(pair[8..].try_into().unwrap());
+            let chunk_bits = pairs
+                .checked_mul(2)
+                .and_then(|count| count.checked_mul(usize::from(bits_per_index)))
+                .ok_or_else(|| invalid_mapping("packed successor read chunk bit length overflow"))?;
+            let byte_len = chunk_bits
+                .checked_add(7)
+                .ok_or_else(|| invalid_mapping("packed successor read chunk size overflow"))?
+                / 8;
+            packed.resize(byte_len, 0);
+            reader.read_exact(&mut packed)?;
+            state.update(&packed);
+            if start + pairs as u64 == edge_count && chunk_bits % 8 != 0 {
+                let used = (chunk_bits % 8) as u8;
+                let unused_mask = !((1u8 << used) - 1);
+                if packed.last().copied().unwrap_or(0) & unused_mask != 0 {
+                    return Err(invalid_mapping("packed successor payload has nonzero tail bits"));
+                }
+            }
+            decoded_pairs.clear();
+            for pair_index in 0..pairs {
+                let bit_offset = pair_index
+                    .checked_mul(2)
+                    .and_then(|value| value.checked_mul(usize::from(bits_per_index)))
+                    .ok_or_else(|| invalid_mapping("packed successor pair offset overflow"))?;
+                let source = decode_packed_index(&packed, bit_offset, bits_per_index)?;
+                let target = decode_packed_index(
+                    &packed,
+                    bit_offset + usize::from(bits_per_index),
+                    bits_per_index,
+                )?;
                 if source >= max_cells || target >= max_cells || source == target
                     || previous_source.map(|previous| previous >= source).unwrap_or(false)
                 {
                     return Err(invalid_mapping("successor entry is outside the domain or sources are not strictly ordered"));
                 }
                 previous_source = Some(source);
+                decoded_pairs.extend_from_slice(&source.to_le_bytes());
+                decoded_pairs.extend_from_slice(&target.to_le_bytes());
             }
-            successors.append_raw(start, &raw)?;
+            if let Some(successors) = &mut fallback_successors {
+                successors.append_raw(start, &decoded_pairs)?;
+            }
             start = start.checked_add(pairs as u64).ok_or_else(|| invalid_mapping("successor read offset overflow"))?;
         }
+        let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+            (Some((file, _)), Some(offset), None) => {
+                #[cfg(feature = "formal-permutation-spill")]
+                {
+                    SuccessorEntries::Spilled(NativeSuccessorStore::packed_file_view(
+                        file,
+                        offset,
+                        edge_count,
+                        bits_per_index,
+                    )?)
+                }
+                #[cfg(not(feature = "formal-permutation-spill"))]
+                {
+                    let _ = (file, offset);
+                    return Err(invalid_mapping("file-backed packed successor storage requires formal permutation spill"));
+                }
+            }
+            (_, _, Some(successors)) => successors,
+            _ => return Err(invalid_mapping("packed successor storage state is inconsistent")),
+        };
         let mut expected_digest = [0u8; 32];
         reader.read_exact(&mut expected_digest)?;
         let actual_digest = state.finalize();
@@ -351,19 +476,16 @@ where
             return Err(invalid_mapping("successor mapping payload digest mismatch"));
         }
         // Serialized proving-key inputs are untrusted: authenticate target
-        // membership and uniqueness before rebuilding any sigma polynomial.
+        // membership and uniqueness before retaining the lazy source mapping.
         successors.validate(max_cells, max_total_backing_bytes)?;
-        let mut key = Self {
+        let sigma_deferred_source_prepare_started = std::time::Instant::now();
+        let key = Self {
             domain_size,
             columns: expected_columns.to_vec(),
             successors,
-            polys: Vec::new(),
-            polys_materialized: expected_columns.is_empty(),
             _marker: PhantomData,
         };
-        let sigma_rebuild_started = std::time::Instant::now();
-        key.rebuild_polys(domain)?;
-        Ok((key, sigma_rebuild_started.elapsed()))
+        Ok((key, sigma_deferred_source_prepare_started.elapsed()))
     }
 
     /// Writes proving key for a single permutation argument to buffer using `Polynomial::write`.  
@@ -381,27 +503,56 @@ where
             write_hashed(writer, &mut state, &index.to_le_bytes())?;
         }
         write_hashed_u64(writer, &mut state, self.successors.len())?;
+        let max_cells = self
+            .domain_size
+            .checked_mul(self.columns.len() as u64)
+            .ok_or_else(|| invalid_mapping("permutation domain size overflow"))?;
+        let bits_per_index = packed_index_width(max_cells);
+        if self.successors.len() > 0 && bits_per_index == 0 {
+            return Err(invalid_mapping("nonempty successor mapping has a zero-width index"));
+        }
         const WRITE_CHUNK_PAIRS: usize = 4096;
         let mut pairs = Vec::new();
         pairs.try_reserve_exact(WRITE_CHUNK_PAIRS).map_err(|error| {
             io::Error::new(io::ErrorKind::OutOfMemory, format!("cannot reserve bounded successor output buffer: {error}"))
         })?;
         pairs.resize(WRITE_CHUNK_PAIRS, (0u64, 0u64));
-        let mut raw = Vec::new();
-        raw.try_reserve_exact(WRITE_CHUNK_PAIRS * 16).map_err(|error| {
-            io::Error::new(io::ErrorKind::OutOfMemory, format!("cannot reserve bounded successor serialization buffer: {error}"))
+        let max_chunk_bytes = WRITE_CHUNK_PAIRS
+            .checked_mul(2)
+            .and_then(|count| count.checked_mul(usize::from(bits_per_index)))
+            .and_then(|bits| bits.checked_add(7))
+            .map(|bits| bits / 8)
+            .ok_or_else(|| invalid_mapping("packed successor serialization chunk size overflow"))?;
+        let mut packed = Vec::new();
+        packed.try_reserve_exact(max_chunk_bytes).map_err(|error| {
+            io::Error::new(io::ErrorKind::OutOfMemory, format!("cannot reserve bounded packed successor output buffer: {error}"))
         })?;
+        let mut unused_raw = Vec::new();
         let mut start = 0u64;
         while start < self.successors.len() {
             let count = usize::try_from((self.successors.len() - start).min(WRITE_CHUNK_PAIRS as u64))
                 .map_err(|_| invalid_mapping("successor serialization chunk length overflow"))?;
-            self.successors.read_pairs_inplace(start, &mut pairs[..count], &mut raw)?;
-            raw.clear();
+            self.successors.read_pairs_inplace(start, &mut pairs[..count], &mut unused_raw)?;
+            let chunk_bits = count
+                .checked_mul(2)
+                .and_then(|value| value.checked_mul(usize::from(bits_per_index)))
+                .ok_or_else(|| invalid_mapping("packed successor output bit length overflow"))?;
+            packed.clear();
+            packed.resize(
+                chunk_bits
+                    .checked_add(7)
+                    .ok_or_else(|| invalid_mapping("packed successor output size overflow"))?
+                    / 8,
+                0,
+            );
+            let mut bit_offset = 0usize;
             for &(source, target) in &pairs[..count] {
-                raw.extend_from_slice(&source.to_le_bytes());
-                raw.extend_from_slice(&target.to_le_bytes());
+                encode_packed_index(&mut packed, bit_offset, bits_per_index, source)?;
+                bit_offset += usize::from(bits_per_index);
+                encode_packed_index(&mut packed, bit_offset, bits_per_index, target)?;
+                bit_offset += usize::from(bits_per_index);
             }
-            write_hashed(writer, &mut state, &raw)?;
+            write_hashed(writer, &mut state, &packed)?;
             start = start
                 .checked_add(count as u64)
                 .ok_or_else(|| invalid_mapping("successor serialization offset overflow"))?;
@@ -414,7 +565,17 @@ where
 impl<C: CurveAffine> ProvingKey<C> {
     /// Gets the total number of bytes in the serialization of `self`
     pub(super) fn bytes_length(&self) -> usize {
-        8 + 8 + self.columns.len() * 10 + 8 + (self.successors.len() as usize) * 16 + 32
+        let max_cells = self.domain_size.saturating_mul(self.columns.len() as u64);
+        let payload_bits = (self.successors.len() as u128)
+            .saturating_mul(2)
+            .saturating_mul(u128::from(packed_index_width(max_cells)));
+        let payload_bytes = payload_bits.saturating_add(7) / 8;
+        8usize
+            .saturating_add(8)
+            .saturating_add(self.columns.len().saturating_mul(10))
+            .saturating_add(8)
+            .saturating_add(usize::try_from(payload_bytes).unwrap_or(usize::MAX))
+            .saturating_add(32)
     }
 
     pub(super) fn from_successors(
@@ -434,13 +595,10 @@ impl<C: CurveAffine> ProvingKey<C> {
                 "successor mapping is outside the permutation domain",
             ));
         }
-        let polys_materialized = columns.is_empty();
         Ok(Self {
             domain_size,
             columns,
             successors: SuccessorEntries::Memory(successors),
-            polys: Vec::new(),
-            polys_materialized,
             _marker: PhantomData,
         })
     }
@@ -455,16 +613,12 @@ impl<C: CurveAffine> ProvingKey<C> {
         // This constructor is used only for mappings produced in this process
         // by the native Assembly DSU. Serialized PK inputs use `read`, which
         // performs strict membership and uniqueness validation first.
-        let mut key = Self {
+        Ok(Self {
             domain_size,
             columns,
             successors: SuccessorEntries::Spilled(successors),
-            polys: Vec::new(),
-            polys_materialized: false,
             _marker: PhantomData,
-        };
-        key.rebuild_polys(domain)?;
-        Ok(key)
+        })
     }
 
     #[cfg(feature = "formal-permutation-spill")]
@@ -473,19 +627,12 @@ impl<C: CurveAffine> ProvingKey<C> {
         columns: Vec<Column<Any>>,
         successors: NativeSuccessorStore,
     ) -> io::Result<Self> {
-        let polys_materialized = columns.is_empty();
         Ok(Self {
             domain_size: domain.get_n(),
             columns,
             successors: SuccessorEntries::Spilled(successors),
-            polys: Vec::new(),
-            polys_materialized,
             _marker: PhantomData,
         })
-    }
-
-    pub(super) fn polys_materialized(&self) -> bool {
-        self.polys_materialized && self.polys.len() == self.columns.len()
     }
 
     #[cfg(test)]
@@ -501,11 +648,7 @@ impl<C: CurveAffine> ProvingKey<C> {
         self.domain_size
     }
 
-    pub(super) fn polys(&self) -> &[Polynomial<C::Scalar, Coeff>] {
-        &self.polys
-    }
-
-    pub(super) fn sigma_lagrange(
+    pub(crate) fn sigma_lagrange(
         &self,
         domain: &EvaluationDomain<C::Scalar>,
         column: usize,
@@ -594,23 +737,16 @@ impl<C: CurveAffine> ProvingKey<C> {
         Ok(sigma)
     }
 
-    fn rebuild_polys(&mut self, domain: &EvaluationDomain<C::Scalar>) -> io::Result<()> {
-        let n = usize::try_from(self.domain_size)
-            .map_err(|_| invalid_mapping("native domain size does not fit usize"))?;
-        let mut omega_powers: Polynomial<C::Scalar, LagrangeCoeff> =
-            Polynomial::mapped_filled(n, C::Scalar::ONE)?;
-        let omega = domain.get_omega();
-        for row in 1..n {
-            omega_powers[row] = omega_powers[row - 1] * omega;
-        }
-        let mut polys = Vec::with_capacity(self.columns.len());
-        for column in 0..self.columns.len() {
-            let sigma = self.sigma_lagrange(domain, column, &omega_powers[..])?;
-            polys.push(domain.lagrange_to_coeff(sigma));
-        }
-        self.polys = polys;
-        self.polys_materialized = true;
-        Ok(())
+    pub(crate) fn sigma_coeff(
+        &self,
+        domain: &EvaluationDomain<C::Scalar>,
+        column: usize,
+        omega_powers: &[C::Scalar],
+    ) -> io::Result<Polynomial<C::Scalar, Coeff>>
+    where
+        C::Scalar: WithSmallOrderMulGroup<3>,
+    {
+        Ok(domain.lagrange_to_coeff(self.sigma_lagrange(domain, column, omega_powers)?))
     }
 }
 
@@ -651,6 +787,57 @@ fn read_hashed_u64<R: io::Read>(
     reader.read_exact(&mut bytes)?;
     state.update(&bytes);
     Ok(u64::from_le_bytes(bytes))
+}
+
+/// Width of the smallest unsigned representation for every cell in
+/// `[0, max_cells)`. A one-cell domain has only the value zero and uses no
+/// payload bits; a nonempty nonidentity mapping cannot exist in that domain.
+fn packed_index_width(max_cells: u64) -> u8 {
+    if max_cells <= 1 {
+        0
+    } else {
+        (64 - (max_cells - 1).leading_zeros()) as u8
+    }
+}
+
+fn decode_packed_index(bytes: &[u8], bit_offset: usize, width: u8) -> io::Result<u64> {
+    let bits = usize::from(width);
+    if bits == 0 || bits > 64 {
+        return Err(invalid_mapping("packed successor index width is invalid"));
+    }
+    let shift = bit_offset % 8;
+    let byte_offset = bit_offset / 8;
+    let byte_count = (shift + bits + 7) / 8;
+    let encoded = bytes
+        .get(byte_offset..byte_offset.checked_add(byte_count).ok_or_else(|| invalid_mapping("packed successor byte range overflow"))?)
+        .ok_or_else(|| invalid_mapping("packed successor index exceeds its chunk"))?;
+    let mut value = 0u128;
+    for (byte_index, byte) in encoded.iter().enumerate() {
+        value |= u128::from(*byte) << (byte_index * 8);
+    }
+    let mask = if bits == 64 { u64::MAX as u128 } else { (1u128 << bits) - 1 };
+    Ok(((value >> shift) & mask) as u64)
+}
+
+fn encode_packed_index(bytes: &mut [u8], bit_offset: usize, width: u8, value: u64) -> io::Result<()> {
+    let bits = usize::from(width);
+    if bits == 0 || bits > 64 || (bits < 64 && value >= (1u64 << bits)) {
+        return Err(invalid_mapping("successor index does not fit its packed width"));
+    }
+    let shift = bit_offset % 8;
+    let byte_offset = bit_offset / 8;
+    let byte_count = (shift + bits + 7) / 8;
+    let end = byte_offset
+        .checked_add(byte_count)
+        .ok_or_else(|| invalid_mapping("packed successor byte range overflow"))?;
+    let encoded = bytes
+        .get_mut(byte_offset..end)
+        .ok_or_else(|| invalid_mapping("packed successor output exceeds its chunk"))?;
+    let shifted = u128::from(value) << shift;
+    for (byte_index, byte) in encoded.iter_mut().enumerate() {
+        *byte |= (shifted >> (byte_index * 8)) as u8;
+    }
+    Ok(())
 }
 
 fn read_column_identity<R: io::Read>(
@@ -750,7 +937,7 @@ mod native_mapping_tests {
             .read_pairs(0, &mut decoded_pairs)
             .expect("read bounded mapping pairs");
         assert_eq!(decoded_pairs, successors);
-        assert_eq!(decoded.polys().len(), columns.len());
+        assert_eq!(decoded.columns, columns);
 
         let mut omega_powers = vec![Fr::ONE; domain.get_n() as usize];
         for row in 1..omega_powers.len() {

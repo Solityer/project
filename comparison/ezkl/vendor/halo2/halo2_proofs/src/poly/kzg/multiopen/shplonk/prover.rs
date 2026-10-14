@@ -22,6 +22,7 @@ use rand_core::RngCore;
 use std::fmt::Debug;
 use std::io;
 use std::marker::PhantomData;
+use group::ff::WithSmallOrderMulGroup;
 use std::ops::MulAssign;
 
 fn div_by_vanishing<F: Field>(poly: Polynomial<F, Coeff>, roots: &[F]) -> Vec<F> {
@@ -106,16 +107,15 @@ impl<'a, C: CurveAffine> CommitmentExtension<'a, C> {
         &self,
         u: C::Scalar,
     ) -> io::Result<Polynomial<C::Scalar, Coeff>> {
-        let p_x = self.commitment.get().poly;
         let r_eval = eval_polynomial(&self.low_degree_equivalent[..], u);
-        let mut contribution = p_x.try_clone()?;
+        let mut contribution = self.commitment.get().materialize()?;
         contribution[0] -= r_eval;
         Ok(contribution)
     }
 
     fn quotient_contribution(&self) -> io::Result<Polynomial<C::Scalar, Coeff>> {
         let len = self.low_degree_equivalent.len();
-        let mut p_x = self.commitment.get().poly.try_clone()?;
+        let mut p_x = self.commitment.get().materialize()?;
         parallelize(&mut p_x[0..len], |lhs, start| {
             for (lhs, rhs) in lhs
                 .iter_mut()
@@ -166,6 +166,7 @@ impl<'a, E: Engine> ProverSHPLONK<'a, E> {
 impl<'params, E: Engine + Debug> Prover<'params, KZGCommitmentScheme<E>>
     for ProverSHPLONK<'params, E>
 where
+    E::Fr: WithSmallOrderMulGroup<3>,
     E::Fr: Ord,
     E::G1Affine: SerdeCurveAffine<ScalarExt = <E as Engine>::Fr, CurveExt = <E as Engine>::G1>,
     E::G1: CurveExt<AffineExt = E::G1Affine>,

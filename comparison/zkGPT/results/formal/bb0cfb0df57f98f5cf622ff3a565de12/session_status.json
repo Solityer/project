@@ -1,8 +1,0 @@
-{
-  "active_stage": "session-created",
-  "completed_stages": [],
-  "schema": "zkgpt-gat-formal-session-v1",
-  "session_id": "bb0cfb0df57f98f5cf622ff3a565de12",
-  "started_unix_ns": 1791205461119004702,
-  "status": "RUNNING"
-}

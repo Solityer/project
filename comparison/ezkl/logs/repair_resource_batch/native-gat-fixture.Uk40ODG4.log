@@ -1,0 +1,100 @@
+COMMAND: cargo test --offline --locked --release --no-default-features --features formal-gpu --target-dir /home/pzh/project/comparison/ezkl/target/gpu --test gat_adapter_relation native_gat_fixture_proof_verifies_independently -- --exact --nocapture
+ENV_SOURCE: artifacts/build/icicle-cuda/env.sh (authenticated build receipt)
+CARGO_HOME: /home/pzh/project/comparison/ezkl/.cargo_local
+CARGO_TARGET_DIR: /home/pzh/project/comparison/ezkl/target/gpu
+RUSTUP_TOOLCHAIN: nightly-2025-12-01
+CARGO_BUILD_JOBS: 2
+ENABLE_ICICLE_GPU: 1
+EZKL_GAT_BACKEND: gpu
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling openssl-sys v0.9.117
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+error[E0308]: mismatched types
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/multiopen/prover.rs:58:59
+   |
+58 |                     q_polys[set_idx] = Some(poly * *x_1 + new_poly);
+   |                                                           ^^^^^^^^ expected `&Polynomial<..., ...>`, found `Polynomial<..., ...>`
+   |
+   = note: expected reference `&Polynomial<_, _>`
+                 found struct `Polynomial<_, _>`
+help: consider borrowing here
+   |
+58 |                     q_polys[set_idx] = Some(poly * *x_1 + &new_poly);
+   |                                                           +
+
+error[E0277]: cannot add-assign `&Polynomial<<E as Engine>::Fr, Coeff>` to `Polynomial<<E as Engine>::Fr, Coeff>`
+  --> vendor/halo2/halo2_proofs/src/poly/kzg/multiopen/gwc/prover.rs:71:34
+   |
+71 |                     *accumulator += &poly;
+   |                                  ^^ no implementation for `Polynomial<<E as Engine>::Fr, Coeff> += &Polynomial<<E as Engine>::Fr, Coeff>`
+   |
+help: the trait `AddAssign<&Polynomial<<E as Engine>::Fr, Coeff>>` is not implemented for `Polynomial<<E as Engine>::Fr, Coeff>`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:91:1
+   |
+91 | pub struct Polynomial<F, B> {
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+Some errors have detailed explanations: E0277, E0308.
+For more information about an error, try `rustc --explain E0277`.
+warning: `halo2_proofs` (lib) generated 7 warnings
+error: could not compile `halo2_proofs` (lib) due to 2 previous errors; 7 warnings emitted
+warning: build failed, waiting for other jobs to finish...
+EXIT_CODE: 101

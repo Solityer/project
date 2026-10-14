@@ -64,16 +64,58 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> Einsums<F> {
         num_inner_cols: usize,
         logrows: usize,
     ) -> Self {
+        Self::configure_universal_with_blinding_factors(
+            meta,
+            analysis,
+            num_inner_cols,
+            logrows,
+            None,
+        )
+    }
+
+    pub(crate) fn configure_universal_with_blinding_factors(
+        meta: &mut ConstraintSystem<F>,
+        analysis: &EinsumAnalysis,
+        num_inner_cols: usize,
+        logrows: usize,
+        reserved_blinding_factors: Option<usize>,
+    ) -> Self {
         let capacity = analysis.reduction_length;
+        let make_first_phase = |meta: &mut ConstraintSystem<F>, capacity| {
+            if let Some(reserve) = reserved_blinding_factors {
+                VarTensor::new_advice_with_blinding_factors(
+                    meta,
+                    logrows,
+                    num_inner_cols,
+                    capacity,
+                    reserve,
+                )
+            } else {
+                VarTensor::new_advice(meta, logrows, num_inner_cols, capacity)
+            }
+        };
+        let make_second_phase = |meta: &mut ConstraintSystem<F>, capacity| {
+            if let Some(reserve) = reserved_blinding_factors {
+                VarTensor::new_advice_in_second_phase_with_blinding_factors(
+                    meta,
+                    logrows,
+                    num_inner_cols,
+                    capacity,
+                    reserve,
+                )
+            } else {
+                VarTensor::new_advice_in_second_phase(meta, logrows, num_inner_cols, capacity)
+            }
+        };
         let inputs: [VarTensor; 4] = [
-            VarTensor::new_advice(meta, logrows, num_inner_cols, capacity),
-            VarTensor::new_advice(meta, logrows, num_inner_cols, capacity),
-            VarTensor::new_advice_in_second_phase(meta, logrows, num_inner_cols, capacity),
-            VarTensor::new_advice_in_second_phase(meta, logrows, num_inner_cols, capacity),
+            make_first_phase(meta, capacity),
+            make_first_phase(meta, capacity),
+            make_second_phase(meta, capacity),
+            make_second_phase(meta, capacity),
         ];
         let outputs = [
-            VarTensor::new_advice(meta, logrows, num_inner_cols, capacity),
-            VarTensor::new_advice_in_second_phase(meta, logrows, num_inner_cols, capacity),
+            make_first_phase(meta, capacity),
+            make_second_phase(meta, capacity),
         ];
         let contraction_gate = ContractionConfig::new(
             meta,

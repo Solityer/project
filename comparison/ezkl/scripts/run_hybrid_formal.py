@@ -1092,6 +1092,12 @@ def _validate_native_shplonk_shape(dataset: str, memory: dict[str, object], cs: 
     shuffle_arguments = int(cs["num_shuffle_arguments"])
     shplonk_permutation_chunk = max(degree - 2, 1)
     expected_shplonk_permutation_sets = (permutation_columns + shplonk_permutation_chunk - 1) // shplonk_permutation_chunk
+    expected_grand_product_bank_bytes = (
+        expected_shplonk_permutation_sets
+        * int(memory["shplonk_proof_instance_count"])
+        * domain_size
+        * int(memory["size_of_fr_bytes"])
+    )
     expected_shplonk_queries = (
         int(memory["shplonk_advice_query_polynomial_count"])
         + int(memory["shplonk_fixed_query_polynomial_count"])
@@ -1107,6 +1113,10 @@ def _validate_native_shplonk_shape(dataset: str, memory: dict[str, object], cs: 
         or max(shplonk_counts, default=0) != memory["shplonk_max_commitments_per_rotation_set"]
         or memory["shplonk_query_polynomial_count"] != expected_shplonk_queries
         or memory["shplonk_permutation_product_set_count"] != expected_shplonk_permutation_sets
+        or isinstance(memory.get("permutation_grand_product_bank_mapped_bytes_upper"), bool)
+        or not isinstance(memory.get("permutation_grand_product_bank_mapped_bytes_upper"), int)
+        or memory["permutation_grand_product_bank_mapped_bytes_upper"] != expected_grand_product_bank_bytes
+        or expected_grand_product_bank_bytes > sys.maxsize
         or memory["shplonk_advice_query_polynomial_count"] > cs["num_advice_columns"]
         or memory["shplonk_fixed_query_polynomial_count"] > cs["fixed_column_count_post_compression"]
         or memory["shplonk_lookup_argument_count"] != lookup_arguments
@@ -1275,10 +1285,10 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission has malformed exact Halo2 constraint-shape counts")
         if cs["minimum_rows"] <= 0 or admission["domain_size"] < cs["minimum_rows"]:
             abort(f"{dataset} native admission domain is below the current Halo2 minimum row requirement")
-        if cs["selector_fixed_column_count_upper"] != cs["num_selectors"] or cs["fixed_column_count_post_compression"] != (cs["num_fixed_columns"] + cs["selector_fixed_column_count_upper"]):
+        if cs["selector_fixed_column_count_upper"] > cs["num_selectors"] or cs["fixed_column_count_post_compression"] != (cs["num_fixed_columns"] + cs["selector_fixed_column_count_upper"]):
             abort(f"{dataset} native admission selector/fixed-column upper bound is inconsistent")
         expected_permutation_cells = cs["num_permutation_columns"] * admission["domain_size"]
-        if cs["permutation_copy_call_count_upper"] != expected_permutation_cells:
+        if cs["permutation_copy_call_count_upper"] > expected_permutation_cells:
             abort(f"{dataset} native admission permutation synthesis upper bound is inconsistent")
         expected_successor_entries = min(expected_permutation_cells, 2 * cs["permutation_copy_call_count_upper"])
         if cs["permutation_successor_entry_count_upper"] != expected_successor_entries:
@@ -1308,10 +1318,12 @@ def native_admit_all_datasets(
             "custom_gate_dependency_columns",
             "lookup_dependency_columns",
             "lookup_query_polynomial_counts",
+            "lookup_argument_table_group_indices",
             "shuffle_dependency_columns",
             "advice_column_phase_ids",
             "size_of_fr_bytes",
             "size_of_assigned_fr_bytes",
+            "size_of_assigned_event_bytes",
             "size_of_option_fr_bytes",
             "size_of_batch_invert_entry_bytes",
             "size_of_usize_bytes",
@@ -1327,11 +1339,16 @@ def native_admit_all_datasets(
             "size_of_vec_u8_bytes",
             "size_of_lookup_repr_bytes",
             "lookup_table_cardinality_upper_bounds",
+            "fixed_value_explicit_zero_seen",
             "size_of_vec_header_bytes",
             "size_of_polynomial_header_bytes",
+            "size_of_fixed_column_source_bytes",
             "size_of_mv_lookup_prepared_bytes",
             "size_of_mv_lookup_prepared_table_bytes",
             "size_of_mv_lookup_committed_bytes",
+            "size_of_mv_lookup_compact_table_bytes",
+            "size_of_mv_lookup_id_tape_bytes",
+            "size_of_mv_lookup_source_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
             "size_of_coeff_polynomial_header_bytes",
@@ -1342,6 +1359,7 @@ def native_admit_all_datasets(
             "shplonk_unique_opening_point_count",
             "shplonk_max_commitments_per_rotation_set",
             "shplonk_permutation_product_set_count",
+            "permutation_grand_product_bank_mapped_bytes_upper",
             "shplonk_advice_query_polynomial_count",
             "shplonk_fixed_query_polynomial_count",
             "shplonk_lookup_argument_count",
@@ -1355,37 +1373,49 @@ def native_admit_all_datasets(
             "gat_transient_witness_evidence_kind",
             "gat_transient_witness_formula_id",
             "advice_event_record_bytes_upper",
+            "advice_event_decoder_record_bytes_upper",
+            "advice_event_assignment_counts_upper",
+            "advice_event_count_upper",
             "advice_event_reservation_chunk_bytes",
             "advice_event_batch_size_upper",
             "advice_event_decoded_entry_bytes_upper",
+            "advice_event_pending_batch_bytes_upper",
+            "advice_event_flush_scratch_bytes_upper",
+            "advice_event_reader_buffer_bytes_upper",
             "advice_event_read_buffer_bytes_upper",
             "advice_event_column_metadata_bytes_upper",
             "advice_event_writer_buffer_bytes_upper",
             "advice_event_column_bytes_upper",
             "advice_event_latest_element_bytes",
             "advice_event_log_bound_evidence_kind",
+            "advice_event_phase_materialization_order",
             "cuda_uuid",
             "cuda_free_bytes_at_admission",
             "cuda_total_memory_bytes",
             "selector_activation_bitmap_bytes_upper",
             "selector_activation_storage_bytes_upper",
             "selector_activation_storage_kind",
+            "selector_cache_encoded_bytes",
             "fixed_polynomial_read_mode",
             "fixed_polynomial_read_chunk_fields_upper",
             "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
             "native_pk_read_buffer_capacity_bytes",
+            "native_pk_format_version",
+            "native_pk_sigma_wire_encoding",
+            "native_pk_sigma_index_width_formula",
             "native_successor_read_cache_bytes",
             "native_target_bitmap_fixed_cache_bytes",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v11" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "static_pre_setup_envelope; exact_native_selector_and_permutation_observations_are_required_from_keygen_receipt":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v17" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "static_pre_setup_envelope; selector, advice-event, and sparse-permutation geometry are synthesis-census-derived; keygen receipt verifies observed allocations":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
             "proof_domain_size",
             "size_of_fr_bytes",
             "size_of_assigned_fr_bytes",
+            "size_of_assigned_event_bytes",
             "size_of_option_fr_bytes",
             "size_of_batch_invert_entry_bytes",
             "size_of_usize_bytes",
@@ -1404,9 +1434,14 @@ def native_admit_all_datasets(
             "size_of_gat_valtype_bytes",
             "gat_transient_witness_bytes_upper",
             "advice_event_record_bytes_upper",
+            "advice_event_decoder_record_bytes_upper",
+            "advice_event_count_upper",
             "advice_event_reservation_chunk_bytes",
             "advice_event_batch_size_upper",
             "advice_event_decoded_entry_bytes_upper",
+            "advice_event_pending_batch_bytes_upper",
+            "advice_event_flush_scratch_bytes_upper",
+            "advice_event_reader_buffer_bytes_upper",
             "advice_event_read_buffer_bytes_upper",
             "advice_event_column_metadata_bytes_upper",
             "advice_event_writer_buffer_bytes_upper",
@@ -1414,12 +1449,17 @@ def native_admit_all_datasets(
             "advice_event_latest_element_bytes",
             "size_of_vec_header_bytes",
             "size_of_polynomial_header_bytes",
+            "size_of_fixed_column_source_bytes",
             "size_of_mv_lookup_prepared_bytes",
             "size_of_mv_lookup_prepared_table_bytes",
             "size_of_mv_lookup_committed_bytes",
+            "size_of_mv_lookup_compact_table_bytes",
+            "size_of_mv_lookup_id_tape_bytes",
+            "size_of_mv_lookup_source_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
             "size_of_coeff_polynomial_header_bytes",
+            "permutation_grand_product_bank_mapped_bytes_upper",
             "size_of_fftdata_bytes",
             "size_of_fftdata_once_lock_bytes",
             "size_of_fftdata_cache_entry_bytes",
@@ -1432,11 +1472,13 @@ def native_admit_all_datasets(
             "size_of_arc_header_bytes",
             "parallel_fft_lookup_table_elements",
             "cuda_total_memory_bytes",
+            "selector_cache_encoded_bytes",
             "fixed_polynomial_read_chunk_fields_upper",
             "fixed_polynomial_read_raw_chunk_bytes_upper",
             "fixed_polynomial_read_decoded_chunk_bytes_upper",
             "fixed_polynomial_read_heap_scratch_bytes_upper",
             "native_pk_read_buffer_capacity_bytes",
+            "native_pk_format_version",
             "native_successor_read_cache_bytes",
             "native_target_bitmap_fixed_cache_bytes",
         }
@@ -1446,6 +1488,12 @@ def native_admit_all_datasets(
             or memory["cuda_free_bytes_at_admission"] < 0
         ):
             abort(f"{dataset} native admission has non-positive or malformed source memory values")
+        if (
+            memory["native_pk_format_version"] != 4
+            or memory["native_pk_sigma_wire_encoding"] != "packed_source_target_indices_lsb0_v1"
+            or memory["native_pk_sigma_index_width_formula"] != "0_if_cells_le_1_else_ceil_log2_cells"
+        ):
+            abort(f"{dataset} native admission PK/Sigma format does not match v4 packed indices")
         expected_scalar_domain_bytes = admission["domain_size"] * (
             cs["num_fixed_columns"] + cs["num_advice_columns"] + cs["num_instance_columns"]
         ) * memory["size_of_fr_bytes"]
@@ -1464,6 +1512,13 @@ def native_admit_all_datasets(
         ):
             abort(f"{dataset} native admission has a malformed graph-witness shape count")
         cardinality_bounds = memory["lookup_table_cardinality_upper_bounds"]
+        fixed_zero_seen = memory["fixed_value_explicit_zero_seen"]
+        if (
+            not isinstance(fixed_zero_seen, list)
+            or len(fixed_zero_seen) != cs["num_fixed_columns"]
+            or any(type(value) is not bool for value in fixed_zero_seen)
+        ):
+            abort(f"{dataset} native admission fixed-zero census is malformed or inconsistent")
         if (
             not isinstance(cardinality_bounds, list)
             or len(cardinality_bounds) != cs["num_unique_lookup_table_expression_groups"]
@@ -1491,31 +1546,43 @@ def native_admit_all_datasets(
             or memory["srs_fft_cache_entry_capacity"] < 1
             or memory["parallel_fft_lookup_table_elements"] != expected_parallel_lut_elements
             or memory["size_of_usize_pair_bytes"] != 2 * memory["size_of_usize_bytes"]
-            or memory["size_of_lookup_map_entry_bytes"] != memory["size_of_vec_u8_bytes"] + memory["size_of_usize_bytes"]
+            or memory["size_of_lookup_map_entry_bytes"] != memory["size_of_vec_u8_bytes"] + 2 * memory["size_of_usize_bytes"]
             or memory["size_of_lookup_repr_bytes"] != memory["size_of_fr_bytes"]
             or memory["size_of_graph_witness_scalar_bytes"] != memory["size_of_fr_bytes"]
             or memory["gat_transient_witness_evidence_kind"] != "source-derived-conservative-live-tensor-envelope-v1"
             or memory["gat_transient_witness_formula_id"] != "whole-gat-retained-inputs-plus-max-live-head-phase-v1"
-            or memory["advice_event_log_bound_evidence_kind"] != "cumulative_region_linear_cursor_upper_not_num_rows_or_proof_domain-v1"
-            or memory["advice_event_record_bytes_upper"] != 9 + 2 * memory["size_of_lookup_repr_bytes"]
+            or memory["advice_event_log_bound_evidence_kind"] != "synthesis-census-exact-advice-assignment-events-v1"
+            or memory["advice_event_phase_materialization_order"] != "per-phase-encoded-bytes-descending-index-ascending-v1"
+            or memory["advice_event_record_bytes_upper"] != 9 + memory["size_of_lookup_repr_bytes"]
+            or memory["advice_event_decoder_record_bytes_upper"] != 9 + 2 * memory["size_of_lookup_repr_bytes"]
             or memory["advice_event_reservation_chunk_bytes"] != 1 << 20
             or memory["advice_event_batch_size_upper"] != 8192
-            or memory["advice_event_decoded_entry_bytes_upper"] < memory["size_of_assigned_fr_bytes"]
+            or memory["advice_event_decoded_entry_bytes_upper"] != memory["size_of_assigned_event_bytes"]
+            or memory["advice_event_pending_batch_bytes_upper"]
+            != memory["advice_event_batch_size_upper"] * memory["size_of_assigned_event_bytes"]
+            or memory["advice_event_flush_scratch_bytes_upper"]
+            != memory["advice_event_batch_size_upper"]
+            * (
+                memory["size_of_option_fr_bytes"]
+                + memory["size_of_batch_invert_entry_bytes"]
+            )
+            + memory["size_of_vec_header_bytes"]
+            or memory["advice_event_reader_buffer_bytes_upper"] < 8192
             or memory["advice_event_writer_buffer_bytes_upper"] != 8192
             or memory["advice_event_column_bytes_upper"]
-            < memory["advice_event_column_metadata_bytes_upper"]
+            != memory["advice_event_column_metadata_bytes_upper"]
             + memory["advice_event_record_bytes_upper"]
-            + memory["advice_event_writer_buffer_bytes_upper"]
             or memory["advice_event_latest_element_bytes"] != memory["size_of_usize_bytes"]
             or memory["advice_event_read_buffer_bytes_upper"]
             != memory["advice_event_batch_size_upper"]
             * (
-                memory["advice_event_record_bytes_upper"]
-                + memory["advice_event_decoded_entry_bytes_upper"]
+                memory["advice_event_decoded_entry_bytes_upper"]
                 + memory["size_of_option_fr_bytes"]
                 + memory["size_of_batch_invert_entry_bytes"]
             )
-            + 3 * memory["size_of_vec_header_bytes"]
+            + 2 * memory["size_of_vec_header_bytes"]
+            + memory["advice_event_reader_buffer_bytes_upper"]
+            + memory["advice_event_decoder_record_bytes_upper"]
             or memory["size_of_vec_header_bytes"] != memory["size_of_vec_u8_bytes"]
             or memory["size_of_option_fr_bytes"] < memory["size_of_fr_bytes"]
             or memory["size_of_batch_invert_entry_bytes"] < memory["size_of_fr_bytes"]
@@ -1527,6 +1594,21 @@ def native_admit_all_datasets(
             or memory["cuda_uuid"] != selected_device.get("uuid")
         ):
             abort(f"{dataset} native admission memory model is internally inconsistent or targets another GPU")
+        advice_event_assignment_counts = memory["advice_event_assignment_counts_upper"]
+        if (
+            not isinstance(advice_event_assignment_counts, list)
+            or len(advice_event_assignment_counts) != cs["num_advice_columns"]
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > sys.maxsize
+                for value in advice_event_assignment_counts
+            )
+            or sum(advice_event_assignment_counts) != memory["advice_event_count_upper"]
+            or memory["advice_event_count_upper"] > sys.maxsize
+        ):
+            abort(f"{dataset} native admission has inconsistent per-column Advice event census counts")
         if (
             isinstance(memory["recursive_fft_twiddle_field_elements"], bool)
             or not isinstance(memory["recursive_fft_twiddle_field_elements"], int)
@@ -1558,13 +1640,32 @@ def native_admit_all_datasets(
             or max(memory["lookup_query_polynomial_counts"], default=0) != cs["max_lookup_query_polynomials_per_argument"]
         ):
             abort(f"{dataset} native admission lookup dependency/query counts do not match chunked arguments")
+        lookup_group_indices = memory["lookup_argument_table_group_indices"]
+        if (
+            not isinstance(lookup_group_indices, list)
+            or len(lookup_group_indices) != cs["num_lookup_arguments"]
+            or any(
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or index >= cs["num_unique_lookup_table_expression_groups"]
+                for index in lookup_group_indices
+            )
+            or set(lookup_group_indices) != set(range(cs["num_unique_lookup_table_expression_groups"]))
+        ):
+            abort(f"{dataset} native admission lookup argument/table group mapping is malformed")
         _validate_native_shplonk_shape(dataset, memory, cs, admission["domain_size"])
         expected_bitmap = cs["num_selectors"] * ((admission["domain_size"] + 7) // 8)
+        selector_cache_encoded_bytes = memory["selector_cache_encoded_bytes"]
+        selector_cache_encoded_min = 5 + 4 * cs["num_selectors"]
+        selector_cache_encoded_max = 5 + cs["num_selectors"] * ((admission["domain_size"] + 7) // 8 + 5)
         selector_storage = memory["selector_activation_storage_bytes_upper"]
         selector_storage_max = 2 * expected_bitmap + cs["num_selectors"] * 64
         read_chunk_fields = memory["fixed_polynomial_read_chunk_fields_upper"]
         if (
             memory["selector_activation_bitmap_bytes_upper"] != expected_bitmap
+            or selector_cache_encoded_bytes < selector_cache_encoded_min
+            or selector_cache_encoded_bytes > selector_cache_encoded_max
             or isinstance(selector_storage, bool)
             or not isinstance(selector_storage, int)
             or selector_storage != selector_storage_max
@@ -2142,11 +2243,15 @@ def _native_capacity_requirements(
     map_entry = int(memory["size_of_lookup_map_entry_bytes"])
     map_header = int(memory["size_of_lookup_map_header_bytes"])
     repr_bytes = int(memory["size_of_lookup_repr_bytes"])
+    usize_bytes = int(memory["size_of_usize_bytes"])
     vec_header = int(memory["size_of_vec_header_bytes"])
     polynomial_header = int(memory["size_of_polynomial_header_bytes"])
     prepared_header = int(memory["size_of_mv_lookup_prepared_bytes"])
     prepared_table_header = int(memory["size_of_mv_lookup_prepared_table_bytes"])
     committed_header = int(memory["size_of_mv_lookup_committed_bytes"])
+    compact_table_header = int(memory["size_of_mv_lookup_compact_table_bytes"])
+    lookup_id_tape_header = int(memory["size_of_mv_lookup_id_tape_bytes"])
+    lookup_source_header = int(memory["size_of_mv_lookup_source_bytes"])
     graph_witness_scalars = int(memory["graph_witness_scalar_element_count"])
     g1_affine = int(memory["size_of_g1_affine_bytes"])
     g1_projective = int(memory["size_of_g1_projective_bytes"])
@@ -2157,19 +2262,51 @@ def _native_capacity_requirements(
     max_lookup_queries = int(cs["max_lookup_query_polynomials_per_argument"])
     table_group_count = int(cs["num_unique_lookup_table_expression_groups"])
     table_bounds = memory["lookup_table_cardinality_upper_bounds"]
+    lookup_group_indices = memory["lookup_argument_table_group_indices"]
     custom_gate_dependencies = memory["custom_gate_dependency_columns"]
     lookup_dependencies = memory["lookup_dependency_columns"]
     lookup_query_counts = memory["lookup_query_polynomial_counts"]
+    proof_instance_count = int(memory["shplonk_proof_instance_count"])
     shuffle_dependencies = memory["shuffle_dependency_columns"]
     n = domain_size
-    total_assignments = admission.get("total_assignments")
+    blinding_factors = int(cs["num_blinding_factors"])
+    active_lookup_rows = n - blinding_factors - 1
+    if active_lookup_rows <= 0:
+        abort("EZKL native lookup has no active rows after the blinding region")
+
+    def packed_id_width(cardinality_upper: int) -> int:
+        if cardinality_upper <= 0:
+            abort("EZKL native lookup table bound must be positive")
+        if cardinality_upper <= (1 << 32):
+            # PackedIdTape stores identifiers as LSB-first bits. A set of U
+            # possible IDs needs ceil(log2(U)) bits (zero bits when U == 1).
+            return (cardinality_upper - 1).bit_length()
+        abort(f"EZKL native lookup table bound {cardinality_upper} exceeds packed u32 identifiers")
+
+    lookup_group_widths = [packed_id_width(int(bound)) for bound in table_bounds]
+    lookup_argument_widths = [lookup_group_widths[int(index)] for index in lookup_group_indices]
+    advice_event_assignment_counts = memory.get("advice_event_assignment_counts_upper")
+    advice_event_count_upper = memory.get("advice_event_count_upper")
+    advice_column_phase_ids = memory.get("advice_column_phase_ids")
     if (
-        isinstance(total_assignments, bool)
-        or not isinstance(total_assignments, int)
-        or total_assignments <= 0
-        or total_assignments > sys.maxsize
+        not isinstance(advice_event_assignment_counts, list)
+        or len(advice_event_assignment_counts) != int(cs["num_advice_columns"])
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 0
+            or value > sys.maxsize
+            for value in advice_event_assignment_counts
+        )
+        or isinstance(advice_event_count_upper, bool)
+        or not isinstance(advice_event_count_upper, int)
+        or advice_event_count_upper != sum(advice_event_assignment_counts)
+        or advice_event_count_upper > sys.maxsize
+        or not isinstance(advice_column_phase_ids, list)
+        or len(advice_column_phase_ids) != int(cs["num_advice_columns"])
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in advice_column_phase_ids)
     ):
-        abort("EZKL native admission has invalid cumulative assignment count for prover spill bounds")
+        abort("EZKL native admission has invalid per-column advice event census for prover spill bounds")
     proof_domain = int(memory["proof_domain_size"])
     proof_logrows = int(memory["proof_logrows"])
     uses_recursive_fft = bool(memory["uses_recursive_fft"])
@@ -2193,6 +2330,19 @@ def _native_capacity_requirements(
     expected_successor_entries_upper = min(permutation_cells, 2 * copy_calls_upper)
     if permutation_cells > sys.maxsize or successor_entries_upper != expected_successor_entries_upper:
         abort("EZKL native admission permutation-copy bound is inconsistent with the local capacity gate")
+    permutation_grand_product_set_count = (
+        int(memory["shplonk_permutation_product_set_count"])
+        * proof_instance_count
+    )
+    permutation_grand_product_bank_mapped_bytes = int(memory["permutation_grand_product_bank_mapped_bytes_upper"])
+    permutation_grand_product_window_bytes = n * fr if permutation_grand_product_set_count else 0
+    if (
+        permutation_grand_product_bank_mapped_bytes
+        != permutation_grand_product_set_count * permutation_grand_product_window_bytes
+        or permutation_grand_product_bank_mapped_bytes > sys.maxsize
+        or permutation_grand_product_window_bytes > sys.maxsize
+    ):
+        abort("EZKL native permutation grand-product bank is inconsistent with its authenticated chunk geometry")
     if expected_successor_entries_upper > sys.maxsize // 16:
         abort("EZKL native sparse successor-file ceiling exceeds the native address range")
     selector_activation_storage_ceiling = int(memory["selector_activation_storage_bytes_upper"])
@@ -2243,22 +2393,66 @@ def _native_capacity_requirements(
     successor_entries_for_files = expected_successor_entries_upper if native_census is None else successor_entries
     if successor_entries_for_files > sys.maxsize // 16:
         abort("native proving-key successor backing exceeds the native address range")
+    sigma_index_width_bits = 0 if permutation_cells <= 1 else (permutation_cells - 1).bit_length()
+    sigma_payload_bits_upper = successor_entries_for_files * 2 * sigma_index_width_bits
+    sigma_payload_bytes_upper = (sigma_payload_bits_upper + 7) // 8
+    if sigma_payload_bytes_upper > sys.maxsize:
+        abort("native packed Sigma payload exceeds the native address range")
+    # Raw 16E remains the keygen/DSU temporary format. The PK stores only the
+    # packed wire payload and its proving reader views that existing artifact.
     native_successor_file_bytes = 16 * successor_entries_for_files
     native_successor_backing_reserved_bytes = ((native_successor_file_bytes + 4095) // 4096) * 4096
     if native_successor_backing_reserved_bytes > sys.maxsize:
         abort("native proving-key page-rounded successor backing exceeds the native address range")
-    target_bitmap_virtual_bytes = (successor_entries_for_files + 7) // 8
-    target_bitmap_page_bytes = ((target_bitmap_virtual_bytes + 4095) // 4096) * 4096
-    target_bitmap_page_count = target_bitmap_page_bytes // 4096
+    target_bitmap_virtual_bytes = (permutation_cells + 7) // 8
+    target_bitmap_page_count = (target_bitmap_virtual_bytes + 4095) // 4096
+    target_bitmap_page_bytes = min(successor_entries_for_files, target_bitmap_page_count) * 4096
     target_bitmap_allocation_bitmap_bytes = (target_bitmap_page_count + 7) // 8
-    native_pk_read_backing_required = native_successor_backing_reserved_bytes + target_bitmap_page_bytes
+    fixed_source_runtime_bytes = (
+        fixed_uncompressed * n * fr
+        + (int(cs["num_selectors"]) * n + 7) // 8
+        + fixed_post * 256 * fr
+        + fixed_post * int(memory["size_of_fixed_column_source_bytes"])
+    )
+    fixed_pk_mapped_base = fixed_source_runtime_bytes + 3 * proof_domain * fr
+    fixed_pk_boundary_peak = fixed_source_runtime_bytes + 4 * proof_domain * fr
+    native_pk_read_backing_required = target_bitmap_page_bytes
     if native_pk_read_backing_required > sys.maxsize:
         abort("native proving-key read backing exceeds the native address range")
+    native_pk_read_permutation_peak = fixed_pk_mapped_base + native_pk_read_backing_required
+    native_pk_read_mapped_peak = max(fixed_pk_boundary_peak, native_pk_read_permutation_peak)
+    native_pk_read_mapped_extra = max(
+        0,
+        native_pk_read_mapped_peak - native_pk_read_permutation_peak,
+    )
+    if any(
+        value > sys.maxsize
+        for value in (
+            fixed_pk_mapped_base,
+            fixed_pk_boundary_peak,
+            native_pk_read_permutation_peak,
+            native_pk_read_mapped_peak,
+            native_pk_read_mapped_extra,
+        )
+    ):
+        abort("native proving-key mapped materialization peak exceeds the native address range")
     permutation_hashmap_header = int(memory["size_of_permutation_hashmap_header_bytes"])
     advice = int(cs["num_advice_columns"])
     gat_transient_witness_bytes = int(memory["gat_transient_witness_bytes_upper"])
     advice_event_column_bytes = int(memory["advice_event_column_bytes_upper"])
     advice_event_batch_bytes = int(memory["advice_event_read_buffer_bytes_upper"])
+    advice_event_pending_batch_bytes = int(memory["advice_event_pending_batch_bytes_upper"])
+    advice_event_flush_scratch_bytes = int(memory["advice_event_flush_scratch_bytes_upper"])
+    advice_event_active_columns = sum(1 for count in advice_event_assignment_counts if count > 0)
+    advice_event_pending_resident_bytes = advice_event_active_columns * advice_event_pending_batch_bytes
+    advice_event_writer_resident_bytes = (
+        advice_event_active_columns * int(memory["advice_event_writer_buffer_bytes_upper"])
+    )
+    advice_event_column_state_resident_bytes = (
+        advice * advice_event_column_bytes
+        + advice_event_pending_resident_bytes
+        + advice_event_writer_resident_bytes
+    )
     advice_event_record_bytes = int(memory["advice_event_record_bytes_upper"])
     advice_event_chunk_bytes = int(memory["advice_event_reservation_chunk_bytes"])
     latest_element_bytes = int(memory["advice_event_latest_element_bytes"])
@@ -2284,7 +2478,6 @@ def _native_capacity_requirements(
     icicle_affine_bytes = int(icicle_type_sizes["affine_bytes"])
     if degree < 2:
         abort("EZKL native admission has invalid quotient degree for the local capacity gate")
-    selector_activation_bitmap_ceiling = int(memory["selector_activation_bitmap_bytes_upper"])
     selector_census_storage = int(memory["selector_activation_storage_bytes_upper"])
     read_scratch = int(memory["fixed_polynomial_read_heap_scratch_bytes_upper"])
     for label, number in (
@@ -2353,7 +2546,10 @@ def _native_capacity_requirements(
     ):
         abort("EZKL native admission has inconsistent evaluator/FFT resource metadata")
     shplonk_batch_width_upper = min(shplonk_query_polynomials, parallel_threads)
-    shplonk_task_bytes = 2 * n * fr + 2 * coeff_polynomial_header
+    # A deferred compact phi opening rebuilds R differences, an N-row
+    # Lagrange polynomial, then its N-row coefficient form before SHPLONK
+    # consumes the source. Reserve that whole per-task materialization window.
+    shplonk_task_bytes = (2 * n + active_lookup_rows) * fr + 3 * coeff_polynomial_header
     shplonk_fixed_workspace_bytes = 4 * n * fr + 4 * coeff_polynomial_header
     shplonk_query_point_upper = shplonk_query_polynomials * shplonk_max_rotations
     shplonk_extension_host_upper = (
@@ -2364,7 +2560,15 @@ def _native_capacity_requirements(
         + shplonk_query_point_upper * (2 * fr + int(memory["size_of_usize_bytes"]))
         + parallel_threads * shplonk_max_rotations * 2 * fr
     )
-    shplonk_transient_spill_upper = (shplonk_batch_width_upper + 2) * n * fr
+    shplonk_source_rebuild_spill_window = (
+        shplonk_batch_width_upper * n * fr
+        if lookup_arguments
+        else 0
+    )
+    shplonk_transient_spill_upper = (
+        (shplonk_batch_width_upper + 2) * n * fr
+        + shplonk_source_rebuild_spill_window
+    )
 
     def fft_cache_map_allocation(capacity: int) -> int:
         required_buckets = (capacity * 8 + 6) // 7
@@ -2383,28 +2587,95 @@ def _native_capacity_requirements(
     proof_fft_twiddle_elements = int(memory["recursive_fft_twiddle_field_elements"])
     proof_fft_cache_bytes = fft_cache_payload(fft_supported_lengths, fft_cache_capacity, proof_logrows, proof_fft_twiddle_elements if uses_recursive_fft else 0)
     # Source-derived known mapped setup allocations: fixed assignment maps,
-    # fixed-value and coefficient maps, permutation polynomials, three
-    # extended-domain selector polynomials retained by the PK, plus the live
-    # l_blind map and one fixed-polynomial clone during keygen.
+    # fixed-value and coefficient maps, three extended-domain selector
+    # polynomials retained by the PK, plus the live l_blind map, one
+    # fixed-polynomial clone, and one omega/sigma reconstruction pair.
     fixed_assignment_maps = fixed_uncompressed * n * assigned
-    setup_persisted_maps = (2 * fixed_post * n + permutation * n + 3 * proof_domain) * fr
+    setup_persisted_maps = fixed_source_runtime_bytes + 3 * proof_domain * fr
     setup_transition_map = (proof_domain + n) * fr
-    setup_mapped_peak = fixed_assignment_maps + setup_persisted_maps + setup_transition_map
+    permutation_reconstruction_mapped_bytes = 2 * n * fr
+    setup_mapped_peak = fixed_assignment_maps + setup_persisted_maps + setup_transition_map + permutation_reconstruction_mapped_bytes
     # The serialized PK keeps the same dominant fixed/l-selector payloads;
     # reserving the complete source-derived setup map payload covers that file
     # plus its bounded headers/commitment metadata and the separately saved VK.
-    # Serialized selector wire data is conservatively reserved at the dense
-    # bitmap ceiling even though the native in-memory activation set is a
-    # run/bitmap hybrid. These are file bytes, not resident-memory estimates.
-    selector_vk_bytes = selector_activation_bitmap_ceiling
+    # VK selector cache payload uses the same canonical deduplicated
+    # run/bitmap dictionary emitted by native keygen, with its exact census
+    # byte length. These are file bytes, not resident-memory estimates.
+    selector_vk_bytes = int(memory["selector_cache_encoded_bytes"])
     commitment_vk_bytes = (fixed_post + permutation) * int(memory["size_of_g1_affine_bytes"])
-    permutation_mapping_bytes = 8 + 8 + 10 * permutation + native_successor_backing_reserved_bytes + 32
-    setup_key_artifact_upper = setup_persisted_maps + selector_vk_bytes + commitment_vk_bytes + permutation_mapping_bytes + 8 + 12 + 2 * (4 + 4 * fixed_post)
+    permutation_serialized_bytes = 56 + 10 * permutation + sigma_payload_bytes_upper
+    # PK v4 retains raw fixed-source fallback values, one selector ID bit per
+    # selector-row in the worst case, and per-source compact codebook bounds.
+    fixed_value_wire_upper = (
+        4
+        + fixed_uncompressed * (5 + n * repr_bytes)
+        + (int(cs["num_selectors"]) * n + 7) // 8
+        + fixed_post * (4 + 256 * repr_bytes)
+    )
+    if fixed_value_wire_upper > sys.maxsize:
+        abort("native PK v4 fixed-value wire upper bound exceeds the native address range")
+    setup_key_artifact_upper = (
+        fixed_value_wire_upper
+        + selector_vk_bytes
+        + commitment_vk_bytes
+        + permutation_serialized_bytes
+        + 8
+        + 12
+        + 2 * (4 + 4 * fixed_post)
+    )
+    if setup_key_artifact_upper > sys.maxsize:
+        abort("native PK v4 serialized artifact upper bound exceeds the native address range")
     quotient_coefficients = n * (degree - 1)
-    advice_event_log_records_upper = total_assignments * advice_event_record_bytes
-    advice_event_log_rounding_upper = advice * (advice_event_chunk_bytes - 1)
-    advice_event_log_reserved_upper = advice_event_log_records_upper + advice_event_log_rounding_upper
+    advice_event_log_records_upper = sum(
+        count * advice_event_record_bytes for count in advice_event_assignment_counts
+    )
+    advice_event_log_reserved_upper = sum(
+        ((count * advice_event_record_bytes + advice_event_chunk_bytes - 1) // advice_event_chunk_bytes)
+        * advice_event_chunk_bytes
+        for count in advice_event_assignment_counts
+        if count
+    )
+    advice_event_log_rounding_upper = advice_event_log_reserved_upper - advice_event_log_records_upper
     advice_latest_map_bytes = n * latest_element_bytes
+    advice_phase_groups: dict[int, list[int]] = {}
+    for index, phase in enumerate(advice_column_phase_ids):
+        advice_phase_groups.setdefault(int(phase), []).append(index)
+    advice_phase_rows: list[tuple[int, int, int, int]] = []
+    advice_phase_prior_polynomials = 0
+    advice_phase_mapped_peak = 0
+    advice_phase_allocation_peak = 0
+    advice_one_polynomial_bytes = n * fr
+    for phase in sorted(advice_phase_groups):
+        columns = advice_phase_groups[phase]
+        phase_logs = sum(
+            ((advice_event_assignment_counts[index] * advice_event_record_bytes + advice_event_chunk_bytes - 1)
+             // advice_event_chunk_bytes)
+            * advice_event_chunk_bytes
+            for index in columns
+            if advice_event_assignment_counts[index]
+        )
+        phase_polynomials = len(columns) * advice_one_polynomial_bytes
+        phase_base_peak = (
+            advice_phase_prior_polynomials
+            + max(phase_logs, phase_polynomials)
+            + advice_one_polynomial_bytes
+        )
+        advice_phase_rows.append((phase, len(columns), phase_logs, phase_polynomials))
+        advice_phase_mapped_peak = max(
+            advice_phase_mapped_peak,
+            phase_base_peak + advice_latest_map_bytes,
+        )
+        advice_phase_allocation_peak = max(
+            advice_phase_allocation_peak,
+            phase_base_peak + advice_latest_map_bytes + advice_event_batch_bytes,
+        )
+        advice_phase_prior_polynomials += phase_polynomials
+    if (
+        advice_phase_prior_polynomials != advice * advice_one_polynomial_bytes
+        or advice_phase_mapped_peak > sys.maxsize
+        or advice_phase_allocation_peak > sys.maxsize
+    ):
+        abort("EZKL native per-phase advice materialization bound exceeds the native address range")
     if any(
         value < 0 or value > sys.maxsize
         for value in (
@@ -2412,14 +2683,62 @@ def _native_capacity_requirements(
             advice_event_log_rounding_upper,
             advice_event_log_reserved_upper,
             advice_latest_map_bytes,
+            advice_event_pending_resident_bytes,
         )
     ):
         abort("EZKL native advice-event spill or conversion-map source bound exceeds the native address range")
-    lookup_query_spill_bytes = lookup_queries * n * fr
-    lookup_m_spill_bytes = lookup_arguments * n * fr
-    lookup_table_spill_bytes = table_group_count * n * fr
-    lookup_phi_spill_bytes = lookup_arguments * n * fr
-    lookup_spill_known = lookup_query_spill_bytes + lookup_m_spill_bytes + lookup_table_spill_bytes + lookup_phi_spill_bytes
+    lookup_prepare_workers = min(
+        parallel_threads, proof_instance_count * lookup_arguments
+    ) if lookup_arguments else 0
+    # Prepare iterates over proof instances and lookup arguments in Rayon;
+    # commit handles one instance at a time and parallelizes its argument
+    # batches. Each Q is converted to table IDs; the complete encoded tapes
+    # remain as compact sources but no N-row Q field bank is retained.
+    lookup_commit_workers = min(parallel_threads, lookup_arguments) if lookup_arguments else 0
+    lookup_query_tape_bytes_per_instance = sum(
+        (active_lookup_rows * count * width + 7) // 8
+        for count, width in zip(lookup_query_counts, lookup_argument_widths)
+    )
+    lookup_table_id_tape_bytes_per_instance = sum(
+        (active_lookup_rows * width + 7) // 8
+        for width in lookup_group_widths
+    )
+    lookup_query_spill_bytes = proof_instance_count * lookup_query_tape_bytes_per_instance
+    lookup_table_spill_bytes = proof_instance_count * lookup_table_id_tape_bytes_per_instance
+    lookup_m_spill_bytes = 0
+    lookup_phi_spill_bytes = 0
+    # `codebook` and `winner_rows` grow with try_reserve(1), so reserve at
+    # most twice the admitted cardinality each; beta inverses use one exact
+    # cardinality-sized Vec. This counts retained capacities, not just len().
+    lookup_table_codebook_bytes = proof_instance_count * sum(
+        int(bound) * (3 * fr + 2 * usize_bytes) for bound in table_bounds
+    )
+    lookup_sparse_count_bytes = proof_instance_count * sum(
+        int(table_bounds[int(group)]) * 8 for group in lookup_group_indices
+    )
+    lookup_phi_blind_bytes = proof_instance_count * lookup_arguments * blinding_factors * fr
+    lookup_compact_source_bytes = (
+        lookup_query_spill_bytes
+        + lookup_table_spill_bytes
+        + lookup_table_codebook_bytes
+        + lookup_sparse_count_bytes
+        + lookup_phi_blind_bytes
+    )
+    # During prepare, the mapped full-field window is one compressed Q; during
+    # later commit/H/opening consumers the analogous single window is m or phi.
+    lookup_prepare_q_window_bytes = lookup_prepare_workers * n * fr
+    lookup_commit_phi_window_bytes = lookup_commit_workers * n * fr
+    lookup_h_source_rebuild_mapped_window_bytes = 2 * n * fr if lookup_arguments else 0
+    lookup_h_source_rebuild_host_window_bytes = (
+        (2 * n + active_lookup_rows) * fr if lookup_arguments else 0
+    )
+    lookup_spill_known = (
+        lookup_query_spill_bytes
+        + lookup_table_spill_bytes
+        + lookup_prepare_q_window_bytes
+        + lookup_commit_phi_window_bytes
+        + lookup_h_source_rebuild_mapped_window_bytes
+    )
     max_gate_dependencies = max(custom_gate_dependencies, default=0)
     max_lookup_dependencies = max(lookup_dependencies, default=0)
     max_shuffle_dependencies = max(shuffle_dependencies, default=0)
@@ -2442,19 +2761,25 @@ def _native_capacity_requirements(
     # `evaluate_h` always keeps the three PK boundary-selector cosets and the
     # quotient accumulator mapped; only the current expression group's exact
     # source dependencies and their cosets are additionally touched.
-    proof_eval_hot_mmap = 4 * proof_domain * fr + evaluation_temporary_mapped_bytes + evaluation_source_hot_bytes
+    proof_eval_hot_mmap = (
+        4 * proof_domain * fr
+        + evaluation_temporary_mapped_bytes
+        + evaluation_source_hot_bytes
+        + permutation_grand_product_window_bytes
+    )
     proof_spill_known = (
         setup_persisted_maps
-        + advice * n * fr
         + 2 * instances * n * fr
         + proof_domain * fr
         + quotient_coefficients * fr
         + lookup_spill_known
-        + advice_event_log_reserved_upper
-        + advice_latest_map_bytes
+        + advice_phase_mapped_peak
+        + permutation_reconstruction_mapped_bytes
+        + permutation_grand_product_bank_mapped_bytes
         + evaluation_temporary_mapped_bytes
         + shplonk_transient_spill_upper
         + native_pk_read_backing_required
+        + native_pk_read_mapped_extra
     )
     # The bounded native proving-key reader uses one lazily allocated
     # successor-store cache, one target-bitmap cache, its source-derived
@@ -2469,9 +2794,16 @@ def _native_capacity_requirements(
         + native_pk_read_validation_buffers
         + native_pk_read_stream_buffer
     )
+    # The fixed-value decoder holds at most one raw N-vector or one <=256
+    # value codebook plus row IDs. Coefficient materialization adds its clone;
+    # the source-derived FFT upper is added after the common proof FFT bound
+    # is computed below.
+    native_pk_fixed_value_decode_host = max(n * fr, 256 * fr + n)
     # Native save_pk also emits a separate VK file; include its known selector
     # bitmaps and commitments in the retained-artifact reservation.
     setup_key_artifact_upper += selector_vk_bytes + commitment_vk_bytes
+    if setup_key_artifact_upper > sys.maxsize:
+        abort("native PK and separate VK artifact upper bound exceeds the native address range")
     # Formal native keygen now stores selector activations and permutation
     # state in bounded hybrid/sparse stores. The old HashMap and full successor
     # Vec estimates are not allocations in this path. Before the mandatory
@@ -2570,6 +2902,15 @@ def _native_capacity_requirements(
     # group at a time and are bounded by proof_eval_hot_mmap below.
     proof_nonprepare_hot_mmap = 3 * proof_domain * fr
     proof_nonprepare_resident = proof_nonprepare_heap + proof_nonprepare_hot_mmap
+    # Commit's live mapped/heap windows are omega powers, sigma, the current
+    # Z polynomial, and its modified-values accumulator. Z conversion to
+    # coefficients is in-place, so the persistent Z bank below is not copied.
+    permutation_grand_product_commit_workspace_bytes = 4 * permutation_grand_product_window_bytes
+    proof_permutation_grand_product_commit_host_peak = (
+        proof_nonprepare_resident
+        + permutation_grand_product_commit_workspace_bytes
+        + icicle_msm_staging
+    )
     # The native proof's assignment callback keeps one event column for each
     # advice column through circuit synthesis. The source-derived GAT live
     # tensor envelope is concurrent with this synthesis, while event decode
@@ -2578,15 +2919,15 @@ def _native_capacity_requirements(
     gat_proof_synthesis_host_peak = (
         proof_nonprepare_resident
         + gat_transient_witness_bytes
-        + advice * advice_event_column_bytes
+        + advice_event_column_state_resident_bytes
+        + advice_event_flush_scratch_bytes
     )
     advice_conversion_mapped_host_upper = n * (latest_element_bytes + fr)
     advice_conversion_host_peak = (
         proof_nonprepare_resident
-        + advice_event_batch_bytes
-        + advice_conversion_mapped_host_upper
+        + advice * int(memory["advice_event_column_metadata_bytes_upper"])
+        + advice_phase_allocation_peak
     )
-    native_pk_read_host_peak = proof_nonprepare_resident + native_pk_read_host_scratch
     lookup_map_allocations: list[int] = []
     previous_bucket_growth: list[int] = []
     for upper in table_bounds:
@@ -2596,53 +2937,137 @@ def _native_capacity_requirements(
         lookup_map_allocations.append(map_allocation)
         previous_bucket_count = bucket_count // 2 if bucket_count > 4 else 0
         previous_bucket_growth.append(previous_bucket_count * (map_entry + 1) + (16 if previous_bucket_count else 0))
-    lookup_maps_retained = sum(lookup_map_allocations)
-    lookup_map_growth_peak = max(previous_bucket_growth, default=0)
-    lookup_table_polynomials = lookup_table_spill_bytes
+    table_build_workers = min(parallel_threads, proof_instance_count) if table_group_count else 0
+    lookup_maps_retained = proof_instance_count * sum(lookup_map_allocations)
+    lookup_map_growth_peak = table_build_workers * max(previous_bucket_growth, default=0)
+    lookup_table_tapes = lookup_table_spill_bytes
     lookup_metadata_retained = (
-        table_group_count * (prepared_table_header + vec_header)
-        + lookup_arguments * committed_header
-        + lookup_arguments * prepared_header
-        + lookup_queries * polynomial_header
-        + 2 * vec_header
+        proof_instance_count
+        * (
+            table_group_count * (prepared_table_header + compact_table_header)
+            + lookup_arguments
+            * (
+                committed_header
+                + prepared_header
+                + lookup_source_header
+                + lookup_id_tape_header
+            )
+        )
     )
-    lookup_table_cache_retained_host = lookup_maps_retained + lookup_table_polynomials + lookup_metadata_retained
-    # `Expression::evaluate` and the dense polynomial fold can have three
-    # N-element field vectors live while one unique table group is built.
-    lookup_table_build_peak = (3 * n * fr + lookup_map_growth_peak + (repr_bytes + 32)) if table_group_count else 0
+    lookup_compact_source_host_retained = lookup_compact_source_bytes + lookup_metadata_retained
+    lookup_table_cache_retained_host = (
+        lookup_maps_retained + lookup_compact_source_host_retained
+    )
+    # Expression evaluation and the dense fold can have three N-element
+    # field vectors live while each active proof instance builds one table;
+    # its packed row tape and retained codebook are already in the source sum.
+    max_lookup_table_bound = max((int(bound) for bound in table_bounds), default=0)
+    # At most one growing Vec's previous allocation overlaps its replacement;
+    # reserve is requested only while len < the admitted cardinality. Retained
+    # codebook/winner capacities are already included in the source sum above.
+    lookup_table_vec_reallocation_extra = max_lookup_table_bound * max(fr, usize_bytes)
+    lookup_table_build_peak = (
+        table_build_workers
+        * (
+            3 * n * fr
+            + max(previous_bucket_growth, default=0)
+            + repr_bytes
+            + 32
+            + lookup_table_vec_reallocation_extra
+        )
+        if table_group_count
+        else 0
+    )
     lookup_table_cache_peak_host = lookup_table_cache_retained_host + lookup_table_build_peak
+    # One active input expression is evaluated at a time. Its expression Vec
+    # overlaps the mapped compressed Q, and the count conversion briefly owns
+    # both AtomicU64 and u64 vectors bounded by the largest table codebook.
     lookup_prepare_task_bytes = (
-        (n * (max_lookup_queries * fr + atomic_u64 + 2 * fr) + max_lookup_queries * polynomial_header + prepared_header + 2 * vec_header)
+        (
+            2 * n * fr
+            + max((int(bound) for bound in table_bounds), default=0) * (atomic_u64 + 8)
+            + polynomial_header
+            + prepared_header
+            + 2 * vec_header
+        )
         if lookup_arguments
         else 0
     )
-    lookup_prepare_host_peak = proof_nonprepare_resident + lookup_table_cache_peak_host + lookup_prepare_task_bytes + icicle_msm_staging
-    # Source lifetimes in commit_grand_sum: the largest heap phase is either
-    # the accumulator + current input + BatchInvert's (Fr, &mut Fr) prefix,
-    # or three dense vectors while constructing log_derivatives_diff. The
-    # two accumulators are dropped before phi construction; phi is spilled.
-    # Add only the touched input/m/phi mapping window per concurrent task.
-    lookup_commit_heap_per_task = n * max(2 * fr + batch_invert_entry, 3 * fr)
-    lookup_commit_active_map_per_task = 3 * n * fr
-    lookup_commit_task_bytes = (lookup_commit_heap_per_task + lookup_commit_active_map_per_task + 5 * vec_header) if lookup_arguments else 0
-    # Includes the one shared table-expression group mapping in addition to
-    # the per-task input, m, and phi windows.
-    lookup_commit_active_map_window = (4 * n * fr) if lookup_arguments else 0
-    lookup_commit_host_peak = proof_nonprepare_resident + lookup_table_polynomials + lookup_metadata_retained + lookup_commit_task_bytes + icicle_msm_staging
+    lookup_prepare_host_peak = (
+        proof_nonprepare_resident
+        + lookup_table_cache_peak_host
+        + lookup_prepare_workers * lookup_prepare_task_bytes
+        + icicle_msm_staging
+    )
+    # Compact grand-sum reconstruction has one R-row heap accumulator and
+    # one N-row mapped phi polynomial. The shared beta-inverse codebook and
+    # all encoded tapes are retained-source backing, counted above.
+    lookup_commit_heap_per_task = active_lookup_rows * fr
+    lookup_commit_active_map_per_task = n * fr
+    lookup_commit_task_bytes = (
+        lookup_commit_heap_per_task
+        + lookup_commit_active_map_per_task
+        + 4 * vec_header
+    ) if lookup_arguments else 0
+    lookup_commit_active_map_window = (
+        lookup_commit_workers * n * fr if lookup_arguments else 0
+    )
+    lookup_commit_host_peak = (
+        proof_nonprepare_resident
+        + lookup_compact_source_host_retained
+        + lookup_commit_workers * lookup_commit_task_bytes
+        + icicle_msm_staging
+    )
     parallel_split_m = 1 << (parallel_threads.bit_length() - 1)
     parallel_task_elements = parallel_threads * parallel_split_m
     parallel_fft_transient = proof_domain * fr + parallel_lut_elements * fr + parallel_task_elements * fr
     recursive_fft_transient = 2 * proof_domain * fr if uses_recursive_fft else 0
     fft_cache_build_scratch = proof_domain * fr if uses_recursive_fft else 0
     proof_fft_transient = max(parallel_fft_transient, recursive_fft_transient, fft_cache_build_scratch)
+    native_pk_materialize_decode_host = (
+        native_pk_fixed_value_decode_host
+        + n * fr
+        + proof_fft_transient
+        + read_scratch
+    )
+    native_pk_materialize_boundary_host = (
+        n * fr + (4096 * fr) + proof_fft_transient
+    )
+    native_pk_materialize_host_scratch = max(
+        native_pk_materialize_decode_host,
+        native_pk_materialize_boundary_host,
+    )
+    if any(
+        value > sys.maxsize
+        for value in (
+            native_pk_materialize_decode_host,
+            native_pk_materialize_boundary_host,
+            native_pk_materialize_host_scratch,
+        )
+    ):
+        abort("native PK materialization host scratch exceeds the native address range")
+    native_pk_read_host_peak = (
+        proof_nonprepare_resident
+        + native_pk_read_host_scratch
+        + native_pk_materialize_host_scratch
+    )
     lookup_eval_workers = min(parallel_threads, max(1, (proof_domain + 4095) // 4096)) if lookup_arguments else 0
     lookup_eval_task_host_peak = (lookup_eval_workers * 4096 * max_lookup_input_count * (fr + batch_invert_entry)) if lookup_arguments else 0
-    proof_eval_h_host_peak = proof_nonprepare_heap + proof_eval_hot_mmap + proof_fft_cache_bytes + max(proof_fft_transient, lookup_eval_task_host_peak)
+    proof_eval_h_host_peak = (
+        proof_nonprepare_heap
+        + lookup_compact_source_host_retained
+        + proof_eval_hot_mmap
+        + proof_fft_cache_bytes
+        + max(
+            proof_fft_transient,
+            lookup_eval_task_host_peak + lookup_h_source_rebuild_host_window_bytes,
+        )
+    )
     shplonk_host_peak = (
         proof_nonprepare_heap
         + proof_eval_hot_mmap
         + proof_fft_cache_bytes
-        + lookup_table_cache_retained_host
+        + lookup_compact_source_host_retained
         + icicle_msm_staging
         + shplonk_extension_host_upper
         + shplonk_fixed_workspace_bytes
@@ -2653,6 +3078,7 @@ def _native_capacity_requirements(
         lookup_commit_host_peak,
         proof_eval_h_host_peak,
         shplonk_host_peak,
+        proof_permutation_grand_product_commit_host_peak,
         gat_proof_synthesis_host_peak,
         advice_conversion_host_peak,
         native_pk_read_host_peak,
@@ -2668,8 +3094,16 @@ def _native_capacity_requirements(
     host_known = max(setup_keygen_host_peak, srs_setup_peak, proof_host_peak)
     return {
         "fixed_assignment_mapped_bytes": fixed_assignment_maps,
+        "fixed_source_runtime_bytes": fixed_source_runtime_bytes,
+        "fixed_source_descriptor_bytes": fixed_post * int(memory["size_of_fixed_column_source_bytes"]),
         "setup_persisted_mapped_bytes": setup_persisted_maps,
         "setup_transition_mapped_bytes": setup_transition_map,
+        "permutation_reconstruction_mapped_bytes": permutation_reconstruction_mapped_bytes,
+        "permutation_grand_product_set_count": permutation_grand_product_set_count,
+        "permutation_grand_product_bank_mapped_bytes": permutation_grand_product_bank_mapped_bytes,
+        "permutation_grand_product_window_mapped_bytes": permutation_grand_product_window_bytes,
+        "permutation_grand_product_commit_workspace_bytes": permutation_grand_product_commit_workspace_bytes,
+        "proof_permutation_grand_product_commit_host_peak_bytes": proof_permutation_grand_product_commit_host_peak,
         "setup_disk_known_bytes": setup_mapped_peak,
         "setup_mapped_peak_bytes": setup_mapped_peak,
         "proof_spill_known_bytes": proof_spill_known,
@@ -2679,20 +3113,36 @@ def _native_capacity_requirements(
         "advice_event_log_reserved_upper_bytes": advice_event_log_reserved_upper,
         "advice_latest_index_mapped_bytes": advice_latest_map_bytes,
         "advice_conversion_current_field_map_upper_bytes": n * fr,
-        "advice_event_column_resident_upper_bytes": advice * advice_event_column_bytes,
+        "advice_phase_ids_upper": [row[0] for row in advice_phase_rows],
+        "advice_phase_column_counts_upper": [row[1] for row in advice_phase_rows],
+        "advice_phase_event_log_reserved_upper_bytes": [row[2] for row in advice_phase_rows],
+        "advice_phase_polynomial_bank_upper_bytes": [row[3] for row in advice_phase_rows],
+        "advice_phase_mapped_peak_upper_bytes": advice_phase_mapped_peak,
+        "advice_phase_allocation_peak_upper_bytes": advice_phase_allocation_peak,
+        "advice_event_column_resident_upper_bytes": advice_event_column_state_resident_bytes,
+        "advice_event_pending_buffer_resident_upper_bytes": advice_event_pending_resident_bytes,
+        "advice_event_writer_buffer_resident_upper_bytes": advice_event_writer_resident_bytes,
+        "advice_event_flush_scratch_resident_upper_bytes": advice_event_flush_scratch_bytes,
         "advice_event_decode_batch_resident_upper_bytes": advice_event_batch_bytes,
-        "native_pk_read_successor_file_bytes": native_successor_file_bytes,
-        "native_pk_read_successor_reserved_bytes": native_successor_backing_reserved_bytes,
+        "native_keygen_successor_file_bytes": native_successor_file_bytes,
+        "native_keygen_successor_reserved_bytes": native_successor_backing_reserved_bytes,
+        "native_pk_sigma_index_width_bits": sigma_index_width_bits,
+        "native_pk_sigma_packed_payload_bytes": sigma_payload_bytes_upper,
+        "native_pk_read_successor_file_bytes": sigma_payload_bytes_upper,
+        "native_pk_read_successor_reserved_bytes": 0,
         "native_pk_read_target_bitmap_virtual_bytes": target_bitmap_virtual_bytes,
         "native_pk_read_target_bitmap_backing_upper_bytes": target_bitmap_page_bytes,
         "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": target_bitmap_allocation_bitmap_bytes,
         "native_pk_read_backing_required_bytes": native_pk_read_backing_required,
+        "native_pk_read_mapped_peak_upper_bytes": native_pk_read_mapped_peak,
+        "native_pk_read_mapped_extra_upper_bytes": native_pk_read_mapped_extra,
         "native_pk_read_backing_evidence_kind": (
-            "exact_successor_count_with_page_rounded_store_and_4KiB_target_page_upper"
+            "packed_authenticated_pk_view_no_successor_copy_and_one_cell_bitmap_page_upper"
             if native_census is not None
-            else "source_successor_ceiling_with_page_rounded_store_and_4KiB_target_page_upper_census_pending"
+            else "shape_successor_ceiling_with_pk_view_and_one_cell_bitmap_page_upper_census_pending"
         ),
         "native_pk_read_host_scratch_upper_bytes": native_pk_read_host_scratch,
+        "native_pk_materialize_host_scratch_upper_bytes": native_pk_materialize_host_scratch,
         "native_pk_read_successor_cache_upper_bytes": int(memory["native_successor_read_cache_bytes"]),
         "native_pk_read_target_bitmap_fixed_cache_upper_bytes": int(memory["native_target_bitmap_fixed_cache_bytes"]),
         "native_pk_read_validation_buffers_upper_bytes": native_pk_read_validation_buffers,
@@ -2701,6 +3151,19 @@ def _native_capacity_requirements(
         "lookup_m_spill_bytes": lookup_m_spill_bytes,
         "lookup_table_spill_bytes": lookup_table_spill_bytes,
         "lookup_phi_spill_bytes": lookup_phi_spill_bytes,
+        "lookup_query_tape_bytes_per_instance": lookup_query_tape_bytes_per_instance,
+        "lookup_table_id_tape_bytes_per_instance": lookup_table_id_tape_bytes_per_instance,
+        "lookup_id_width_bits_by_group": lookup_group_widths,
+        "lookup_argument_table_group_indices": [int(index) for index in lookup_group_indices],
+        "lookup_table_codebook_and_inverse_capacity_upper_bytes": lookup_table_codebook_bytes,
+        "lookup_sparse_multiplicity_upper_bytes": lookup_sparse_count_bytes,
+        "lookup_phi_blind_tail_upper_bytes": lookup_phi_blind_bytes,
+        "lookup_compact_source_retained_host_bytes": lookup_compact_source_host_retained,
+        "lookup_prepare_q_mapped_window_bytes_upper": lookup_prepare_q_window_bytes,
+        "lookup_commit_phi_mapped_window_bytes_upper": lookup_commit_phi_window_bytes,
+        "lookup_h_source_rebuild_mapped_window_bytes_upper": lookup_h_source_rebuild_mapped_window_bytes,
+        "lookup_h_source_rebuild_host_window_bytes_upper": lookup_h_source_rebuild_host_window_bytes,
+        "lookup_shplonk_lagrange_rebuild_spill_window_bytes_upper": shplonk_source_rebuild_spill_window,
         "lookup_spill_known_bytes": lookup_spill_known,
         "srs_loaded_host_bytes": srs_loaded,
         "srs_downsize_peak_host_bytes": srs_downsize_peak,
@@ -2730,6 +3193,7 @@ def _native_capacity_requirements(
         "proof_nonprepare_resident_host_bytes": proof_nonprepare_resident,
         "proof_nonprepare_heap_host_bytes": proof_nonprepare_heap,
         "proof_nonprepare_hot_mmap_host_bytes": proof_nonprepare_hot_mmap,
+        "proof_permutation_grand_product_eval_mapped_window_bytes": permutation_grand_product_window_bytes,
         "proof_evaluation_hot_mmap_host_bytes": proof_eval_hot_mmap,
         "proof_evaluation_coset_mapped_window_bytes": evaluation_temporary_mapped_bytes,
         "proof_evaluation_source_mapped_window_bytes": evaluation_source_hot_bytes,
@@ -2745,10 +3209,13 @@ def _native_capacity_requirements(
         "shplonk_transient_spill_upper_bytes": shplonk_transient_spill_upper,
         "lookup_map_retained_host_bytes": lookup_maps_retained,
         "lookup_map_growth_transient_host_bytes": lookup_map_growth_peak,
-        "lookup_table_polynomial_mapped_bytes": lookup_table_polynomials,
+        "lookup_table_id_tape_mapped_bytes": lookup_table_tapes,
         "lookup_metadata_retained_host_bytes": lookup_metadata_retained,
         "lookup_table_cache_retained_host_bytes": lookup_table_cache_retained_host,
         "lookup_table_build_transient_host_bytes": lookup_table_build_peak,
+        "lookup_table_vec_reallocation_extra_upper_bytes": (
+            table_build_workers * lookup_table_vec_reallocation_extra
+        ),
         "lookup_table_cache_peak_host_bytes": lookup_table_cache_peak_host,
         "lookup_prepare_task_host_bytes": lookup_prepare_task_bytes,
         "lookup_prepare_host_peak_bytes": lookup_prepare_host_peak,
@@ -2763,6 +3230,7 @@ def _native_capacity_requirements(
         "lookup_map_bounds": [int(item) for item in table_bounds],
         "lookup_map_bucket_count_upper": [max(4, 1 << (((int(item) * 8 + 6) // 7 - 1).bit_length())) for item in table_bounds],
         "setup_key_artifact_upper_bytes": setup_key_artifact_upper,
+        "pk_v4_fixed_value_wire_upper_bytes": fixed_value_wire_upper,
         "quotient_extended_backing_bytes": proof_domain * fr,
         "quotient_piece_bytes": quotient_coefficients * fr,
         "setup_witnessless_shape_values_upper_bytes": setup_witnessless_shape_values_upper,
@@ -2956,7 +3424,7 @@ def _write_native_keygen_budget_receipt(
     if not isinstance(relation_identity, dict):
         abort(f"{dataset} native keygen budget lacks its admitted relation identity")
     value = {
-        "schema": "ezkl.native-keygen-budget.v1",
+        "schema": "ezkl.native-keygen-budget.v2",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -2967,6 +3435,8 @@ def _write_native_keygen_budget_receipt(
         "build_environment_sha256": resume_identity.get("build_environment_sha256"),
         "logrows": admission.get("logrows"),
         "domain_size": admission.get("domain_size"),
+        "native_pk_format_version": admission["native_memory_model"]["native_pk_format_version"],
+        "native_pk_sigma_wire_encoding": admission["native_memory_model"]["native_pk_sigma_wire_encoding"],
         "gat_transient_witness_bytes_upper": gat_transient_witness,
         "host_available_bytes": setup_check.get("host_available_bytes"),
         "host_os_diagnostic_reserve_bytes": setup_check.get("host_os_diagnostic_reserve_bytes"),
@@ -3011,12 +3481,22 @@ def _write_native_prove_budget_receipt(
     host_available = prove_check.get("host_available_bytes")
     host_required = prove_check.get("host_required_known_bytes")
     native_read_required = capacity.get("native_pk_read_backing_required_bytes")
+    native_read_mapped_peak = capacity.get("native_pk_read_mapped_peak_upper_bytes")
+    native_read_mapped_extra = capacity.get("native_pk_read_mapped_extra_upper_bytes")
     native_read_host_scratch = capacity.get("native_pk_read_host_scratch_upper_bytes")
+    native_materialize_host_scratch = capacity.get("native_pk_materialize_host_scratch_upper_bytes")
     native_read_cache = capacity.get("native_pk_read_successor_cache_upper_bytes")
     target_bitmap_cache = capacity.get("native_pk_read_target_bitmap_fixed_cache_upper_bytes")
     target_bitmap_allocation = capacity.get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes")
     validation_buffers = capacity.get("native_pk_read_validation_buffers_upper_bytes")
     stream_buffer = capacity.get("native_pk_read_stream_buffer_upper_bytes")
+    sigma_width_bits = capacity.get("native_pk_sigma_index_width_bits")
+    sigma_payload_bytes = capacity.get("native_pk_sigma_packed_payload_bytes")
+    grand_product_set_count = capacity.get("permutation_grand_product_set_count")
+    grand_product_bank_bytes = capacity.get("permutation_grand_product_bank_mapped_bytes")
+    grand_product_window_bytes = capacity.get("permutation_grand_product_window_mapped_bytes")
+    grand_product_commit_workspace_bytes = capacity.get("permutation_grand_product_commit_workspace_bytes")
+    grand_product_commit_host_peak = capacity.get("proof_permutation_grand_product_commit_host_peak_bytes")
     if any(
         isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize
         for value in (
@@ -3025,20 +3505,46 @@ def _write_native_prove_budget_receipt(
             host_available,
             host_required,
             native_read_required,
+            native_read_mapped_peak,
+            native_read_mapped_extra,
             native_read_host_scratch,
+            native_materialize_host_scratch,
             native_read_cache,
             target_bitmap_cache,
             target_bitmap_allocation,
             validation_buffers,
             stream_buffer,
+            sigma_width_bits,
+            sigma_payload_bytes,
+            grand_product_set_count,
+            grand_product_bank_bytes,
+            grand_product_window_bytes,
+            grand_product_commit_workspace_bytes,
+            grand_product_commit_host_peak,
         )
     ):
         abort(f"{dataset} native prove budget has malformed host or disk accounting")
     if native_read_host_scratch != native_read_cache + target_bitmap_cache + target_bitmap_allocation + validation_buffers + stream_buffer:
         abort(f"{dataset} native PK reader host scratch does not equal its source-derived cache/buffer components")
-    if host_required > host_available or native_read_host_scratch > host_required:
+    if (
+        grand_product_bank_bytes != grand_product_set_count * grand_product_window_bytes
+        or grand_product_commit_workspace_bytes != 4 * grand_product_window_bytes
+    ):
+        abort(f"{dataset} permutation grand-product backing does not match its authenticated one-set geometry")
+    if (
+        host_required > host_available
+        or native_read_host_scratch + native_materialize_host_scratch > host_required
+        or grand_product_commit_host_peak > host_required
+        or grand_product_window_bytes > host_required
+        or grand_product_commit_workspace_bytes > host_required
+    ):
         abort(f"{dataset} native PK reader host scratch exceeds the checked shared-memory envelope")
-    if native_read_required > disk_required:
+    if (
+        native_read_required > disk_required
+        or native_read_mapped_peak > disk_required
+        or native_read_mapped_extra > disk_required
+        or grand_product_bank_bytes > disk_required
+    ):
         abort(f"{dataset} native PK read backing is missing from the checked proof disk peak")
     other_known = disk_required - native_read_required
     max_backing = min(native_read_required, disk_available - other_known) if disk_available >= other_known else 0
@@ -3051,7 +3557,7 @@ def _write_native_prove_budget_receipt(
     if not isinstance(required_identity, dict):
         abort(f"{dataset} native prove budget lacks the admitted relation identity")
     value = {
-        "schema": "ezkl.native-prove-budget.v1",
+        "schema": "ezkl.native-prove-budget.v2",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -3066,11 +3572,23 @@ def _write_native_prove_budget_receipt(
         "setup_receipt_sha256": setup_receipt_sha256,
         "native_keygen_budget_sha256": native_keygen_budget_sha256,
         "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
+        "native_pk_format_version": admission["native_memory_model"]["native_pk_format_version"],
+        "native_pk_sigma_wire_encoding": admission["native_memory_model"]["native_pk_sigma_wire_encoding"],
+        "native_pk_sigma_index_width_bits": sigma_width_bits,
+        "native_pk_sigma_packed_payload_bytes": sigma_payload_bytes,
         "disk_available_bytes": disk_available,
         "disk_required_known_bytes": disk_required,
+        "permutation_grand_product_set_count": grand_product_set_count,
+        "permutation_grand_product_bank_mapped_bytes": grand_product_bank_bytes,
+        "permutation_grand_product_window_mapped_bytes": grand_product_window_bytes,
+        "permutation_grand_product_commit_workspace_bytes": grand_product_commit_workspace_bytes,
+        "proof_permutation_grand_product_commit_host_peak_bytes": grand_product_commit_host_peak,
         "native_pk_read_backing_required_bytes": native_read_required,
+        "native_pk_read_mapped_peak_upper_bytes": native_read_mapped_peak,
+        "native_pk_read_mapped_extra_upper_bytes": native_read_mapped_extra,
         "max_total_backing_bytes": max_backing,
         "native_pk_read_host_scratch_upper_bytes": native_read_host_scratch,
+        "native_pk_materialize_host_scratch_upper_bytes": native_materialize_host_scratch,
         "native_pk_read_successor_cache_upper_bytes": native_read_cache,
         "native_pk_read_target_bitmap_fixed_cache_upper_bytes": target_bitmap_cache,
         "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": target_bitmap_allocation,
@@ -3080,7 +3598,7 @@ def _write_native_prove_budget_receipt(
         "host_required_known_bytes": host_required,
         "integrated_device": workspace_query.get("integrated_device"),
         "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
-        "backing_scope": "single_formal_pk_stream_read_and_target_validation; exact_successor_count_plus_4KiB_target_page_upper",
+        "backing_scope": "packed_authenticated_pk_view_plus_one_cell_domain_target_bitmap",
         "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
     }
     _write_session_record(path, value)
@@ -3114,7 +3632,7 @@ def _load_reusable_native_prove_budget_receipt(
     if not isinstance(budget, dict) or not isinstance(relation, dict):
         return None
     expected = {
-        "schema": "ezkl.native-prove-budget.v1",
+        "schema": "ezkl.native-prove-budget.v2",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -3129,8 +3647,20 @@ def _load_reusable_native_prove_budget_receipt(
         "setup_receipt_sha256": setup_receipt_sha256,
         "native_keygen_budget_sha256": native_keygen_budget_sha256,
         "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
+        "native_pk_format_version": admission.get("native_memory_model", {}).get("native_pk_format_version") if isinstance(admission.get("native_memory_model"), dict) else None,
+        "native_pk_sigma_wire_encoding": admission.get("native_memory_model", {}).get("native_pk_sigma_wire_encoding") if isinstance(admission.get("native_memory_model"), dict) else None,
+        "native_pk_sigma_index_width_bits": capacity.get("native_pk_sigma_index_width_bits"),
+        "native_pk_sigma_packed_payload_bytes": capacity.get("native_pk_sigma_packed_payload_bytes"),
+        "permutation_grand_product_set_count": capacity.get("permutation_grand_product_set_count"),
+        "permutation_grand_product_bank_mapped_bytes": capacity.get("permutation_grand_product_bank_mapped_bytes"),
+        "permutation_grand_product_window_mapped_bytes": capacity.get("permutation_grand_product_window_mapped_bytes"),
+        "permutation_grand_product_commit_workspace_bytes": capacity.get("permutation_grand_product_commit_workspace_bytes"),
+        "proof_permutation_grand_product_commit_host_peak_bytes": capacity.get("proof_permutation_grand_product_commit_host_peak_bytes"),
         "native_pk_read_backing_required_bytes": capacity.get("native_pk_read_backing_required_bytes"),
+        "native_pk_read_mapped_peak_upper_bytes": capacity.get("native_pk_read_mapped_peak_upper_bytes"),
+        "native_pk_read_mapped_extra_upper_bytes": capacity.get("native_pk_read_mapped_extra_upper_bytes"),
         "native_pk_read_host_scratch_upper_bytes": capacity.get("native_pk_read_host_scratch_upper_bytes"),
+        "native_pk_materialize_host_scratch_upper_bytes": capacity.get("native_pk_materialize_host_scratch_upper_bytes"),
         "native_pk_read_successor_cache_upper_bytes": capacity.get("native_pk_read_successor_cache_upper_bytes"),
         "native_pk_read_target_bitmap_fixed_cache_upper_bytes": capacity.get("native_pk_read_target_bitmap_fixed_cache_upper_bytes"),
         "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": capacity.get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes"),
@@ -3138,7 +3668,7 @@ def _load_reusable_native_prove_budget_receipt(
         "native_pk_read_stream_buffer_upper_bytes": capacity.get("native_pk_read_stream_buffer_upper_bytes"),
         "integrated_device": workspace_query.get("integrated_device"),
         "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
-        "backing_scope": "single_formal_pk_stream_read_and_target_validation; exact_successor_count_plus_4KiB_target_page_upper",
+        "backing_scope": "packed_authenticated_pk_view_plus_one_cell_domain_target_bitmap",
         "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
     }
     dynamic_fields = {
@@ -3152,7 +3682,13 @@ def _load_reusable_native_prove_budget_receipt(
         for name in (
             "disk_available_bytes", "disk_required_known_bytes", "max_total_backing_bytes",
             "host_available_bytes", "host_required_known_bytes", "native_pk_read_backing_required_bytes",
-            "native_pk_read_host_scratch_upper_bytes", "native_pk_read_successor_cache_upper_bytes",
+            "native_pk_format_version", "native_pk_sigma_index_width_bits", "native_pk_sigma_packed_payload_bytes",
+            "permutation_grand_product_set_count", "permutation_grand_product_bank_mapped_bytes",
+            "permutation_grand_product_window_mapped_bytes", "permutation_grand_product_commit_workspace_bytes",
+            "proof_permutation_grand_product_commit_host_peak_bytes",
+            "native_pk_read_mapped_peak_upper_bytes", "native_pk_read_mapped_extra_upper_bytes",
+            "native_pk_read_host_scratch_upper_bytes", "native_pk_materialize_host_scratch_upper_bytes",
+            "native_pk_read_successor_cache_upper_bytes",
             "native_pk_read_target_bitmap_fixed_cache_upper_bytes", "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes", "native_pk_read_stream_buffer_upper_bytes", "device_workspace_peak_bytes",
         )
@@ -3170,6 +3706,14 @@ def _load_reusable_native_prove_budget_receipt(
     disk_required = int(integers["disk_required_known_bytes"])
     disk_available = int(integers["disk_available_bytes"])
     native_read_required = int(integers["native_pk_read_backing_required_bytes"])
+    native_read_mapped_peak = int(integers["native_pk_read_mapped_peak_upper_bytes"])
+    native_read_mapped_extra = int(integers["native_pk_read_mapped_extra_upper_bytes"])
+    native_materialize_scratch = int(integers["native_pk_materialize_host_scratch_upper_bytes"])
+    grand_product_set_count = int(integers["permutation_grand_product_set_count"])
+    grand_product_bank = int(integers["permutation_grand_product_bank_mapped_bytes"])
+    grand_product_window = int(integers["permutation_grand_product_window_mapped_bytes"])
+    grand_product_workspace = int(integers["permutation_grand_product_commit_workspace_bytes"])
+    grand_product_commit_host_peak = int(integers["proof_permutation_grand_product_commit_host_peak_bytes"])
     other_known = disk_required - native_read_required
     expected_backing = min(native_read_required, disk_available - other_known) if other_known >= 0 and disk_available >= other_known else 0
     if (
@@ -3178,11 +3722,19 @@ def _load_reusable_native_prove_budget_receipt(
         or int(integers["host_available_bytes"]) <= 0
         or disk_required > disk_available
         or native_read_required > disk_required
+        or native_read_mapped_peak > disk_required
+        or native_read_mapped_extra > disk_required
+        or grand_product_bank != grand_product_set_count * grand_product_window
+        or grand_product_workspace != 4 * grand_product_window
+        or grand_product_bank > disk_required
+        or grand_product_commit_host_peak > int(integers["host_required_known_bytes"])
+        or grand_product_window > int(integers["host_required_known_bytes"])
         or int(integers["max_total_backing_bytes"]) != expected_backing
         or int(integers["max_total_backing_bytes"]) < native_read_required
         or int(integers["host_required_known_bytes"]) > int(integers["host_available_bytes"])
         or int(integers["native_pk_read_host_scratch_upper_bytes"]) != scratch
-        or int(integers["native_pk_read_host_scratch_upper_bytes"]) > int(integers["host_required_known_bytes"])
+        or int(integers["native_pk_read_host_scratch_upper_bytes"]) + native_materialize_scratch
+        > int(integers["host_required_known_bytes"])
     ):
         return None
     return sha256(path)
@@ -4161,7 +4713,7 @@ def _load_native_keygen_receipt(
     if not isinstance(relation_identity, dict):
         abort(f"{dataset} native admission has no authenticated relation identity")
     expected_budget = {
-        "schema": "ezkl.native-keygen-budget.v1",
+        "schema": "ezkl.native-keygen-budget.v2",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -4172,6 +4724,8 @@ def _load_native_keygen_receipt(
         "build_environment_sha256": resume_identity.get("build_environment_sha256"),
         "logrows": admission.get("logrows"),
         "domain_size": admission.get("domain_size"),
+        "native_pk_format_version": admission.get("native_memory_model", {}).get("native_pk_format_version") if isinstance(admission.get("native_memory_model"), dict) else None,
+        "native_pk_sigma_wire_encoding": admission.get("native_memory_model", {}).get("native_pk_sigma_wire_encoding") if isinstance(admission.get("native_memory_model"), dict) else None,
     }
     for name, value in expected_budget.items():
         if budget.get(name) != value:
@@ -4312,7 +4866,9 @@ def _load_native_keygen_receipt(
         abort(f"{dataset} exact keygen census exceeds the stricter of its VK/PK live allocation caps")
 
     expected_receipt = {
-        "schema": "ezkl.native-keygen-receipt.v2",
+        "schema": "ezkl.native-keygen-receipt.v3",
+        "native_pk_format_version": 4,
+        "native_pk_sigma_wire_encoding": "packed_source_target_indices_lsb0_v1",
         "session_id": session_id,
         "dataset": dataset,
         "relation_identity": relation_identity,

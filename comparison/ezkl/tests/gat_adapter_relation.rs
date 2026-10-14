@@ -542,10 +542,316 @@ fn native_mv_lookup_rejects_out_of_range_queries_before_commitment() {
 
 const TINY_GAT_TEST_LOGROWS: u32 = 13;
 
+fn source_built_tiny_gat_spec() -> CanonicalGat {
+    use ezkl::gat_adapter::schema::{
+        self, BoundFamily, CanonicalGraph, CanonicalModel, DigestIdentity, HeadWeights,
+        HiddenLayerSpec, IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables,
+        GAT_SCHEMA_VERSION, MODEL_HASH_DOMAIN,
+    };
+    use halo2curves::ff::PrimeField;
+
+    fn head(input: usize, output: usize, with_bias: bool) -> HeadWeights {
+        HeadWeights {
+            projection: vec![0; input * output],
+            a_src: vec![0; output],
+            a_dst: vec![0; output],
+            bias: if with_bias { vec![0; output] } else { Vec::new() },
+        }
+    }
+
+    fn exact_table(
+        table_id: &str,
+        function_id: &str,
+        input_min: i128,
+        input_max: i128,
+        input_scale: i32,
+        output_scale: i32,
+        output: impl Fn(i128) -> i128,
+    ) -> ezkl::gat_adapter::ExactTable {
+        let mut table = ezkl::gat_adapter::ExactTable {
+            table_id: table_id.into(),
+            input_scale,
+            output_scale,
+            function_id: function_id.into(),
+            domain_id: format!("{}-domain", table_id),
+            generator_id: format!("{}-generator", table_id),
+            rows: (input_min..=input_max)
+                .map(|input| (input, output(input)))
+                .collect(),
+            input_min,
+            input_max,
+            digest: String::new(),
+        };
+        table.refresh_digest().unwrap();
+        table
+    }
+
+    fn family(layer: usize, head: usize, is_output: bool) -> BoundFamily {
+        let max_aggregation_num = if layer == 0 && head == 0 && !is_output {
+            3_600
+        } else {
+            0
+        };
+        BoundFamily {
+            layer,
+            head,
+            is_output,
+            max_score_abs: 600,
+            max_weight_abs: 1,
+            max_attention_abs: 1,
+            max_bias_abs: 1,
+            max_table_output_abs: 3_600,
+            max_delta: 1_200,
+            max_exp: 1,
+            max_sum: 3,
+            max_aggregation_num,
+            max_dividend_abs: 7_200,
+            max_aux_abs: 43_212,
+            max_divisor: 6,
+        }
+    }
+
+    let mut graph = CanonicalGraph {
+        n_total: 5,
+        n: 5,
+        e: 9,
+        g_batch: 2,
+        node_ids: vec![0, 1, 2, 3, 4],
+        src: vec![0, 1, 0, 2, 1, 0, 3, 4, 3],
+        dst: vec![0, 1, 1, 2, 2, 2, 3, 4, 4],
+        node_ptr: vec![0, 3, 5],
+        edge_ptr: vec![0, 6, 9],
+        topology_id: "tiny-two-graph-topology".into(),
+        topology_digest: String::new(),
+    };
+    graph.refresh_digest().unwrap();
+
+    let model = CanonicalModel {
+        hidden_layers: vec![
+            HiddenLayerSpec {
+                d_in: 2,
+                heads: vec![head(2, 2, false), head(2, 2, false)],
+                d_head: 2,
+            },
+            HiddenLayerSpec {
+                d_in: 4,
+                heads: vec![head(4, 3, false)],
+                d_head: 3,
+            },
+        ],
+        output_heads: vec![head(3, 2, true), head(3, 2, true)],
+        classes: 2,
+        model_arch_id: "tiny-two-layer-multihead".into(),
+    };
+    let scales = ScaleChain {
+        s_input: 1,
+        s_delta: 2,
+        s_exp: 1,
+        s_h: vec![1, 1, 1],
+        s_w_hidden: vec![vec![0, 0], vec![0]],
+        s_h_prime: vec![vec![1, 1], vec![1]],
+        s_a_src_hidden: vec![vec![1, 1], vec![1]],
+        s_a_dst_hidden: vec![vec![1, 1], vec![1]],
+        s_agg_pre: vec![1, 1],
+        s_agg: vec![1, 1],
+        s_cat: vec![1, 1],
+        s_w_output: vec![0, 0],
+        s_y_prime: vec![1, 1],
+        s_a_src_output: vec![1, 1],
+        s_a_dst_output: vec![1, 1],
+        s_b_output: vec![2, 2],
+        s_out_pre: 1,
+        s_out_head: 2,
+        s_out: 2,
+    };
+    let mut tables = StaticTables {
+        lrelu: exact_table("tiny-lrelu", "lrelu", -600, 600, 2, 2, |value| value),
+        exp: exact_table("tiny-exp", "exp_neg", 0, 1_200, 2, 1, |_| 1),
+        elu: exact_table("tiny-elu", "elu", -3_600, 3_600, 1, 1, |value| value),
+        max_relu: exact_table("tiny-max-relu", "max_relu", -1_200, 1_200, 2, 2, |value| {
+            value.max(0)
+        }),
+        static_tables_id: "tiny-static-tables".into(),
+        backend_aux_tables_id: "tiny-backend-aux".into(),
+        static_tables_digest: String::new(),
+    };
+    tables.refresh_digest().unwrap();
+
+    let mut families = vec![family(0, 0, false), family(0, 1, false), family(1, 0, false)];
+    families.push(family(usize::MAX, 0, true));
+    families.push(family(usize::MAX, 1, true));
+    let mut ledger = IntegerBoundLedger {
+        max_score_abs: 600,
+        max_table_output_abs: 3_600,
+        max_delta: 1_200,
+        max_exp: 1,
+        max_sum: 3,
+        max_aggregation_num: 3_600,
+        max_dividend_abs: 7_200,
+        max_aux_abs: 43_212,
+        max_divisor: 6,
+        field_modulus: halo2curves::bn256::Fr::MODULUS.into(),
+        ledger_id: "tiny-bounds".into(),
+        ledger_digest: String::new(),
+        families,
+    };
+    ledger.refresh_digest().unwrap();
+    let topology = DigestIdentity {
+        id: graph.topology_id.clone(),
+        digest: graph.topology_digest.clone(),
+    };
+    let quant_cfg_id = "tiny-quantization".to_string();
+    let quantization = DigestIdentity {
+        id: quant_cfg_id.clone(),
+        digest: schema::sha256_digest(&scales.canonical_bytes()).unwrap(),
+    };
+    let ledger_identity = DigestIdentity {
+        id: ledger.ledger_id.clone(),
+        digest: schema::sha256_digest(&ledger.canonical_bytes()).unwrap(),
+    };
+    let mut spec = CanonicalGat {
+        schema_version: GAT_SCHEMA_VERSION,
+        graph,
+        features: vec![0; 10],
+        feature_dim: 2,
+        model,
+        scales,
+        tables,
+        ledger,
+        quant_cfg_id,
+        ezkl_security_profile_id: "tiny-native-profile".into(),
+        topology,
+        quantization,
+        ledger_identity,
+        circuit_ref: None,
+        model_binding: ModelBinding {
+            hash: "1".into(),
+            hash_domain: MODEL_HASH_DOMAIN.into(),
+            canonical_model_digest: String::new(),
+        },
+        private_params_redacted: false,
+    };
+    spec.features[0] = 1;
+    spec.model.hidden_layers[0].heads[0].projection[0] = 1;
+    let field_params = spec
+        .model
+        .flattened_params()
+        .into_iter()
+        .map(ezkl::fieldutils::integer_rep_to_felt::<halo2curves::bn256::Fr>)
+        .collect::<Vec<_>>();
+    spec.model_binding.hash = ezkl::graph::modules::native_poseidon_hash_string(&field_params)
+        .unwrap();
+    spec.model_binding.canonical_model_digest = spec.canonical_model_digest().unwrap();
+    spec.validate_for_compile().unwrap();
+    spec
+}
+
+fn source_built_tiny_gat_fixture(
+    test_logrows: u32,
+) -> (ezkl::graph::GraphCircuit, ezkl::graph::GraphWitness, u32) {
+    use ezkl::circuit::ops::region::RegionSettings;
+    use ezkl::gat_adapter::{build_model_for_run_args, gat_settings_for_run_args, RoundingMode};
+    use ezkl::graph::{GraphCircuit, Visibility};
+    use ezkl::tensor::Tensor;
+    use halo2curves::bn256::{Bn256, Fr};
+
+    let spec = source_built_tiny_gat_spec();
+    let mut build_args = ezkl::RunArgs::default();
+    // Match the production GAT settings path: its module scales come from the
+    // authenticated scale chain, not RunArgs' generic defaults.
+    build_args.input_scale = spec.scales.s_input;
+    build_args.param_scale = spec.scales.s_w_hidden[0][0];
+    build_args.param_visibility = Visibility::Hashed {
+        hash_is_public: true,
+        outlets: Vec::new(),
+    };
+    build_args.num_inner_cols = 2;
+    build_args.decomp_base = 256;
+    build_args.decomp_legs = 2;
+    let compiled_logrows = build_args.logrows;
+    let model = build_model_for_run_args(
+        spec.clone(),
+        RoundingMode::NearestTiesAway,
+        &build_args,
+    )
+    .expect("source-built fixture uses the native GAT model builder");
+
+    let mut run_args = build_args;
+    run_args.logrows = test_logrows;
+    let settings = gat_settings_for_run_args(&spec, &run_args)
+        .expect("source-built fixture uses current canonical GAT settings");
+    let expected_input_scales = [spec.scales.s_input, 0, 0, 0, 0, 0];
+    assert_eq!(run_args.input_scale, spec.scales.s_input);
+    assert_eq!(run_args.param_scale, spec.scales.s_w_hidden[0][0]);
+    assert_eq!(settings.run_args.input_scale, spec.scales.s_input);
+    assert_eq!(settings.run_args.param_scale, spec.scales.s_w_hidden[0][0]);
+    assert_eq!(settings.model_input_scales, expected_input_scales);
+    assert_eq!(settings.model_output_scales, [spec.scales.s_out]);
+    let input_scales = settings.model_input_scales.clone();
+    let mut circuit = GraphCircuit::new_from_settings(model, settings, run_args.check_mode)
+        .expect("source-built fixture creates a native GraphCircuit");
+
+    let as_tensor = |values: &[i128], dimensions: &[usize], scale: i32| {
+        let field_values = values
+            .iter()
+            .map(|value| ezkl::fieldutils::integer_rep_to_felt::<Fr>(*value))
+            .collect::<Vec<_>>();
+        let mut tensor = Tensor::new(Some(&field_values), dimensions)
+            .expect("fixture tensor shape matches the canonical GAT input");
+        tensor.set_scale(scale);
+        tensor
+    };
+    let graph = &spec.graph;
+    let node_ids = graph.node_ids.iter().map(|value| *value as i128).collect::<Vec<_>>();
+    let src = graph.src.iter().map(|value| *value as i128).collect::<Vec<_>>();
+    let dst = graph.dst.iter().map(|value| *value as i128).collect::<Vec<_>>();
+    let node_ptr = graph.node_ptr.iter().map(|value| *value as i128).collect::<Vec<_>>();
+    let edge_ptr = graph.edge_ptr.iter().map(|value| *value as i128).collect::<Vec<_>>();
+    let mut inputs = vec![
+        as_tensor(&spec.features, &[graph.n_total, spec.feature_dim], input_scales[0]),
+        as_tensor(&node_ids, &[graph.n], input_scales[1]),
+        as_tensor(&src, &[graph.e], input_scales[2]),
+        as_tensor(&dst, &[graph.e], input_scales[3]),
+        as_tensor(&node_ptr, &[graph.g_batch + 1], input_scales[4]),
+        as_tensor(&edge_ptr, &[graph.g_batch + 1], input_scales[5]),
+    ];
+    let flat_params = spec.model.flattened_params();
+    let params = as_tensor(
+        &flat_params,
+        &[flat_params.len()],
+        run_args.param_scale,
+    );
+    let witness = circuit
+        .forward_with_runtime_params::<
+            halo2_proofs::poly::kzg::commitment::KZGCommitmentScheme<Bn256>,
+        >(
+            &mut inputs,
+            Some(&params),
+            None,
+            None,
+            RegionSettings::all_true(run_args.decomp_base, run_args.decomp_legs),
+        )
+        .expect("native full GAT forward creates the witness and H(W)");
+    assert_eq!(witness.inputs.len(), 6, "GAT witness preserves all public inputs");
+    assert_eq!(witness.params.len(), 1, "GAT witness preserves the private parameter closure");
+    let witnessed_hash = witness
+        .processed_params
+        .as_ref()
+        .and_then(|processed| processed.poseidon_hash.as_ref())
+        .and_then(|hash| hash.first())
+        .map(|value| ezkl::pfsys::canonical_fr_to_string(value))
+        .expect("native parameter module produces public H(W)");
+    assert_eq!(witnessed_hash, spec.model_binding.hash, "witness H(W) matches the canonical binding");
+    circuit
+        .load_graph_witness(&witness)
+        .expect("native source-built witness loads into its GraphCircuit");
+    (circuit, witness, compiled_logrows)
+}
+
 fn known_gat_fixture(
     test_logrows: u32,
 ) -> (ezkl::graph::GraphCircuit, ezkl::graph::GraphWitness, u32) {
-    use ezkl::graph::{GraphCircuit, GraphWitness};
+    use ezkl::graph::{GraphCircuit, GraphWitness, NodeType, SupportedOp};
 
     let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/gat_lookup_reuse");
@@ -553,18 +859,242 @@ fn known_gat_fixture(
     let compiled_logrows = incomplete.settings().run_args.logrows;
     let witness = GraphWitness::from_path(fixture.join("witness.json")).unwrap();
     let mut test_args = incomplete.settings().run_args.clone();
-    // The serialized fixture uses k=17. For this test-only one-node relation,
-    // k=13 is the smallest domain that contains its 5,455 main rows plus
-    // reserved rows; the largest required range (0, 16,383) is represented
-    // with three lookup-table columns at that domain, below the 12-column
-    // native limit. This keeps the same complete constraints while avoiding
-    // an unnecessary 16x domain for the bounded test.
+    // The serialized fixture uses k=17. Keep the same complete one-node
+    // relation at k=13; its public wide bounds use the adapter-owned byte
+    // range gadget rather than per-bound native lookup tables.
     test_args.logrows = test_logrows;
-    let mut known = GraphCircuit::new(incomplete.model().clone(), &test_args).expect(
-        "fresh fixture settings should configure every range used by the current GAT layout",
-    );
+    let spec = incomplete
+        .model()
+        .graph
+        .nodes
+        .values()
+        .find_map(|node| match node {
+            NodeType::Node(node) => match &node.opkind {
+                SupportedOp::Gat(op) => Some(op.spec.clone()),
+                _ => None,
+            },
+            NodeType::SubGraph { .. } => None,
+        })
+        .expect("fixture includes the canonical GAT operation");
+    let settings = ezkl::gat_adapter::gat_settings_for_run_args(&spec, &test_args)
+        .expect("fresh fixture settings use the authenticated GAT layout and range-gadget version");
+    let mut known = GraphCircuit::new_from_settings(
+        incomplete.model().clone(),
+        settings,
+        test_args.check_mode,
+    )
+    .expect("fresh fixture circuit uses its complete canonical GAT settings");
     known.load_graph_witness(&witness).unwrap();
     (known, witness, compiled_logrows)
+}
+
+fn report_current_five_dataset_geometry() {
+    use halo2_proofs::plonk::{Circuit, ConstraintSystem};
+    use halo2curves::bn256::Fr;
+
+    let baseline_root = std::env::current_dir().expect("canonical geometry test runs from the EZKL baseline root");
+    let manifest_path = std::path::Path::new("resources/resource_manifest.json");
+    for dataset in ["cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv"] {
+        let loaded = ezkl::gat_adapter::load_dataset_with_manifest(
+            &baseline_root,
+            &manifest_path,
+            dataset,
+        )
+        .unwrap_or_else(|error| panic!("authenticate canonical {dataset} geometry resources: {error}"));
+        let parameter_count = loaded
+            .spec
+            .model
+            .flattened_params_len()
+            .unwrap_or_else(|error| panic!("count canonical {dataset} parameters: {error}"));
+        let (model, settings) = ezkl::execute::build_canonical_gat_settings(&loaded)
+            .unwrap_or_else(|error| panic!("build production {dataset} geometry settings: {error}"));
+        // Configure only the current production constraint system. This reads
+        // column/lookup geometry without synthesizing the graph, allocating
+        // selector activation arrays, or creating N-domain polynomial data.
+        let mut cs = ConstraintSystem::<Fr>::default();
+        let circuit_config = ezkl::graph::GraphCircuit::configure_with_params(
+            &mut cs,
+            settings.clone(),
+        );
+        let native_cs = cs.clone().chunk_lookups();
+        let native_lookup_arguments = native_cs.lookups().len();
+        let native_query_counts = native_cs
+            .lookups()
+            .iter()
+            .map(|lookup| lookup.input_expressions().len())
+            .collect::<Vec<_>>();
+        let native_query_polynomials = native_query_counts
+            .iter()
+            .try_fold(0usize, |total, count| total.checked_add(*count))
+            .expect("canonical lookup query count fits usize");
+        let native_table_groups = cs.lookups_map.len();
+        let mut chunked_tables = Vec::new();
+        for lookup in native_cs.lookups() {
+            let table = lookup.table_expressions();
+            if !chunked_tables.iter().any(|known| *known == table) {
+                chunked_tables.push(table);
+            }
+        }
+        // T counts the pre-chunk lookup-map table groups; newT counts unique
+        // table-expression vectors in the final native chunked arguments.
+        let native_chunked_table_groups = chunked_tables.len();
+        let native_degree = native_cs.degree();
+        let used_einsums = settings
+            .einsum_params
+            .equations
+            .iter()
+            .enumerate()
+            .map(|(index, (equation, axes))| ((index, equation.clone()), axes.clone()))
+            .collect();
+        let einsum_analysis = ezkl::circuit::ops::chip::einsum::analysis::analyze_einsum_usage(
+            &used_einsums,
+        )
+        .unwrap_or_else(|error| panic!("analyze production {dataset} Einsum allocation: {error}"));
+        let main_advice_cells = (settings.total_assignments as u128) * 3;
+        let main_advice_logical_bytes = main_advice_cells * 32;
+        let dynamic_capacity = settings.dynamic_lookup_params.total_dynamic_col_size
+            + settings.shuffle_params.total_shuffle_col_size;
+        let extra_advice_cells = if settings.requires_dynamic_lookup() || settings.requires_shuffle() {
+            (dynamic_capacity as u128) * 3
+        } else {
+            0
+        };
+        let extra_advice_bytes = extra_advice_cells * 32;
+        let einsum_advice_cells = if settings.einsum_params.total_einsum_col_size > 0 {
+            (einsum_analysis.reduction_length as u128) * 6
+        } else {
+            0
+        };
+        let domain = 1usize
+            .checked_shl(settings.run_args.logrows)
+            .expect("canonical geometry domain fits usize");
+        let reserved_advice_rows =
+            ezkl::gat_adapter::GAT_RANGE_BLINDING_FACTOR_RESERVE + 1;
+        let usable_advice_rows = domain
+            .checked_sub(reserved_advice_rows)
+            .expect("formal k covers the authenticated GAT row reserve");
+        let main_blocks = ezkl::tensor::VarTensor::advice_blocks_for_capacity(
+            settings.total_assignments,
+            usable_advice_rows * settings.run_args.num_inner_cols,
+        );
+        let main_advice_columns = main_blocks * settings.run_args.num_inner_cols * 3;
+        let has_dynamic_advice = settings.requires_dynamic_lookup() || settings.requires_shuffle();
+        let dynamic_blocks = if has_dynamic_advice {
+            ezkl::tensor::VarTensor::advice_blocks_for_capacity(dynamic_capacity, usable_advice_rows)
+        } else {
+            0
+        };
+        let dynamic_advice_columns = dynamic_blocks * 3;
+        let einsum_blocks = if settings.einsum_params.total_einsum_col_size > 0 {
+            ezkl::tensor::VarTensor::advice_blocks_for_capacity(
+                einsum_analysis.reduction_length,
+                usable_advice_rows * settings.run_args.num_inner_cols,
+            )
+        } else {
+            0
+        };
+        let einsum_advice_columns = einsum_blocks * settings.run_args.num_inner_cols * 6;
+        let hashed_parameter_advice_cells =
+            if settings.run_args.param_visibility.is_hashed_public() { 1 } else { 0 };
+        let hashed_parameter_advice_columns = hashed_parameter_advice_cells as usize;
+        let total_advice_logical_cells = main_advice_cells
+            + extra_advice_cells
+            + einsum_advice_cells
+            + hashed_parameter_advice_cells;
+        let core_advice_columns = main_advice_columns
+            + dynamic_advice_columns
+            + einsum_advice_columns
+            + hashed_parameter_advice_columns;
+        let core_advice_polynomial_bytes =
+            (core_advice_columns as u128) * (domain as u128) * 32;
+        let dense_advice_domain_bytes =
+            (native_cs.num_advice_columns() as u128) * (domain as u128) * 32;
+        let dense_fixed_domain_bytes =
+            (native_cs.num_fixed_columns() as u128) * (domain as u128) * 32;
+        let scalar_domain_storage_bytes = (native_cs.num_advice_columns() as u128
+            + native_cs.num_fixed_columns() as u128
+            + native_cs.num_instance_columns() as u128)
+            * (domain as u128)
+            * 32;
+        eprintln!(
+            "EZKL_FORMAL_GEOMETRY dataset={} resource_manifest_sha256={} n_total={} n={} e={} graphs={} feature_dim={} classes={} hidden_layers={} hidden_heads={} output_heads={} parameter_count={} k={} N={} domain={} inner_cols={} rows={} T={} range_gadget_version={} range_blinding_factor_reserve={} usable_advice_rows={} main_blocks={} main_advice_columns={} main_advice_cells={} main_advice_logical_bytes={} einsum_equations={} einsum_col_size={} einsum_reduction_capacity={} einsum_blocks={} einsum_advice_columns={} einsum_advice_cells={} einsum_advice_first_phase_cells={} einsum_advice_second_phase_cells={} einsum_max_output_axes={} dynamic_lookups={} dynamic_col_size={} dynamic_max_input={} shuffle_col_size={} dynamic_blocks={} extra_advice_arrays={} dynamic_advice_columns={} extra_advice_cells={} extra_advice_logical_bytes={} hashed_parameter_advice_cells={} hashed_parameter_advice_columns={} total_advice_logical_cells={} total_advice_logical_bytes={} core_advice_columns={} core_advice_polynomial_bytes={} dense_advice_domain_bytes={} dense_fixed_domain_bytes={} scalar_domain_storage_bytes={} const_cells={} required_ranges={} F0={} A={} P={} degree={} L={} Q={} T_lookup_groups={} newT={} per_argument_Q={:?} custom_gate_groups={} shuffle_arguments={} rawSelectors={} model_instance_shapes={:?} module_sizes={:?} total_instances={:?}",
+            loaded.dataset,
+            loaded.resource_manifest_sha256,
+            loaded.spec.graph.n_total,
+            loaded.spec.graph.n,
+            loaded.spec.graph.e,
+            loaded.spec.graph.g_batch,
+            loaded.spec.feature_dim,
+            loaded.spec.model.classes,
+            loaded.spec.model.hidden_layers.len(),
+            loaded.spec.model.hidden_layers.iter().map(|layer| layer.heads.len()).sum::<usize>(),
+            loaded.spec.model.output_heads.len(),
+            parameter_count,
+            settings.run_args.logrows,
+            domain,
+            domain,
+            settings.run_args.num_inner_cols,
+            settings.num_rows,
+            settings.total_assignments,
+            settings.gat_range_gadget_version.unwrap_or_default(),
+            ezkl::gat_adapter::GAT_RANGE_BLINDING_FACTOR_RESERVE,
+            usable_advice_rows,
+            main_blocks,
+            main_advice_columns,
+            main_advice_cells,
+            main_advice_logical_bytes,
+            settings.einsum_params.equations.len(),
+            settings.einsum_params.total_einsum_col_size,
+            einsum_analysis.reduction_length,
+            einsum_blocks,
+            einsum_advice_columns,
+            einsum_advice_cells,
+            (einsum_analysis.reduction_length as u128) * 3,
+            (einsum_analysis.reduction_length as u128) * 3,
+            einsum_analysis.max_num_output_axes,
+            settings.dynamic_lookup_params.num_dynamic_lookups,
+            settings.dynamic_lookup_params.total_dynamic_col_size,
+            settings.dynamic_lookup_params.max_dynamic_input_len,
+            settings.shuffle_params.total_shuffle_col_size,
+            dynamic_blocks,
+            if settings.requires_dynamic_lookup() || settings.requires_shuffle() { 3 } else { 0 },
+            dynamic_advice_columns,
+            extra_advice_cells,
+            extra_advice_bytes,
+            hashed_parameter_advice_cells,
+            hashed_parameter_advice_columns,
+            total_advice_logical_cells,
+            total_advice_logical_cells * 32,
+            core_advice_columns,
+            core_advice_polynomial_bytes,
+            dense_advice_domain_bytes,
+            dense_fixed_domain_bytes,
+            scalar_domain_storage_bytes,
+            settings.total_const_size,
+            settings.required_range_checks.len(),
+            native_cs.num_fixed_columns(),
+            native_cs.num_advice_columns(),
+            native_cs.num_permutation_columns(),
+            native_degree,
+            native_lookup_arguments,
+            native_query_polynomials,
+            native_table_groups,
+            native_chunked_table_groups,
+            native_query_counts,
+            native_cs.gates().len(),
+            native_cs.shuffles().len(),
+            cs.num_selectors(),
+            &settings.model_instance_shapes,
+            &settings.module_sizes,
+            settings.total_instances(),
+        );
+        drop(native_cs);
+        drop(circuit_config);
+        drop(cs);
+        drop(settings);
+        drop(model);
+        drop(loaded);
+    }
 }
 
 fn report_gat_fixture_shape(
@@ -711,7 +1241,8 @@ fn native_gat_fixture_proof_verifies_independently() {
     use std::time::Instant;
 
     let _ = env_logger::try_init();
-    let (known, witness, compiled_logrows) = known_gat_fixture(TINY_GAT_TEST_LOGROWS);
+    report_current_five_dataset_geometry();
+    let (known, witness, compiled_logrows) = source_built_tiny_gat_fixture(TINY_GAT_TEST_LOGROWS);
     let k = known.settings().run_args.logrows;
     report_gat_fixture_shape(&known, &witness, compiled_logrows);
     let mut rng = OsRng;
@@ -764,19 +1295,52 @@ fn native_gat_fixture_proof_verifies_independently() {
         "prepared fixture instances include model and module instances",
     );
     let instances: &[&[&[Fr]]] = &[&[&public]];
+    #[cfg(feature = "formal-gpu")]
+    let gpu_stats_before_prove = {
+        assert_eq!(
+            std::env::var("ENABLE_ICICLE_GPU").unwrap_or_default(),
+            "1",
+            "formal GPU proof fixture must not silently use the CPU MSM backend",
+        );
+        halo2_proofs::icicle::execution_stats()
+    };
     let started = Instant::now();
     eprintln!("EZKL_TEST_PHASE START stage=tiny_native_gat_prove");
     let mut writer = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(Vec::new());
     create_proof::<KZGCommitmentScheme<Bn256>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
-        &[known],
+        std::slice::from_ref(&known),
         instances,
         &mut rng,
         &mut writer,
     )
     .expect("tiny GAT fixture proof generation");
     let proof = writer.finalize();
+    #[cfg(feature = "formal-gpu")]
+    {
+        let gpu_stats_after_prove = halo2_proofs::icicle::execution_stats();
+        let msm_operations = gpu_stats_after_prove
+            .0
+            .checked_sub(gpu_stats_before_prove.0)
+            .expect("native ICICLE MSM operation counter did not reset during proof");
+        let gpu_msm_chunks = gpu_stats_after_prove
+            .1
+            .checked_sub(gpu_stats_before_prove.1)
+            .expect("native ICICLE GPU chunk counter did not reset during proof");
+        let synchronized_calls = gpu_stats_after_prove
+            .4
+            .checked_sub(gpu_stats_before_prove.4)
+            .expect("native ICICLE synchronization counter did not reset during proof");
+        assert!(
+            msm_operations > 0 && gpu_msm_chunks >= msm_operations,
+            "formal GAT proof did not dispatch its MSM commitments to native ICICLE GPU"
+        );
+        assert_eq!(
+            synchronized_calls, gpu_msm_chunks,
+            "native GPU MSM chunks must be synchronized before proof completion"
+        );
+    }
     eprintln!(
         "EZKL_TEST_PHASE DONE stage=tiny_native_gat_prove elapsed_ms={} proof_bytes={}",
         started.elapsed().as_millis(),
@@ -1083,7 +1647,7 @@ fn native_k4_gate_permutation_matrix_reports_exact_cases() {
         circuit::{Layouter, SimpleFloorPlanner, Value},
         plonk::{
             census_native_shape, create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Circuit,
-            Column, ConstraintSystem, Error, Instance, ProvingKey, Selector,
+            Column, ConstraintSystem, Error, ProvingKey, Selector,
         },
         poly::{
             commitment::Params,
@@ -1494,4 +2058,107 @@ fn halo2_commitment_timing_counts_public_and_phase_zero_only() {
         params.n(),
     )
     .unwrap();
+}
+
+#[test]
+fn native_fixed_storage_contract() {
+    use ezkl::pfsys::{load_pk_with_native_backing_budget_and_timing, save_pk};
+    use halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        plonk::{
+            keygen_pk, keygen_vk_custom, Advice, Circuit, Column, ConstraintSystem, Error, Fixed,
+            Selector,
+        },
+        poly::{
+            kzg::commitment::{KZGCommitmentScheme, ParamsKZG},
+            Rotation,
+        },
+        SerdeFormat,
+    };
+    use halo2curves::bn256::{Bn256, Fr};
+    use rand::rngs::OsRng;
+
+    #[derive(Clone, Copy)]
+    struct FixedStorageCircuit;
+
+    impl Circuit<Fr> for FixedStorageCircuit {
+        type Config = (Column<Advice>, Column<Advice>, Column<Fixed>, Selector);
+        type FloorPlanner = SimpleFloorPlanner;
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            *self
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            let left = meta.advice_column();
+            let right = meta.advice_column();
+            let fixed = meta.fixed_column();
+            let selector = meta.selector();
+            meta.enable_equality(left);
+            meta.enable_equality(right);
+            meta.create_gate("fixed source and selector", |meta| {
+                let q = meta.query_selector(selector);
+                let value = meta.query_advice(left, Rotation::cur());
+                let fixed_value = meta.query_fixed(fixed, Rotation::cur());
+                vec![q * (value - fixed_value)]
+            });
+            (left, right, fixed, selector)
+        }
+
+        fn synthesize(
+            &self,
+            (left, right, fixed, selector): Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            layouter.assign_region(
+                || "compact fixed source and permutation edges",
+                |mut region| {
+                    for row in 0..5 {
+                        let value = Fr::from((row + 1) as u64);
+                        selector.enable(&mut region, row)?;
+                        region.assign_fixed(|| "fixed", fixed, row, || Value::known(value))?;
+                        let left_cell = region.assign_advice(|| "left", left, row, || Value::known(value))?;
+                        let right_cell = region.assign_advice(|| "right", right, row, || Value::known(value))?;
+                        region.constrain_equal(left_cell.cell(), right_cell.cell())?;
+                    }
+                    Ok(())
+                },
+            )
+        }
+    }
+
+    let mut rng = OsRng;
+    let params = ParamsKZG::<Bn256>::setup(5, &mut rng);
+    let circuit = FixedStorageCircuit;
+    let vk = keygen_vk_custom(&params, &circuit, true).expect("compact fixed-source VK");
+    let pk = keygen_pk(&params, vk, &circuit).expect("compact fixed-source PK");
+    assert!(pk.get_vk().fixed_commitments().len() >= 2);
+
+    let mut vk_before = Vec::new();
+    pk.get_vk()
+        .write(&mut vk_before, SerdeFormat::RawBytes)
+        .unwrap();
+    let pk_before = pk.to_bytes(SerdeFormat::RawBytes);
+    let temp = tempfile::Builder::new()
+        .prefix("ezkl-native-fixed-pk-")
+        .tempdir()
+        .unwrap();
+    let pk_path = temp.path().join("fixed.pk");
+    save_pk(&pk_path, &pk).unwrap();
+    drop(pk);
+
+    let (restored, timing) = load_pk_with_native_backing_budget_and_timing::<
+        KZGCommitmentScheme<Bn256>,
+        FixedStorageCircuit,
+    >(pk_path, (), 64 * 1024 * 1024)
+    .expect("file-backed fixed and permutation PK restore");
+    assert_eq!(timing.sigma_rebuild, std::time::Duration::ZERO);
+    let mut vk_after = Vec::new();
+    restored
+        .get_vk()
+        .write(&mut vk_after, SerdeFormat::RawBytes)
+        .unwrap();
+    assert_eq!(vk_before, vk_after);
+    assert_eq!(pk_before, restored.to_bytes(SerdeFormat::RawBytes));
 }

@@ -270,21 +270,9 @@ mod test {
         transcript.write_scalar(cvy).unwrap();
 
         let queries = [
-            ProverQuery {
-                point: x.get_scalar(),
-                poly: &ax,
-                blind,
-            },
-            ProverQuery {
-                point: x.get_scalar(),
-                poly: &bx,
-                blind,
-            },
-            ProverQuery {
-                point: y.get_scalar(),
-                poly: &cx,
-                blind,
-            },
+            ProverQuery::new(x.get_scalar(), &ax, blind),
+            ProverQuery::new(x.get_scalar(), &bx, blind),
+            ProverQuery::new(y.get_scalar(), &cx, blind),
         ]
         .to_vec();
 

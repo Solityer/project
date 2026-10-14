@@ -10,7 +10,7 @@
   ],
   "dataset": "ogbn_arxiv",
   "degree_bound_id": "ledger:gat:ogbn_arxiv:v1",
-  "degree_bound_digest": "7d6d66755badfb4c0a2b892d38a719ec97a05671ea0af6f423f8a9831b06cee4",
+  "degree_bound_digest": "71691279e5ae66bff0e353a4a3a72ced48922da3400eb2039d6f896de326187f",
   "edge_sort_rule": "edge_gid_then_dst_stable",
   "family_schema": "multi_layer_multi_head",
   "hidden_head_specs": [

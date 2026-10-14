@@ -1,5 +1,6 @@
 use super::super::{
-    circuit::Expression, ChallengeGamma, ChallengeTheta, ChallengeX, Error, ProvingKey,
+    circuit::Expression, ChallengeGamma, ChallengeTheta, ChallengeX, Error, FixedColumnSource,
+    ProvingKey,
 };
 use super::Argument;
 use crate::plonk::evaluation::evaluate;
@@ -48,7 +49,7 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         domain: &EvaluationDomain<C::Scalar>,
         theta: ChallengeTheta<C>,
         advice_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
-        fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed_values: &'a [FixedColumnSource<C::Scalar>],
         instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         challenges: &'a [C::Scalar],
     ) -> Compressed<C>
@@ -110,7 +111,7 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
         theta: ChallengeTheta<C>,
         gamma: ChallengeGamma<C>,
         advice_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
-        fixed_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed_values: &'a [FixedColumnSource<C::Scalar>],
         instance_values: &'a [Polynomial<C::Scalar, LagrangeCoeff>],
         challenges: &'a [C::Scalar],
         mut rng: R,
@@ -235,16 +236,16 @@ impl<C: CurveAffine> Evaluated<C> {
 
         iter::empty()
             // Open shuffle product commitments at x
-            .chain(Some(ProverQuery {
-                point: *x,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                *x,
+                &self.constructed.product_poly,
+                self.constructed.product_blind,
+            )))
             // Open shuffle product commitments at x_next
-            .chain(Some(ProverQuery {
-                point: x_next,
-                poly: &self.constructed.product_poly,
-                blind: self.constructed.product_blind,
-            }))
+            .chain(Some(ProverQuery::new(
+                x_next,
+                &self.constructed.product_poly,
+                self.constructed.product_blind,
+            )))
     }
 }

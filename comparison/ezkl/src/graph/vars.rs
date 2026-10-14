@@ -3,6 +3,9 @@ use std::fmt::Display;
 use crate::tensor::TensorType;
 use crate::tensor::{ValTensor, VarTensor};
 use crate::RunArgs;
+use crate::gat_adapter::range_gadget::{
+    GAT_RANGE_BLINDING_FACTOR_RESERVE, GAT_RANGE_GADGET_VERSION,
+};
 use halo2_proofs::plonk::{Column, ConstraintSystem, Instance};
 use halo2curves::ff::PrimeField;
 use itertools::Itertools;
@@ -452,16 +455,41 @@ impl<F: PrimeField + TensorType + PartialOrd + std::hash::Hash> ModelVars<F> {
         let requires_dynamic_lookup = params.requires_dynamic_lookup();
         let requires_shuffle = params.requires_shuffle();
         let dynamic_lookup_and_shuffle_size = params.dynamic_lookup_and_shuffle_col_size();
+        let range_blinding_reserve = (params.gat_range_gadget_version
+            == Some(GAT_RANGE_GADGET_VERSION))
+            .then_some(GAT_RANGE_BLINDING_FACTOR_RESERVE);
 
         let mut advices = (0..3)
-            .map(|_| VarTensor::new_advice(cs, logrows, num_inner_cols, var_len))
+            .map(|_| match range_blinding_reserve {
+                Some(reserve) => VarTensor::new_advice_with_blinding_factors(
+                    cs,
+                    logrows,
+                    num_inner_cols,
+                    var_len,
+                    reserve,
+                ),
+                None => VarTensor::new_advice(cs, logrows, num_inner_cols, var_len),
+            })
             .collect_vec();
 
         if requires_dynamic_lookup || requires_shuffle {
             let num_cols = 3;
             for _ in 0..num_cols {
-                let dynamic_lookup =
-                    VarTensor::new_advice(cs, logrows, 1, dynamic_lookup_and_shuffle_size);
+                let dynamic_lookup = match range_blinding_reserve {
+                    Some(reserve) => VarTensor::new_advice_with_blinding_factors(
+                        cs,
+                        logrows,
+                        1,
+                        dynamic_lookup_and_shuffle_size,
+                        reserve,
+                    ),
+                    None => VarTensor::new_advice(
+                        cs,
+                        logrows,
+                        1,
+                        dynamic_lookup_and_shuffle_size,
+                    ),
+                };
                 if dynamic_lookup.num_blocks() > 1 {
                     warn!("dynamic lookup has {} blocks", dynamic_lookup.num_blocks());
                 };

@@ -53,9 +53,29 @@ pub fn native_mv_lookup_resource_layout<C: crate::arithmetic::CurveAffine>() -> 
 }
 
 #[cfg(feature = "mv-lookup")]
+/// Returns the shallow `size_of` values for the compact table, packed ID tape,
+/// and lookup polynomial source, in that order; backing allocations are excluded.
+pub fn native_mv_lookup_compact_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize, usize) {
+    lookup::prover::native_compact_resource_layout::<C>()
+}
+
+#[cfg(feature = "mv-lookup")]
 /// Returns the native hash-map header size used by multi-lookup table membership.
 pub fn native_mv_lookup_map_header_bytes() -> usize {
-    std::mem::size_of::<HashMap<Vec<u8>, usize>>()
+    std::mem::size_of::<HashMap<Vec<u8>, lookup::prover::TableMembership>>()
+}
+
+#[cfg(feature = "mv-lookup")]
+/// Returns the shallow `size_of` for one `(Vec<u8>, TableMembership)` map entry.
+/// Heap allocations owned by either value are not included.
+pub fn native_mv_lookup_map_entry_bytes() -> usize {
+    std::mem::size_of::<(Vec<u8>, lookup::prover::TableMembership)>()
+}
+
+/// Returns the native heap size of one retained advice event during bounded
+/// batch evaluation and conversion.
+pub fn native_assigned_event_bytes<F: PrimeField>() -> usize {
+    std::mem::size_of::<AssignedEvent<F>>()
 }
 
 #[cfg(feature = "mv-lookup")]
@@ -296,12 +316,16 @@ struct AssignedEvent<F: PrimeField> {
 }
 
 /// Holds only assigned cells, rather than a full `N`-element `Assigned<F>`
-/// vector for each advice column. Records are private canonical field bytes
-/// and retain assignment order so repeated writes preserve last-write-wins.
+/// vector for each advice column. Assigned values stay in a bounded batch long
+/// enough to use the native batch-inversion semantics; the private spill stores
+/// only their evaluated field values and preserves order for last-write-wins.
 struct AssignedEventColumn<F: PrimeField> {
     log: Option<crate::poly::SpillLog>,
     record: Vec<u8>,
+    pending: Vec<AssignedEvent<F>>,
     event_count: u64,
+    encoded_event_count: u64,
+    encoded_bytes: u64,
     _marker: std::marker::PhantomData<F>,
 }
 
@@ -310,8 +334,11 @@ impl<F: PrimeField> AssignedEventColumn<F> {
         let repr_len = F::Repr::default().as_ref().len();
         Self {
             log: None,
-            record: vec![0; 9 + 2 * repr_len],
+            record: vec![0; 9 + repr_len],
+            pending: Vec::new(),
             event_count: 0,
+            encoded_event_count: 0,
+            encoded_bytes: 0,
             _marker: std::marker::PhantomData,
         }
     }
@@ -323,47 +350,120 @@ impl<F: PrimeField> AssignedEventColumn<F> {
                 "advice row exceeds spill format",
             )
         })?;
-        let (tag, numerator, denominator) = match value {
-            Assigned::Zero => (0, F::ZERO, F::ZERO),
-            Assigned::Trivial(numerator) => (1, numerator, F::ZERO),
-            Assigned::Rational(numerator, denominator) => (2, numerator, denominator),
-        };
-        self.record[..8].copy_from_slice(&row.to_le_bytes());
-        self.record[8] = tag;
-        let repr_len = F::Repr::default().as_ref().len();
-        let numerator_repr = numerator.to_repr();
-        let denominator_repr = denominator.to_repr();
-        self.record[9..9 + repr_len].copy_from_slice(numerator_repr.as_ref());
-        self.record[9 + repr_len..].copy_from_slice(denominator_repr.as_ref());
+        let next_event_count = self.event_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "advice event count overflow")
+        })?;
+        self.pending.push(AssignedEvent {
+            row: usize::try_from(row).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "advice row exceeds host index")
+            })?,
+            value,
+        });
+        self.event_count = next_event_count;
+        if self.pending.len() == ASSIGNED_EVENT_BATCH_SIZE {
+            self.flush_pending()?;
+        }
+        Ok(())
+    }
+
+    fn flush_pending(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+
+        let mut inverse_denominators = self
+            .pending
+            .iter()
+            .map(|event| event.value.denominator())
+            .collect::<Vec<_>>();
+        inverse_denominators
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .batch_invert();
+
         if self.log.is_none() {
             self.log = Some(crate::poly::native_spill_log()?);
         }
-        self.log
-            .as_mut()
-            .expect("assigned event log was initialized")
-            .append(&self.record)?;
-        self.event_count = self.event_count.checked_add(1).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "advice event count overflow")
-        })?;
+        let repr_len = F::Repr::default().as_ref().len();
+        if self.record.len() != 9 + repr_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "advice event writer buffer has an invalid record width",
+            ));
+        }
+        for (event, inverse) in self.pending.drain(..).zip(inverse_denominators) {
+            let row = u64::try_from(event.row).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "advice row exceeds spill format")
+            })?;
+            let value = event.value.numerator() * inverse.unwrap_or(F::ONE);
+            self.record[..8].copy_from_slice(&row.to_le_bytes());
+            let encoded_len = if value == F::ZERO {
+                self.record[8] = 0;
+                9
+            } else {
+                self.record[8] = 1;
+                let repr = value.to_repr();
+                self.record[9..9 + repr_len].copy_from_slice(repr.as_ref());
+                9 + repr_len
+            };
+            let next_event_count = self.encoded_event_count.checked_add(1).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "encoded advice event count overflow")
+            })?;
+            let next_encoded_bytes = self
+                .encoded_bytes
+                .checked_add(u64::try_from(encoded_len).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "advice event width exceeds u64")
+                })?)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "advice event byte length overflow")
+                })?;
+            self.log
+                .as_mut()
+                .expect("assigned event log was initialized")
+                .append(&self.record[..encoded_len])?;
+            self.encoded_event_count = next_event_count;
+            self.encoded_bytes = next_encoded_bytes;
+        }
         Ok(())
     }
 
     fn into_lagrange(mut self, domain_len: usize) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        self.flush_pending()?;
         let Some(mut log) = self.log.take() else {
+            if self.event_count != 0
+                || self.encoded_event_count != 0
+                || self.encoded_bytes != 0
+                || !self.pending.is_empty()
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event counters are nonzero without a spill log",
+                ));
+            }
             return Polynomial::mapped_filled(domain_len, F::ZERO);
         };
-        let repr_len = F::Repr::default().as_ref().len();
-        let record_len = self.record.len();
-        let expected_bytes = self
+        let expected_bytes = self.encoded_bytes;
+        let minimum_bytes = self.event_count.checked_mul(9).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "advice event minimum byte length overflow",
+            )
+        })?;
+        let maximum_bytes = self
             .event_count
-            .checked_mul(record_len as u64)
+            .checked_mul(self.record.len() as u64)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    "advice event byte length overflow",
+                    "advice event maximum byte length overflow",
                 )
             })?;
-        if log.bytes_written() != expected_bytes || record_len != 9 + 2 * repr_len {
+        if log.bytes_written() != expected_bytes
+            || self.event_count == 0
+            || self.encoded_event_count != self.event_count
+            || expected_bytes < minimum_bytes
+            || expected_bytes > maximum_bytes
+        {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "advice event log length does not match its authenticated in-memory count",
@@ -375,35 +475,29 @@ impl<F: PrimeField> AssignedEventColumn<F> {
             let mut reader = log.reader()?;
             let mut remaining = self.event_count;
             let mut first_index = 0u64;
+            let mut consumed_bytes = 0u64;
             while remaining > 0 {
                 let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
                     .map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
                     })?;
-                let byte_len = count.checked_mul(record_len).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "advice batch byte length overflow",
-                    )
-                })?;
-                let mut buffer = vec![0u8; byte_len];
-                reader.read_exact(&mut buffer)?;
-                for (offset, record) in buffer.chunks_exact(record_len).enumerate() {
-                    let row = usize::try_from(u64::from_le_bytes(
-                        record[..8]
-                            .try_into()
-                            .expect("fixed advice event row width"),
-                    ))
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "advice row exceeds host index")
-                    })?;
-                    if row >= domain_len {
+                for offset in 0..count {
+                    let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
+                    consumed_bytes = consumed_bytes
+                        .checked_add(event_bytes as u64)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "advice event byte count overflow",
+                            )
+                        })?;
+                    if event.row >= domain_len {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidData,
                             "advice event row exceeds native polynomial domain",
                         ));
                     }
-                    latest[row] = first_index
+                    latest[event.row] = first_index
                         .checked_add(offset as u64)
                         .and_then(|index| index.checked_add(1))
                         .ok_or_else(|| {
@@ -418,6 +512,12 @@ impl<F: PrimeField> AssignedEventColumn<F> {
                 })?;
                 remaining -= count as u64;
             }
+            if consumed_bytes != expected_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event decoder byte count disagrees with its writer count",
+                ));
+            }
             if reader.fill_buf()?.len() != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -431,23 +531,31 @@ impl<F: PrimeField> AssignedEventColumn<F> {
             let mut reader = log.reader()?;
             let mut remaining = self.event_count;
             let mut first_index = 0u64;
+            let mut consumed_bytes = 0u64;
             while remaining > 0 {
                 let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
                     .map_err(|_| {
                         io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
                     })?;
-                let byte_len = count.checked_mul(record_len).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "advice batch byte length overflow",
-                    )
-                })?;
-                let mut buffer = vec![0u8; byte_len];
-                reader.read_exact(&mut buffer)?;
-                let events = buffer
-                    .chunks_exact(record_len)
-                    .map(decode_assigned_event::<F>)
-                    .collect::<io::Result<Vec<_>>>()?;
+                let mut events = Vec::with_capacity(count);
+                for _ in 0..count {
+                    let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
+                    consumed_bytes = consumed_bytes
+                        .checked_add(event_bytes as u64)
+                        .ok_or_else(|| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                "advice event byte count overflow",
+                            )
+                        })?;
+                    if event.row >= domain_len {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "advice event row exceeds native polynomial domain",
+                        ));
+                    }
+                    events.push(event);
+                }
                 let mut inverse_denominators = events
                     .iter()
                     .map(|event| event.value.denominator())
@@ -477,6 +585,12 @@ impl<F: PrimeField> AssignedEventColumn<F> {
                 })?;
                 remaining -= count as u64;
             }
+            if consumed_bytes != expected_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event decoder byte count disagrees with its writer count",
+                ));
+            }
             if reader.fill_buf()?.len() != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
@@ -489,44 +603,59 @@ impl<F: PrimeField> AssignedEventColumn<F> {
     }
 }
 
-fn decode_assigned_event<F: PrimeField>(record: &[u8]) -> io::Result<AssignedEvent<F>> {
+fn read_assigned_event<F: PrimeField, R: Read>(
+    reader: &mut R,
+) -> io::Result<(AssignedEvent<F>, usize)> {
     let repr_len = F::Repr::default().as_ref().len();
-    if record.len() != 9 + 2 * repr_len {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "advice event has an invalid record width",
-        ));
-    }
+    let mut header = [0u8; 9];
+    reader.read_exact(&mut header)?;
     let row = usize::try_from(u64::from_le_bytes(
-        record[..8]
+        header[..8]
             .try_into()
             .expect("fixed advice event row width"),
     ))
     .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "advice row exceeds host index"))?;
-    let mut numerator_repr = F::Repr::default();
-    numerator_repr
-        .as_mut()
-        .copy_from_slice(&record[9..9 + repr_len]);
-    let numerator = Option::<F>::from(F::from_repr(numerator_repr)).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "advice numerator is not a field encoding",
-        )
-    })?;
-    let mut denominator_repr = F::Repr::default();
-    denominator_repr
-        .as_mut()
-        .copy_from_slice(&record[9 + repr_len..]);
-    let denominator = Option::<F>::from(F::from_repr(denominator_repr)).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "advice denominator is not a field encoding",
-        )
-    })?;
-    let value = match record[8] {
-        0 if numerator == F::ZERO && denominator == F::ZERO => Assigned::Zero,
-        1 if denominator == F::ZERO => Assigned::Trivial(numerator),
-        2 => Assigned::Rational(numerator, denominator),
+    let (value, encoded_len) = match header[8] {
+        0 => (Assigned::Zero, 9),
+        1 => {
+            let mut numerator_repr = F::Repr::default();
+            reader.read_exact(numerator_repr.as_mut())?;
+            let numerator = Option::<F>::from(F::from_repr(numerator_repr)).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice numerator is not a field encoding",
+                )
+            })?;
+            if numerator == F::ZERO {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "zero trivial advice event was not normalized",
+                ));
+            }
+            (Assigned::Trivial(numerator), 9 + repr_len)
+        }
+        2 => {
+            let mut numerator_repr = F::Repr::default();
+            let mut denominator_repr = F::Repr::default();
+            reader.read_exact(numerator_repr.as_mut())?;
+            reader.read_exact(denominator_repr.as_mut())?;
+            let numerator = Option::<F>::from(F::from_repr(numerator_repr)).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice numerator is not a field encoding",
+                )
+            })?;
+            let denominator = Option::<F>::from(F::from_repr(denominator_repr)).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice denominator is not a field encoding",
+                )
+            })?;
+            (
+                Assigned::Rational(numerator, denominator),
+                9 + 2 * repr_len,
+            )
+        }
         _ => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -534,7 +663,7 @@ fn decode_assigned_event<F: PrimeField>(record: &[u8]) -> io::Result<AssignedEve
             ))
         }
     };
-    Ok(AssignedEvent { row, value })
+    Ok((AssignedEvent { row, value }, encoded_len))
 }
 
 /// This creates a proof for the provided `circuit` when given the public
@@ -561,13 +690,6 @@ where
     Scheme::Scalar: PrimeField + WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
     Scheme::ParamsProver: Send + Sync,
 {
-    if !pk.permutation.polys_materialized() {
-        return Err(Error::NativeStorage(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "compact native proving key must be reloaded and sigma polynomials materialized before proof creation",
-        )));
-    }
-
     #[cfg(feature = "counter")]
     {
         use crate::{FFT_COUNTER, MSM_COUNTER};
@@ -927,17 +1049,40 @@ where
                 )?;
 
                 let _start = Instant::now();
-                // Convert one assigned column at a time. The assigned backing
-                // is released as soon as its field polynomial has been built.
+                // Finish each current-phase source log before choosing an
+                // order, so encoded_bytes is the exact on-disk event length.
+                // Descending source size drains the largest logs first while
+                // the retained Lagrange outputs grow; tie-break by column
+                // index for deterministic materialization order.
+                let mut materialize_indices = Vec::with_capacity(column_indices.len());
                 for column_index in &column_indices {
+                    let source = &mut witness.advice[*column_index];
+                    source.flush_pending().map_err(Error::NativeStorage)?;
+                    // `drain(..)` preserves Vec capacity; no more assignments
+                    // occur in this phase, so release that per-column batch
+                    // buffer before materializing any full-domain polynomials.
+                    source.pending = Vec::new();
+                    materialize_indices.push(*column_index);
+                }
+                materialize_indices.sort_by(|left, right| {
+                    witness.advice[*right]
+                        .encoded_bytes
+                        .cmp(&witness.advice[*left].encoded_bytes)
+                        .then_with(|| left.cmp(right))
+                });
+
+                // Convert one assigned column at a time. Each source backing
+                // is released before the next column is materialized, and
+                // outputs remain stored at their original column indices.
+                for column_index in materialize_indices {
                     let assigned = std::mem::replace(
-                        &mut witness.advice[*column_index],
+                        &mut witness.advice[column_index],
                         AssignedEventColumn::<Scheme::Scalar>::new(),
                     );
                     let mut advice_values = assigned
                         .into_lagrange(params.n() as usize)
                         .map_err(Error::NativeStorage)?;
-                    if !witness.unblinded_advice.contains(column_index) {
+                    if !witness.unblinded_advice.contains(&column_index) {
                         for cell in &mut advice_values[unusable_rows_start..] {
                             *cell = Scheme::Scalar::random(&mut rng);
                         }
@@ -946,7 +1091,7 @@ where
                             *cell = Blind::default().0;
                         }
                     }
-                    advice.advice_polys[*column_index] = advice_values;
+                    advice.advice_polys[column_index] = advice_values;
                 }
 
                 let _start = Instant::now();
@@ -1044,32 +1189,39 @@ where
     );
 
     #[cfg(feature = "mv-lookup")]
-    let max_query_polynomials_per_argument = pk
-        .vk
-        .cs
-        .lookups
-        .iter()
-        .map(|lookup| lookup.inputs_expressions.len())
-        .max()
-        .unwrap_or(0);
-
+    let prepare_rows = params.n() as u128;
     #[cfg(feature = "mv-lookup")]
-    let prepare_task_bytes = (params.n() as u128)
-        .checked_mul(
-            (max_query_polynomials_per_argument as u128)
-                .checked_add(2)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<Scheme::Scalar>() as u128))
-                .and_then(|bytes| bytes.checked_add(std::mem::size_of::<std::sync::atomic::AtomicU64>() as u128))
-                .ok_or_else(|| invalid_native_prepare_policy("mv-lookup per-task byte bound overflow"))?,
-        )
+    let prepare_sparse_count_bound = prepare_policy
+        .table_cardinality_bounds
+        .as_ref()
+        .and_then(|bounds| bounds.iter().copied().max())
+        .map(|bound| bound as u128)
+        .unwrap_or(prepare_rows);
+    #[cfg(feature = "mv-lookup")]
+    let prepare_task_bytes = prepare_rows
+        .checked_mul((2 * std::mem::size_of::<Scheme::Scalar>()) as u128)
         .and_then(|bytes| {
-            let polynomial_headers = max_query_polynomials_per_argument
-                .checked_mul(std::mem::size_of::<Polynomial<Scheme::Scalar, LagrangeCoeff>>())?;
+            // The codebook-sized atomics and their u64 result overlap while
+            // converting the sparse count bank. The Q/table ID tapes are
+            // already reserved as retained compact backing in the Python
+            // envelope and are not charged again to this per-task window.
+            bytes.checked_add(
+                prepare_sparse_count_bound
+                    .checked_mul(
+                        (std::mem::size_of::<std::sync::atomic::AtomicU64>()
+                            + std::mem::size_of::<u64>()) as u128,
+                    )?,
+            )
+        })
+        .and_then(|bytes| {
+            // At most one Q polynomial is active per task. During expression
+            // evaluation/spill its source Vec and mapped backing overlap.
+            let polynomial_header = std::mem::size_of::<Polynomial<Scheme::Scalar, LagrangeCoeff>>();
             let transient_vector_headers =
                 std::mem::size_of::<Vec<std::sync::atomic::AtomicU64>>()
                     + std::mem::size_of::<Vec<Scheme::Scalar>>();
             let prepared_header = std::mem::size_of::<lookup::prover::Prepared<Scheme::Curve>>();
-            bytes.checked_add((polynomial_headers + transient_vector_headers + prepared_header) as u128)
+            bytes.checked_add((polynomial_header + transient_vector_headers + prepared_header) as u128)
         })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .filter(|bytes| *bytes > 0)
@@ -1142,18 +1294,39 @@ where
                     (entries.saturating_add(shape.0), capacity.saturating_add(shape.1))
                 });
             println!(
-                "EZKL_NATIVE_PHASE DONE stage=mv_lookup_table_cache dataset={} groups={} arguments={} map_entries={} map_capacity={} map_capacity_bytes_upper={} table_poly_mapped_bytes={} elapsed_ms={:.3}",
+                "EZKL_NATIVE_PHASE DONE stage=mv_lookup_table_cache dataset={} groups={} arguments={} map_entries={} map_capacity={} map_capacity_bytes_upper={} table_row_id_tape_bytes={} table_codebook_and_winner_bytes={} elapsed_ms={:.3}",
                 lookup_run_label,
                 table_cache.len(),
                 pk.vk.cs.lookups.len(),
                 table_map_entries,
                 table_map_capacity,
                 (table_map_capacity as u128)
-                    .saturating_mul((std::mem::size_of::<(Vec<u8>, usize)>() + 1) as u128)
-                    .saturating_add(16u128 * table_cache.len() as u128),
-                (params.n() as u128)
-                    .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128)
-                    .saturating_mul(table_cache.len() as u128),
+                    .saturating_mul((native_mv_lookup_map_entry_bytes() + 1) as u128)
+                    .saturating_add(16u128 * table_cache.len() as u128)
+                    .saturating_add(
+                        (table_map_entries as u128)
+                            .saturating_mul(Scheme::Scalar::default().to_repr().as_ref().len() as u128),
+                    ),
+                table_cache
+                    .iter()
+                    .map(|(_, table)| {
+                        let (active_rows, width_bytes, _, _, _) = table.compact_storage_shape();
+                        (active_rows as u128).saturating_mul(width_bytes as u128)
+                    })
+                    .fold(0u128, u128::saturating_add),
+                table_cache
+                    .iter()
+                    .map(|(_, table)| {
+                        let (_, _, _, codebook_capacity, winner_capacity) =
+                            table.compact_storage_shape();
+                        (codebook_capacity as u128)
+                            .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128)
+                            .saturating_add(
+                                (winner_capacity as u128)
+                                    .saturating_mul(std::mem::size_of::<usize>() as u128),
+                            )
+                    })
+                    .fold(0u128, u128::saturating_add),
                 table_cache_started.elapsed().as_secs_f64() * 1000.0,
             );
 
@@ -1234,8 +1407,20 @@ where
         .collect::<Result<Vec<_>, _>>()?;
 
     #[cfg(feature = "mv-lookup")]
+    let (lookup_query_id_tape_bytes, lookup_sparse_m_count_entries) = lookups
+        .iter()
+        .flatten()
+        .map(|lookup| lookup.compact_storage_shape())
+        .fold((0u128, 0u128), |(tape_bytes, sparse_entries), (bytes, entries)| {
+            (
+                tape_bytes.saturating_add(bytes as u128),
+                sparse_entries.saturating_add(entries as u128),
+            )
+        });
+
+    #[cfg(feature = "mv-lookup")]
     println!(
-        "EZKL_NATIVE_PHASE DONE stage=mv_lookup_prepare dataset={} instances={} arguments={} table_groups={} elapsed_ms={:.3}",
+        "EZKL_NATIVE_PHASE DONE stage=mv_lookup_prepare dataset={} instances={} arguments={} table_groups={} query_id_tape_bytes={} sparse_m_count_entries={} elapsed_ms={:.3}",
         lookup_run_label,
         lookups.len(),
         pk.vk.cs.lookups.len(),
@@ -1244,6 +1429,8 @@ where
             .as_ref()
             .map(Vec::len)
             .unwrap_or(0),
+        lookup_query_id_tape_bytes,
+        lookup_sparse_m_count_entries,
         start.elapsed().as_secs_f64() * 1000.0,
     );
 
@@ -1320,19 +1507,20 @@ where
     // preallocate the lookups
 
     #[cfg(feature = "mv-lookup")]
+    let commit_active_rows = (params.n() as usize)
+        .checked_sub(pk.vk.cs.blinding_factors() + 1)
+        .ok_or_else(|| invalid_native_prepare_policy("mv-lookup active-row count underflow"))?;
+    #[cfg(feature = "mv-lookup")]
     let commit_task_bytes = (params.n() as u128)
-        .checked_mul(
-            (5 * std::mem::size_of::<Scheme::Scalar>()
-                + std::mem::size_of::<(Scheme::Scalar, &mut Scheme::Scalar)>()) as u128,
-        )
+        .checked_add(commit_active_rows as u128)
+        .and_then(|rows| rows.checked_mul(std::mem::size_of::<Scheme::Scalar>() as u128))
         .and_then(|bytes| {
-            // Per concurrent argument, include the three N-element mapped
-            // windows touched by lookup commit (input, m, and phi output),
-            // plus the exact dense heap arrays and BatchInvert prefix scratch.
-            // The shared table polynomial is charged once in the Python
-            // table-cache envelope.
+            // A commit task keeps the R-row difference accumulator while the
+            // N-row mapped phi polynomial is built. Compact tapes, codebooks,
+            // inverse codebooks, sparse counts, and blinds are retained-source
+            // backing and are reserved separately by the admission envelope.
             bytes.checked_add(
-                (5 * std::mem::size_of::<Vec<Scheme::Scalar>>()) as u128,
+                (4 * std::mem::size_of::<Vec<Scheme::Scalar>>()) as u128,
             )
         })
         .and_then(|bytes| u64::try_from(bytes).ok())
@@ -1354,16 +1542,19 @@ where
         let mut remaining_arguments = total_lookup_arguments;
         let mut committed_instances = Vec::with_capacity(lookups.len());
         println!(
-            "EZKL_NATIVE_PHASE START stage=mv_lookup_commit dataset={} instances={} arguments={} per_task_bytes={} phi_spill_bytes_upper={}",
+            "EZKL_NATIVE_PHASE START stage=mv_lookup_commit dataset={} instances={} arguments={} per_task_bytes={} phi_mapped_bytes_per_task_upper={}",
             lookup_run_label,
             lookups.len(),
             total_lookup_arguments,
             commit_task_bytes,
-            (total_lookup_arguments as u128)
-                .saturating_mul(params.n() as u128)
+            (params.n() as u128)
                 .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
         );
-        for pending in lookups {
+        for ((instance_values, advice_values), pending) in
+            instance.iter().zip(advice.iter()).zip(lookups)
+        {
+            let advice_values = &advice_values.advice_polys;
+            let instance_values = &instance_values.instance_values;
             let mut pending = std::collections::VecDeque::from(pending);
             let mut committed = Vec::with_capacity(pending.len());
             let mut first_argument = total_lookup_arguments - remaining_arguments;
@@ -1395,7 +1586,7 @@ where
                 }
                 let batch_end_argument = first_argument + batch.len();
                 println!(
-                    "EZKL_NATIVE_PHASE START stage=mv_lookup_commit_batch dataset={} first_argument={} end_argument={} total_arguments={} batch_width={} per_task_bytes={} available_budget_bytes={} remaining_phi_spill_bytes_upper={}",
+                    "EZKL_NATIVE_PHASE START stage=mv_lookup_commit_batch dataset={} first_argument={} end_argument={} total_arguments={} batch_width={} per_task_bytes={} available_budget_bytes={} phi_mapped_bytes_per_task_upper={}",
                     lookup_run_label,
                     first_argument,
                     batch_end_argument,
@@ -1403,19 +1594,40 @@ where
                     batch.len(),
                     commit_task_bytes,
                     available_budget,
-                    (remaining_arguments as u128)
-                        .saturating_mul(params.n() as u128)
+                    (params.n() as u128)
                         .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
                 );
                 #[cfg(feature = "metal")]
                 let batch_result = batch
                     .into_iter()
-                    .map(|lookup| lookup.commit_grand_sum(&pk.vk, params, beta, &phi_blinds))
+                    .map(|lookup| {
+                        lookup.commit_grand_sum(
+                            &pk.vk,
+                            params,
+                            beta,
+                            advice_values,
+                            &pk.fixed_values,
+                            instance_values,
+                            &challenges,
+                            &phi_blinds,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 #[cfg(not(feature = "metal"))]
                 let batch_result = batch
                     .into_par_iter()
-                    .map(|lookup| lookup.commit_grand_sum(&pk.vk, params, beta, &phi_blinds))
+                    .map(|lookup| {
+                        lookup.commit_grand_sum(
+                            &pk.vk,
+                            params,
+                            beta,
+                            advice_values,
+                            &pk.fixed_values,
+                            instance_values,
+                            &challenges,
+                            &phi_blinds,
+                        )
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 committed.extend(batch_result);
                 remaining_arguments = remaining_arguments
@@ -1434,12 +1646,11 @@ where
             committed_instances.push(committed);
         }
         println!(
-            "EZKL_NATIVE_PHASE DONE stage=mv_lookup_commit dataset={} instances={} arguments={} phi_spill_bytes_upper={} ",
+            "EZKL_NATIVE_PHASE DONE stage=mv_lookup_commit dataset={} instances={} arguments={} phi_mapped_bytes_per_task_upper={}",
             lookup_run_label,
             committed_instances.len(),
             total_lookup_arguments,
-            (total_lookup_arguments as u128)
-                .saturating_mul(params.n() as u128)
+            (params.n() as u128)
                 .saturating_mul(std::mem::size_of::<Scheme::Scalar>() as u128),
         );
         Ok(committed_instances)
@@ -1615,13 +1826,27 @@ where
 
     let start = Instant::now();
     // Compute and hash fixed evals (shared across all circuit instances)
-    let fixed_evals: Vec<_> = meta
-        .fixed_queries
-        .iter()
-        .map(|&(column, at)| {
-            eval_polynomial(&pk.fixed_polys[column.index()], domain.rotate_omega(*x, at))
-        })
-        .collect();
+    let mut fixed_queries_by_column = vec![Vec::new(); pk.fixed_values.len()];
+    for (query_index, &(column, at)) in meta.fixed_queries.iter().enumerate() {
+        fixed_queries_by_column[column.index()].push((query_index, at));
+    }
+    let mut fixed_evals = vec![Scheme::Scalar::ZERO; meta.fixed_queries.len()];
+    for (column_index, queries) in fixed_queries_by_column.iter().enumerate() {
+        if queries.is_empty() {
+            continue;
+        }
+        let lagrange = pk.fixed_values[column_index]
+            .materialize_lagrange()
+            .map_err(Error::NativeStorage)?;
+        let coeff = domain
+            .lagrange_to_coeff(lagrange)
+            .spill()
+            .map_err(Error::NativeStorage)?;
+        for &(query_index, at) in queries {
+            fixed_evals[query_index] = eval_polynomial(&coeff, domain.rotate_omega(*x, at));
+        }
+        drop(coeff);
+    }
     log::trace!("Fixed evaluation: {:?}", start.elapsed());
 
     // Hash each fixed column evaluation
@@ -1637,7 +1862,11 @@ where
 
     // Evaluate common permutation data
     let start = Instant::now();
-    pk.permutation.evaluate(x, transcript)?;
+    let permutation_omega_powers = permutation::omega_powers(domain)
+        .map_err(Error::NativeStorage)?;
+    let permutation_evaluations =
+        pk.permutation
+            .evaluate(x, domain, &permutation_omega_powers[..], transcript)?;
     log::trace!("Permutation evaluation: {:?}", start.elapsed());
 
     // Evaluate the permutations, if any, at omega^i x.
@@ -1694,11 +1923,11 @@ where
                 .chain(
                     P::QUERY_INSTANCE
                         .then_some(pk.vk.cs.instance_queries.iter().map(move |&(column, at)| {
-                            ProverQuery {
-                                point: domain.rotate_omega(*x, at),
-                                poly: &instance.instance_polys[column.index()],
-                                blind: Blind::default(),
-                            }
+                            ProverQuery::new(
+                                domain.rotate_omega(*x, at),
+                                &instance.instance_polys[column.index()],
+                                Blind::default(),
+                            )
                         }))
                         .into_iter()
                         .flatten(),
@@ -1708,28 +1937,34 @@ where
                         .cs
                         .advice_queries
                         .iter()
-                        .map(move |&(column, at)| ProverQuery {
-                            point: domain.rotate_omega(*x, at),
-                            poly: &advice.advice_polys[column.index()],
-                            blind: advice.advice_blinds[column.index()],
+                        .map(move |&(column, at)| {
+                            ProverQuery::new(
+                                domain.rotate_omega(*x, at),
+                                &advice.advice_polys[column.index()],
+                                advice.advice_blinds[column.index()],
+                            )
                         }),
                 )
                 .chain(permutation.open(pk, x))
                 .chain(lookups.iter().flat_map(move |p| p.open(pk, x)))
                 .chain(shuffles.iter().flat_map(move |p| p.open(pk, x)))
         })
-        .chain(
-            pk.vk
-                .cs
-                .fixed_queries
-                .iter()
-                .map(|&(column, at)| ProverQuery {
-                    point: domain.rotate_omega(*x, at),
-                    poly: &pk.fixed_polys[column.index()],
-                    blind: Blind::default(),
-                }),
-        )
-        .chain(pk.permutation.open(x))
+        .chain(pk.vk.cs.fixed_queries.iter().zip(fixed_evals.iter().copied()).map(
+            |(&(column, at), eval)| {
+                ProverQuery::new_fixed_column(
+                    domain.rotate_omega(*x, at),
+                    &pk.fixed_values[column.index()],
+                    domain,
+                    eval,
+                )
+            },
+        ))
+        .chain(pk.permutation.open(
+            x,
+            domain,
+            &permutation_omega_powers[..],
+            &permutation_evaluations[..],
+        ))
         // We query the h(X) polynomial at x
         .chain(vanishing.open(x));
     log::trace!("Open queries: {:?}", start.elapsed());
@@ -1940,9 +2175,8 @@ fn packed_selector_count_vk_roundtrip_and_proof_verify() {
     assert_eq!(decoded_vk.transcript_repr(), vk.transcript_repr());
 
     let pk = keygen_pk(&params, vk, &circuit).expect("keygen_pk should succeed");
-    // Compact native proving keys reconstruct dense sigma polynomials while
-    // loading the serialized key. Exercise that supported production path
-    // instead of proving from the intentionally sparse in-memory keygen value.
+    // Reload the compact sparse mapping and exercise the supported deferred
+    // sigma source through proof creation and independent verification.
     let pk_bytes = pk.to_bytes(SerdeFormat::RawBytes);
     #[cfg(feature = "circuit-params")]
     let pk = super::ProvingKey::from_bytes::<SelectorCircuit>(

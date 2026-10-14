@@ -9,10 +9,12 @@ use group::Curve;
 use super::{
     circuit::{
         Advice, Any, Assignment, Circuit, Column, ConstraintSystem, Fixed, FloorPlanner, Instance,
-        PackedSelectorAssignment, Selector, SelectorActivationSet, SelectorBitmap,
+        PackedSelectorAssignment, Selector, SelectorActivationCache, SelectorActivationSet,
+        SelectorBitmap,
     },
     evaluation::Evaluator,
-    permutation, Assigned, Challenge, Error, LagrangeCoeff, Polynomial, ProvingKey, VerifyingKey,
+    permutation, Assigned, Challenge, Error, FixedColumnSource, LagrangeCoeff, PackedIdTape,
+    PackedIdWidth, Polynomial, ProvingKey, VerifyingKey,
 };
 use crate::{
     arithmetic::{parallelize, CurveAffine},
@@ -22,6 +24,58 @@ use crate::{
         EvaluationDomain, NativePermutationStore,
     },
 };
+
+/// Rebuild the deterministic boundary polynomials stored in a proving key.
+/// Keep this shared by key generation and PK restoration so the serialized
+/// artifact can omit these domain-derived values without changing the native
+/// prover inputs.
+pub(super) fn compute_prover_boundary_polynomials<C: CurveAffine>(
+    domain: &EvaluationDomain<C::Scalar>,
+    blinding_factors: usize,
+) -> io::Result<(
+    Polynomial<C::Scalar, crate::poly::ExtendedLagrangeCoeff>,
+    Polynomial<C::Scalar, crate::poly::ExtendedLagrangeCoeff>,
+    Polynomial<C::Scalar, crate::poly::ExtendedLagrangeCoeff>,
+)> {
+    let n = usize::try_from(domain.get_n()).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "native proving-key domain exceeds host index")
+    })?;
+    let last_active_row = blinding_factors
+        .checked_add(1)
+        .and_then(|reserved| n.checked_sub(reserved))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "native proving-key boundary row underflows"))?;
+
+    // Compute l_0(X).
+    let mut l0 = domain.empty_lagrange();
+    l0[0] = C::Scalar::ONE;
+    let l0 = domain.lagrange_to_coeff(l0);
+    let l0 = domain.coeff_to_extended_spilled(&l0)?;
+
+    // Compute l_blind(X), then l_last(X), preserving the original keygen order.
+    let mut l_blind = domain.empty_lagrange();
+    for evaluation in l_blind[..].iter_mut().rev().take(blinding_factors) {
+        *evaluation = C::Scalar::ONE;
+    }
+    let l_blind = domain.lagrange_to_coeff(l_blind);
+    let l_blind = domain.coeff_to_extended_spilled(&l_blind)?;
+
+    let mut l_last = domain.empty_lagrange();
+    l_last[last_active_row] = C::Scalar::ONE;
+    let l_last = domain.lagrange_to_coeff(l_last);
+    let l_last = domain.coeff_to_extended_spilled(&l_last)?;
+
+    // Compute l_active_row(X) = 1 - l_last(X) - l_blind(X).
+    let one = C::Scalar::ONE;
+    let mut l_active_row = Polynomial::mapped_filled(domain.extended_len(), C::Scalar::ZERO)?;
+    parallelize(&mut l_active_row[..], |values, start| {
+        for (i, value) in values.iter_mut().enumerate() {
+            let idx = i + start;
+            *value = one - (l_last[idx] + l_blind[idx]);
+        }
+    });
+
+    Ok((l0, l_last, l_active_row))
+}
 
 /// Source-derived geometry and allocation ceilings for one native keygen
 /// synthesis. Byte counts are explicit backing/virtual-size estimates; they
@@ -537,14 +591,17 @@ impl<F: Field> Assignment<F> for Assembly<F> {
     }
 }
 
-/// Exact selector and conservative compact-permutation census produced by a
-/// shape-only synthesis. Copy calls are counted so the serialized sparse
-/// successor mapping can use the source-derived `2 * copy_calls` bound rather
-/// than the much looser full `permutation_columns * domain_size` bound.
+/// Exact selector/advice-assignment and conservative compact-permutation
+/// census produced by a shape-only synthesis. Copy calls are counted so the
+/// serialized sparse successor mapping can use the source-derived
+/// `2 * copy_calls` bound rather than the much looser full
+/// `permutation_columns * domain_size` bound.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeShapeCensus {
     /// Number of fixed columns emitted by native selector compression.
     pub selector_fixed_column_count: usize,
+    /// Exact serialized bytes for the dictionary-backed VK selector cache.
+    pub selector_cache_encoded_bytes: u64,
     /// High-water bytes used by activation row-set backing during this census.
     /// Includes the outer selector-set vector and transient old/new storage
     /// while a selector changes from runs to a packed bitmap; excludes allocator
@@ -556,11 +613,19 @@ pub struct NativeShapeCensus {
     pub selector_activation_counts: Vec<u64>,
     /// Upper bounds on distinct fixed values assigned or filled per fixed column.
     pub fixed_value_assignment_counts: Vec<u64>,
+    /// Whether synthesis explicitly assigned a canonical zero representation
+    /// (Zero or Trivial(0)) in each fixed column. Other encodings do not prove
+    /// that the implicit unassigned-row zero is already represented.
+    pub fixed_value_explicit_zero_seen: Vec<bool>,
+    /// Exact number of advice assignment callbacks made per configured advice
+    /// column by this circuit's normal synthesis.
+    pub advice_assignment_counts: Vec<u64>,
 }
 
 /// Run shape-only synthesis without building fixed/permutation polynomials or
 /// a proving/verifying key. This executes the circuit's normal floor planner
-/// and records exact selector activations and copy-callback count.
+/// and records exact selector activations, advice assignment callback counts,
+/// and copy-callback count.
 pub fn census_native_shape<C, ConcreteCircuit>(
     k: u32,
     circuit: &ConcreteCircuit,
@@ -603,6 +668,8 @@ where
         selector_activation_storage_peak_bytes: selector_activation_initial_bytes,
         selector_activation_counts: vec![0; cs.num_selectors],
         fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
+        fixed_value_explicit_zero_seen: vec![false; cs.num_fixed_columns],
+        advice_assignment_counts: vec![0; cs.num_advice_columns],
         usable_rows: 0..usable_end,
         permutation_copy_call_count: 0,
         _marker: std::marker::PhantomData,
@@ -617,8 +684,13 @@ where
 
     let selector_fixed_column_count =
         cs.count_selector_activation_combinations(&assembly.selectors);
+    let selector_cache = SelectorActivationCache::from_selectors(assembly.selectors)
+        .map_err(Error::NativeStorage)?;
+    let selector_cache_encoded_bytes = u64::try_from(selector_cache.encoded_byte_len())
+        .map_err(|_| Error::BoundsFailure)?;
     Ok(NativeShapeCensus {
         selector_fixed_column_count,
+        selector_cache_encoded_bytes,
         selector_activation_storage_bytes: u64::try_from(
             assembly.selector_activation_storage_peak_bytes,
         )
@@ -626,6 +698,8 @@ where
         permutation_copy_call_count: assembly.permutation_copy_call_count,
         selector_activation_counts: assembly.selector_activation_counts,
         fixed_value_assignment_counts: assembly.fixed_value_assignment_counts,
+        fixed_value_explicit_zero_seen: assembly.fixed_value_explicit_zero_seen,
+        advice_assignment_counts: assembly.advice_assignment_counts,
     })
 }
 
@@ -655,9 +729,19 @@ struct SelectorOnlyAssembly<F: Field> {
     selector_activation_storage_peak_bytes: usize,
     selector_activation_counts: Vec<u64>,
     fixed_value_assignment_counts: Vec<u64>,
+    fixed_value_explicit_zero_seen: Vec<bool>,
+    advice_assignment_counts: Vec<u64>,
     usable_rows: Range<usize>,
     permutation_copy_call_count: u64,
     _marker: std::marker::PhantomData<F>,
+}
+
+fn assigned_value_is_explicit_zero<F: Field>(value: Assigned<F>) -> bool {
+    match value {
+        Assigned::Zero => true,
+        Assigned::Trivial(value) => value.is_zero_vartime(),
+        Assigned::Rational(_, _) => false,
+    }
 }
 
 impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
@@ -719,7 +803,7 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
     fn assign_advice<V, VR, A, AR>(
         &mut self,
         _: A,
-        _: Column<Advice>,
+        column: Column<Advice>,
         _: usize,
         _: V,
     ) -> Result<(), Error>
@@ -730,6 +814,11 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
         AR: Into<String>,
     {
         // Keygen does not evaluate advice callbacks during key generation.
+        let count = self
+            .advice_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
         Ok(())
     }
 
@@ -752,12 +841,18 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
         if column.index() >= self.fixed_columns {
             return Err(Error::BoundsFailure);
         }
-        let _ = to().into_field().assign()?;
+        let value = to().into_field().assign()?;
         let count = self
             .fixed_value_assignment_counts
             .get_mut(column.index())
             .ok_or(Error::BoundsFailure)?;
         *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        if assigned_value_is_explicit_zero(value) {
+            *self
+                .fixed_value_explicit_zero_seen
+                .get_mut(column.index())
+                .ok_or(Error::BoundsFailure)? = true;
+        }
         Ok(())
     }
 
@@ -796,12 +891,18 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
         if column.index() >= self.fixed_columns {
             return Err(Error::BoundsFailure);
         }
-        let _ = to.assign()?;
+        let value = to.assign()?;
         let count = self
             .fixed_value_assignment_counts
             .get_mut(column.index())
             .ok_or(Error::BoundsFailure)?;
         *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        if assigned_value_is_explicit_zero(value) {
+            *self
+                .fixed_value_explicit_zero_seen
+                .get_mut(column.index())
+                .ok_or(Error::BoundsFailure)? = true;
+        }
         Ok(())
     }
 
@@ -833,7 +934,10 @@ fn selector_combination_bitmap<F: Field>(
 ) -> Result<(SelectorBitmap, u64), Error> {
     let max_root = assignments
         .iter()
-        .filter(|assignment| assignment.combination_index == combination_index)
+        .filter(|assignment| {
+            assignment.combination_index == combination_index
+                && assignment.is_activation_representative
+        })
         .map(|assignment| assignment.root_value)
         .max()
         .ok_or_else(|| {
@@ -851,7 +955,10 @@ fn selector_combination_bitmap<F: Field>(
         SelectorBitmap::zeroed(row_count, bits_per_value).map_err(Error::NativeStorage)?;
     for assignment in assignments
         .iter()
-        .filter(|assignment| assignment.combination_index == combination_index)
+        .filter(|assignment| {
+            assignment.combination_index == combination_index
+                && assignment.is_activation_representative
+        })
     {
         let activation = selectors
             .get(assignment.selector)
@@ -1071,16 +1178,19 @@ where
         fixed_commitments.push(params.commit_lagrange(&fixed, Blind::default()).to_affine());
     }
 
+    let selector_cache = if compress_selectors {
+        SelectorActivationCache::from_selectors(assembly.selectors)
+            .map_err(Error::NativeStorage)?
+    } else {
+        SelectorActivationCache::default()
+    };
+
     Ok(VerifyingKey::from_parts(
         domain,
         fixed_commitments,
         permutation_vk,
         cs,
-        if compress_selectors {
-            assembly.selectors
-        } else {
-            Vec::new()
-        },
+        selector_cache,
         compress_selectors,
     ))
 }
@@ -1234,29 +1344,46 @@ where
     after_synthesis(&native_census).map_err(Error::NativeStorage)?;
     let mut fixed = Vec::with_capacity(cs.num_fixed_columns + selector_column_count);
     for assigned in assembly.fixed {
-        fixed.push(assigned.invert_spilled().map_err(Error::NativeStorage)?);
+        let polynomial = assigned.invert_spilled().map_err(Error::NativeStorage)?;
+        fixed.push(
+            FixedColumnSource::from_polynomial(polynomial).map_err(Error::NativeStorage)?,
+        );
     }
     for combination_index in 0..selector_column_count {
         let (encoded, max_root) =
             selector_combination_bitmap(&selectors, &selector_assignments, combination_index)?;
-        let poly = selector_bitmap_to_field::<C::Scalar>(&encoded, max_root);
-        fixed.push(
-            vk.domain
+        let cardinality = usize::try_from(max_root)
+            .ok()
+            .and_then(|root| root.checked_add(1))
+            .ok_or(Error::BoundsFailure)?;
+        if cardinality <= 256 {
+            let mut codebook = Vec::with_capacity(cardinality);
+            codebook.push(C::Scalar::ZERO);
+            for _ in 1..cardinality {
+                let next = codebook.last().copied().unwrap_or(C::Scalar::ZERO) + C::Scalar::ONE;
+                codebook.push(next);
+            }
+            let width = PackedIdWidth::for_cardinality(cardinality)
+                .map_err(Error::NativeStorage)?;
+            let mut ids = PackedIdTape::zeroed(n, width).map_err(Error::NativeStorage)?;
+            for row in 0..n {
+                let id = usize::try_from(encoded.value(row)).map_err(|_| Error::BoundsFailure)?;
+                ids.write(row, id).map_err(Error::NativeStorage)?;
+            }
+            fixed.push(FixedColumnSource::Compact { codebook, ids });
+        } else {
+            let poly = selector_bitmap_to_field::<C::Scalar>(&encoded, max_root);
+            let polynomial = vk
+                .domain
                 .lagrange_from_vec(poly)
                 .spill()
-                .map_err(Error::NativeStorage)?,
-        );
+                .map_err(Error::NativeStorage)?;
+            fixed.push(
+                FixedColumnSource::from_polynomial(polynomial)
+                    .map_err(Error::NativeStorage)?,
+            );
+        }
     }
-
-    let fixed_polys: Vec<_> = fixed
-        .iter()
-        .map(|poly| {
-            vk.domain
-                .lagrange_to_coeff(poly.clone())
-                .spill()
-                .map_err(Error::NativeStorage)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
 
     let permutation_pk = if compact_artifact {
         #[cfg(feature = "formal-permutation-spill")]
@@ -1277,48 +1404,11 @@ where
             .build_pk(params, &vk.domain, &cs.permutation)?
     };
 
-    // Compute l_0(X)
-    // TODO: this can be done more efficiently
-    let mut l0 = vk.domain.empty_lagrange();
-    l0[0] = C::Scalar::ONE;
-    let l0 = vk.domain.lagrange_to_coeff(l0);
-    let l0 = vk
-        .domain
-        .coeff_to_extended_spilled(&l0)
-        .map_err(Error::NativeStorage)?;
-
-    // Compute l_blind(X) which evaluates to 1 for each blinding factor row
-    // and 0 otherwise over the domain.
-    let mut l_blind = vk.domain.empty_lagrange();
-    for evaluation in l_blind[..].iter_mut().rev().take(cs.blinding_factors()) {
-        *evaluation = C::Scalar::ONE;
-    }
-    let l_blind = vk.domain.lagrange_to_coeff(l_blind);
-    let l_blind = vk
-        .domain
-        .coeff_to_extended_spilled(&l_blind)
-        .map_err(Error::NativeStorage)?;
-
-    // Compute l_last(X) which evaluates to 1 on the first inactive row (just
-    // before the blinding factors) and 0 otherwise over the domain
-    let mut l_last = vk.domain.empty_lagrange();
-    l_last[params.n() as usize - cs.blinding_factors() - 1] = C::Scalar::ONE;
-    let l_last = vk.domain.lagrange_to_coeff(l_last);
-    let l_last = vk
-        .domain
-        .coeff_to_extended_spilled(&l_last)
-        .map_err(Error::NativeStorage)?;
-
-    // Compute l_active_row(X)
-    let one = C::Scalar::ONE;
-    let mut l_active_row = Polynomial::mapped_filled(vk.domain.extended_len(), C::Scalar::ZERO)
-        .map_err(Error::NativeStorage)?;
-    parallelize(&mut l_active_row[..], |values, start| {
-        for (i, value) in values.iter_mut().enumerate() {
-            let idx = i + start;
-            *value = one - (l_last[idx] + l_blind[idx]);
-        }
-    });
+    let (l0, l_last, l_active_row) = compute_prover_boundary_polynomials::<C>(
+        &vk.domain,
+        cs.blinding_factors(),
+    )
+    .map_err(Error::NativeStorage)?;
 
     // Compute the optimized evaluation data structure
     let ev = Evaluator::new(&vk.cs);
@@ -1329,7 +1419,6 @@ where
         l_last,
         l_active_row,
         fixed_values: fixed,
-        fixed_polys,
         permutation: permutation_pk,
         ev,
     })

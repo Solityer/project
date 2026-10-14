@@ -55,7 +55,7 @@ impl Argument {
         pk: &plonk::ProvingKey<C>,
         pkey: &ProvingKey<C>,
         advice: &[Polynomial<C::Scalar, LagrangeCoeff>],
-        fixed: &[Polynomial<C::Scalar, LagrangeCoeff>],
+        fixed: &[plonk::FixedColumnSource<C::Scalar>],
         instance: &[Polynomial<C::Scalar, LagrangeCoeff>],
         beta: ChallengeBeta<C>,
         gamma: ChallengeGamma<C>,
@@ -84,13 +84,7 @@ impl Argument {
             pkey.columns, self.columns,
             "permutation PK columns disagree with circuit"
         );
-        let mut omega_powers: Polynomial<C::Scalar, LagrangeCoeff> =
-            Polynomial::mapped_filled(params.n() as usize, C::Scalar::ONE)
-                .map_err(Error::NativeStorage)?;
-        let omega = domain.get_omega();
-        for row in 1..omega_powers.len() {
-            omega_powers[row] = omega_powers[row - 1] * omega;
-        }
+        let omega_powers = super::omega_powers(domain).map_err(Error::NativeStorage)?;
 
         for (set_index, columns) in self.columns.chunks(chunk_len).enumerate() {
             // Goal is to compute the products of fractions
@@ -108,18 +102,19 @@ impl Argument {
                 let column_index = set_index * chunk_len + column_offset;
                 let permuted_column_values =
                     pkey.sigma_lagrange(domain, column_index, &omega_powers[..])?;
-                let values = match column.column_type() {
-                    Any::Advice(_) => advice,
-                    Any::Fixed => fixed,
-                    Any::Instance => instance,
-                };
                 parallelize(&mut modified_values, |modified_values, start| {
-                    for ((modified_values, value), permuted_value) in modified_values
+                    for (offset, (modified_value, permuted_value)) in modified_values
                         .iter_mut()
-                        .zip(values[column.index()][start..].iter())
                         .zip(permuted_column_values[start..].iter())
+                        .enumerate()
                     {
-                        *modified_values *= &(*beta * permuted_value + &*gamma + value);
+                        let row = start + offset;
+                        let value = match column.column_type() {
+                            Any::Advice(_) => advice[column.index()][row],
+                            Any::Fixed => fixed[column.index()].value(row),
+                            Any::Instance => instance[column.index()][row],
+                        };
+                        *modified_value *= &(*beta * permuted_value + &*gamma + value);
                     }
                 });
             }
@@ -131,19 +126,17 @@ impl Argument {
             // of the entire fraction by computing the numerators
             for &column in columns.iter() {
                 let omega = domain.get_omega();
-                let values = match column.column_type() {
-                    Any::Advice(_) => advice,
-                    Any::Fixed => fixed,
-                    Any::Instance => instance,
-                };
                 parallelize(&mut modified_values, |modified_values, start| {
                     let mut deltaomega = deltaomega * &omega.pow_vartime([start as u64, 0, 0, 0]);
-                    for (modified_values, value) in modified_values
-                        .iter_mut()
-                        .zip(values[column.index()][start..].iter())
-                    {
+                    for (offset, modified_value) in modified_values.iter_mut().enumerate() {
+                        let row = start + offset;
+                        let value = match column.column_type() {
+                            Any::Advice(_) => advice[column.index()][row],
+                            Any::Fixed => fixed[column.index()].value(row),
+                            Any::Instance => instance[column.index()][row],
+                        };
                         // Multiply by p_j(\omega^i) + \delta^j \omega^i \beta
-                        *modified_values *= &(deltaomega * &*beta + &*gamma + value);
+                        *modified_value *= &(deltaomega * &*beta + &*gamma + value);
                         deltaomega *= &omega;
                     }
                 });
@@ -213,28 +206,46 @@ impl<C: CurveAffine> Committed<C> {
 }
 
 impl<C: CurveAffine> super::ProvingKey<C> {
-    pub(in crate::plonk) fn open(
-        &self,
+    pub(in crate::plonk) fn open<'a>(
+        &'a self,
         x: ChallengeX<C>,
-    ) -> impl Iterator<Item = ProverQuery<'_, C>> + Clone {
-        self.polys.iter().map(move |poly| ProverQuery {
-            point: *x,
-            poly,
-            blind: Blind::default(),
+        domain: &'a crate::poly::EvaluationDomain<C::Scalar>,
+        omega_powers: &'a [C::Scalar],
+        evaluations: &'a [C::Scalar],
+    ) -> impl Iterator<Item = ProverQuery<'a, C>> + Clone + 'a {
+        assert_eq!(self.columns.len(), evaluations.len());
+        (0..self.columns.len()).map(move |column| {
+            ProverQuery::new_permutation_sigma(
+                *x,
+                self,
+                domain,
+                omega_powers,
+                column,
+                evaluations[column],
+            )
         })
     }
 
     pub(in crate::plonk) fn evaluate<E: EncodedChallenge<C>, T: TranscriptWrite<C, E>>(
         &self,
         x: ChallengeX<C>,
+        domain: &crate::poly::EvaluationDomain<C::Scalar>,
+        omega_powers: &[C::Scalar],
         transcript: &mut T,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<C::Scalar>, Error>
+    where
+        C::Scalar: group::ff::WithSmallOrderMulGroup<3>,
+    {
         // Hash permutation evals
-        for eval in self.polys.iter().map(|poly| eval_polynomial(poly, *x)) {
+        let mut evaluations = Vec::with_capacity(self.columns.len());
+        for column in 0..self.columns.len() {
+            let poly = self.sigma_coeff(domain, column, omega_powers)?;
+            let eval = eval_polynomial(&poly[..], *x);
             transcript.write_scalar(eval)?;
+            evaluations.push(eval);
         }
 
-        Ok(())
+        Ok(evaluations)
     }
 }
 
@@ -302,16 +313,16 @@ impl<C: CurveAffine> Evaluated<C> {
             .chain(self.constructed.sets.iter().flat_map(move |set| {
                 iter::empty()
                     // Open permutation product commitments at x and \omega x
-                    .chain(Some(ProverQuery {
-                        point: *x,
-                        poly: &set.permutation_product_poly,
-                        blind: set.permutation_product_blind,
-                    }))
-                    .chain(Some(ProverQuery {
-                        point: x_next,
-                        poly: &set.permutation_product_poly,
-                        blind: set.permutation_product_blind,
-                    }))
+                    .chain(Some(ProverQuery::new(
+                        *x,
+                        &set.permutation_product_poly,
+                        set.permutation_product_blind,
+                    )))
+                    .chain(Some(ProverQuery::new(
+                        x_next,
+                        &set.permutation_product_poly,
+                        set.permutation_product_blind,
+                    )))
             }))
             // Open it at \omega^{last} x for all but the last set. This rotation is only
             // sensical for the first row, but we only use this rotation in a constraint
@@ -323,11 +334,11 @@ impl<C: CurveAffine> Evaluated<C> {
                     .rev()
                     .skip(1)
                     .flat_map(move |set| {
-                        Some(ProverQuery {
-                            point: x_last,
-                            poly: &set.permutation_product_poly,
-                            blind: set.permutation_product_blind,
-                        })
+                        Some(ProverQuery::new(
+                            x_last,
+                            &set.permutation_product_poly,
+                            set.permutation_product_blind,
+                        ))
                     }),
             )
     }

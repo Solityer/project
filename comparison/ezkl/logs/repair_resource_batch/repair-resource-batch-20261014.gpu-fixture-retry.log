@@ -1,0 +1,589 @@
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: associated items `read_activation` and `activation_fingerprint` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:73:19
+    |
+ 41 | impl SelectorBitmap {
+    | ------------------- associated items in this implementation
+...
+ 73 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+198 |     pub(crate) fn activation_fingerprint(&self) -> u64 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `read_activation`, `is_activated`, and `encoded_byte_len` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:411:19
+    |
+364 | impl SelectorActivationSet {
+    | -------------------------- associated items in this implementation
+...
+411 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+494 |     pub(crate) fn is_activated(&self, row: usize) -> bool {
+    |                   ^^^^^^^^^^^^
+...
+691 |     pub(crate) fn encoded_byte_len(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `compress_selector_bitmaps` and `directly_convert_selector_bitmaps` are never used
+    --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:3196:19
+     |
+2702 | impl<F: Field> ConstraintSystem<F> {
+     | ---------------------------------- methods in this implementation
+...
+3196 |     pub(crate) fn compress_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+3375 |     pub(crate) fn directly_convert_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `process_bitmaps` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit/compress_selectors.rs:414:15
+    |
+414 | pub(crate) fn process_bitmaps<F: Field, E>(
+    |               ^^^^^^^^^^^^^^^
+
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:56:5
+   |
+36 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+56 |     Y(),
+   |     ^
+57 |     /// Previous value
+58 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `pair_at` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:109:8
+    |
+ 31 | impl SuccessorEntries {
+    | --------------------- method in this implementation
+...
+109 |     fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+    |        ^^^^^^^
+
+warning: associated functions `read` and `read_with_native_backing_budget` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:277:19
+    |
+271 | / impl<C: SerdeCurveAffine> ProvingKey<C>
+272 | | where
+273 | |     C::Scalar: Field,
+    | |_____________________- associated functions in this implementation
+...
+277 |       pub(super) fn read<R: io::Read>(
+    |                     ^^^^
+...
+286 |       pub(super) fn read_with_native_backing_budget<R: io::Read>(reader: &mut R, _format: SerdeFormat, domain: &EvaluationDomain<C:...
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `domain_size` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:491:19
+    |
+419 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- method in this implementation
+...
+491 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: variant `Memory` is never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:32:5
+   |
+31 | enum PermutationState {
+   |      ---------------- variant in this enum
+32 |     Memory {
+   |     ^^^^^^
+   |
+   = note: `PermutationState` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `cell_at` and `mapping_at_idx` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:99:8
+    |
+ 54 | impl Assembly {
+    | ------------- methods in this implementation
+...
+ 99 |     fn cell_at(&self, cell: usize) -> (usize, usize) {
+    |        ^^^^^^^
+...
+111 |     fn mapping_at_idx(&mut self, column: usize, row: usize) -> Result<(usize, usize), Error> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:410:15
+    |
+410 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:456:19
+    |
+439 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+456 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:122:19
+    |
+ 61 | impl NativePermutationStore {
+    | --------------------------- associated function in this implementation
+...
+122 |     pub(crate) fn new(cell_count: usize) -> io::Result<Self> {
+    |                   ^^^
+
+warning: associated items `new` and `pair_at` are never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:909:19
+     |
+ 908 | impl NativeSuccessorStore {
+     | ------------------------- associated items in this implementation
+ 909 |     pub(crate) fn new(len: u64) -> io::Result<Self> {
+     |                   ^^^
+...
+1047 |     pub(crate) fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+     |                   ^^^^^^^
+
+warning: associated function `new` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1186:19
+     |
+1183 | impl NativeTargetBitmap {
+     | ----------------------- associated function in this implementation
+...
+1186 |     pub(crate) fn new(bit_count: u64) -> io::Result<Self> {
+     |                   ^^^
+
+warning: method `write_value` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:2096:19
+     |
+2095 | impl<F: Copy> SpillBuilder<F> {
+     | ----------------------------- method in this implementation
+2096 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+     |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 28 warnings (run `cargo fix --lib -p halo2_proofs` to apply 6 suggestions)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 3m 27s
+     Running tests/gat_adapter_relation.rs (target/gpu/release/deps/gat_adapter_relation-f159b85137d49044)
+
+running 1 test
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (0/88206 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (88206/88206 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (0/88206 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/edges.txt (88206/88206 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (0/700967 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (700967/700967 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (0/700967 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/features.txt (700967/700967 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (0/6654 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (6654/6654 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (0/6654 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/labels.txt (6654/6654 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (0/123 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (123/123 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (0/123 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/meta.cfg (123/123 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/citeseer/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (0/99636 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (99636/99636 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (0/99636 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/edges.txt (99636/99636 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (0/310956 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (310956/310956 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (0/310956 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/features.txt (310956/310956 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (0/5416 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (5416/5416 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (0/5416 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/labels.txt (5416/5416 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (0/119 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (119/119 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (0/119 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/meta.cfg (119/119 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (0/5000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/cora/test.index (5000/5000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (0/14773350 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (14773350/14773350 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (0/14773350 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/edges.txt (14773350/14773350 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (0/86703744 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (86703744/86703744 bytes, 0.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (0/86703744 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/features.npy (86703744/86703744 bytes, 0.2s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (0/477779 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (477779/477779 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (0/477779 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/labels.txt (477779/477779 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (0/396 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (396/396 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (0/396 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ogbn_arxiv/meta.cfg (396/396 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (0/12551171 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (12551171/12551171 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (0/12551171 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/edges.txt (12551171/12551171 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (0/11388928 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (11388928/11388928 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (0/11388928 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/features.npy (11388928/11388928 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (0/27561024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (27561024/27561024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (0/27561024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.npy (27561024/27561024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (0/13780458 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (13780458/13780458 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (0/13780458 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/labels_multi.txt (13780458/13780458 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (0/439 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (439/439 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (0/439 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/meta.cfg (439/439 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (0/1720 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (1720/1720 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (0/1720 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/node_ptr.txt (1720/1720 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/test_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/train_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (0/57072 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/ppi/val_mask.npy (57072/57072 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (0/963182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (963182/963182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (0/963182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/edges.txt (963182/963182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (0/19289548 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (19289548/19289548 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (0/19289548 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/features.txt (19289548/19289548 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (0/39434 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (39434/39434 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (0/39434 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/labels.txt (39434/39434 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (0/121 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (121/121 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (0/121 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/meta.cfg (121/121 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (0/6000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (6000/6000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (0/6000 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/cache/pubmed/test.index (6000/6000 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (0/987317 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (987317/987317 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (0/987317 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/best_model.pt (987317/987317 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (0/17443 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (17443/17443 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (0/17443 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/manifest.json (17443/17443 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (0/909182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (909182/909182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (0/909182 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.npz (909182/909182 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (0/5551692 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (5551692/5551692 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (0/5551692 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/tensors.txt (5551692/5551692 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (0/4780 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (4780/4780 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (0/4780 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/citeseer_gat/training_summary.json (4780/4780 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (0/406645 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (406645/406645 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (0/406645 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/best_model.pt (406645/406645 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (0/17427 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (17427/17427 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (0/17427 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/manifest.json (17427/17427 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (0/375421 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (375421/375421 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (0/375421 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.npz (375421/375421 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (0/2268024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (2268024/2268024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (0/2268024 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/tensors.txt (2268024/2268024 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (0/4790 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (4790/4790 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (0/4790 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/cora_gat/training_summary.json (4790/4790 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (0/90485 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (90485/90485 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (0/90485 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/best_model.pt (90485/90485 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (0/17451 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (17451/17451 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (0/17451 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/manifest.json (17451/17451 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (0/81685 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (81685/81685 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (0/81685 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.npz (81685/81685 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (0/421362 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (421362/421362 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (0/421362 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/tensors.txt (421362/421362 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (0/4831 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (4831/4831 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (0/4831 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ogbn_arxiv_gat/training_summary.json (4831/4831 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (0/113909 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (113909/113909 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (0/113909 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/best_model.pt (113909/113909 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (0/101461 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (101461/101461 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (0/101461 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.npz (101461/101461 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (0/508006 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (508006/508006 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (0/508006 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/tensors.txt (508006/508006 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (0/3792 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (3792/3792 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (0/3792 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/ppi_gat/training_summary.json (3792/3792 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (0/166005 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (166005/166005 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (0/166005 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/best_model.pt (166005/166005 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (0/17425 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/manifest.json (17425/17425 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (0/150992 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (150992/150992 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (0/150992 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.npz (150992/150992 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (0/828582 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (828582/828582 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (0/828582 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/tensors.txt (828582/828582 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (0/4829 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (4829/4829 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (0/4829 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/checkpoints/pubmed_gat/training_summary.json (4829/4829 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (0/1437 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (1437/1437 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (0/1437 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/citeseer_secure.cfg (1437/1437 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (0/1413 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (1413/1413 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (0/1413 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/cora_secure.cfg (1413/1413 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (0/1474 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (1474/1474 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (0/1474 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ogbn_arxiv_secure.cfg (1474/1474 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (0/1431 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (1431/1431 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (0/1431 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/ppi_secure.cfg (1431/1431 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (0/1424 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (1424/1424 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (0/1424 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/pubmed_secure.cfg (1424/1424 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (0/817 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (817/817 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (0/817 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/configs/quantization_scale_chain.cfg (817/817 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/citeseer/gat_integer_ledger.json (0/7715 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/citeseer/gat_integer_ledger.json (7715/7715 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/cora/gat_integer_ledger.json (0/7711 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/cora/gat_integer_ledger.json (7711/7711 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ogbn_arxiv/gat_integer_ledger.json (0/7872 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ogbn_arxiv/gat_integer_ledger.json (7872/7872 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ppi/gat_integer_ledger.json (0/8081 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/ppi/gat_integer_ledger.json (8081/8081 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/pubmed/gat_integer_ledger.json (0/7713 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/ledgers/pubmed/gat_integer_ledger.json (7713/7713 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/citeseer/gat_static_tables.bin (0/8348 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/citeseer/gat_static_tables.bin (8348/8348 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/cora/gat_static_tables.bin (0/12725 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/cora/gat_static_tables.bin (12725/12725 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin (0/843956 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/ogbn_arxiv/gat_static_tables.bin (843956/843956 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/ppi/gat_static_tables.bin (0/10728354 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/ppi/gat_static_tables.bin (10728354/10728354 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (0/53837 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/scripts/generate_gat_resources.py (53837/53837 bytes, 0.0s)
+[sha256] resource/artifact authentication: started /home/pzh/project/comparison/ezkl/resources/canonical/tables/pubmed/gat_static_tables.bin (0/12937 bytes)
+[sha256] resource/artifact authentication: complete /home/pzh/project/comparison/ezkl/resources/canonical/tables/pubmed/gat_static_tables.bin (12937/12937 bytes, 0.0s)
+EZKL_NATIVE_PHASE START stage=model_build dataset=cora n_total=2708 n=2708 e=13264 graphs=1 feature_dim=1433 classes=7 layers=2 hidden_heads=16 output_heads=2
+[2026-10-14T06:01:07Z WARN  ezkl] low scale values (<8) may impact precision
+EZKL_NATIVE_PHASE DONE stage=model_build dataset=cora elapsed_ms=54.967
+[2026-10-14T06:01:07Z WARN  ezkl] low scale values (<8) may impact precision
+[2026-10-14T06:01:07Z WARN  ezkl] low scale values (<8) may impact precision
+EZKL_NATIVE_PHASE DONE stage=static_capacity_preflight dataset=cora model_instance_module_floor_k=22 exact_table_rows_total=342 exact_table_total_floor_k=9 exact_table_rows_max=339 exact_table_max_floor_k=9 selected_k=22 domain=4194304 official_srs_max_k=26 geometry=shape_only_full_relation
+EZKL_NATIVE_PHASE DONE stage=shape_only_gat_geometry dataset=cora elapsed_ms=81.720 logical_rows=26297122 logical_assignments=52594244 dynamic_lookup_coord=342 max_dynamic_input_len=339 dynamic_lookups=4
+
+thread 'native_gat_fixture_proof_verifies_independently' (1829156) panicked at /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:1269:48:
+internal error: entered unreachable code
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test native_gat_fixture_proof_verifies_independently ... FAILED
+
+failures:
+
+failures:
+    native_gat_fixture_proof_verifies_independently
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 17 filtered out; finished in 9.48s
+
+error: test failed, to rerun pass `--test gat_adapter_relation`

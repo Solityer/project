@@ -14,6 +14,8 @@ pub mod loader;
 pub mod manifest;
 /// Native ezkl circuit operation.
 pub mod op;
+/// Compact native byte-slack bounded-range gadget used by formal GAT.
+pub(crate) mod range_gadget;
 /// Shape-only geometry for the canonical GAT relation.
 pub mod geometry;
 /// Native einsum geometry metadata shared with Halo2 layout analysis.
@@ -35,6 +37,9 @@ pub use manifest::{
 };
 pub use op::GatOp;
 pub use geometry::gat_settings_for_run_args;
+/// Internal row-reserve constant used by the formal GAT relation fixtures.
+#[doc(hidden)]
+pub use range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE;
 pub use relation::{evaluate, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode, SignedDivision,};
 pub use schema::{
     multiplier_to_scale_exponent, scale_exponent_to_multiplier, BoundFamily, CanonicalGat, CanonicalGraph, CanonicalModel, CircuitRef, DigestIdentity,

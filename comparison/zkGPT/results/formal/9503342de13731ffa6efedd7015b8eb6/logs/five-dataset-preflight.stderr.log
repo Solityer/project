@@ -1,6 +1,0 @@
-FORMAL_PREFLIGHT_BLOCKED
-- capacity output is not JSON for cora/cpu
-- capacity output is not JSON for citeseer/cpu
-- capacity output is not JSON for pubmed/cpu
-- Command '['/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover', '--capacity-only', '--dataset', 'ppi', '--backend', 'cpu', '--baseline-root', '/home/pzh/project/comparison/zkGPT', '--config', 'baseline-local/configs/ppi_secure.cfg']' timed out after 300 seconds
-- Command '['/home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/zkgpt_gat_prover', '--capacity-only', '--dataset', 'ogbn_arxiv', '--backend', 'cpu', '--baseline-root', '/home/pzh/project/comparison/zkGPT', '--config', 'baseline-local/configs/ogbn_arxiv_secure.cfg']' timed out after 300 seconds

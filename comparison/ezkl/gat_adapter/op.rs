@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use halo2_proofs::circuit::Value;
 use halo2curves::bn256::Fr as Fp;
 use halo2curves::ff::{Field, PrimeField};
+use num::BigUint;
 
 use crate::circuit::ops::region::RegionCtx;
 use crate::circuit::ops::{base::BaseOp, layouts, Op};
@@ -20,9 +21,53 @@ use crate::fieldutils::{integer_rep_to_felt, IntegerRep};
 use crate::tensor::{Tensor, ValTensor, ValType};
 
 use super::relation::RoundingMode;
-use super::schema::{scale_exponent_to_multiplier, BoundFamily, CanonicalGat, ExactTable};
+use super::range_gadget::{limb_count, RangeSchedule, BYTE_RANGE, GAT_RANGE_GADGET_VERSION};
+use super::schema::{
+    parse_authenticated_bn254_modulus, scale_exponent_to_multiplier, BoundFamily, CanonicalGat,
+    ExactTable,
+};
 
 pub(super) const MAX_GAT_EDGE_CHUNK_CELLS: usize = 1 << 18;
+
+/// Validate the public divisor envelope used by the nearest/ties-away
+/// constant-divisor remainder identity. The checked envelope bounds the full
+/// integer residual `abs - b*q_abs - r` strictly inside the signed BN254 lift,
+/// including the configured signed-remainder interval.
+pub(super) fn constant_nearest_remainder_range(
+    spec: &CanonicalGat,
+    divisor: i128,
+    max_divisor: i128,
+    max_dividend_abs: i128,
+) -> Result<(i128, i128), String> {
+    if divisor <= 0 || divisor > max_divisor || max_dividend_abs < 0 {
+        return Err("constant nearest divisor is outside the authenticated positive bound".into());
+    }
+    let lower = (divisor / 2)
+        .checked_neg()
+        .ok_or_else(|| "constant nearest remainder lower bound overflows i128".to_string())?;
+    let upper = divisor
+        .checked_sub(1)
+        .ok_or_else(|| "constant nearest remainder upper bound underflows i128".to_string())?
+        / 2;
+    // With abs,q_abs in [0,A] and r in [lower,upper], the integer residual
+    // abs - b*q_abs - r lies in [-(b*A + upper), A - lower]. Reject any
+    // parameters for which this complete equality could alias by the field
+    // modulus, not merely those for which abs - b*q_abs itself is too wide.
+    let negative_extent = divisor
+        .checked_mul(max_dividend_abs)
+        .and_then(|product| product.checked_add(upper))
+        .ok_or_else(|| "constant nearest remainder lower no-wrap envelope overflows i128".to_string())?;
+    let positive_extent = max_dividend_abs
+        .checked_sub(lower)
+        .ok_or_else(|| "constant nearest remainder upper no-wrap envelope overflows i128".to_string())?;
+    let residual_envelope = negative_extent.max(positive_extent);
+    let modulus = parse_authenticated_bn254_modulus(&spec.ledger.field_modulus)?;
+    let field_half = (modulus - BigUint::from(1_u8)) >> 1usize;
+    if BigUint::from(residual_envelope as u128) >= field_half {
+        return Err("constant nearest remainder equation is not a unique BN254 integer lift".into());
+    }
+    Ok((lower, upper))
+}
 
 /// Source-derived bound for adapter-owned `ValType` payloads around one
 /// `aggregate_head` call. This does not include Halo2's region-assignment,
@@ -477,7 +522,208 @@ impl GatOp {
         i128::try_from(magnitude).ok()?.checked_neg()
     }
 
+    fn explicit_scalar_constant_i128(value: &ValTensor<Fp>) -> Result<Option<i128>, CircuitError> {
+        if value.dims() != [1] {
+            return Ok(None);
+        }
+        let inner = value.get_inner_tensor()?;
+        let scalar = inner.get(&[0]);
+        if !scalar.is_constant() {
+            return Ok(None);
+        }
+        let felt = scalar.get_felt_eval().ok_or(CircuitError::UnsupportedOp)?;
+        Ok(Some(Self::checked_signed_field(felt).ok_or(CircuitError::UnsupportedOp)?))
+    }
+
     fn range_check_bounded(config: &BaseConfig<Fp>, region: &mut RegionCtx<Fp>, values: &[&ValTensor<Fp>; 1], range: &crate::circuit::table::Range) -> Result<(), CircuitError> {
+        if config.gat_range_checks.version().is_none() {
+            return Self::range_check_bounded_legacy(config, region, values, range);
+        }
+        let value = values[0];
+        if range.0 > range.1 {
+            return Err(CircuitError::InvalidMinMaxRange(range.0, range.1));
+        }
+        let span = range.1.checked_sub(range.0).ok_or(CircuitError::UnsupportedOp)?;
+        if span <= 1023 {
+            layouts::range_check(config, region, &[value], range)?;
+            return Ok(());
+        }
+        if config.gat_range_checks.version() != Some(GAT_RANGE_GADGET_VERSION)
+            || config.gat_range_checks.storage_shape()
+                != Some((config.custom_gates.output.col_size(), config.custom_gates.output.num_inner_cols()))
+        {
+            return Err(CircuitError::UnsupportedOp);
+        }
+        // The compact gate consults the byte table for both decompositions.
+        // Track that table in the runtime layout statistics just as the
+        // native range-check path tracks its configured lookup table.
+        region.add_used_range_check(BYTE_RANGE)?;
+        let limbs = limb_count(*range).map_err(CircuitError::DimMismatch)?;
+        let output_var = &config.custom_gates.output;
+        let col_size = output_var.col_size();
+        let lanes = output_var.num_inner_cols();
+        if col_size == 0 || lanes == 0 {
+            return Err(CircuitError::UnsupportedOp);
+        }
+        let max_difference = if limbs == 16 {
+            // Every public interval endpoint is an i128 and the checked span
+            // is at most i128::MAX, while the byte reconstruction may occupy
+            // all sixteen limbs.
+            u128::MAX
+        } else {
+            1_u128
+                .checked_shl((limbs * 8) as u32)
+                .and_then(|bound| bound.checked_sub(1))
+                .ok_or(CircuitError::UnsupportedOp)?
+        };
+        let source = value.get_inner_tensor()?;
+        let mut schedule = RangeSchedule::new(
+            region.linear_coord(),
+            value.len(),
+            col_size,
+            lanes,
+            limbs,
+        )
+        .map_err(CircuitError::DimMismatch)?;
+        let rows_per_group = limbs.checked_add(1).ok_or(CircuitError::UnsupportedOp)?;
+        while let Some(batch) = schedule
+            .next_batch()
+            .map_err(CircuitError::DimMismatch)?
+        {
+            if batch.start_cursor < region.linear_coord() {
+                return Err(CircuitError::UnsupportedOp);
+            }
+            region.increment(batch.start_cursor - region.linear_coord());
+            let rows = batch.cells.checked_div(lanes).ok_or(CircuitError::UnsupportedOp)?;
+            let dims = [rows, lanes];
+            let mut a_bytes = vec![ValType::Value(Value::known(Fp::ZERO)); batch.cells];
+            let mut b_bytes = vec![ValType::Value(Value::known(Fp::ZERO)); batch.cells];
+            let mut assigned_values = vec![ValType::Value(Value::known(Fp::ZERO)); batch.cells];
+            let mut differences = Vec::with_capacity(batch.item_count);
+            for item in batch.first_item..batch.first_item + batch.item_count {
+                let difference = match source[item].get_felt_eval() {
+                    Some(field_value) => {
+                        let integer = Self::checked_signed_field(field_value)
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        let lower = integer
+                            .checked_sub(range.0)
+                            .filter(|value| *value >= 0)
+                            .and_then(|value| u128::try_from(value).ok())
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        let upper = range
+                            .1
+                            .checked_sub(integer)
+                            .filter(|value| *value >= 0)
+                            .and_then(|value| u128::try_from(value).ok())
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        if lower > max_difference
+                            || upper > max_difference
+                            || lower.checked_add(upper) != Some(span as u128)
+                        {
+                            return Err(CircuitError::UnsupportedOp);
+                        }
+                        Some((lower, upper))
+                    }
+                    None => None,
+                };
+                differences.push(difference);
+            }
+
+            for group in 0..batch.groups {
+                for lane in 0..lanes {
+                    let item = batch.first_item + group * lanes + lane;
+                    if item >= batch.first_item + batch.item_count {
+                        continue;
+                    }
+                    let item_offset = group
+                        .checked_mul(rows_per_group)
+                        .and_then(|row| row.checked_mul(lanes))
+                        .and_then(|offset| offset.checked_add(lane))
+                        .ok_or(CircuitError::UnsupportedOp)?;
+                    let diff = differences[item - batch.first_item];
+                    assigned_values[item_offset + limbs * lanes] = source[item].clone();
+                    for limb in 0..limbs {
+                        let slot = item_offset + limb * lanes;
+                        if let Some((lower, upper)) = diff {
+                            let shift = limb.checked_mul(8).ok_or(CircuitError::UnsupportedOp)?;
+                            a_bytes[slot] = ValType::Value(Value::known(Fp::from_u128(
+                                (lower >> shift) & 0xff,
+                            )));
+                            b_bytes[slot] = ValType::Value(Value::known(Fp::from_u128(
+                                (upper >> shift) & 0xff,
+                            )));
+                        } else {
+                            a_bytes[slot] = ValType::Value(Value::unknown());
+                            b_bytes[slot] = ValType::Value(Value::unknown());
+                        }
+                    }
+                }
+            }
+
+            let mut a_tensor: ValTensor<Fp> = Tensor::from_vec(a_bytes, &dims)?.into();
+            let mut b_tensor: ValTensor<Fp> = Tensor::from_vec(b_bytes, &dims)?.into();
+            let mut assigned: ValTensor<Fp> = Tensor::from_vec(assigned_values, &dims)?.into();
+            a_tensor.set_scale(0);
+            b_tensor.set_scale(0);
+            assigned.set_scale(value.scale());
+            region.assign(&config.custom_gates.inputs[0], &a_tensor)?;
+            region.assign(&config.custom_gates.inputs[1], &b_tensor)?;
+            region.assign(output_var, &assigned)?;
+
+            if !region.is_dummy() {
+                for group in 0..batch.groups {
+                    for lane in 0..lanes {
+                        let item = batch.first_item + group * lanes + lane;
+                        if item >= batch.first_item + batch.item_count {
+                            continue;
+                        }
+                        let group_cursor = batch
+                            .start_cursor
+                            .checked_add(group * rows_per_group * lanes)
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        for limb in 0..limbs {
+                            let cursor = group_cursor
+                                .checked_add(limb * lanes + lane)
+                                .ok_or(CircuitError::UnsupportedOp)?;
+                            let (block, actual_lane, row) = output_var.cartesian_coord(cursor);
+                            if actual_lane != lane {
+                                return Err(CircuitError::UnsupportedOp);
+                            }
+                            let selector = config
+                                .gat_range_checks
+                                .byte_selector(block, lane)
+                                .ok_or(CircuitError::UnsupportedOp)?;
+                            region.enable(Some(selector), row)?;
+                        }
+                        let end_cursor = group_cursor
+                            .checked_add(limbs * lanes + lane)
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        let (block, actual_lane, row) = output_var.cartesian_coord(end_cursor);
+                        if actual_lane != lane {
+                            return Err(CircuitError::UnsupportedOp);
+                        }
+                        let selector = config
+                            .gat_range_checks
+                            .end_selector(*range, block, lane)
+                            .ok_or(CircuitError::UnsupportedOp)?;
+                        region.enable(Some(selector), row)?;
+                    }
+                }
+            }
+            region.increment(batch.cells);
+        }
+        if region.linear_coord() != schedule.cursor() {
+            return Err(CircuitError::UnsupportedOp);
+        }
+        Ok(())
+    }
+
+    fn range_check_bounded_legacy(
+        config: &BaseConfig<Fp>,
+        region: &mut RegionCtx<Fp>,
+        values: &[&ValTensor<Fp>; 1],
+        range: &crate::circuit::table::Range,
+    ) -> Result<(), CircuitError> {
         let value = values[0];
         if range.0 > range.1 {
             return Err(CircuitError::InvalidMinMaxRange(range.0, range.1));
@@ -1173,9 +1419,9 @@ impl GatOp {
                 let item = if all_unknown {
                     ValType::Value(Value::unknown())
                 } else {
-                        let current = input_inner[(row - chunk_start) * channels + channel]
-                            .get_felt_eval()
-                            .ok_or(CircuitError::UnsupportedOp)?;
+                    let current = input_inner[(row - chunk_start) * channels + channel]
+                        .get_felt_eval()
+                        .ok_or(CircuitError::UnsupportedOp)?;
                     accumulators[channel] += current;
                     ValType::Value(Value::known(accumulators[channel]))
                 };
@@ -1185,9 +1431,9 @@ impl GatOp {
 
         let mut claimed: ValTensor<Fp> = Tensor::from_vec(prefix_witness, &expected_dims)?.into();
         claimed.set_scale(values.scale());
-        let claimed = region.assign(&config.custom_gates.inputs[1], &claimed)?;
+        let start = region.linear_coord();
+        let claimed = region.assign(&config.custom_gates.output, &claimed)?;
         let claimed_inner = claimed.get_inner_tensor()?;
-        region.increment(claimed.len());
         let mut group_index = first_group;
         let mut previous_values = Vec::with_capacity(values.len());
         for row in chunk_start..chunk_end {
@@ -1218,8 +1464,21 @@ impl GatOp {
         }
         let mut previous: ValTensor<Fp> = Tensor::from_vec(previous_values, &expected_dims)?.into();
         previous.set_scale(values.scale());
-        let recurrence = layouts::pairwise(config, region, &[&previous, values], BaseOp::Add)?;
-        layouts::enforce_equality(config, region, &[&recurrence, &claimed])?;
+        region.assign(&config.custom_gates.inputs[0], &previous)?;
+        region.assign(&config.custom_gates.inputs[1], values)?;
+        if !region.is_dummy() {
+            for offset in 0..claimed.len() {
+                let (block, lane, row) =
+                    config.custom_gates.output.cartesian_coord(start + offset);
+                let selector = config
+                    .custom_gates
+                    .selectors
+                    .get(&(BaseOp::Add, block, lane))
+                    .ok_or(CircuitError::UnsupportedOp)?;
+                region.enable(Some(selector), row)?;
+            }
+        }
+        region.increment(claimed.len());
 
         let last_row = (chunk_edges - 1) * channels;
         let carry_out_cells = (0..channels)
@@ -1274,8 +1533,8 @@ impl GatOp {
 
     /// Constrain one field prefix recurrence per edge/channel, resetting at
     /// every public destination boundary. The public schedule only chooses
-    /// predecessor cells; every recurrence is enforced by `pairwise` and an
-    /// equality to the claimed prefix advice tensor.
+    /// predecessor cells; each recurrence is enforced in one shared native
+    /// Add-gate assignment row.
     fn segmented_prefix(
         config: &BaseConfig<Fp>,
         region: &mut RegionCtx<Fp>,
@@ -1331,9 +1590,9 @@ impl GatOp {
         }
         let mut claimed: ValTensor<Fp> = Tensor::from_vec(prefix_witness, &expected_dims)?.into();
         claimed.set_scale(values.scale());
-        let claimed = region.assign(&config.custom_gates.inputs[1], &claimed)?;
+        let start = region.linear_coord();
+        let claimed = region.assign(&config.custom_gates.output, &claimed)?;
         let claimed_inner = claimed.get_inner_tensor()?;
-        region.increment(claimed.len());
 
         let mut previous_values = Vec::with_capacity(values.len());
         for (_, start, end) in destination_groups.iter().copied() {
@@ -1349,8 +1608,21 @@ impl GatOp {
         }
         let mut previous: ValTensor<Fp> = Tensor::from_vec(previous_values, &expected_dims)?.into();
         previous.set_scale(values.scale());
-        let recurrence = layouts::pairwise(config, region, &[&previous, values], BaseOp::Add)?;
-        layouts::enforce_equality(config, region, &[&recurrence, &claimed])?;
+        region.assign(&config.custom_gates.inputs[0], &previous)?;
+        region.assign(&config.custom_gates.inputs[1], values)?;
+        if !region.is_dummy() {
+            for offset in 0..claimed.len() {
+                let (block, lane, row) =
+                    config.custom_gates.output.cartesian_coord(start + offset);
+                let selector = config
+                    .custom_gates
+                    .selectors
+                    .get(&(BaseOp::Add, block, lane))
+                    .ok_or(CircuitError::UnsupportedOp)?;
+                region.enable(Some(selector), row)?;
+            }
+        }
+        region.increment(claimed.len());
         Ok(claimed)
     }
 
@@ -1427,82 +1699,159 @@ impl GatOp {
             return Err(CircuitError::DimMismatch("GAT dividend must be a nonempty tensor".into()));
         }
         let destination_count = dividend.dims()[0];
+        let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
+        let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
+        let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
+        let constant_nearest = if matches!(rounding, RoundingMode::NearestTiesAway) {
+            Self::explicit_scalar_constant_i128(divisor)?
+                .map(|value| {
+                    constant_nearest_remainder_range(
+                        &self.spec,
+                        value,
+                        max_divisor,
+                        max_dividend_abs,
+                    )
+                    .map(|range| (value, range))
+                    .map_err(CircuitError::DimMismatch)
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let d_repeated = Self::broadcast_destination_rows(divisor, dividend, destination_count)?;
         if d_repeated.len() != dividend.len() || d_repeated.dims() != dividend.dims() {
             return Err(CircuitError::DimMismatch("GAT divisor broadcast did not exactly match the dividend shape".into()));
         }
-        let (q, q_floor, rem, abs, sigma, zero, rounded_up) = if dividend.any_unknowns()? || divisor.any_unknowns()? {
+        let (q_floor, rem, sigma, zero, rounded_up, q_abs_witness) = if dividend.any_unknowns()? || divisor.any_unknowns()? {
             let dims = dividend.dims();
             (
+                if constant_nearest.is_some() { None } else { Some(Self::unknown_tensor(dims)?) },
+                if constant_nearest.is_some() { None } else { Some(Self::unknown_tensor(dims)?) },
                 Self::unknown_tensor(dims)?,
                 Self::unknown_tensor(dims)?,
-                Self::unknown_tensor(dims)?,
-                Self::unknown_tensor(dims)?,
-                Self::unknown_tensor(dims)?,
-                Self::unknown_tensor(dims)?,
-                Self::unknown_tensor(dims)?,
+                if constant_nearest.is_some() { None } else { Some(Self::unknown_tensor(dims)?) },
+                if constant_nearest.is_some() { Some(Self::unknown_tensor(dims)?) } else { None },
             )
         } else {
-            let divisors = d_repeated.int_evals()?;
-            if divisors.len() != dividend.len() || divisors.iter().any(|d| *d <= 0) {
-                return Err(CircuitError::DimMismatch("GAT divisor rows must be positive and match the dividend".into()));
+            let dividend_values = dividend.int_evals()?;
+            let divisors = if constant_nearest.is_some() {
+                None
+            } else {
+                Some(d_repeated.int_evals()?)
+            };
+            if let Some(divisors) = &divisors {
+                if divisors.len() != dividend.len() || divisors.iter().any(|d| *d <= 0) {
+                    return Err(CircuitError::DimMismatch("GAT divisor rows must be positive and match the dividend".into()));
+                }
             }
-            let mut qv = Vec::new();
-            let mut q_floor_v = Vec::new();
-            let mut rv = Vec::new();
-            let mut av = Vec::new();
+            let mut q_floor_v = constant_nearest.is_none().then(|| Vec::with_capacity(dividend.len()));
+            let mut rv = constant_nearest.is_none().then(|| Vec::with_capacity(dividend.len()));
             let mut sv = Vec::new();
             let mut zv = Vec::new();
-            let mut rounded_up_v = Vec::new();
-            for (x, d) in dividend.int_evals()?.iter().copied().zip(divisors) {
+            let mut rounded_up_v = constant_nearest.is_none().then(|| Vec::with_capacity(dividend.len()));
+            let mut q_abs_v = constant_nearest.map(|_| Vec::with_capacity(dividend.len()));
+            for (index, x) in dividend_values.into_iter().enumerate() {
+                let d = if let Some((constant_divisor, _)) = constant_nearest {
+                    constant_divisor
+                } else {
+                    divisors
+                        .as_ref()
+                        .ok_or(CircuitError::UnsupportedOp)?[index]
+                };
+                if d <= 0 {
+                    return Err(CircuitError::DimMismatch("GAT divisor rows must be positive and match the dividend".into()));
+                }
                 let signed = super::relation::evaluate_signed_division(x, d, rounding).map_err(|_| CircuitError::UnsupportedOp)?;
-                qv.push(signed.quotient);
-                q_floor_v.push(signed.quotient_floor);
-                rv.push(signed.remainder);
-                av.push(signed.abs_dividend);
+                if let Some(values) = &mut q_floor_v {
+                    values.push(signed.quotient_floor);
+                }
+                if let Some(values) = &mut rv {
+                    values.push(signed.remainder);
+                }
                 sv.push(if signed.sigma { 1 } else { 0 });
                 zv.push(if signed.zero { 1 } else { 0 });
-                rounded_up_v.push(if signed.rounded_up { 1 } else { 0 });
+                if let Some(values) = &mut rounded_up_v {
+                    values.push(if signed.rounded_up { 1 } else { 0 });
+                }
+                if let Some(values) = &mut q_abs_v {
+                    values.push(signed.quotient.checked_abs().ok_or(CircuitError::UnsupportedOp)?);
+                }
             }
             (
-                Self::value_i128(&qv, dividend.dims())?,
-                Self::value_i128(&q_floor_v, dividend.dims())?,
-                Self::value_i128(&rv, dividend.dims())?,
-                Self::value_i128(&av, dividend.dims())?,
+                q_floor_v
+                    .map(|values| Self::value_i128(&values, dividend.dims()))
+                    .transpose()?,
+                rv.map(|values| Self::value_i128(&values, dividend.dims()))
+                    .transpose()?,
                 Self::value_i128(&sv, dividend.dims())?,
                 Self::value_i128(&zv, dividend.dims())?,
-                Self::value_i128(&rounded_up_v, dividend.dims())?,
+                rounded_up_v
+                    .map(|values| Self::value_i128(&values, dividend.dims()))
+                    .transpose()?,
+                q_abs_v
+                    .map(|values| Self::value_i128(&values, dividend.dims()))
+                    .transpose()?,
             )
         };
-        let q = region.assign(&config.custom_gates.inputs[1], &q)?;
-        region.increment(q.len());
-        let q_floor = region.assign(&config.custom_gates.inputs[1], &q_floor)?;
-        region.increment(q_floor.len());
-        let rem = region.assign(&config.custom_gates.inputs[1], &rem)?;
-        region.increment(rem.len());
-        let abs = region.assign(&config.custom_gates.inputs[1], &abs)?;
-        region.increment(abs.len());
+        let q_floor = q_floor
+            .map(|value| -> Result<_, CircuitError> {
+                let assigned = region.assign(&config.custom_gates.inputs[1], &value)?;
+                region.increment(assigned.len());
+                Ok(assigned)
+            })
+            .transpose()?;
+        let rem = rem
+            .map(|value| -> Result<_, CircuitError> {
+                let assigned = region.assign(&config.custom_gates.inputs[1], &value)?;
+                region.increment(assigned.len());
+                Ok(assigned)
+            })
+            .transpose()?;
+        let q_abs_witness = q_abs_witness
+            .map(|value| -> Result<_, CircuitError> {
+                let assigned = region.assign(&config.custom_gates.inputs[1], &value)?;
+                region.increment(assigned.len());
+                Ok(assigned)
+            })
+            .transpose()?;
         let sigma = region.assign(&config.custom_gates.inputs[1], &sigma)?;
         region.increment(sigma.len());
         let zero = region.assign(&config.custom_gates.inputs[1], &zero)?;
         region.increment(zero.len());
-        let rounded_up = region.assign(&config.custom_gates.inputs[1], &rounded_up)?;
-        region.increment(rounded_up.len());
+        let rounded_up = rounded_up
+            .map(|value| -> Result<_, CircuitError> {
+                let assigned = region.assign(&config.custom_gates.inputs[1], &value)?;
+                region.increment(assigned.len());
+                Ok(assigned)
+            })
+            .transpose()?;
         let sigma = layouts::boolean_identity(config, region, &[&sigma], true)?;
         let zero = layouts::boolean_identity(config, region, &[&zero], true)?;
-        let rounded_up = layouts::boolean_identity(config, region, &[&rounded_up], true)?;
+        let rounded_up = rounded_up
+            .as_ref()
+            .map(|value| layouts::boolean_identity(config, region, &[value], true))
+            .transpose()?;
         let two = Self::constant_i128(&vec![2; dividend.len()], dividend.dims())?;
         let two_sigma = layouts::pairwise(config, region, &[&sigma, &two], BaseOp::Mult)?;
         let one = Self::constant_i128(&vec![1; dividend.len()], dividend.dims())?;
         let sign_factor = layouts::pairwise(config, region, &[&one, &two_sigma], BaseOp::Sub)?;
-        let signed_abs = layouts::pairwise(config, region, &[&sign_factor, &abs], BaseOp::Mult)?;
-        layouts::enforce_equality(config, region, &[dividend, &signed_abs])?;
-        let q_abs = layouts::pairwise(config, region, &[&q_floor, &rounded_up], BaseOp::Add)?;
-        let signed_q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
-        let q = layouts::enforce_equality(config, region, &[&q, &signed_q])?;
-        let max_divisor = bounds.map(|family| family.max_divisor).unwrap_or(self.spec.ledger.max_divisor);
-        let max_aux_abs = bounds.map(|family| family.max_aux_abs).unwrap_or(self.spec.ledger.max_aux_abs);
-        let max_dividend_abs = bounds.map(|family| family.max_dividend_abs).unwrap_or(self.spec.ledger.max_dividend_abs);
+        // Since sign_factor is constrained to {-1, 1}, multiplying the signed
+        // dividend by it directly yields the same nonnegative absolute value.
+        let abs = layouts::pairwise(config, region, &[&sign_factor, dividend], BaseOp::Mult)?;
+        let q_abs = if constant_nearest.is_some() {
+            q_abs_witness.ok_or(CircuitError::UnsupportedOp)?
+        } else {
+            layouts::pairwise(
+                config,
+                region,
+                &[
+                    q_floor.as_ref().ok_or(CircuitError::UnsupportedOp)?,
+                    rounded_up.as_ref().ok_or(CircuitError::UnsupportedOp)?,
+                ],
+                BaseOp::Add,
+            )?
+        };
+        let q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
         Self::range_check_bounded(config, region, &[&q_abs], &(0, max_dividend_abs))?;
         Self::range_check_bounded(config, region, &[&q], &(-max_dividend_abs, max_dividend_abs),)?;
         Self::range_check_bounded(config, region, &[&sign_factor], &(-1, 1))?;
@@ -1530,9 +1879,10 @@ impl GatOp {
         region.increment(abs_inv.len());
         let abs_product = layouts::pairwise(config, region, &[&abs, &abs_inv], BaseOp::Mult)?;
         let one_minus_zero = layouts::pairwise(config, region, &[&one, &zero], BaseOp::Sub)?;
-        layouts::enforce_equality(config, region, &[&abs_product, &one_minus_zero])?;
-        let zero_from_abs = layouts::equals_zero(config, region, &[&abs])?;
-        layouts::enforce_equality(config, region, &[&zero, &zero_from_abs])?;
+        // Together with zero*abs=0 below, abs*abs_inv=1-zero already makes
+        // zero exactly the indicator for abs == 0; a second zero-test would
+        // only reassign and recheck the same relation.
+        region.constrain_equal(&abs_product, &one_minus_zero)?;
         let zero_abs = layouts::pairwise(config, region, &[&zero, &abs], BaseOp::Mult)?;
         let zero_sigma = layouts::pairwise(config, region, &[&zero, &sigma], BaseOp::Mult)?;
         let zero_inv = layouts::pairwise(config, region, &[&zero, &abs_inv], BaseOp::Mult)?;
@@ -1542,6 +1892,18 @@ impl GatOp {
         layouts::enforce_equality(config, region, &[&zero_sigma, &zeros])?;
         layouts::enforce_equality(config, region, &[&zero_inv, &zeros])?;
         layouts::enforce_equality(config, region, &[&zero_q, &zeros])?;
+        if let Some((_constant_divisor, (remainder_min, remainder_max))) = constant_nearest {
+            // The bounded signed remainder has exactly one quotient for a
+            // positive public divisor, including the negative half-way tie.
+            let divisor_q_abs = layouts::pairwise(config, region, &[divisor, &q_abs], BaseOp::Mult)?;
+            let signed_remainder = layouts::pairwise(config, region, &[&abs, &divisor_q_abs], BaseOp::Sub)?;
+            Self::range_check_bounded(config, region, &[&signed_remainder], &(remainder_min, remainder_max))?;
+            Self::range_check_bounded(config, region, &[&abs], &(0, max_dividend_abs))?;
+            return Ok(q);
+        }
+        let q_floor = q_floor.as_ref().ok_or(CircuitError::UnsupportedOp)?;
+        let rem = rem.as_ref().ok_or(CircuitError::UnsupportedOp)?;
+        let rounded_up = rounded_up.as_ref().ok_or(CircuitError::UnsupportedOp)?;
         let d_minus_one = layouts::pairwise(config, region, &[&d_repeated, &one], BaseOp::Sub)?;
         let delta_vals = if rem.any_unknowns()? {
             Self::unknown_tensor(rem.dims())?
@@ -1567,10 +1929,10 @@ impl GatOp {
 
         match rounding {
             RoundingMode::TowardZero => {
-                let dq_floor = layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
-                let abs_reconstructed = layouts::pairwise(config, region, &[&dq_floor, &rem], BaseOp::Add)?;
+                let dq_floor = layouts::pairwise(config, region, &[&d_repeated, q_floor], BaseOp::Mult)?;
+                let abs_reconstructed = layouts::pairwise(config, region, &[&dq_floor, rem], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&abs, &abs_reconstructed])?;
-                let r_delta = layouts::pairwise(config, region, &[&rem, &delta_vals], BaseOp::Add)?;
+                let r_delta = layouts::pairwise(config, region, &[rem, &delta_vals], BaseOp::Add)?;
                 layouts::enforce_equality(config, region, &[&r_delta, &d_minus_one])?;
             }
             RoundingMode::NearestTiesAway => {
@@ -1579,12 +1941,12 @@ impl GatOp {
                 let dq_abs = layouts::pairwise(config, region, &[&d_repeated, &q_abs], BaseOp::Mult)?;
                 let two_dq_abs = layouts::pairwise(config, region, &[&two, &dq_abs], BaseOp::Mult)?;
                 let rhs = layouts::pairwise(config, region, &[&two_dq_abs, &rem], BaseOp::Add)?;
-                layouts::enforce_equality(config, region, &[&lhs, &rhs])?;
+                region.constrain_equal(&lhs, &rhs)?;
 
                 let two_d = layouts::pairwise(config, region, &[&two, &d_repeated], BaseOp::Mult)?;
                 let two_d_minus_one = layouts::pairwise(config, region, &[&two_d, &one], BaseOp::Sub)?;
                 let r_delta = layouts::pairwise(config, region, &[&rem, &delta_vals], BaseOp::Add)?;
-                layouts::enforce_equality(config, region, &[&r_delta, &two_d_minus_one])?;
+                region.constrain_equal(&r_delta, &two_d_minus_one)?;
 
                 let dq_floor = layouts::pairwise(config, region, &[&d_repeated, &q_floor], BaseOp::Mult)?;
                 let floor_rem = layouts::pairwise(config, region, &[&abs, &dq_floor], BaseOp::Sub)?;
@@ -1600,13 +1962,13 @@ impl GatOp {
             }
         }
 
-        Self::range_check_bounded(config, region, &[&rem], &(0, max_aux_abs))?;
+        Self::range_check_bounded(config, region, &[rem], &(0, max_aux_abs))?;
         Self::range_check_bounded(config, region, &[&delta_vals], &(0, max_aux_abs))?;
-        Self::range_check_bounded(config, region, &[&q_floor], &(0, max_dividend_abs))?;
+        Self::range_check_bounded(config, region, &[q_floor], &(0, max_dividend_abs))?;
         match rounding {
             RoundingMode::TowardZero => {
                 let zero_round = Self::constant_i128(&vec![0; dividend.len()], dividend.dims())?;
-                layouts::enforce_equality(config, region, &[&rounded_up, &zero_round])?;
+                layouts::enforce_equality(config, region, &[rounded_up, &zero_round])?;
             }
             RoundingMode::NearestTiesAway => {}
         }

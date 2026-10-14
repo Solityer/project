@@ -731,8 +731,11 @@ impl Model {
                     .duration_since(instant::SystemTime::UNIX_EPOCH)?
                     .as_millis(),
             ),
+            gat_range_gadget_version: None,
             #[cfg(any(not(feature = "ezkl"), target_arch = "wasm32"))]
             timestamp: None,
+            #[cfg(any(not(feature = "ezkl"), target_arch = "wasm32"))]
+            gat_range_gadget_version: None,
         };
         if formal_phase_log {
             println!(
@@ -1233,8 +1236,42 @@ impl Model {
             base_gate.configure_lookup(meta, input, output, index, lookup_range, logrows, &op)?;
         }
 
-        for range in required_range_checks {
-            base_gate.configure_range_check(meta, input, index, range, logrows)?;
+        match settings.gat_range_gadget_version {
+            None => {
+                for range in required_range_checks {
+                    base_gate.configure_range_check(meta, input, index, range, logrows)?;
+                }
+            }
+            Some(version)
+                if version == crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION =>
+            {
+                let mut adapter_ranges = Vec::new();
+                for range in required_range_checks {
+                    let span = range
+                        .1
+                        .checked_sub(range.0)
+                        .ok_or_else(|| GraphError::MisformedParams(
+                            "GAT required range span overflows".into(),
+                        ))?;
+                    if span > 1023 {
+                        adapter_ranges.push(range);
+                    } else {
+                        base_gate.configure_range_check(meta, input, index, range, logrows)?;
+                    }
+                }
+                crate::gat_adapter::range_gadget::configure(
+                    meta,
+                    &mut base_gate,
+                    &adapter_ranges,
+                    logrows,
+                )?;
+            }
+            Some(version) => {
+                return Err(GraphError::MisformedParams(format!(
+                    "unsupported GAT bounded-range gadget version {}",
+                    version
+                )));
+            }
         }
 
         if settings.requires_dynamic_lookup() {
@@ -1275,7 +1312,33 @@ impl Model {
                 })
                 .collect();
             let analysis = analyze_einsum_usage(&used_einsums)?;
-            base_gate.configure_einsums(meta, &analysis, num_inner_cols, logrows)?;
+            let reserved_blinding_factors =
+                (settings.gat_range_gadget_version
+                    == Some(crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION))
+                .then_some(
+                    crate::gat_adapter::range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE,
+                );
+            base_gate.configure_einsums_with_blinding_factors(
+                meta,
+                &analysis,
+                num_inner_cols,
+                logrows,
+                reserved_blinding_factors,
+            )?;
+        }
+
+        if settings.gat_range_gadget_version
+            == Some(crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION)
+        {
+            let actual_blinding_factors = meta.blinding_factors();
+            let reserved_blinding_factors =
+                crate::gat_adapter::range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE;
+            if actual_blinding_factors > reserved_blinding_factors {
+                return Err(GraphError::MisformedParams(format!(
+                    "configured GAT circuit requires {} blinding factors, exceeding the authenticated compact-range reserve {}",
+                    actual_blinding_factors, reserved_blinding_factors
+                )));
+            }
         }
 
         Ok(base_gate)

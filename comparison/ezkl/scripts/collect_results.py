@@ -207,7 +207,12 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         "selected_cuda_device", "build_receipt_sha256", "build_environment_sha256",
         "gpu_prover_record_sha256", "independent_verifier_log_sha256",
     }
-    formal_pk_timing_fields = {"native_pk_read_timing_sha256", "prove_command_wall_ms", "prove_wall_scope"}
+    formal_pk_timing_fields = {
+        "native_pk_read_timing_sha256",
+        "prove_command_wall_ms",
+        "prove_wall_scope",
+        "prove_command_residual_excluding_pk_artifact_read_and_sigma_prepare_ms",
+    }
     unknown = set(result) - REQUIRED_RESULT_KEYS - {"backend", "execution_mode", "phase_backends", "native_backend", "formal_session_id"} - formal_gpu_identity_fields - formal_pk_timing_fields
     if unknown:
         abort(f"{path} has unknown result fields: {sorted(unknown)}")
@@ -218,6 +223,8 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         abort(f"{path} is not a verified native result")
     dataset = result["dataset"]
     formal = "formal_session_id" in result
+    if formal and not formal_pk_timing_fields.issubset(result):
+        abort(f"{path} formal result omits its authenticated PK materialization timing boundary")
     secure_config = None
     backend = result.get("backend")
     if dataset not in DATASETS:
@@ -373,6 +380,13 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         abort(f"{path} commitment_time_ms does not match the native measured duration")
     if result["prove_time_ms"] != proof_metrics["prove_time_ms"]:
         abort(f"{path} prove_time_ms does not match native proof timing")
+    if not math.isclose(
+        float(result["phase_timings_ms"].get("prove", float("nan"))),
+        float(proof_metrics["prove_time_ms"]),
+        rel_tol=0.0,
+        abs_tol=0.000001,
+    ):
+        abort(f"{path} phase prove timing does not match the native composed proof metric")
     verify_metric = require_exact_keys(result["verify_metric"], {"operation", "included_in", "path", "sha256"}, "result native verification metric")
     verify_metrics_path = path_from_result(verify_metric["path"], "native verification metrics")
     if verify_metrics_path != path.parent / "native_verify_metrics.json":
@@ -457,22 +471,28 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         phase_timings = result["phase_timings_ms"]
         if (
             not math.isclose(phase_timings.get("pk_artifact_read_validate", float("nan")), pk_timing["artifact_read_validate_ms"], rel_tol=0.0, abs_tol=0.000001)
-            or not math.isclose(phase_timings.get("setup_pk_sigma_materialization", float("nan")), pk_timing["sigma_rebuild_wall_ms"], rel_tol=0.0, abs_tol=0.000001)
+            or not math.isclose(phase_timings.get("pk_materialize", float("nan")), pk_timing["pk_materialize_ms"], rel_tol=0.0, abs_tol=0.000001)
+            or not math.isclose(phase_timings.get("setup_pk_sigma_deferred_source_prepare", float("nan")), pk_timing["sigma_deferred_source_prepare_wall_ms"], rel_tol=0.0, abs_tol=0.000001)
+            or not math.isclose(proof_metrics["pk_materialize_time_ms"], pk_timing["pk_materialize_ms"], rel_tol=0.0, abs_tol=0.000001)
         ):
             abort(f"{path} phase timing does not preserve the measured PK restore subphases")
         command_wall = result["prove_command_wall_ms"]
         if isinstance(command_wall, bool) or not isinstance(command_wall, (int, float)) or not math.isfinite(command_wall) or command_wall <= 0:
             abort(f"{path} native prove command wall duration is invalid")
-        residual = command_wall - pk_timing["artifact_read_validate_ms"] - pk_timing["sigma_rebuild_wall_ms"]
+        residual = command_wall - pk_timing["artifact_read_validate_ms"] - pk_timing["sigma_deferred_source_prepare_wall_ms"]
+        recorded_residual = result["prove_command_residual_excluding_pk_artifact_read_and_sigma_prepare_ms"]
+        if (
+            isinstance(recorded_residual, bool)
+            or not isinstance(recorded_residual, (int, float))
+            or not math.isfinite(recorded_residual)
+            or not math.isclose(recorded_residual, residual, rel_tol=0.0, abs_tol=0.001)
+        ):
+            abort(f"{path} outer prove residual does not preserve its mutually exclusive restore phases")
         if residual > 0.0:
-            if result["prove_wall_scope"] != "outer_command_residual_excludes_pk_restore" or not math.isclose(
-                phase_timings["prove"], residual, rel_tol=0.0, abs_tol=0.001
-            ):
-                abort(f"{path} outer prove wall residual does not exactly exclude authenticated PK restore")
+            if result["prove_wall_scope"] != "outer_command_residual_excludes_artifact_read_and_sigma_prepare_includes_pk_materialize":
+                abort(f"{path} outer prove wall residual does not preserve PK materialization")
         elif residual >= -0.01:
-            if result["prove_wall_scope"] != "outer_command_wall_with_pk_restore_overlap_within_0_01ms" or not math.isclose(
-                phase_timings["prove"], command_wall, rel_tol=0.0, abs_tol=0.001
-            ):
+            if result["prove_wall_scope"] != "outer_command_subphase_overlap_within_0_01ms_includes_pk_materialize":
                 abort(f"{path} sub-resolution PK restore overlap is not transparently recorded")
         else:
             abort(f"{path} PK restore stages exceed its prove command wall time")
@@ -609,6 +629,11 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         for name in (
             "disk_available_bytes",
             "disk_required_known_bytes",
+            "permutation_grand_product_set_count",
+            "permutation_grand_product_bank_mapped_bytes",
+            "permutation_grand_product_window_mapped_bytes",
+            "permutation_grand_product_commit_workspace_bytes",
+            "proof_permutation_grand_product_commit_host_peak_bytes",
             "native_pk_read_backing_required_bytes",
             "max_total_backing_bytes",
             "host_available_bytes",
@@ -634,6 +659,15 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         )
         if (
             prove_budget["disk_required_known_bytes"] > prove_budget["disk_available_bytes"]
+            or prove_budget["permutation_grand_product_bank_mapped_bytes"]
+            != prove_budget["permutation_grand_product_set_count"]
+            * prove_budget["permutation_grand_product_window_mapped_bytes"]
+            or prove_budget["permutation_grand_product_commit_workspace_bytes"]
+            != 4 * prove_budget["permutation_grand_product_window_mapped_bytes"]
+            or prove_budget["permutation_grand_product_bank_mapped_bytes"]
+            > prove_budget["disk_required_known_bytes"]
+            or prove_budget["proof_permutation_grand_product_commit_host_peak_bytes"]
+            > prove_budget["host_required_known_bytes"]
             or prove_budget["native_pk_read_backing_required_bytes"] != exact_pk_read_backing_bytes
             or prove_budget["max_total_backing_bytes"] != exact_pk_read_backing_bytes
             or prove_budget["native_pk_read_target_bitmap_allocation_bitmap_upper_bytes"] != target_bitmap_allocation_upper

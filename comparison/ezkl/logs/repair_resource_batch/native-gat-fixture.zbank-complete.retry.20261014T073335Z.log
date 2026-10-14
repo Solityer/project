@@ -1,0 +1,222 @@
+LOG=logs/repair_resource_batch/native-gat-fixture.zbank-complete.retry.20261014T073335Z.log
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+error[E0599]: `maybe_rayon::slice::ChunksMut<'_, u8>` is not an iterator
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:595:22
+    |
+594 | /                 tape_rows.par_chunks_mut(LOOKUP_ENCODE_ROWS * id_width.bytes())
+595 | |                     .enumerate()
+    | |                     -^^^^^^^^^ `maybe_rayon::slice::ChunksMut<'_, u8>` is not an iterator
+    | |_____________________|
+    |
+    |
+   ::: /home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/rayon-1.12.0/src/slice/chunks.rs:193:1
+    |
+193 |   pub struct ChunksMut<'data, T> {
+    |   ------------------------------ doesn't satisfy `maybe_rayon::slice::ChunksMut<'_, u8>: Iterator`
+    |
+    = note: the following trait bounds were not satisfied:
+            `maybe_rayon::slice::ChunksMut<'_, u8>: Iterator`
+            which is required by `&mut maybe_rayon::slice::ChunksMut<'_, u8>: Iterator`
+    = help: items from traits can only be used if the trait is in scope
+help: trait `IndexedParallelIterator` which provides `enumerate` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use maybe_rayon::iter::IndexedParallelIterator;
+    |
+
+error[E0282]: type annotations needed for `(_, _)`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:596:32
+    |
+596 |                     .for_each(|(chunk_index, output)| {
+    |                                ^^^^^^^^^^^^^^^^^^^^^
+597 |                         let row_start = chunk_index * LOOKUP_ENCODE_ROWS;
+598 |                         for (offset, encoded) in output.chunks_exact_mut(id_width.bytes()).enumerate() {
+    |                                                  ------ type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type, where the placeholders `_` are specified
+    |
+596 |                     .for_each(|(chunk_index, output): (_, _)| {
+    |                                                     ++++++++
+
+error[E0282]: type annotations needed
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:600:33
+    |
+600 | ...                   let value = compressed_input_expression[row];
+    |                           ^^^^^
+601 | ...                   let representation = value.to_repr();
+    |                                            ----- type must be known at this point
+    |
+help: consider giving `value` an explicit type
+    |
+600 |                             let value: /* Type */ = compressed_input_expression[row];
+    |                                      ++++++++++++
+
+error[E0277]: the trait bound `u128: From<usize>` is not satisfied
+    --> vendor/halo2/halo2_proofs/src/plonk/prover.rs:1190:38
+     |
+1190 |       let prepare_sparse_count_bound = prepare_policy
+     |  ______________________________________^
+1191 | |         .table_cardinality_bounds
+1192 | |         .as_ref()
+1193 | |         .and_then(|bounds| bounds.iter().copied().max())
+1194 | |         .map(u128::from)
+     | |________________________^ the trait `From<usize>` is not implemented for `u128`
+     |
+     = note: `u128` implements similarly named trait `cast::From`, but not `From<usize>`
+     = help: the following other types implement trait `From<T>`:
+               `u128` implements `From<Char>`
+               `u128` implements `From<Ipv6Addr>`
+               `u128` implements `From<bool>`
+               `u128` implements `From<char>`
+               `u128` implements `From<u16>`
+               `u128` implements `From<u32>`
+               `u128` implements `From<u64>`
+               `u128` implements `From<u8>`
+             and 4 others
+
+error[E0277]: the trait bound `u128: From<usize>` is not satisfied
+    --> vendor/halo2/halo2_proofs/src/plonk/prover.rs:1194:14
+     |
+1194 |         .map(u128::from)
+     |              ^^^^ the trait `From<usize>` is not implemented for `u128`
+     |
+     = note: `u128` implements similarly named trait `cast::From`, but not `From<usize>`
+     = help: the following other types implement trait `From<T>`:
+               `u128` implements `From<Char>`
+               `u128` implements `From<Ipv6Addr>`
+               `u128` implements `From<bool>`
+               `u128` implements `From<char>`
+               `u128` implements `From<u16>`
+               `u128` implements `From<u32>`
+               `u128` implements `From<u64>`
+               `u128` implements `From<u8>`
+             and 4 others
+
+error[E0624]: method `as_slice` is private
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:110:29
+    |
+110 |     for value in polynomial.as_slice() {
+    |                             ^^^^^^^^ private method
+    |
+   ::: vendor/halo2/halo2_proofs/src/poly.rs:231:5
+    |
+231 |     fn as_slice(&self) -> &[F] {
+    |     -------------------------- private method defined here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `SlicePattern` which provides `as_slice` is implemented but not in scope; perhaps you want to import it
+    |
+  8 + use core::slice::SlicePattern;
+    |
+
+error[E0624]: method `as_slice` is private
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:186:37
+    |
+186 |             for value in polynomial.as_slice() {
+    |                                     ^^^^^^^^ private method
+    |
+   ::: vendor/halo2/halo2_proofs/src/poly.rs:231:5
+    |
+231 |     fn as_slice(&self) -> &[F] {
+    |     -------------------------- private method defined here
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `SlicePattern` which provides `as_slice` is implemented but not in scope; perhaps you want to import it
+    |
+  8 + use core::slice::SlicePattern;
+    |
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: unused variable: `advice_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:773:9
+    |
+773 |         advice_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_advice_values`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:774:9
+    |
+774 |         fixed_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_values`
+
+warning: unused variable: `instance_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:775:9
+    |
+775 |         instance_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_instance_values`
+
+warning: unused variable: `challenges`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:776:9
+    |
+776 |         challenges: &[C::Scalar],
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenges`
+
+warning: unused variable: `theta`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:788:13
+    |
+788 |             theta,
+    |             ^^^^^ help: try ignoring the field: `theta: _`
+
+Some errors have detailed explanations: E0277, E0282, E0599, E0624.
+For more information about an error, try `rustc --explain E0277`.
+warning: `halo2_proofs` (lib) generated 12 warnings
+error: could not compile `halo2_proofs` (lib) due to 7 previous errors; 12 warnings emitted

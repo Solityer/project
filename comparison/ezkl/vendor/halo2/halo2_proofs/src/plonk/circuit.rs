@@ -11,6 +11,7 @@ use ff::Field;
 use sealed::SealedPhase;
 use std::collections::BTreeMap;
 use std::fmt::Debug;
+use std::hash::{Hash, Hasher};
 use std::iter::{Product, Sum};
 use std::{
     convert::TryFrom,
@@ -158,6 +159,118 @@ impl SelectorBitmap {
         }
     }
 
+    /// Visit maximal active-row ranges without expanding the bitmap into one
+    /// item per row. Selector compression uses this canonical view to find
+    /// equal complex-selector activation patterns even when their retained
+    /// backing formats differ.
+    fn for_each_activation_run(&self, mut visit: impl FnMut(usize, usize)) {
+        assert_eq!(self.bits_per_value, 1);
+        let mut pending: Option<(usize, usize)> = None;
+        for (byte_index, byte) in self.bytes.iter().copied().enumerate() {
+            let mut remaining = byte;
+            while remaining != 0 {
+                let first = remaining.trailing_zeros() as usize;
+                let shifted = remaining >> first;
+                let run_len = shifted.trailing_ones() as usize;
+                let start = byte_index * 8 + first;
+                let end = (start + run_len).min(self.len);
+                if start < end {
+                    match pending {
+                        Some((pending_start, pending_end)) if pending_end == start => {
+                            pending = Some((pending_start, end));
+                        }
+                        Some((pending_start, pending_end)) => {
+                            visit(pending_start, pending_end);
+                            pending = Some((start, end));
+                        }
+                        None => pending = Some((start, end)),
+                    }
+                }
+                let run_mask = ((1u16 << run_len) - 1) as u8;
+                remaining &= !(run_mask << first);
+            }
+        }
+        if let Some((start, end)) = pending {
+            visit(start, end);
+        }
+    }
+
+    pub(crate) fn activation_fingerprint(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.len.hash(&mut hasher);
+        self.for_each_activation_run(|start, end| {
+            start.hash(&mut hasher);
+            end.hash(&mut hasher);
+        });
+        hasher.finish()
+    }
+
+    fn count_set_bits(&self) -> usize {
+        assert_eq!(self.bits_per_value, 1);
+        self.bytes
+            .iter()
+            .map(|byte| byte.count_ones() as usize)
+            .sum()
+    }
+
+    fn all_set_in_range(&self, start: usize, end: usize) -> bool {
+        assert_eq!(self.bits_per_value, 1);
+        assert!(start <= end && end <= self.len);
+        if start == end {
+            return true;
+        }
+        let first_byte = start / 8;
+        let last_byte = (end - 1) / 8;
+        if first_byte == last_byte {
+            let lower = start % 8;
+            let upper = (end - 1) % 8 + 1;
+            let mask = ((1u16 << upper) - 1) as u8 & !((1u16 << lower) - 1) as u8;
+            return self.bytes[first_byte] & mask == mask;
+        }
+        let first_mask = u8::MAX << (start % 8);
+        if self.bytes[first_byte] & first_mask != first_mask {
+            return false;
+        }
+        if self.bytes[first_byte + 1..last_byte]
+            .iter()
+            .any(|byte| *byte != u8::MAX)
+        {
+            return false;
+        }
+        let last_bits = end % 8;
+        let last_mask = if last_bits == 0 {
+            u8::MAX
+        } else {
+            ((1u16 << last_bits) - 1) as u8
+        };
+        self.bytes[last_byte] & last_mask == last_mask
+    }
+
+    fn has_same_activation_as_runs(
+        &self,
+        len: usize,
+        runs: &[std::ops::Range<usize>],
+    ) -> bool {
+        if self.len != len {
+            return false;
+        }
+        let active_rows = runs
+            .iter()
+            .map(|run| run.end.saturating_sub(run.start))
+            .sum::<usize>();
+        active_rows == self.count_set_bits()
+            && runs
+                .iter()
+                .all(|run| self.all_set_in_range(run.start, run.end))
+    }
+
+    pub(crate) fn same_activations(&self, other: &Self) -> bool {
+        self.len == other.len
+            && self.bits_per_value == 1
+            && other.bits_per_value == 1
+            && self.bytes == other.bytes
+    }
+
     pub(crate) fn storage_bytes(&self) -> usize {
         self.bytes.capacity()
     }
@@ -229,6 +342,19 @@ pub(crate) enum SelectorActivationSet {
     Bitmap(SelectorBitmap),
 }
 
+/// Versioned compact selector cache used only by native verifying-key
+/// serialization. The dictionary stores each exact row-activation pattern
+/// once; `selector_pattern_indices` preserves the original selector order.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SelectorActivationCache {
+    pub(crate) patterns: Vec<SelectorActivationSet>,
+    pub(crate) selector_pattern_indices: Vec<u32>,
+}
+
+const SELECTOR_CACHE_ENCODING_TAG: u8 = 1;
+const SELECTOR_PATTERN_RUNS_TAG: u8 = 0;
+const SELECTOR_PATTERN_BITMAP_TAG: u8 = 1;
+
 pub(crate) struct SelectorActivationInsert {
     pub(crate) activated: bool,
     pub(crate) storage_bytes: usize,
@@ -244,6 +370,38 @@ impl SelectorActivationSet {
         match self {
             Self::Runs { rows, .. } => rows.capacity() * std::mem::size_of::<std::ops::Range<usize>>(),
             Self::Bitmap(bitmap) => bitmap.storage_bytes(),
+        }
+    }
+
+    pub(crate) fn activation_fingerprint(&self) -> u64 {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.len().hash(&mut hasher);
+        match self {
+            Self::Runs { rows, .. } => {
+                for run in rows {
+                    run.start.hash(&mut hasher);
+                    run.end.hash(&mut hasher);
+                }
+            }
+            Self::Bitmap(bitmap) => bitmap.for_each_activation_run(|start, end| {
+                start.hash(&mut hasher);
+                end.hash(&mut hasher);
+            }),
+        }
+        hasher.finish()
+    }
+
+    pub(crate) fn same_activations(&self, other: &Self) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        match (self, other) {
+            (Self::Runs { rows: left, .. }, Self::Runs { rows: right, .. }) => left == right,
+            (Self::Bitmap(left), Self::Bitmap(right)) => left.same_activations(right),
+            (Self::Runs { len, rows }, Self::Bitmap(bitmap))
+            | (Self::Bitmap(bitmap), Self::Runs { len, rows }) => {
+                bitmap.has_same_activation_as_runs(*len, rows)
+            }
         }
     }
 
@@ -391,6 +549,145 @@ impl SelectorActivationSet {
         }
     }
 
+    fn activation_run_count(&self) -> usize {
+        match self {
+            Self::Runs { rows, .. } => rows.len(),
+            Self::Bitmap(bitmap) => {
+                let mut count = 0usize;
+                bitmap.for_each_activation_run(|_, _| count += 1);
+                count
+            }
+        }
+    }
+
+    fn compact_pattern_lengths(&self) -> std::io::Result<(usize, usize)> {
+        let bitmap_len = self.len().checked_add(7).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector bitmap length overflow")
+        })? / 8;
+        let run_len = self
+            .activation_run_count()
+            .checked_mul(16)
+            .and_then(|length| length.checked_add(8))
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector run encoding length overflow")
+            })?;
+        Ok((run_len, bitmap_len))
+    }
+
+    /// Write the canonical smaller of the range and bitmap encodings. A tie
+    /// uses the bitmap form, making the encoding choice deterministic.
+    fn write_compact_pattern<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        let (run_len, bitmap_len) = self.compact_pattern_lengths()?;
+        if run_len < bitmap_len {
+            writer.write_all(&[SELECTOR_PATTERN_RUNS_TAG])?;
+            let count = u64::try_from(self.activation_run_count()).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector run count exceeds u64")
+            })?;
+            writer.write_all(&count.to_le_bytes())?;
+            match self {
+                Self::Runs { rows, .. } => {
+                    for run in rows {
+                        write_activation_run(writer, run.start, run.end)?;
+                    }
+                }
+                Self::Bitmap(bitmap) => {
+                    let mut result = Ok(());
+                    bitmap.for_each_activation_run(|start, end| {
+                        if result.is_ok() {
+                            result = write_activation_run(writer, start, end);
+                        }
+                    });
+                    result?;
+                }
+            }
+            Ok(())
+        } else {
+            writer.write_all(&[SELECTOR_PATTERN_BITMAP_TAG])?;
+            self.write_activation(writer)
+        }
+    }
+
+    fn read_compact_pattern<R: std::io::Read>(
+        reader: &mut R,
+        len: usize,
+    ) -> std::io::Result<Self> {
+        let mut tag = [0u8; 1];
+        reader.read_exact(&mut tag)?;
+        let bitmap_len = len.checked_add(7).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "selector bitmap length overflow")
+        })? / 8;
+        match tag[0] {
+            SELECTOR_PATTERN_RUNS_TAG => {
+                let mut count_bytes = [0u8; 8];
+                reader.read_exact(&mut count_bytes)?;
+                let count = usize::try_from(u64::from_le_bytes(count_bytes)).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "selector run count exceeds usize")
+                })?;
+                let run_len = count
+                    .checked_mul(16)
+                    .and_then(|size| size.checked_add(8))
+                    .ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "selector run encoding length overflow")
+                    })?;
+                if run_len >= bitmap_len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-canonical selector cache: range encoding is not smaller than bitmap",
+                    ));
+                }
+                let mut rows = Vec::new();
+                rows.try_reserve_exact(count).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+                })?;
+                let mut previous_end = None;
+                for _ in 0..count {
+                    let mut bounds = [0u8; 16];
+                    reader.read_exact(&mut bounds)?;
+                    let start = usize::try_from(u64::from_le_bytes(bounds[..8].try_into().unwrap()))
+                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "selector run start exceeds usize"))?;
+                    let end = usize::try_from(u64::from_le_bytes(bounds[8..].try_into().unwrap()))
+                        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "selector run end exceeds usize"))?;
+                    if start >= end || end > len || previous_end.map(|previous| start <= previous).unwrap_or(false) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "non-canonical selector cache: activation ranges are invalid or adjacent",
+                        ));
+                    }
+                    rows.push(start..end);
+                    previous_end = Some(end);
+                }
+                Ok(Self::Runs { len, rows })
+            }
+            SELECTOR_PATTERN_BITMAP_TAG => {
+                let mut bitmap = SelectorBitmap::zeroed(len, 1)?;
+                reader.read_exact(&mut bitmap.bytes)?;
+                if len % 8 != 0 {
+                    let used_bits = len % 8;
+                    let mask = (1u8 << used_bits) - 1;
+                    if bitmap.bytes.last().map(|last| *last & !mask != 0).unwrap_or(false) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "non-canonical selector cache: bitmap has nonzero padding bits",
+                        ));
+                    }
+                }
+                let result = Self::Bitmap(bitmap);
+                let (run_len, bitmap_len) = result.compact_pattern_lengths()?;
+                if run_len < bitmap_len {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "non-canonical selector cache: bitmap encoding is not minimal",
+                    ));
+                }
+                Ok(result)
+            }
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unknown selector activation encoding",
+            )),
+        }
+    }
+
     pub(crate) fn encoded_byte_len(&self) -> usize {
         self.len().saturating_add(7) / 8
     }
@@ -522,6 +819,167 @@ impl SelectorActivationSet {
             }
             (Self::Bitmap(bitmap), Self::Runs { rows, .. }) | (Self::Runs { rows, .. }, Self::Bitmap(bitmap)) => rows.iter().any(|run| bitmap.any_set_in_range(run.start, run.end)),
         }
+    }
+}
+
+fn write_activation_run<W: std::io::Write>(
+    writer: &mut W,
+    start: usize,
+    end: usize,
+) -> std::io::Result<()> {
+    let start = u64::try_from(start).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector run start exceeds u64")
+    })?;
+    let end = u64::try_from(end).map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector run end exceeds u64")
+    })?;
+    writer.write_all(&start.to_le_bytes())?;
+    writer.write_all(&end.to_le_bytes())
+}
+
+impl SelectorActivationCache {
+    pub(crate) fn from_selectors(
+        selectors: Vec<SelectorActivationSet>,
+    ) -> std::io::Result<Self> {
+        let mut patterns = Vec::new();
+        let mut selector_pattern_indices = Vec::new();
+        selector_pattern_indices.try_reserve_exact(selectors.len()).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+        })?;
+        let mut patterns_by_fingerprint = HashMap::<u64, Vec<usize>>::default();
+        for selector in selectors {
+            let fingerprint = selector.activation_fingerprint();
+            let matching_pattern = patterns_by_fingerprint.get(&fingerprint).and_then(|candidates| {
+                candidates.iter().copied().find(|index| selector.same_activations(&patterns[*index]))
+            });
+            let pattern_index = if let Some(index) = matching_pattern {
+                index
+            } else {
+                let index = patterns.len();
+                let encoded_index = u32::try_from(index).map_err(|_| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector pattern count exceeds u32")
+                })?;
+                patterns.try_reserve(1).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+                })?;
+                patterns.push(selector);
+                patterns_by_fingerprint.entry(fingerprint).or_default().push(index);
+                selector_pattern_indices.push(encoded_index);
+                continue;
+            };
+            selector_pattern_indices.push(u32::try_from(pattern_index).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector pattern index exceeds u32")
+            })?);
+        }
+        Ok(Self { patterns, selector_pattern_indices })
+    }
+
+    pub(crate) fn read<R: std::io::Read>(
+        reader: &mut R,
+        len: usize,
+        selector_count: usize,
+    ) -> std::io::Result<Self> {
+        let mut encoding_tag = [0u8; 1];
+        reader.read_exact(&mut encoding_tag)?;
+        if encoding_tag[0] != SELECTOR_CACHE_ENCODING_TAG {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "unsupported selector cache encoding; regenerate native VK/PK artifacts",
+            ));
+        }
+        let mut count_bytes = [0u8; 4];
+        reader.read_exact(&mut count_bytes)?;
+        let pattern_count = u32::from_le_bytes(count_bytes) as usize;
+        if pattern_count > selector_count {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "selector cache pattern count exceeds circuit selector count",
+            ));
+        }
+        let mut patterns = Vec::new();
+        patterns.try_reserve_exact(pattern_count).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+        })?;
+        let mut patterns_by_fingerprint = HashMap::<u64, Vec<usize>>::default();
+        for _ in 0..pattern_count {
+            let pattern = SelectorActivationSet::read_compact_pattern(reader, len)?;
+            let fingerprint = pattern.activation_fingerprint();
+            let duplicate = patterns_by_fingerprint.get(&fingerprint).map(|candidates| {
+                candidates.iter().any(|index| pattern.same_activations(&patterns[*index]))
+            }).unwrap_or(false);
+            if duplicate {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "non-canonical selector cache: duplicate activation pattern",
+                ));
+            }
+            let index = patterns.len();
+            patterns.push(pattern);
+            patterns_by_fingerprint.entry(fingerprint).or_default().push(index);
+        }
+        let mut selector_pattern_indices = Vec::new();
+        selector_pattern_indices.try_reserve_exact(selector_count).map_err(|error| {
+            std::io::Error::new(std::io::ErrorKind::OutOfMemory, error)
+        })?;
+        let mut next_first_use = 0usize;
+        for _ in 0..selector_count {
+            let mut index_bytes = [0u8; 4];
+            reader.read_exact(&mut index_bytes)?;
+            let index = u32::from_le_bytes(index_bytes);
+            let index_usize = index as usize;
+            if index_usize >= pattern_count || index_usize > next_first_use {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "non-canonical selector cache: invalid or out-of-order pattern reference",
+                ));
+            }
+            if index_usize == next_first_use {
+                next_first_use += 1;
+            }
+            selector_pattern_indices.push(index);
+        }
+        if next_first_use != pattern_count {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "non-canonical selector cache: unused activation pattern",
+            ));
+        }
+        Ok(Self { patterns, selector_pattern_indices })
+    }
+
+    pub(crate) fn write<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[SELECTOR_CACHE_ENCODING_TAG])?;
+        let pattern_count = u32::try_from(self.patterns.len()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "selector pattern count exceeds u32")
+        })?;
+        writer.write_all(&pattern_count.to_le_bytes())?;
+        for pattern in &self.patterns {
+            pattern.write_compact_pattern(writer)?;
+        }
+        for index in &self.selector_pattern_indices {
+            writer.write_all(&index.to_le_bytes())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn encoded_byte_len(&self) -> usize {
+        let pattern_bytes = self.patterns.iter().fold(5usize, |total, pattern| {
+            let (runs, bitmap) = pattern
+                .compact_pattern_lengths()
+                .expect("in-memory selector cache lengths must fit usize");
+            total
+                .checked_add(1)
+                .and_then(|total| total.checked_add(runs.min(bitmap)))
+                .expect("in-memory selector cache length overflow")
+        });
+        let index_bytes = self
+            .selector_pattern_indices
+            .len()
+            .checked_mul(4)
+            .expect("in-memory selector cache index length overflow");
+        pattern_bytes
+            .checked_add(index_bytes)
+            .expect("in-memory selector cache length overflow")
     }
 }
 
@@ -2385,7 +2843,10 @@ impl<F: Field> ConstraintSystem<F> {
             .unwrap();
         log::debug!("max single lookup degree: {}", max_gate_degree);
 
-        let minimum_degree = std::cmp::max(max_gate_degree, max_single_lookup_degree);
+        let minimum_degree = std::cmp::max(
+            std::cmp::max(max_gate_degree, max_single_lookup_degree),
+            self.minimum_degree.unwrap_or(1),
+        );
         // TODO: Find the best degree that needs least commitment
         // let minimum_degree = (minimum_degree as u64 - 1).next_power_of_two() as usize + 1;
 
@@ -2834,6 +3295,67 @@ impl<F: Field> ConstraintSystem<F> {
         (self, combination_count, assignments)
     }
 
+    /// Rebuild compressed selector queries from a dictionary cache without
+    /// cloning one activation pattern per original selector. The selector
+    /// reference vector remains in original circuit order, so this produces
+    /// the same fixed-column map as synthesis-time key generation.
+    pub(crate) fn compress_selector_activation_cache(
+        mut self,
+        cache: &SelectorActivationCache,
+    ) -> (
+        Self,
+        usize,
+        Vec<compress_selectors::PackedSelectorAssignment<F>>,
+    ) {
+        assert_eq!(cache.selector_pattern_indices.len(), self.num_selectors);
+        assert!(cache
+            .selector_pattern_indices
+            .iter()
+            .all(|index| (*index as usize) < cache.patterns.len()));
+
+        let mut degrees = vec![0; self.num_selectors];
+        for expression in self.gates.iter().flat_map(|gate| gate.polys.iter()) {
+            if let Some(selector) = expression.extract_simple_selector() {
+                degrees[selector.0] = max(degrees[selector.0], expression.degree());
+            }
+        }
+
+        let max_degree = self.degree();
+        let mut new_columns = Vec::new();
+        let (combination_count, assignments) = compress_selectors::process_activation_patterns(
+            &cache.patterns,
+            &cache.selector_pattern_indices,
+            &degrees,
+            max_degree,
+            || {
+                let column = self.fixed_column();
+                new_columns.push(column);
+                Expression::Fixed(FixedQuery {
+                    index: Some(self.query_fixed_index(column, Rotation::cur())),
+                    column_index: column.index,
+                    rotation: Rotation::cur(),
+                })
+            },
+        );
+
+        let mut selector_map = vec![None; assignments.len()];
+        let mut selector_replacements = vec![None; assignments.len()];
+        for assignment in &assignments {
+            selector_replacements[assignment.selector] = Some(assignment.expression.clone());
+            selector_map[assignment.selector] = Some(new_columns[assignment.combination_index]);
+        }
+        self.selector_map = selector_map
+            .into_iter()
+            .map(|column| column.expect("every selector receives a fixed-column mapping"))
+            .collect();
+        let selector_replacements = selector_replacements
+            .into_iter()
+            .map(|expression| expression.expect("every selector receives a fixed expression"))
+            .collect::<Vec<_>>();
+        self.replace_selectors_with_fixed(&selector_replacements);
+        (self, combination_count, assignments)
+    }
+
     /// Count compressed selector columns from the exact row sets captured by
     /// selector-only synthesis without allocating compression expressions or
     /// fixed-column assignments.
@@ -2878,6 +3400,7 @@ impl<F: Field> ConstraintSystem<F> {
                 combination_index: selector,
                 root_value: 1,
                 expression,
+                is_activation_representative: true,
             });
         }
         let selector_replacements = assignments
@@ -2914,6 +3437,7 @@ impl<F: Field> ConstraintSystem<F> {
                 combination_index: selector,
                 root_value: 1,
                 expression,
+                is_activation_representative: true,
             });
         }
         let selector_replacements = assignments

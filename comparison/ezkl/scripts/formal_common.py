@@ -1858,11 +1858,17 @@ def require_positive_timings(timings: Any, label: str = "phase timings") -> dict
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             abort(f"{label}.{key} must be a positive finite duration")
         result[key] = float(value)
-    for key in ("pk_artifact_read_validate", "setup_pk_sigma_materialization"):
+    for key in ("pk_artifact_read_validate",):
         if key in timings:
             value = timings[key]
             if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
                 abort(f"{label}.{key} must be a positive finite duration")
+    for key in ("setup_pk_sigma_deferred_source_prepare", "pk_materialize"):
+        if key not in timings:
+            continue
+        value = timings[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            abort(f"{label}.{key} must be a nonnegative finite duration")
     return result
 
 
@@ -1895,17 +1901,18 @@ def validate_native_pk_read_timing(
         "pk_sha256",
         "measurement_scope",
         "artifact_read_validate_ms",
-        "sigma_rebuild_wall_ms",
+        "pk_materialize_ms",
+        "sigma_deferred_source_prepare_wall_ms",
     }
     require_exact_keys(timing, required, "native PK read timing")
     expected = {
-        "schema": "ezkl.native-pk-read-timing.v1",
+        "schema": "ezkl.native-pk-read-timing.v3",
         "operation": "authenticated_compact_native_pk_restore",
         "session_id": session_id,
         "dataset": dataset,
         "native_prove_budget_sha256": native_prove_budget_sha256,
         "pk_sha256": pk_sha256,
-        "measurement_scope": "artifact_read_decode_digest_and_mapping_validation_excluding_sigma_rebuild; sigma_wall_elapsed_may_include_mapped_or_spill_io",
+        "measurement_scope": "artifact_read_decode_digest_and_mapping_validation; fixed_value_decode_coefficient_ifft_and_deterministic_boundary_materialization; deferred_sigma_source_descriptor_preparation",
     }
     if any(timing.get(name) != value for name, value in expected.items()):
         abort("native PK read timing is not bound to this session, dataset, prove budget, and PK")
@@ -1924,10 +1931,15 @@ def validate_native_pk_read_timing(
         "vk_sha256",
     ):
         require_digest(timing[name], f"native PK read timing {name}")
-    for name in ("artifact_read_validate_ms", "sigma_rebuild_wall_ms"):
-        duration = timing[name]
-        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
-            abort(f"native PK read timing {name} must be a positive finite wall duration")
+    duration = timing["artifact_read_validate_ms"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        abort("native PK read timing artifact_read_validate_ms must be a positive finite wall duration")
+    duration = timing["pk_materialize_ms"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+        abort("native PK read timing pk_materialize_ms must be a nonnegative finite wall duration")
+    duration = timing["sigma_deferred_source_prepare_wall_ms"]
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration < 0:
+        abort("native PK read timing sigma_deferred_source_prepare_wall_ms must be a nonnegative finite wall duration")
     return timing
 
 
@@ -1940,7 +1952,11 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
             "operation",
             "included_in",
             "measurement_scope",
+            "prove_measurement_scope",
+            "prove_included_in",
             "commitment_time_ms",
+            "native_create_proof_time_ms",
+            "pk_materialize_time_ms",
             "prove_time_ms",
             "proof_sha256",
             "instance_commitment_count",
@@ -1950,10 +1966,12 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
         "native proof metrics",
     )
     if (
-        metrics["schema_version"] != 2
+        metrics["schema_version"] != 3
         or metrics["operation"] != "native_halo2_initial_instance_and_phase0_advice_commitments"
         or metrics["included_in"] != "native_create_proof"
         or metrics["measurement_scope"] != "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization"
+        or metrics["prove_included_in"] != "native_create_proof_plus_authenticated_pk_materialization"
+        or metrics["prove_measurement_scope"] != "native_create_proof_wall_plus_authenticated_fixed_value_decode_coefficient_ifft_and_boundary_rebuild"
         or metrics["proof_sha256"] != proof_sha256
     ):
         abort("native proof metrics do not match the current proof artifact and timing boundary")
@@ -1961,10 +1979,20 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
         count = metrics[name]
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             abort(f"native proof metrics {name} must be a nonnegative integer diagnostic")
-    for name in ("commitment_time_ms", "prove_time_ms"):
+    for name in ("commitment_time_ms", "native_create_proof_time_ms", "prove_time_ms"):
         duration = metrics[name]
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
             abort(f"native proof metrics {name} must be a positive finite measured duration")
+    materialize_ms = metrics["pk_materialize_time_ms"]
+    if isinstance(materialize_ms, bool) or not isinstance(materialize_ms, (int, float)) or not math.isfinite(materialize_ms) or materialize_ms < 0:
+        abort("native proof metrics pk_materialize_time_ms must be a nonnegative finite measured duration")
+    if not math.isclose(
+        float(metrics["prove_time_ms"]),
+        float(metrics["native_create_proof_time_ms"]) + float(materialize_ms),
+        rel_tol=0.0,
+        abs_tol=1e-9,
+    ):
+        abort("native prove time is not the sum of create_proof and authenticated PK materialization")
     return metrics
 
 

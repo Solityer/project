@@ -674,11 +674,21 @@ pub(crate) struct NativeSuccessorStore {
     reserved_bytes: u64,
 }
 
+#[derive(Clone, Copy)]
+enum NativeSuccessorEncoding {
+    RawPairs,
+    PackedIndices { bits_per_index: u8 },
+}
+
 struct NativeSuccessorBacking {
-    path: PathBuf,
-    file: File,
+    // A file-backed PK view shares the authenticated PK file and must never
+    // unlink it. Temporary keygen stores own their path and root instead.
+    path: Option<PathBuf>,
+    file: Arc<File>,
+    file_offset: u64,
+    encoding: NativeSuccessorEncoding,
     read_cache: Mutex<Option<NativeSuccessorReadCache>>,
-    _root: Arc<SpillRoot>,
+    _root: Option<Arc<SpillRoot>>,
 }
 
 struct NativeSuccessorReadPage {
@@ -730,33 +740,115 @@ impl NativeSuccessorReadCache {
             .saturating_add(self.slots.capacity().saturating_mul(std::mem::size_of::<CacheSlotIndex>()))
     }
 
-    fn pair_at(&mut self, file: &File, len: u64, index: u64) -> io::Result<(u64, u64)> {
+    fn pair_at(
+        &mut self,
+        file: &File,
+        file_offset: u64,
+        file_len: u64,
+        encoding: NativeSuccessorEncoding,
+        len: u64,
+        index: u64,
+    ) -> io::Result<(u64, u64)> {
         if index >= len {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor index is outside the declared pair count"));
         }
-        let offset = index
-            .checked_mul(16)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read offset overflow"))?;
-        let page_index = offset / NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64;
-        let page_offset = usize::try_from(offset % NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64)
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor page offset overflow"))?;
-        let file_len = len
-            .checked_mul(16)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor backing size overflow"))?;
-        let slot = self.page_slot(file, page_index, file_len)?;
-        let raw = &self.pages[slot].bytes[page_offset..page_offset + 16];
-        Ok((
-            u64::from_le_bytes(raw[..8].try_into().unwrap()),
-            u64::from_le_bytes(raw[8..].try_into().unwrap()),
-        ))
+        match encoding {
+            NativeSuccessorEncoding::RawPairs => {
+                let offset = index
+                    .checked_mul(16)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read offset overflow"))?;
+                let mut raw = [0u8; 16];
+                self.read_cached_bytes(file, file_offset, file_len, offset, &mut raw)?;
+                Ok((
+                    u64::from_le_bytes(raw[..8].try_into().unwrap()),
+                    u64::from_le_bytes(raw[8..].try_into().unwrap()),
+                ))
+            }
+            NativeSuccessorEncoding::PackedIndices { bits_per_index } => {
+                let bits = u64::from(bits_per_index);
+                if bits == 0 || bits > 64 {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "packed successor index width is invalid"));
+                }
+                let first = index
+                    .checked_mul(2)
+                    .and_then(|value| value.checked_mul(bits))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "packed successor bit offset overflow"))?;
+                let second = first
+                    .checked_add(bits)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "packed successor bit offset overflow"))?;
+                Ok((
+                    self.read_packed_index(file, file_offset, file_len, first, bits_per_index)?,
+                    self.read_packed_index(file, file_offset, file_len, second, bits_per_index)?,
+                ))
+            }
+        }
     }
 
-    fn lower_bound_source(&mut self, file: &File, len: u64, source: u64) -> io::Result<u64> {
+    fn read_packed_index(
+        &mut self,
+        file: &File,
+        file_offset: u64,
+        file_len: u64,
+        bit_offset: u64,
+        bits_per_index: u8,
+    ) -> io::Result<u64> {
+        let shift = (bit_offset % 8) as usize;
+        let byte_offset = bit_offset / 8;
+        let bits = usize::from(bits_per_index);
+        let byte_count = (shift + bits + 7) / 8;
+        if byte_count > 9 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "packed successor index exceeds the bounded decoder"));
+        }
+        let mut encoded = [0u8; 9];
+        self.read_cached_bytes(file, file_offset, file_len, byte_offset, &mut encoded[..byte_count])?;
+        let mut value = 0u128;
+        for (byte_index, byte) in encoded[..byte_count].iter().enumerate() {
+            value |= u128::from(*byte) << (byte_index * 8);
+        }
+        let mask = if bits == 64 { u64::MAX as u128 } else { (1u128 << bits) - 1 };
+        Ok(((value >> shift) & mask) as u64)
+    }
+
+    fn read_cached_bytes(
+        &mut self,
+        file: &File,
+        file_offset: u64,
+        file_len: u64,
+        mut offset: u64,
+        mut out: &mut [u8],
+    ) -> io::Result<()> {
+        if offset.checked_add(out.len() as u64).map(|end| end > file_len).unwrap_or(true) {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "successor read exceeds backing view"));
+        }
+        while !out.is_empty() {
+            let page_index = offset / NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64;
+            let page_offset = usize::try_from(offset % NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64)
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor page offset overflow"))?;
+            let slot = self.page_slot(file, file_offset, page_index, file_len)?;
+            let count = out.len().min(NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES - page_offset);
+            out[..count].copy_from_slice(&self.pages[slot].bytes[page_offset..page_offset + count]);
+            offset = offset
+                .checked_add(count as u64)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read offset overflow"))?;
+            out = &mut out[count..];
+        }
+        Ok(())
+    }
+
+    fn lower_bound_source(
+        &mut self,
+        file: &File,
+        file_offset: u64,
+        file_len: u64,
+        encoding: NativeSuccessorEncoding,
+        len: u64,
+        source: u64,
+    ) -> io::Result<u64> {
         let mut low = 0u64;
         let mut high = len;
         while low < high {
             let middle = low + (high - low) / 2;
-            if self.pair_at(file, len, middle)?.0 < source {
+            if self.pair_at(file, file_offset, file_len, encoding, len, middle)?.0 < source {
                 low = middle + 1;
             } else {
                 high = middle;
@@ -765,15 +857,23 @@ impl NativeSuccessorReadCache {
         Ok(low)
     }
 
-    fn source_ordinal(&mut self, file: &File, len: u64, source: u64) -> io::Result<Option<u64>> {
-        let ordinal = self.lower_bound_source(file, len, source)?;
+    fn source_ordinal(
+        &mut self,
+        file: &File,
+        file_offset: u64,
+        file_len: u64,
+        encoding: NativeSuccessorEncoding,
+        len: u64,
+        source: u64,
+    ) -> io::Result<Option<u64>> {
+        let ordinal = self.lower_bound_source(file, file_offset, file_len, encoding, len, source)?;
         if ordinal == len {
             return Ok(None);
         }
-        Ok((self.pair_at(file, len, ordinal)?.0 == source).then_some(ordinal))
+        Ok((self.pair_at(file, file_offset, file_len, encoding, len, ordinal)?.0 == source).then_some(ordinal))
     }
 
-    fn page_slot(&mut self, file: &File, page_index: u64, file_len: u64) -> io::Result<usize> {
+    fn page_slot(&mut self, file: &File, file_offset: u64, page_index: u64, file_len: u64) -> io::Result<usize> {
         if let Some(slot) = self.lookup_slot(page_index) {
             self.pages[slot].referenced = true;
             return Ok(slot);
@@ -785,15 +885,17 @@ impl NativeSuccessorReadCache {
         if let Some(old_page) = self.pages[slot].page_index {
             self.remove_slot(old_page);
         }
-        let offset = page_index
+        let relative_offset = page_index
             .checked_mul(NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor page offset overflow"))?;
+        let offset = file_offset.checked_add(relative_offset)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor file offset overflow"))?;
         libc::off_t::try_from(offset)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor page exceeds off_t"))?;
-        if offset >= file_len {
+        if relative_offset >= file_len {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "successor page starts beyond backing file"));
         }
-        let count = usize::try_from((file_len - offset).min(NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64))
+        let count = usize::try_from((file_len - relative_offset).min(NATIVE_SUCCESSOR_READ_CACHE_PAGE_BYTES as u64))
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor page length overflow"))?;
         let page = &mut self.pages[slot];
         page.bytes.fill(0);
@@ -901,7 +1003,9 @@ impl std::fmt::Debug for NativeSuccessorStore {
 
 impl Drop for NativeSuccessorBacking {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if let Some(path) = &self.path {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 
@@ -945,13 +1049,57 @@ impl NativeSuccessorStore {
         }
         Ok(Self {
             backing: Arc::new(NativeSuccessorBacking {
-                path,
-                file,
+                path: Some(path),
+                file: Arc::new(file),
+                file_offset: 0,
+                encoding: NativeSuccessorEncoding::RawPairs,
                 read_cache: Mutex::new(None),
-                _root: root,
+                _root: Some(root),
             }),
             len,
             reserved_bytes,
+        })
+    }
+
+    /// Creates a read-only view over packed successor indices in an
+    /// authenticated proving-key file. The view borrows the PK's file and
+    /// therefore never reserves temporary successor bytes or unlinks it.
+    pub(crate) fn packed_file_view(
+        file: Arc<File>,
+        file_offset: u64,
+        len: u64,
+        bits_per_index: u8,
+    ) -> io::Result<Self> {
+        if bits_per_index > 64 || (len > 0 && bits_per_index == 0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "packed successor index width is invalid"));
+        }
+        let packed_bits = len
+            .checked_mul(2)
+            .and_then(|count| count.checked_mul(u64::from(bits_per_index)))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "packed successor payload size overflow"))?;
+        let packed_bytes = packed_bits
+            .checked_add(7)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "packed successor payload size overflow"))?
+            / 8;
+        let file_end = file_offset
+            .checked_add(packed_bytes)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "packed successor file range overflow"))?;
+        if file_end > file.metadata()?.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "packed successor view exceeds proving-key file"));
+        }
+        libc::off_t::try_from(file_end)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "packed successor file range exceeds off_t"))?;
+        Ok(Self {
+            backing: Arc::new(NativeSuccessorBacking {
+                path: None,
+                file,
+                file_offset,
+                encoding: NativeSuccessorEncoding::PackedIndices { bits_per_index },
+                read_cache: Mutex::new(None),
+                _root: None,
+            }),
+            len,
+            reserved_bytes: 0,
         })
     }
 
@@ -960,6 +1108,9 @@ impl NativeSuccessorStore {
     }
 
     pub(crate) fn write_bytes(&mut self, start: u64, bytes: &[u8]) -> io::Result<()> {
+        if !matches!(self.backing.encoding, NativeSuccessorEncoding::RawPairs) || self.backing.path.is_none() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "successor view is read-only"));
+        }
         if bytes.len() % 16 != 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor write is not pair-aligned"));
         }
@@ -978,10 +1129,6 @@ impl NativeSuccessorStore {
     }
 
     pub(crate) fn read_pairs(&self, start: u64, out: &mut [(u64, u64)]) -> io::Result<()> {
-        let byte_len = out
-            .len()
-            .checked_mul(16)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read buffer size overflow"))?;
         let count = u64::try_from(out.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor read length overflow"))?;
         if start
@@ -991,6 +1138,16 @@ impl NativeSuccessorStore {
         {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor read exceeds declared pair count"));
         }
+        if matches!(self.backing.encoding, NativeSuccessorEncoding::PackedIndices { .. }) {
+            for (offset, pair) in out.iter_mut().enumerate() {
+                *pair = self.pair_at(start + offset as u64)?;
+            }
+            return Ok(());
+        }
+        let byte_len = out
+            .len()
+            .checked_mul(16)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read buffer size overflow"))?;
         let offset = start
             .checked_mul(16)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor read offset overflow"))?;
@@ -1021,6 +1178,30 @@ impl NativeSuccessorStore {
             .unwrap_or(true)
         {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor read exceeds declared pair count"));
+        }
+        if matches!(self.backing.encoding, NativeSuccessorEncoding::PackedIndices { .. }) {
+            let file_len = self.packed_file_len()?;
+            let mut cache = self.backing.read_cache.lock().map_err(|_| {
+                io::Error::new(io::ErrorKind::Other, "native successor read cache mutex is poisoned")
+            })?;
+            if cache.is_none() {
+                *cache = Some(NativeSuccessorReadCache::new(NATIVE_SUCCESSOR_READ_CACHE_PAGES)?);
+            }
+            let cache = cache.as_mut().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::Other, "native successor read cache was not initialized")
+            })?;
+            for (offset, pair) in out.iter_mut().enumerate() {
+                *pair = cache.pair_at(
+                    &self.backing.file,
+                    self.backing.file_offset,
+                    file_len,
+                    self.backing.encoding,
+                    self.len,
+                    start + offset as u64,
+                )?;
+            }
+            bytes.clear();
+            return Ok(());
         }
         let byte_len = out
             .len()
@@ -1054,7 +1235,14 @@ impl NativeSuccessorStore {
         cache
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "native successor read cache was not initialized"))?
-            .pair_at(&self.backing.file, self.len, index)
+            .pair_at(
+                &self.backing.file,
+                self.backing.file_offset,
+                self.packed_file_len()?,
+                self.backing.encoding,
+                self.len,
+                index,
+            )
     }
 
     pub(crate) fn lower_bound_source(&self, source: u64) -> io::Result<u64> {
@@ -1067,7 +1255,14 @@ impl NativeSuccessorStore {
         cache
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "native successor read cache was not initialized"))?
-            .lower_bound_source(&self.backing.file, self.len, source)
+            .lower_bound_source(
+                &self.backing.file,
+                self.backing.file_offset,
+                self.packed_file_len()?,
+                self.backing.encoding,
+                self.len,
+                source,
+            )
     }
 
     fn source_ordinal(&self, source: u64) -> io::Result<Option<u64>> {
@@ -1080,7 +1275,14 @@ impl NativeSuccessorStore {
         cache
             .as_mut()
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "native successor read cache was not initialized"))?
-            .source_ordinal(&self.backing.file, self.len, source)
+            .source_ordinal(
+                &self.backing.file,
+                self.backing.file_offset,
+                self.packed_file_len()?,
+                self.backing.encoding,
+                self.len,
+                source,
+            )
     }
 
     pub(crate) fn validate_bijection(&self, max_cells: u64, max_total_backing_bytes: u64) -> io::Result<NativeSuccessorValidationStats> {
@@ -1088,7 +1290,7 @@ impl NativeSuccessorStore {
         let target_bitmap_budget = max_total_backing_bytes.checked_sub(successor_bytes).ok_or_else(|| {
             io::Error::new(io::ErrorKind::OutOfMemory, "successor backing exceeds the configured validation budget")
         })?;
-        let mut targets = NativeTargetBitmap::new_with_budget(self.len, target_bitmap_budget)?;
+        let mut targets = NativeTargetBitmap::new_with_budget(max_cells, target_bitmap_budget)?;
         const VALIDATION_CHUNK_PAIRS: usize = 4096;
         let mut pairs = Vec::new();
         pairs.try_reserve_exact(VALIDATION_CHUNK_PAIRS).map_err(|error| {
@@ -1113,16 +1315,40 @@ impl NativeSuccessorStore {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "successor sources are not strictly ordered"));
                 }
                 previous_source = Some(source);
-                let ordinal = self.source_ordinal(target)?.ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "successor target is not in the native source set")
-                })?;
-                if !targets.insert(ordinal)? {
+                if !targets.insert(target)? {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "successor targets are not unique"));
                 }
             }
             start = start
                 .checked_add(count as u64)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor validation offset overflow"))?;
+        }
+        // Source-order validation above proves there are exactly `len`
+        // distinct in-range sources. Targets are also exactly `len` distinct
+        // in-range cells. Clearing every source from the target bitmap proves
+        // the two sets are equal, without a binary search per target or a
+        // second full-domain bitmap.
+        targets.flush()?;
+        let mut visited = 0u64;
+        let mut start = 0u64;
+        while start < self.len {
+            let count = usize::try_from((self.len - start).min(VALIDATION_CHUNK_PAIRS as u64))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "successor closure chunk length overflow"))?;
+            self.read_pairs_inplace(start, &mut pairs[..count], &mut raw)?;
+            for &(source, _) in &pairs[..count] {
+                if !targets.take(source)? {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "successor target is not in the native source set"));
+                }
+                visited = visited.checked_add(1).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "successor validation visit count overflow")
+                })?;
+            }
+            start = start
+                .checked_add(count as u64)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor closure offset overflow"))?;
+        }
+        if visited != self.len {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "successor source-set closure count mismatch"));
         }
         targets.flush()?;
         Ok(NativeSuccessorValidationStats {
@@ -1134,11 +1360,31 @@ impl NativeSuccessorStore {
     }
 
     pub(crate) fn flush(&self) -> io::Result<()> {
-        self.backing.file.sync_data()
+        if self.backing.path.is_some() {
+            self.backing.file.sync_data()
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) fn disk_bytes(&self) -> u64 {
         self.reserved_bytes
+    }
+
+    fn packed_file_len(&self) -> io::Result<u64> {
+        match self.backing.encoding {
+            NativeSuccessorEncoding::RawPairs => self
+                .len
+                .checked_mul(16)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "successor backing size overflow")),
+            NativeSuccessorEncoding::PackedIndices { bits_per_index } => self
+                .len
+                .checked_mul(2)
+                .and_then(|count| count.checked_mul(u64::from(bits_per_index)))
+                .and_then(|bits| bits.checked_add(7))
+                .map(|bits| bits / 8)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "packed successor backing size overflow")),
+        }
     }
 }
 
@@ -1152,7 +1398,7 @@ pub(crate) struct NativeSuccessorValidationStats {
 
 /// Fixed native target-membership cache bytes, including its page payload,
 /// page and index descriptors, and embedded cache headers. The allocation
-/// bitmap is reported separately because it scales with the successor count.
+/// bitmap is reported separately because it scales with the permutation cell count.
 pub const NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES: u64 =
     (std::mem::size_of::<NativeTargetBitmap>()
         + std::mem::size_of::<SparsePageCache>()
@@ -1161,9 +1407,9 @@ pub const NATIVE_TARGET_BITMAP_FIXED_CACHE_BYTES: u64 =
         + (NativeTargetBitmap::CACHE_PAGES * 2) * std::mem::size_of::<CacheSlotIndex>()) as u64;
 
 /// Return the exact source-derived size of the sparse target-bitmap page
-/// allocation bitmap for `successor_edges`, with overflow checked.
-pub fn native_target_bitmap_allocation_bitmap_bytes(successor_edges: u64) -> Option<u64> {
-    let bitmap_bytes = successor_edges.checked_add(7)? / 8;
+/// allocation bitmap for `permutation_cells`, with overflow checked.
+pub fn native_target_bitmap_allocation_bitmap_bytes(permutation_cells: u64) -> Option<u64> {
+    let bitmap_bytes = permutation_cells.checked_add(7)? / 8;
     let page_count = bitmap_bytes.checked_add(PERMUTATION_PAGE_BYTES as u64 - 1)?
         / PERMUTATION_PAGE_BYTES as u64;
     Some(page_count.checked_add(7)? / 8)
@@ -1214,18 +1460,33 @@ impl NativeTargetBitmap {
         })
     }
 
-    /// Returns false if this source ordinal was already targeted.
-    pub(crate) fn insert(&mut self, ordinal: u64) -> io::Result<bool> {
-        if ordinal >= self.len {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor validation ordinal is out of range"));
+    /// Sets a target bit, returning false if it was already set.
+    pub(crate) fn insert(&mut self, cell: u64) -> io::Result<bool> {
+        if cell >= self.len {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor validation cell is out of range"));
         }
-        let byte_offset = ordinal / 8;
-        let mask = 1u8 << (ordinal % 8);
+        let byte_offset = cell / 8;
+        let mask = 1u8 << (cell % 8);
         let old = self.bits.read_u8(byte_offset)?;
         if old & mask != 0 {
             return Ok(false);
         }
         self.bits.write_u8(byte_offset, old | mask)?;
+        Ok(true)
+    }
+
+    /// Clears one bit and returns whether it was previously set.
+    pub(crate) fn take(&mut self, cell: u64) -> io::Result<bool> {
+        if cell >= self.len {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "successor validation cell is out of range"));
+        }
+        let byte_offset = cell / 8;
+        let mask = 1u8 << (cell % 8);
+        let old = self.bits.read_u8(byte_offset)?;
+        if old & mask == 0 {
+            return Ok(false);
+        }
+        self.bits.write_u8(byte_offset, old & !mask)?;
         Ok(true)
     }
 

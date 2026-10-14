@@ -5,12 +5,12 @@
   "max_exp": 16,
   "max_sum": 2704,
   "max_aggregation_num": 0,
-  "max_dividend_abs": 0,
+  "max_dividend_abs": 2,
   "max_aux_abs": 346112,
   "max_divisor": 173056,
   "field_modulus": "21888242871839275222246405745257275088548364400416034343698204186575808495617",
   "ledger_id": "ledger:gat:cora:v1",
-  "ledger_digest": "2fabcb8f0ccf096f39676cf40669261a6bf4bcb05a6db6e1ea9ec65a8ad1f519",
+  "ledger_digest": "36c1a66920d769a99d5bed46f0e202dcc2bddb0822cc24ee8904fcb7c9134d78",
   "families": [
     {
       "layer": 0,

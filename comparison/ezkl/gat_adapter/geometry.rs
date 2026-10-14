@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use halo2curves::bn256::Fr as Fp;
 use halo2curves::ff::Field;
+use halo2_proofs::plonk::ConstraintSystem;
 
 use crate::circuit::table::Range;
 use crate::fieldutils::integer_rep_to_felt;
@@ -21,10 +22,32 @@ use crate::RunArgs;
 use super::{
     builder::build_model_for_run_args,
     geometry_primitives::{native_dummy_input_cursor_end, plan_einsum_geometry},
-    op::MAX_GAT_EDGE_CHUNK_CELLS,
+    op::{constant_nearest_remainder_range, MAX_GAT_EDGE_CHUNK_CELLS},
+    range_gadget::{
+        limb_count, RangeSchedule, BYTE_RANGE, GAT_RANGE_BLINDING_FACTOR_RESERVE,
+        GAT_RANGE_GADGET_VERSION,
+    },
     relation::RoundingMode,
     schema::{BoundFamily, CanonicalGat, ExactTable},
 };
+
+/// Reserve the quotient-degree rounding slack for the native GAT range
+/// lookup arguments before Halo2 chunks their inputs. This does not enlarge
+/// the extended domain: it only lets the native chunker use the degree the
+/// existing quotient domain already supports.
+pub(crate) fn set_native_lookup_degree_slack(cs: &mut ConstraintSystem<Fp>) {
+    let natural_degree = cs.clone().chunk_lookups().degree();
+    let natural_quotient_degree = natural_degree
+        .checked_sub(1)
+        .expect("configured GAT constraint-system degree must be positive");
+    let rounded_quotient_degree = natural_quotient_degree
+        .checked_next_power_of_two()
+        .expect("configured GAT quotient-degree ceiling must fit usize");
+    let degree_ceiling = rounded_quotient_degree
+        .checked_add(1)
+        .expect("configured GAT degree ceiling must fit usize");
+    cs.set_minimum_degree(degree_ceiling);
+}
 
 /// Reuse the bounded synthetic geometry and MockProver regressions from the
 /// single root-crate formal test entrypoint.
@@ -135,8 +158,11 @@ impl GeometryRegion {
     fn new(run_args: &RunArgs) -> Result<Self, String> {
         let domain = 1usize.checked_shl(run_args.logrows)
             .ok_or_else(|| format!("GAT geometry logrows {} overflows usize", run_args.logrows))?;
-        let col_size = domain.checked_sub(6)
-            .ok_or_else(|| "GAT geometry domain has fewer than six reserved rows".to_string())?;
+        let reserved_rows = GAT_RANGE_BLINDING_FACTOR_RESERVE
+            .checked_add(1)
+            .ok_or_else(|| "GAT geometry reserved row count overflow".to_string())?;
+        let col_size = domain.checked_sub(reserved_rows)
+            .ok_or_else(|| "GAT geometry domain is smaller than the compact-range row reserve".to_string())?;
         if run_args.num_inner_cols == 0 || col_size == 0 {
             return Err("GAT geometry requires positive inner-column and native column sizes".into());
         }
@@ -205,6 +231,15 @@ impl GeometryRegion {
         self.record_constants(rhs);
         self.advance(lhs_len)?;
         ShapeTensor::unknown(&rhs.dims, rhs.scale)
+    }
+
+    fn constrain_assigned_equal(&self, lhs: &ShapeTensor, rhs: &ShapeTensor) -> Result<(), String> {
+        let lhs_len = lhs.len()?;
+        let rhs_len = rhs.len()?;
+        if lhs_len != rhs_len {
+            return Err(format!("GAT assigned equality length mismatch: {} vs {}", lhs_len, rhs_len));
+        }
+        Ok(())
     }
 
     fn range_check(&mut self, value: &ShapeTensor, range: Range) -> Result<(), String> {
@@ -416,30 +451,27 @@ impl<'a> GatGeometry<'a> {
         if span <= 1023 {
             return self.region.range_check(value, range);
         }
-        let significant_bits = 128 - (span as u128).leading_zeros() as usize;
-        let limbs = significant_bits.checked_add(7).ok_or_else(|| "GAT range limb count overflow".to_string())? / 8;
-        let no_wrap_bits = limbs.checked_mul(8).and_then(|bits| bits.checked_add(1))
-            .ok_or_else(|| "GAT range limb width overflow".to_string())?;
-        if limbs == 0 || limbs > 15 || no_wrap_bits > 253 {
-            return Err("GAT bounded range cannot be represented by the canonical limb relation".into());
-        }
+        let limbs = limb_count(range)?;
         let len = value.len()?;
-        let lower = self.constant_repeated(&value.dims, value.scale, range.0)?;
-        let upper = self.constant_repeated(&value.dims, value.scale, range.1)?;
-        let lower_diff = self.region.pairwise(value, &lower)?;
-        let upper_diff = self.region.pairwise(&upper, value)?;
-        let (lower_parts, lower_value) = self.decompose(&lower_diff, 256, limbs, true)?;
-        let (upper_parts, upper_value) = self.decompose(&upper_diff, 256, limbs, true)?;
-        let lower_sign = self.unknown(&value.dims, value.scale)?;
-        let upper_sign = self.unknown(&value.dims, value.scale)?;
-        let _ = (lower_parts, upper_parts);
-        self.region.range_check(&lower_sign, (0, 1))?;
-        self.region.range_check(&upper_sign, (0, 1))?;
-        let difference_sum = self.region.pairwise(&lower_value, &upper_value)?;
-        let span_constant = self.constant_repeated(&value.dims, value.scale, span)?;
-        self.region.equality(&difference_sum, &span_constant)?;
-        if lower_value.len()? != len {
-            return Err("GAT bounded range decomposition changed its tensor shape".into());
+        self.region.ranges.insert(range);
+        self.region.ranges.insert(BYTE_RANGE);
+        self.region.record_constants(value);
+        let mut schedule = RangeSchedule::new(
+            self.region.linear,
+            len,
+            self.region.col_size,
+            self.region.num_inner_cols,
+            limbs,
+        )?;
+        while let Some(batch) = schedule.next_batch()? {
+            if batch.start_cursor < self.region.linear {
+                return Err("GAT compact range scheduler moved the cursor backwards".into());
+            }
+            self.region.advance(batch.start_cursor - self.region.linear)?;
+            self.region.advance(batch.cells)?;
+        }
+        if self.region.linear != schedule.cursor() {
+            return Err("GAT compact range scheduler cursor diverged from geometry".into());
         }
         Ok(())
     }
@@ -524,30 +556,68 @@ impl<'a> GatGeometry<'a> {
             return Err(format!("GAT divisor shape {:?} does not broadcast to {:?}", divisor.dims, dividend.dims));
         }
 
-        let q = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
-        let q_floor = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
-        let rem = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
-        let abs = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
-        let sigma = self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?;
-        let zero = self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?;
-        let rounded_up = self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?;
+        let max_divisor = bounds.map_or(self.spec.ledger.max_divisor, |family| family.max_divisor);
+        let max_aux_abs = bounds.map_or(self.spec.ledger.max_aux_abs, |family| family.max_aux_abs);
+        let max_dividend_abs = bounds.map_or(self.spec.ledger.max_dividend_abs, |family| family.max_dividend_abs);
+        let constant_nearest = if matches!(rounding, RoundingMode::NearestTiesAway)
+            && divisor.dims.as_slice() == [1]
+            && divisor.constants.len() == 1
+        {
+            let value = *divisor.constants.iter().next().ok_or("constant divisor is empty")?;
+            Some((
+                value,
+                constant_nearest_remainder_range(
+                    self.spec,
+                    value,
+                    max_divisor,
+                    max_dividend_abs,
+                )?,
+            ))
+        } else {
+            None
+        };
+
+        let (q_floor, rem, q_abs_witness, sigma, zero, rounded_up) = if constant_nearest.is_some() {
+            (
+                None,
+                None,
+                Some(self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?),
+                self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?,
+                self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?,
+                None,
+            )
+        } else {
+            (
+                Some(self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?),
+                Some(self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?),
+                None,
+                self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?,
+                self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?,
+                Some(self.region.direct_assignment(&self.unknown(&dividend.dims, 0)?)?),
+            )
+        };
         let sigma = self.region.boolean_identity(&sigma)?;
         let zero = self.region.boolean_identity(&zero)?;
-        let rounded_up = self.region.boolean_identity(&rounded_up)?;
+        let rounded_up = rounded_up
+            .as_ref()
+            .map(|value| self.region.boolean_identity(value))
+            .transpose()?;
 
         let two = self.constant_repeated(&dividend.dims, 0, 2)?;
         let two_sigma = self.region.pairwise(&sigma, &two)?;
         let one = self.constant_repeated(&dividend.dims, 0, 1)?;
         let sign_factor = self.region.pairwise(&one, &two_sigma)?;
-        let signed_abs = self.region.pairwise(&sign_factor, &abs)?;
-        self.region.equality(dividend, &signed_abs)?;
-        let q_abs = self.region.pairwise(&q_floor, &rounded_up)?;
-        let signed_q = self.region.pairwise(&sign_factor, &q_abs)?;
-        self.region.equality(&q, &signed_q)?;
+        let abs = self.region.pairwise(&sign_factor, dividend)?;
+        let q_abs = if let Some(q_abs) = q_abs_witness {
+            q_abs
+        } else {
+            self.region.pairwise(
+                q_floor.as_ref().ok_or("missing q_floor layout")?,
+                rounded_up.as_ref().ok_or("missing round-up layout")?,
+            )?
+        };
+        let q = self.region.pairwise(&sign_factor, &q_abs)?;
 
-        let max_divisor = bounds.map_or(self.spec.ledger.max_divisor, |family| family.max_divisor);
-        let max_aux_abs = bounds.map_or(self.spec.ledger.max_aux_abs, |family| family.max_aux_abs);
-        let max_dividend_abs = bounds.map_or(self.spec.ledger.max_dividend_abs, |family| family.max_dividend_abs);
         self.bounded_range(&q_abs, (0, max_dividend_abs))?;
         self.bounded_range(&q, (-max_dividend_abs, max_dividend_abs))?;
         self.bounded_range(&sign_factor, (-1, 1))?;
@@ -563,14 +633,23 @@ impl<'a> GatGeometry<'a> {
         let abs_inv = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
         let abs_product = self.region.pairwise(&abs, &abs_inv)?;
         let one_minus_zero = self.region.pairwise(&one, &zero)?;
-        self.region.equality(&abs_product, &one_minus_zero)?;
-        let zero_from_abs = self.equals_zero(&abs)?;
-        self.region.equality(&zero, &zero_from_abs)?;
+        self.region.constrain_assigned_equal(&abs_product, &one_minus_zero)?;
         let zero_constant = self.constant_repeated(&dividend.dims, dividend.scale, 0)?;
         for checked in [&abs, &sigma, &abs_inv, &q_abs] {
             let product = self.region.pairwise(&zero, checked)?;
             self.region.equality(&product, &zero_constant)?;
         }
+
+        if let Some((_constant_divisor, (remainder_min, remainder_max))) = constant_nearest {
+            let divisor_q_abs = self.region.pairwise(divisor, &q_abs)?;
+            let signed_remainder = self.region.pairwise(&abs, &divisor_q_abs)?;
+            self.bounded_range(&signed_remainder, (remainder_min, remainder_max))?;
+            self.bounded_range(&abs, (0, max_dividend_abs))?;
+            return Ok(q);
+        }
+        let q_floor = q_floor.as_ref().ok_or("missing q_floor layout")?;
+        let rem = rem.as_ref().ok_or("missing remainder layout")?;
+        let rounded_up = rounded_up.as_ref().ok_or("missing round-up layout")?;
 
         let d_minus_one = self.region.pairwise(&repeated_divisor, &one)?;
         let delta = self.region.direct_assignment(&self.unknown(&dividend.dims, dividend.scale)?)?;
@@ -588,12 +667,12 @@ impl<'a> GatGeometry<'a> {
                 let dq_abs = self.region.pairwise(&repeated_divisor, &q_abs)?;
                 let two_dq_abs = self.region.pairwise(&two, &dq_abs)?;
                 let rhs = self.region.pairwise(&two_dq_abs, &rem)?;
-                self.region.equality(&lhs, &rhs)?;
+                self.region.constrain_assigned_equal(&lhs, &rhs)?;
 
                 let two_d = self.region.pairwise(&two, &repeated_divisor)?;
                 let two_d_minus_one = self.region.pairwise(&two_d, &one)?;
                 let r_delta = self.region.pairwise(&rem, &delta)?;
-                self.region.equality(&r_delta, &two_d_minus_one)?;
+                self.region.constrain_assigned_equal(&r_delta, &two_d_minus_one)?;
 
                 let dq_floor = self.region.pairwise(&repeated_divisor, &q_floor)?;
                 let floor_rem = self.region.pairwise(&abs, &dq_floor)?;
@@ -626,11 +705,7 @@ impl<'a> GatGeometry<'a> {
             return Err(format!("GAT prefix shape {:?} is not {:?}", values.dims, expected));
         }
         validate_groups(groups, edge_count)?;
-        let claimed = self.region.direct_assignment(&self.unknown(&values.dims, values.scale)?)?;
-        let previous = ShapeTensor::constant(&values.dims, values.scale, [0])?;
-        let recurrence = self.region.pairwise(&previous, values)?;
-        self.region.equality(&recurrence, &claimed)?;
-        Ok(claimed)
+        self.region.direct_assignment(&self.unknown(&values.dims, values.scale)?)
     }
 
     fn segmented_prefix_chunk(
@@ -648,16 +723,7 @@ impl<'a> GatGeometry<'a> {
             return Err(format!("invalid GAT prefix chunk {:?} at {} for {} edges", values.dims, chunk_start, edge_count));
         }
         validate_groups(groups, edge_count)?;
-        let claimed = self.region.direct_assignment(&self.unknown(&values.dims, values.scale)?)?;
-        let has_group_start = groups.iter().any(|(_, start, _)| *start >= chunk_start && *start < chunk_end);
-        let previous = if has_group_start {
-            ShapeTensor::constant(&values.dims, values.scale, [0])?
-        } else {
-            self.unknown(&values.dims, values.scale)?
-        };
-        let recurrence = self.region.pairwise(&previous, values)?;
-        self.region.equality(&recurrence, &claimed)?;
-        Ok(claimed)
+        self.region.direct_assignment(&self.unknown(&values.dims, values.scale)?)
     }
 
     fn destination_endpoints(&self, values: &ShapeTensor, groups: &[(usize, usize, usize)], channels: usize) -> Result<ShapeTensor, String> {
@@ -1063,6 +1129,7 @@ pub fn gat_settings_for_run_args(spec: &CanonicalGat, run_args: &RunArgs) -> Res
             .map_err(|error| format!("GAT geometry timestamp: {:?}", error))?.as_millis()),
         input_types: model.get_input_types().ok(),
         output_types: Some(model.get_output_types()),
+        gat_range_gadget_version: Some(GAT_RANGE_GADGET_VERSION),
     };
     Ok(settings)
 }

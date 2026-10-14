@@ -7,7 +7,7 @@ use crate::poly::query::ProverQuery;
 use crate::poly::{Coeff, Polynomial};
 use crate::transcript::{EncodedChallenge, TranscriptWrite};
 
-use ff::Field;
+use ff::{Field, WithSmallOrderMulGroup};
 use group::Curve;
 use rand_core::RngCore;
 use std::io;
@@ -19,7 +19,10 @@ pub struct ProverIPA<'params, C: CurveAffine> {
     pub(crate) params: &'params ParamsIPA<C>,
 }
 
-impl<'params, C: CurveAffine> Prover<'params, IPACommitmentScheme<C>> for ProverIPA<'params, C> {
+impl<'params, C: CurveAffine> Prover<'params, IPACommitmentScheme<C>> for ProverIPA<'params, C>
+where
+    C::Scalar: WithSmallOrderMulGroup<3>,
+{
     const QUERY_INSTANCE: bool = true;
 
     fn new(params: &'params ParamsIPA<C>) -> Self {
@@ -49,21 +52,22 @@ impl<'params, C: CurveAffine> Prover<'params, IPACommitmentScheme<C>> for Prover
 
         {
             let mut accumulate = |set_idx: usize,
-                                  new_poly: &Polynomial<C::Scalar, Coeff>,
+                                  new_poly: Polynomial<C::Scalar, Coeff>,
                                   blind: Blind<C::Scalar>| {
-                if let Some(poly) = &q_polys[set_idx] {
-                    q_polys[set_idx] = Some(poly.clone() * *x_1 + new_poly);
+                if let Some(poly) = q_polys[set_idx].take() {
+                    q_polys[set_idx] = Some(poly * *x_1 + &new_poly);
                 } else {
-                    q_polys[set_idx] = Some(new_poly.clone());
+                    q_polys[set_idx] = Some(new_poly);
                 }
                 q_blinds[set_idx] *= *x_1;
                 q_blinds[set_idx] += blind;
             };
 
             for commitment_data in poly_map.into_iter() {
+                let polynomial = commitment_data.commitment.materialize()?;
                 accumulate(
                     commitment_data.set_index,        // set_idx,
-                    commitment_data.commitment.poly,  // poly,
+                    polynomial,                       // poly,
                     commitment_data.commitment.blind, // blind,
                 );
             }

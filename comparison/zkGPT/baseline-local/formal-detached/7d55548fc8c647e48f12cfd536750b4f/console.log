@@ -338,3 +338,6 @@ ZKGPT_FORMAL_CELL_FAILED dataset=ppi error=ChainError: zkGPT local cell phase ex
 [local-cell-ogbn_arxiv] [ogbn_arxiv/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=1.81132e+06
 [local-cell-ogbn_arxiv] [ogbn_arxiv/prover] gat_adapter_prover_stage: begin
 [local-cell-ogbn_arxiv] [ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-build
+[local-cell-ogbn_arxiv] [ogbn_arxiv/prover] gat_adapter_prover_stage: witness
+[local-cell-ogbn_arxiv] [ogbn_arxiv/prover] gat_adapter_prover_stage: generators
+[local-cell-ogbn_arxiv] [ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-prove

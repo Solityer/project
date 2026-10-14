@@ -1,5 +1,6 @@
 use super::{Expression, SelectorBitmap};
 use ff::Field;
+use std::collections::HashMap;
 
 /// This describes a selector and where it is activated.
 #[derive(Debug, Clone)]
@@ -40,6 +41,10 @@ pub(crate) struct PackedSelectorAssignment<F> {
     pub combination_index: usize,
     pub root_value: u64,
     pub expression: Expression<F>,
+    /// Whether this selector is the one activation source for its alias group.
+    /// Other members map to the same expression and root, but do not need to
+    /// rewrite the same fixed-polynomial rows again.
+    pub is_activation_representative: bool,
 }
 
 /// This function takes a vector that defines each selector as well as a closure
@@ -249,55 +254,115 @@ where
     (combination_assignments, selector_assignments)
 }
 
-/// Selector compression over packed activation columns. The ordering,
-/// greedy grouping, degree checks, and selector replacement expressions are
-/// the same as `process`; only the row-set representation changes.
+#[derive(Debug)]
+struct SelectorAliasGroup {
+    selectors: Vec<usize>,
+    max_degree: usize,
+    complex: bool,
+}
+
+#[derive(Debug)]
+struct SelectorCompressionPlan {
+    groups: Vec<SelectorAliasGroup>,
+    /// Each entry is one fixed column's selectors, represented by alias-group
+    /// indices. Complex groups are singletons; simple groups use the standard
+    /// non-overlapping greedy compression over unique activation patterns.
+    combinations: Vec<Vec<usize>>,
+}
+
+/// Selector compression over packed activation columns. Exact activation
+/// aliases are collapsed within each selector class before the unchanged
+/// simple-selector greedy grouping. The original selectors remain in each
+/// alias group so every circuit expression receives a replacement.
 fn selector_combinations(
     degrees: &[usize],
     max_degree: usize,
     mut conflicts: impl FnMut(usize, usize) -> bool,
-) -> Vec<Vec<usize>> {
-    let mut combinations = Vec::new();
-    let simple: Vec<usize> = degrees
-        .iter()
-        .enumerate()
-        .filter_map(|(selector, degree)| (*degree != 0).then_some(selector))
-        .collect();
+    mut activation_fingerprint: impl FnMut(usize) -> u64,
+    mut same_activations: impl FnMut(usize, usize) -> bool,
+) -> SelectorCompressionPlan {
+    let mut groups = Vec::<SelectorAliasGroup>::new();
+    let mut complex_group_ids = Vec::new();
+    let mut simple_group_ids = Vec::new();
+    let mut complex_groups_by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
+    let mut simple_groups_by_hash: HashMap<u64, Vec<usize>> = HashMap::new();
 
-    // Complex and unused selectors are kept as independent columns, in their
-    // original order, just as in Halo2's standard compression routine.
+    // Identical complex/unused selectors share one fixed polynomial. Simple
+    // selectors use a separate alias class so their exact Boolean polynomial
+    // is represented once during conflict and degree checks. Fingerprints
+    // only select candidate buckets; exact row-set equality decides aliases.
     for (selector, degree) in degrees.iter().enumerate() {
-        if *degree == 0 {
-            combinations.push(vec![selector]);
+        let is_complex = *degree == 0;
+        let fingerprint = activation_fingerprint(selector);
+        let groups_by_hash = if is_complex {
+            &mut complex_groups_by_hash
+        } else {
+            assert!(*degree <= max_degree);
+            &mut simple_groups_by_hash
+        };
+        let matching_group = groups_by_hash.get(&fingerprint).and_then(|candidates| {
+            candidates.iter().copied().find(|group_index| {
+                let representative = groups[*group_index].selectors[0];
+                same_activations(selector, representative)
+            })
+        });
+        if let Some(group_index) = matching_group {
+            groups[group_index].selectors.push(selector);
+            groups[group_index].max_degree = groups[group_index].max_degree.max(*degree);
+        } else {
+            let group_index = groups.len();
+            groups.push(SelectorAliasGroup {
+                selectors: vec![selector],
+                max_degree: *degree,
+                complex: is_complex,
+            });
+            groups_by_hash
+                .entry(fingerprint)
+                .or_default()
+                .push(group_index);
+            if is_complex {
+                complex_group_ids.push(group_index);
+            } else {
+                simple_group_ids.push(group_index);
+            }
         }
     }
-    if simple.is_empty() {
-        return combinations;
+
+    let mut combinations = complex_group_ids
+        .into_iter()
+        .map(|group_index| vec![group_index])
+        .collect::<Vec<_>>();
+    if simple_group_ids.is_empty() {
+        return SelectorCompressionPlan {
+            groups,
+            combinations,
+        };
     }
 
-    let mut exclusion_matrix = (0..simple.len())
+    let mut exclusion_matrix = (0..simple_group_ids.len())
         .map(|i| vec![false; i])
         .collect::<Vec<_>>();
-    for (i, selector) in simple.iter().copied().enumerate() {
-        for (j, other_selector) in simple.iter().copied().enumerate().take(i) {
+    for (i, group_index) in simple_group_ids.iter().copied().enumerate() {
+        let selector = groups[group_index].selectors[0];
+        for (j, other_group_index) in simple_group_ids.iter().copied().enumerate().take(i) {
+            let other_selector = groups[other_group_index].selectors[0];
             exclusion_matrix[i][j] = conflicts(selector, other_selector);
         }
     }
 
-    let mut added = vec![false; simple.len()];
-    for i in 0..simple.len() {
+    let mut added = vec![false; simple_group_ids.len()];
+    for i in 0..simple_group_ids.len() {
         if added[i] {
             continue;
         }
         added[i] = true;
-        let first_selector = simple[i];
-        assert!(degrees[first_selector] <= max_degree);
-        let mut degree = degrees[first_selector] - 1;
-        let mut combination = vec![first_selector];
+        let first_group = simple_group_ids[i];
+        let mut degree = groups[first_group].max_degree - 1;
+        let mut combination = vec![first_group];
         let mut combination_indices = vec![i];
 
-        'try_selectors: for j in (i + 1)..simple.len() {
-            let selector = simple[j];
+        'try_selectors: for j in (i + 1)..simple_group_ids.len() {
+            let group_index = simple_group_ids[j];
             if degree + combination.len() == max_degree {
                 break 'try_selectors;
             }
@@ -309,20 +374,22 @@ fn selector_combinations(
                     continue 'try_selectors;
                 }
             }
-            assert!(degrees[selector] <= max_degree);
-            let new_degree = std::cmp::max(degree, degrees[selector] - 1);
+            let new_degree = std::cmp::max(degree, groups[group_index].max_degree - 1);
             if new_degree + combination.len() + 1 > max_degree {
                 continue 'try_selectors;
             }
             degree = new_degree;
-            combination.push(selector);
+            combination.push(group_index);
             combination_indices.push(j);
             added[j] = true;
         }
         combinations.push(combination);
     }
 
-    combinations
+    SelectorCompressionPlan {
+        groups,
+        combinations,
+    }
 }
 
 /// Count the exact columns that the packed compression routine will produce,
@@ -333,9 +400,14 @@ pub(crate) fn count_selector_combinations(
     max_degree: usize,
 ) -> usize {
     assert_eq!(selectors.len(), degrees.len());
-    selector_combinations(degrees, max_degree, |left, right| {
-        selectors[left].has_intersection(&selectors[right])
-    })
+    selector_combinations(
+        degrees,
+        max_degree,
+        |left, right| selectors[left].has_intersection(&selectors[right]),
+        |selector| selectors[selector].activation_fingerprint(),
+        |left, right| selectors[left].same_activations(&selectors[right]),
+    )
+    .combinations
     .len()
 }
 
@@ -355,18 +427,38 @@ where
     let n = selectors[0].len();
     assert!(selectors.iter().all(|selector| selector.len() == n));
 
-    let combinations = selector_combinations(degrees, max_degree, |left, right| {
-        selectors[left].has_intersection(&selectors[right])
-    });
-    let combination_count = combinations.len();
+    let plan = selector_combinations(
+        degrees,
+        max_degree,
+        |left, right| selectors[left].has_intersection(&selectors[right]),
+        |selector| selectors[selector].activation_fingerprint(),
+        |left, right| selectors[left].same_activations(&selectors[right]),
+    );
+    let combination_count = plan.combinations.len();
     let mut selector_assignments = Vec::with_capacity(selectors.len());
-    for (combination_index, combination) in combinations.into_iter().enumerate() {
+    for (combination_index, combination) in plan.combinations.iter().enumerate() {
         let query = allocate_fixed_column();
+        if plan.groups[combination[0]].complex {
+            let group = &plan.groups[combination[0]];
+            debug_assert_eq!(combination.len(), 1);
+            for (member_index, selector) in group.selectors.iter().copied().enumerate() {
+                selector_assignments.push(PackedSelectorAssignment {
+                    selector,
+                    combination_index,
+                    root_value: 1,
+                    expression: query.clone(),
+                    is_activation_representative: member_index == 0,
+                });
+            }
+            continue;
+        }
         let combination_len = combination.len();
         let mut assigned_root = F::ONE;
         let mut root_value = 1u64;
-        for selector in combination {
+        for group_index in combination {
             assert!(root_value <= max_degree as u64);
+            let group = &plan.groups[*group_index];
+            debug_assert!(!group.complex);
             let mut expression = query.clone();
             let mut root = F::ONE;
             for _ in 0..combination_len {
@@ -375,12 +467,15 @@ where
                 }
                 root += F::ONE;
             }
-            selector_assignments.push(PackedSelectorAssignment {
-                selector,
-                combination_index,
-                root_value,
-                expression,
-            });
+            for (member_index, selector) in group.selectors.iter().copied().enumerate() {
+                selector_assignments.push(PackedSelectorAssignment {
+                    selector,
+                    combination_index,
+                    root_value,
+                    expression: expression.clone(),
+                    is_activation_representative: member_index == 0,
+                });
+            }
             assigned_root += F::ONE;
             root_value = root_value
                 .checked_add(1)
@@ -399,30 +494,121 @@ pub(crate) fn process_activation_sets<F: Field, E>(
     selectors: &[super::SelectorActivationSet],
     degrees: &[usize],
     max_degree: usize,
+    allocate_fixed_column: E,
+) -> (usize, Vec<PackedSelectorAssignment<F>>)
+where
+    E: FnMut() -> Expression<F>,
+{
+    process_activation_sets_with_lookup(
+        ActivationSelectorLookup::Direct(selectors),
+        degrees,
+        max_degree,
+        allocate_fixed_column,
+    )
+}
+
+/// Compress selector activations from a dictionary plus original-selector
+/// references. This is the VK-read path: it never expands the cache back into
+/// one activation object per original selector.
+pub(crate) fn process_activation_patterns<F: Field, E>(
+    patterns: &[super::SelectorActivationSet],
+    selector_pattern_indices: &[u32],
+    degrees: &[usize],
+    max_degree: usize,
+    allocate_fixed_column: E,
+) -> (usize, Vec<PackedSelectorAssignment<F>>)
+where
+    E: FnMut() -> Expression<F>,
+{
+    process_activation_sets_with_lookup(
+        ActivationSelectorLookup::Mapped {
+            patterns,
+            selector_pattern_indices,
+        },
+        degrees,
+        max_degree,
+        allocate_fixed_column,
+    )
+}
+
+enum ActivationSelectorLookup<'a> {
+    Direct(&'a [super::SelectorActivationSet]),
+    Mapped {
+        patterns: &'a [super::SelectorActivationSet],
+        selector_pattern_indices: &'a [u32],
+    },
+}
+
+impl ActivationSelectorLookup<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Direct(selectors) => selectors.len(),
+            Self::Mapped {
+                selector_pattern_indices,
+                ..
+            } => selector_pattern_indices.len(),
+        }
+    }
+
+    fn get(&self, selector: usize) -> &super::SelectorActivationSet {
+        match self {
+            Self::Direct(selectors) => &selectors[selector],
+            Self::Mapped {
+                patterns,
+                selector_pattern_indices,
+            } => &patterns[selector_pattern_indices[selector] as usize],
+        }
+    }
+}
+
+fn process_activation_sets_with_lookup<F: Field, E>(
+    selectors: ActivationSelectorLookup<'_>,
+    degrees: &[usize],
+    max_degree: usize,
     mut allocate_fixed_column: E,
 ) -> (usize, Vec<PackedSelectorAssignment<F>>)
 where
     E: FnMut() -> Expression<F>,
 {
     assert_eq!(selectors.len(), degrees.len());
-    if selectors.is_empty() {
+    if selectors.len() == 0 {
         return (0, Vec::new());
     }
-    let n = selectors[0].len();
-    assert!(selectors.iter().all(|selector| selector.len() == n));
+    let n = selectors.get(0).len();
+    assert!((0..selectors.len()).all(|index| selectors.get(index).len() == n));
 
-    let combinations = selector_combinations(degrees, max_degree, |left, right| {
-        selectors[left].has_intersection(&selectors[right])
-    });
-    let combination_count = combinations.len();
+    let plan = selector_combinations(
+        degrees,
+        max_degree,
+        |left, right| selectors.get(left).has_intersection(selectors.get(right)),
+        |selector| selectors.get(selector).activation_fingerprint(),
+        |left, right| selectors.get(left).same_activations(selectors.get(right)),
+    );
+    let combination_count = plan.combinations.len();
     let mut selector_assignments = Vec::with_capacity(selectors.len());
-    for (combination_index, combination) in combinations.into_iter().enumerate() {
+    for (combination_index, combination) in plan.combinations.iter().enumerate() {
         let query = allocate_fixed_column();
+        if plan.groups[combination[0]].complex {
+            let group = &plan.groups[combination[0]];
+            debug_assert_eq!(combination.len(), 1);
+            for (member_index, selector) in group.selectors.iter().copied().enumerate() {
+                selector_assignments.push(PackedSelectorAssignment {
+                    selector,
+                    combination_index,
+                    root_value: 1,
+                    expression: query.clone(),
+                    is_activation_representative: member_index == 0,
+                });
+            }
+            continue;
+        }
         let combination_len = combination.len();
         let mut assigned_root = F::ONE;
         let mut root_value = 1u64;
-        for selector in combination {
+        for group_index in combination {
             assert!(root_value <= max_degree as u64);
+            let group = &plan.groups[*group_index];
+            debug_assert!(!group.complex);
             let mut expression = query.clone();
             let mut root = F::ONE;
             for _ in 0..combination_len {
@@ -431,12 +617,15 @@ where
                 }
                 root += F::ONE;
             }
-            selector_assignments.push(PackedSelectorAssignment {
-                selector,
-                combination_index,
-                root_value,
-                expression,
-            });
+            for (member_index, selector) in group.selectors.iter().copied().enumerate() {
+                selector_assignments.push(PackedSelectorAssignment {
+                    selector,
+                    combination_index,
+                    root_value,
+                    expression: expression.clone(),
+                    is_activation_representative: member_index == 0,
+                });
+            }
             assigned_root += F::ONE;
             root_value = root_value
                 .checked_add(1)
@@ -740,6 +929,122 @@ mod tests {
                 assert_eq!(roots[encoded.value(row) as usize], expected[row]);
             }
         }
+    }
+
+    #[test]
+    fn native_complex_selector_aliasing_requires_equal_activation_sets() {
+        let mut run_backed = super::super::SelectorActivationSet::zeroed(128);
+        for row in 10..80 {
+            run_backed.insert(row).unwrap();
+        }
+        let mut bitmap_backed = super::super::SelectorActivationSet::zeroed(128);
+        for row in (10..80).step_by(2) {
+            bitmap_backed.insert(row).unwrap();
+        }
+        for row in (11..80).step_by(2) {
+            bitmap_backed.insert(row).unwrap();
+        }
+        assert!(matches!(
+            &run_backed,
+            super::super::SelectorActivationSet::Runs { .. }
+        ));
+        assert!(matches!(
+            &bitmap_backed,
+            super::super::SelectorActivationSet::Bitmap(_)
+        ));
+        assert!(run_backed.same_activations(&bitmap_backed));
+        assert_eq!(
+            run_backed.activation_fingerprint(),
+            bitmap_backed.activation_fingerprint()
+        );
+
+        let mut different = super::super::SelectorActivationSet::zeroed(128);
+        for row in (11..81).step_by(2) {
+            different.insert(row).unwrap();
+        }
+        for row in (12..81).step_by(2) {
+            different.insert(row).unwrap();
+        }
+        assert!(matches!(
+            &different,
+            super::super::SelectorActivationSet::Bitmap(_)
+        ));
+        assert!(!run_backed.same_activations(&different));
+        let empty_a = super::super::SelectorActivationSet::zeroed(128);
+        let empty_b = super::super::SelectorActivationSet::zeroed(128);
+        let simple_run_backed = run_backed.clone();
+        let simple_bitmap_backed = bitmap_backed.clone();
+        let mut simple_disjoint = super::super::SelectorActivationSet::zeroed(128);
+        for row in 80..96 {
+            simple_disjoint.insert(row).unwrap();
+        }
+        let selectors = vec![
+            run_backed,
+            bitmap_backed,
+            different,
+            empty_a,
+            empty_b,
+            simple_run_backed,
+            simple_bitmap_backed,
+            simple_disjoint,
+        ];
+        // The identical simple selectors have different degrees. Their
+        // alias group must use the higher degree before the greedy packing
+        // considers the disjoint final selector.
+        let degrees = vec![0, 0, 0, 0, 0, 1, 2, 1];
+        let mut query = 0;
+        let (column_count, assignments) = process_activation_sets::<Fp, _>(
+            &selectors,
+            &degrees,
+            2,
+            || {
+                let column = query;
+                query += 1;
+                Expression::Fixed(FixedQuery {
+                    index: Some(column),
+                    column_index: column,
+                    rotation: Rotation::cur(),
+                })
+            },
+        );
+        assert_eq!(column_count, 5);
+        assert_eq!(assignments.len(), selectors.len());
+        let assignment_for = |selector| {
+            assignments
+                .iter()
+                .find(|assignment| assignment.selector == selector)
+                .unwrap()
+        };
+        assert_eq!(
+            assignment_for(0).combination_index,
+            assignment_for(1).combination_index
+        );
+        assert_eq!(assignment_for(0).root_value, 1);
+        assert_eq!(assignment_for(1).root_value, 1);
+        assert!(assignment_for(0).is_activation_representative);
+        assert!(!assignment_for(1).is_activation_representative);
+        assert_ne!(
+            assignment_for(0).combination_index,
+            assignment_for(2).combination_index
+        );
+        assert_eq!(
+            assignment_for(3).combination_index,
+            assignment_for(4).combination_index
+        );
+        assert!(assignment_for(3).is_activation_representative);
+        assert!(!assignment_for(4).is_activation_representative);
+        assert_eq!(
+            assignment_for(5).combination_index,
+            assignment_for(6).combination_index
+        );
+        assert_eq!(assignment_for(5).root_value, 1);
+        assert_eq!(assignment_for(6).root_value, 1);
+        assert_ne!(
+            assignment_for(5).combination_index,
+            assignment_for(7).combination_index
+        );
+        assert!(!assignment_for(5).is_activation_representative);
+        assert!(assignment_for(6).is_activation_representative);
     }
 
     #[test]
