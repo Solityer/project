@@ -1,5 +1,5 @@
 {
-  "active_stage": "prepare",
+  "active_stage": "owner-failed",
   "completed_stages": [],
   "failure": "zkGPT local prepare phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/0770c18cde9a9bcba425711882465366/prepare.stderr.log",
   "local_owner": {
@@ -15,5 +15,5 @@
   "session_id": "0770c18cde9a9bcba425711882465366",
   "started_unix_ns": 1791771576200121024,
   "status": "FAILED",
-  "updated_unix_ns": 1791772110890351203
+  "updated_unix_ns": 1791909097525429389
 }

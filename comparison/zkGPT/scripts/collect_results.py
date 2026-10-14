@@ -35,9 +35,17 @@ from common import (
 
 def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], resource_digest: str,
                         session_id: str, session_manifest_sha256: str,
-                        native_source_sha256: str) -> None:
-    if preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
-        raise ChainError("formal preflight is not an eligible schema-v2 READY record")
+                        native_source_sha256: str, *, allow_partial: bool = False) -> None:
+    status = preflight.get("status")
+    if preflight.get("schema") != PREFLIGHT_SCHEMA or status not in (("READY", "PARTIAL") if allow_partial else ("READY",)):
+        raise ChainError("formal preflight has an unsupported schema/status")
+    if (preflight.get("shared_preconditions_ready") is not True or
+            preflight.get("source_ready") is not True or preflight.get("resources_ready") is not True or
+            preflight.get("blockers") != [] or
+            preflight.get("formal_experiment_eligible") is not (status == "READY")):
+        raise ChainError("formal preflight shared source/resource/backend/session preconditions are not ready")
+    if preflight.get("static_checks_passed") is not (status == "READY"):
+        raise ChainError("formal preflight static-check status is inconsistent")
     if preflight.get("resource_manifest_sha256") != resource_digest:
         raise ChainError("formal preflight resource manifest is stale")
     if (preflight.get("session_id") != session_id or
@@ -48,9 +56,23 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
     capacities = preflight.get("capacity")
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
+    ready_count = 0
     for dataset in DATASETS:
-        if not isinstance(capacities[dataset], dict) or (capacities[dataset].get("status") != "READY" or capacities[dataset].get("proof_path") != CAPACITY_PROOF_PATH or capacities[dataset].get("full_relation_bound") is not True):
-            raise ChainError(f"formal preflight capacity is not READY for {dataset}")
+        item = capacities[dataset]
+        if not isinstance(item, dict) or item.get("dataset") != dataset or item.get("backend") != "cpu":
+            raise ChainError(f"formal preflight capacity identity is invalid for {dataset}")
+        if item.get("status") == "READY":
+            if item.get("proof_path") != CAPACITY_PROOF_PATH or item.get("full_relation_bound") is not True or item.get("reason") != "":
+                raise ChainError(f"formal preflight capacity is not a complete full-relation admission for {dataset}")
+            ready_count += 1
+        elif item.get("status") == "BLOCKED":
+            if not allow_partial or not isinstance(item.get("reason"), str) or not item["reason"]:
+                raise ChainError(f"formal preflight capacity is blocked for {dataset}")
+        else:
+            raise ChainError(f"formal preflight capacity status is invalid for {dataset}")
+    all_ready = ready_count == len(DATASETS)
+    if (status == "READY") != all_ready or (status == "PARTIAL") == all_ready:
+        raise ChainError("formal preflight status does not match its per-dataset capacity matrix")
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:
         raise ChainError(f"formal preflight backend is not READY: {backend}")

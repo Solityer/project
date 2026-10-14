@@ -1,0 +1,208 @@
+{
+  "checkpoint": {
+    "L": 2,
+    "K_out": 2,
+    "C": 2,
+    "hidden_layers": [
+      {
+        "layer_index": 0,
+        "input_dim": 1,
+        "head_count": 1,
+        "head_dim": 1
+      }
+    ],
+    "hidden_head_specs": [
+      {
+        "layer_index": 0,
+        "local_head_index": 0,
+        "seq_kernel": "hidden/layer0/head0/seq/kernel",
+        "attn_src_kernel": "hidden/layer0/head0/attn_src/kernel",
+        "attn_dst_kernel": "hidden/layer0/head0/attn_dst/kernel"
+      }
+    ],
+    "output_head_specs": [
+      {
+        "head_index": 0,
+        "seq_kernel": "output/head0/seq/kernel",
+        "attn_src_kernel": "output/head0/attn_src/kernel",
+        "attn_dst_kernel": "output/head0/attn_dst/kernel",
+        "output_bias": "output/head0/output_bias"
+      },
+      {
+        "head_index": 1,
+        "seq_kernel": "output/head1/seq/kernel",
+        "attn_src_kernel": "output/head1/attn_src/kernel",
+        "attn_dst_kernel": "output/head1/attn_dst/kernel",
+        "output_bias": "output/head1/output_bias"
+      }
+    ],
+    "tensor_index": {
+      "hidden/layer0/head0/seq/kernel": {
+        "shape": [
+          1
+        ]
+      },
+      "hidden/layer0/head0/attn_src/kernel": {
+        "shape": [
+          1
+        ]
+      },
+      "hidden/layer0/head0/attn_dst/kernel": {
+        "shape": [
+          1
+        ]
+      },
+      "output/head0/seq/kernel": {
+        "shape": [
+          1,
+          2
+        ]
+      },
+      "output/head0/attn_src/kernel": {
+        "shape": [
+          2
+        ]
+      },
+      "output/head0/attn_dst/kernel": {
+        "shape": [
+          2
+        ]
+      },
+      "output/head0/output_bias": {
+        "shape": [
+          2
+        ]
+      },
+      "output/head1/seq/kernel": {
+        "shape": [
+          1,
+          2
+        ]
+      },
+      "output/head1/attn_src/kernel": {
+        "shape": [
+          2
+        ]
+      },
+      "output/head1/attn_dst/kernel": {
+        "shape": [
+          2
+        ]
+      },
+      "output/head1/output_bias": {
+        "shape": [
+          2
+        ]
+      }
+    }
+  },
+  "scales": {
+    "s_w_hidden_0": "32",
+    "s_a_src_hidden_0": "32",
+    "s_a_dst_hidden_0": "1",
+    "s_w_output": "1,32",
+    "s_a_src_output": "1,32",
+    "s_a_dst_output": "1,32",
+    "s_b_output": "16,32"
+  },
+  "tensors": {
+    "hidden/layer0/head0/seq/kernel": {
+      "shape": [
+        1
+      ],
+      "values": [
+        0.02
+      ]
+    },
+    "hidden/layer0/head0/attn_src/kernel": {
+      "shape": [
+        1
+      ],
+      "values": [
+        0.03125
+      ]
+    },
+    "hidden/layer0/head0/attn_dst/kernel": {
+      "shape": [
+        1
+      ],
+      "values": [
+        -0.5
+      ]
+    },
+    "output/head0/seq/kernel": {
+      "shape": [
+        1,
+        2
+      ],
+      "values": [
+        0.0,
+        0.0
+      ]
+    },
+    "output/head0/attn_src/kernel": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.0,
+        0.0
+      ]
+    },
+    "output/head0/attn_dst/kernel": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.0,
+        0.0
+      ]
+    },
+    "output/head0/output_bias": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.02,
+        0.0
+      ]
+    },
+    "output/head1/seq/kernel": {
+      "shape": [
+        1,
+        2
+      ],
+      "values": [
+        0.02,
+        0.0
+      ]
+    },
+    "output/head1/attn_src/kernel": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.02,
+        0.0
+      ]
+    },
+    "output/head1/attn_dst/kernel": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.02,
+        0.0
+      ]
+    },
+    "output/head1/output_bias": {
+      "shape": [
+        2
+      ],
+      "values": [
+        0.02,
+        0.0
+      ]
+    }
+  }
+}

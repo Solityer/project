@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_PATH="$(realpath -e -- "${BASH_SOURCE[0]}")"
 ROOT="$(realpath -e -- "$(dirname -- "$SCRIPT_PATH")/..")"
+cd -- "$ROOT"
 if (($# != 0)); then
     echo "usage: $SCRIPT_PATH" >&2
     exit 2

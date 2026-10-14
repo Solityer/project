@@ -223,6 +223,8 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     capability = formal_backend_capability(backend)
     if not capability["supported"] or backend not in FORMAL_BACKENDS:
         raise ChainError(capability["reason"])
+    validate_preflight_binding(root, preflight, resource_manifest_digest, backend, dataset,
+                               session_id, session, session_manifest_sha256)
     config_path, config = config_with_auth(root, dataset)
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
         raise ChainError(f"{dataset} config does not declare the strict privacy boundary")
@@ -346,10 +348,16 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
 
 
 def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resource_manifest_digest: str,
-                               backend: str, session_id: str, session: Mapping[str, Any],
+                               backend: str, dataset: str, session_id: str, session: Mapping[str, Any],
                                session_manifest_sha256: str) -> None:
-    if preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
+    status = preflight.get("status")
+    if preflight.get("schema") != PREFLIGHT_SCHEMA or status not in ("READY", "PARTIAL"):
         raise ChainError("formal preflight is not eligible; no proving was started")
+    if (preflight.get("shared_preconditions_ready") is not True or
+            preflight.get("source_ready") is not True or preflight.get("resources_ready") is not True or
+            preflight.get("blockers") != [] or
+            preflight.get("formal_experiment_eligible") is not (status == "READY")):
+        raise ChainError("formal preflight shared source/resource/backend/session preconditions are not ready")
     if preflight.get("resource_manifest_sha256") != resource_manifest_digest:
         raise ChainError("formal preflight resource manifest is stale")
     if (preflight.get("session_id") != session_id or
@@ -368,8 +376,12 @@ def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resourc
     if entry.get("prover_fingerprint", {}).get("sha256") != sha256_file(prover) or entry.get("verifier_fingerprint", {}).get("sha256") != sha256_file(verifier):
         raise ChainError("formal preflight binary fingerprint is stale")
     capacities = preflight.get("capacity", {})
-    if set(capacities) != set(DATASETS) or any(not isinstance(capacities[d], dict) or (capacities[d].get("status") != "READY" or capacities[d].get("proof_path") != CAPACITY_PROOF_PATH or capacities[d].get("full_relation_bound") is not True) for d in DATASETS):
+    if dataset not in DATASETS or not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
+    item = capacities.get(dataset)
+    if (not isinstance(item, dict) or item.get("status") != "READY" or
+            item.get("proof_path") != CAPACITY_PROOF_PATH or item.get("full_relation_bound") is not True):
+        raise ChainError(f"formal preflight capacity is not READY for {dataset}; no proving was started")
 
 
 def main(argv: Sequence[str]) -> int:

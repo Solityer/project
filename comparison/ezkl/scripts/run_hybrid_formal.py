@@ -11,8 +11,10 @@ No SRS path, digest, or other ceremony input is accepted from the operator.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import importlib
+import math
 import json
 import os
 import platform
@@ -95,7 +97,9 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
     result.add_argument("--preflight-only", action="store_true", help="authenticate all prerequisites without setup/build/prove")
+    result.add_argument("--capacity-preflight-only", action="store_true", help="reuse the current formal GPU build, authenticate all five native Admissions, and stop before Setup")
     result.add_argument("--resume-session", help="resume this exact interrupted/failed formal session")
+    result.add_argument("--_session-id", help=argparse.SUPPRESS)
     result.add_argument("--_from-ezkl-entry", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--_ld-preload-cleared", action="store_true", help=argparse.SUPPRESS)
     return result
@@ -216,6 +220,8 @@ def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | N
             abort(f"formal command log path is not a regular file: {log_path}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_stream = log_path.open("a", encoding="utf-8")
+        log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} {label} ---\n")
+        log_stream.flush()
         print(f"[ezkl-formal] command output log: {log_path}", flush=True)
     env = os.environ.copy()
     for key in ("ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256", "CUDA_ARCH"):
@@ -232,8 +238,13 @@ def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | N
     started = time.monotonic()
     try:
         process = spawn_guarded_process(command, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    except BaseException:
+    except BaseException as exc:
         if log_stream is not None:
+            log_stream.write(
+                f"\n--- {datetime.now(timezone.utc).isoformat()} command_exit_code=not_started "
+                f"outcome=spawn_failure exception={type(exc).__name__} ---\n"
+            )
+            log_stream.flush()
             log_stream.close()
         raise
     if process.stdout is None:
@@ -306,13 +317,21 @@ def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | N
         if monitor is not None:
             monitor.join(timeout=2)
         if log_stream is not None:
+            log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} command_exit_code={process.poll()} outcome=interrupted_or_runner_error ---\n")
+            log_stream.flush()
             log_stream.close()
         raise
     monitor_stop.set()
     if monitor is not None:
         monitor.join(timeout=2)
         _sample_process_resources(process.pid, memory_profile)
+    elapsed_ms = (time.monotonic() - started) * 1000.0
     if log_stream is not None:
+        log_stream.write(
+            f"\n--- {datetime.now(timezone.utc).isoformat()} command_exit_code={returncode} "
+            f"wall_ms={elapsed_ms:.6f} outcome={'success' if returncode == 0 else 'failed'} ---\n"
+        )
+        log_stream.flush()
         log_stream.close()
     if returncode != 0:
         if terminated_leftovers:
@@ -320,7 +339,7 @@ def run(command: list[str], label: str, *, gpu: bool = False, log_path: Path | N
         abort(f"{label} failed with exit code {returncode}")
     if terminated_leftovers:
         abort(f"{label} left descendants after its leader exited; the group was cleaned")
-    return (time.monotonic() - started) * 1000.0
+    return elapsed_ms
 
 
 def run_prerequisite(command: list[str], label: str, *, timeout_seconds: int, log_path: Path | None = None) -> None:
@@ -331,13 +350,20 @@ def run_prerequisite(command: list[str], label: str, *, timeout_seconds: int, lo
             abort(f"formal prerequisite log path is not a regular file: {log_path}")
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_stream = log_path.open("a", encoding="utf-8")
+        log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite {label} ---\n")
+        log_stream.flush()
         print(f"[ezkl-formal] independent build log: {log_path}", flush=True)
     try:
         process = spawn_guarded_process(
             command, cwd=ROOT, stdout=log_stream if log_stream is not None else None, stderr=subprocess.STDOUT if log_stream is not None else None
         )
-    except BaseException:
+    except BaseException as exc:
         if log_stream is not None:
+            log_stream.write(
+                f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite_exit_code=not_started "
+                f"outcome=spawn_failure exception={type(exc).__name__} ---\n"
+            )
+            log_stream.flush()
             log_stream.close()
         raise
     try:
@@ -354,22 +380,33 @@ def run_prerequisite(command: list[str], label: str, *, timeout_seconds: int, lo
     except subprocess.TimeoutExpired:
         _terminate_process_group(process)
         if log_stream is not None:
+            log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite_exit_code={process.poll()} outcome=timeout ---\n")
+            log_stream.flush()
             log_stream.close()
         abort(f"prerequisite {label} timed out after {timeout_seconds}s; process group was terminated")
     except KeyboardInterrupt:
         print(f"[ezkl-formal] interrupted during prerequisite {label}; terminating process group", file=sys.stderr, flush=True)
         _terminate_process_group(process)
         if log_stream is not None:
+            log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite_exit_code={process.poll()} outcome=interrupted ---\n")
+            log_stream.flush()
             log_stream.close()
         raise
     except BaseException:
         print(f"[ezkl-formal] prerequisite {label} failed; terminating process group", file=sys.stderr, flush=True)
         _terminate_process_group(process)
         if log_stream is not None:
+            log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite_exit_code={process.poll()} outcome=runner_error ---\n")
+            log_stream.flush()
             log_stream.close()
         raise
     terminated_leftovers = finish_guarded_process(process) if returncode == 0 else False
     if log_stream is not None:
+        log_stream.write(
+            f"\n--- {datetime.now(timezone.utc).isoformat()} prerequisite_exit_code={returncode} "
+            f"outcome={'success' if returncode == 0 else 'failed'} ---\n"
+        )
+        log_stream.flush()
         log_stream.close()
     if returncode != 0:
         # The leader may have exited while helpers in its private process
@@ -838,7 +875,12 @@ def _mark_released_session_interrupted(lock_fd: int, output_root: Path) -> None:
     print(f"[ezkl-formal] marked released prior session {previous_id} as INTERRUPTED", flush=True)
 
 
-def begin_formal_session(output_root: Path, matrix: Path, resume_session_id: str | None = None) -> tuple[str, Path, int]:
+def begin_formal_session(
+    output_root: Path,
+    matrix: Path,
+    resume_session_id: str | None = None,
+    requested_session_id: str | None = None,
+) -> tuple[str, Path, int]:
     if output_root.is_symlink() or matrix.is_symlink():
         abort("formal output-root and matrix paths must not be symlinks")
     lock_dir = ROOT / "runs"
@@ -863,6 +905,8 @@ def begin_formal_session(output_root: Path, matrix: Path, resume_session_id: str
             abort(f"formal session history path must be a regular directory: {session_dir}")
         session_dir.mkdir(parents=True, exist_ok=True)
         if resume_session_id is not None:
+            if requested_session_id is not None:
+                abort("a fresh internal session id cannot be combined with resume")
             if FORMAL_SESSION_ID.fullmatch(resume_session_id) is None:
                 abort("resume session id must be one exact 32-character lowercase hexadecimal value")
             session_id = resume_session_id
@@ -892,7 +936,9 @@ def begin_formal_session(output_root: Path, matrix: Path, resume_session_id: str
             _write_session_record(session_file, document)
             print(f"[ezkl-formal] resuming exact interrupted session {session_id}", flush=True)
         else:
-            session_id = uuid.uuid4().hex
+            session_id = requested_session_id or uuid.uuid4().hex
+            if FORMAL_SESSION_ID.fullmatch(session_id) is None:
+                abort("formal session id must be one exact 32-character lowercase hexadecimal value")
             session_file = session_dir / f"{session_id}.json"
             _write_session_record(
                 session_file,
@@ -3041,6 +3087,107 @@ def _write_native_prove_budget_receipt(
     return sha256(path)
 
 
+def _load_reusable_native_prove_budget_receipt(
+    output: Path,
+    *,
+    dataset: str,
+    session_id: str,
+    admission: dict[str, object],
+    resume_identity: dict[str, object],
+    setup_receipt_sha256: str,
+    native_keygen_budget_sha256: str,
+    native_keygen_receipt_sha256: str,
+    capacity: dict[str, object],
+    workspace_query: dict[str, object],
+) -> str | None:
+    """Reuse only an exact session-bound prove budget; never rewrite a proven stage's input."""
+    path = output / "native_prove_budget.json"
+    if not path.exists() and not path.is_symlink():
+        return None
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        budget = load_json(path, f"{dataset} native prove budget")
+    except ContractError:
+        return None
+    relation = admission.get("relation_identity")
+    if not isinstance(budget, dict) or not isinstance(relation, dict):
+        return None
+    expected = {
+        "schema": "ezkl.native-prove-budget.v1",
+        "session_id": session_id,
+        "dataset": dataset,
+        "admission_sha256": admission.get("sha256"),
+        "resource_manifest_sha256": relation.get("resource_manifest_sha256"),
+        "build_receipt_sha256": resume_identity.get("build_receipt_sha256"),
+        "build_environment_sha256": resume_identity.get("build_environment_sha256"),
+        "binary_sha256": resume_identity.get("binary_sha256"),
+        "settings_sha256": admission.get("settings_sha256"),
+        "compiled_circuit_sha256": sha256(output / "compiled.circuit") if (output / "compiled.circuit").is_file() else None,
+        "vk_sha256": sha256(output / "vk.key") if (output / "vk.key").is_file() else None,
+        "pk_sha256": sha256(output / "pk.key") if (output / "pk.key").is_file() else None,
+        "setup_receipt_sha256": setup_receipt_sha256,
+        "native_keygen_budget_sha256": native_keygen_budget_sha256,
+        "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
+        "native_pk_read_backing_required_bytes": capacity.get("native_pk_read_backing_required_bytes"),
+        "native_pk_read_host_scratch_upper_bytes": capacity.get("native_pk_read_host_scratch_upper_bytes"),
+        "native_pk_read_successor_cache_upper_bytes": capacity.get("native_pk_read_successor_cache_upper_bytes"),
+        "native_pk_read_target_bitmap_fixed_cache_upper_bytes": capacity.get("native_pk_read_target_bitmap_fixed_cache_upper_bytes"),
+        "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": capacity.get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes"),
+        "native_pk_read_validation_buffers_upper_bytes": capacity.get("native_pk_read_validation_buffers_upper_bytes"),
+        "native_pk_read_stream_buffer_upper_bytes": capacity.get("native_pk_read_stream_buffer_upper_bytes"),
+        "integrated_device": workspace_query.get("integrated_device"),
+        "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
+        "backing_scope": "single_formal_pk_stream_read_and_target_validation; exact_successor_count_plus_4KiB_target_page_upper",
+        "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
+    }
+    dynamic_fields = {
+        "disk_available_bytes", "disk_required_known_bytes", "max_total_backing_bytes",
+        "host_available_bytes", "host_required_known_bytes",
+    }
+    if set(budget) != set(expected) | dynamic_fields or any(budget.get(name) != value for name, value in expected.items()):
+        return None
+    integers = {
+        name: budget.get(name)
+        for name in (
+            "disk_available_bytes", "disk_required_known_bytes", "max_total_backing_bytes",
+            "host_available_bytes", "host_required_known_bytes", "native_pk_read_backing_required_bytes",
+            "native_pk_read_host_scratch_upper_bytes", "native_pk_read_successor_cache_upper_bytes",
+            "native_pk_read_target_bitmap_fixed_cache_upper_bytes", "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
+            "native_pk_read_validation_buffers_upper_bytes", "native_pk_read_stream_buffer_upper_bytes", "device_workspace_peak_bytes",
+        )
+    }
+    if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in integers.values()):
+        return None
+    scratch = sum(
+        int(integers[name])
+        for name in (
+            "native_pk_read_successor_cache_upper_bytes", "native_pk_read_target_bitmap_fixed_cache_upper_bytes",
+            "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes", "native_pk_read_validation_buffers_upper_bytes",
+            "native_pk_read_stream_buffer_upper_bytes",
+        )
+    )
+    disk_required = int(integers["disk_required_known_bytes"])
+    disk_available = int(integers["disk_available_bytes"])
+    native_read_required = int(integers["native_pk_read_backing_required_bytes"])
+    other_known = disk_required - native_read_required
+    expected_backing = min(native_read_required, disk_available - other_known) if other_known >= 0 and disk_available >= other_known else 0
+    if (
+        not isinstance(budget.get("integrated_device"), bool)
+        or disk_available <= 0
+        or int(integers["host_available_bytes"]) <= 0
+        or disk_required > disk_available
+        or native_read_required > disk_required
+        or int(integers["max_total_backing_bytes"]) != expected_backing
+        or int(integers["max_total_backing_bytes"]) < native_read_required
+        or int(integers["host_required_known_bytes"]) > int(integers["host_available_bytes"])
+        or int(integers["native_pk_read_host_scratch_upper_bytes"]) != scratch
+        or int(integers["native_pk_read_host_scratch_upper_bytes"]) > int(integers["host_required_known_bytes"])
+    ):
+        return None
+    return sha256(path)
+
+
 def _disk_budget_components(
     *,
     pending_srs: dict[str, object],
@@ -3343,13 +3490,616 @@ def update_session_record(path: Path, *, status: str, stage: str, error: str | N
     _write_session_record(path, document)
 
 
-def invoke_python_entrypoint(module_name: str, argv: list[str], label: str, *, context: object, session_id: str) -> None:
+class _Tee:
+    def __init__(self, *streams: object) -> None:
+        self.streams = streams
+
+    def write(self, value: str) -> int:
+        for stream in self.streams:
+            stream.write(value)
+            stream.flush()
+        return len(value)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+    def isatty(self) -> bool:
+        return False
+
+
+def invoke_python_entrypoint(
+    module_name: str,
+    argv: list[str],
+    label: str,
+    *,
+    context: object,
+    session_id: str,
+    log_path: Path | None = None,
+    stage_receipt_hooks: dict[str, object] | None = None,
+    producer_wall_ms: float | None = None,
+) -> float:
     module = importlib.import_module(module_name)
     parsed = module.parser().parse_args(argv)
     print(f"[ezkl-formal] {label}: in-process authenticated session call", flush=True)
-    result = module.main(parsed, authenticated_context=context, formal_session_id=session_id)
+    log_stream = None
+    if log_path is not None:
+        if log_path.is_symlink() or (log_path.exists() and not log_path.is_file()):
+            abort(f"formal command log path is not a regular file: {log_path}")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_stream = log_path.open("a", encoding="utf-8")
+        log_stream.write(f"\n--- {datetime.now(timezone.utc).isoformat()} {label} ---\n")
+        log_stream.flush()
+    started = time.monotonic()
+    try:
+        if log_stream is None:
+            kwargs: dict[str, object] = {"authenticated_context": context, "formal_session_id": session_id}
+            if stage_receipt_hooks is not None:
+                kwargs["stage_receipt_hooks"] = stage_receipt_hooks
+            if producer_wall_ms is not None:
+                kwargs["producer_wall_ms"] = producer_wall_ms
+            result = module.main(parsed, **kwargs)
+        else:
+            with contextlib.redirect_stdout(_Tee(sys.stdout, log_stream)), contextlib.redirect_stderr(_Tee(sys.stderr, log_stream)):
+                kwargs = {"authenticated_context": context, "formal_session_id": session_id}
+                if stage_receipt_hooks is not None:
+                    kwargs["stage_receipt_hooks"] = stage_receipt_hooks
+                if producer_wall_ms is not None:
+                    kwargs["producer_wall_ms"] = producer_wall_ms
+                result = module.main(parsed, **kwargs)
+    except BaseException as exc:
+        if log_stream is not None:
+            log_stream.write(
+                f"\n--- {datetime.now(timezone.utc).isoformat()} {label} "
+                f"outcome=runner_error exception={type(exc).__name__} ---\n"
+            )
+            log_stream.flush()
+        raise
+    finally:
+        if log_stream is not None:
+            log_stream.close()
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    if log_path is not None:
+        with log_path.open("a", encoding="utf-8") as log_stream:
+            log_stream.write(
+                f"\n--- {datetime.now(timezone.utc).isoformat()} {label} return_code={result} "
+                f"wall_ms={elapsed_ms:.6f} outcome={'success' if result == 0 else 'failed'} ---\n"
+            )
     if result != 0:
         abort(f"{label} failed with return code {result}")
+    return elapsed_ms
+
+
+def _artifact_manifest_projection_sha256(path: Path) -> str:
+    manifest = load_json(path, "artifact identity manifest during stage recovery")
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list):
+        abort(f"artifact identity manifest is malformed during stage recovery: {path}")
+    projected = dict(manifest)
+    projected["files"] = [
+        record for record in manifest["files"]
+        if not isinstance(record, dict) or record.get("path") not in {"proof.json", "native_pk_read_timing.json"}
+    ]
+    return canonical_json_digest(projected)
+
+
+_FORMAL_STAGE_ORDER = ("producer", "final", "witness", "prove", "verify")
+_FORMAL_FINALIZATION_STAGE_LOGS = {
+    "producer": "logs/producer.log",
+    "final": "logs/final.log",
+    "witness": "logs/witness.log",
+    "prove": "logs/prove.log",
+    "verify": "logs/verify.log",
+}
+_FORMAL_STAGE_OUTPUTS = {
+    "producer": ("statement.json", "public_output.json", "producer_manifest.json"),
+    "final": ("artifact_manifest.json", "srs.kzg"),
+    "witness": ("witness.json",),
+    "prove": ("proof.json", "native_proof_metrics.json", "native_pk_read_timing.json", "gpu_evidence.json", "gpu_prover_record.json"),
+    "verify": ("native_verify_metrics.json", "core_run_manifest.json", "result.json"),
+}
+
+
+def _stage_paths_digest_map(stage: str, paths: dict[str, Path]) -> dict[str, str]:
+    digests: dict[str, str] = {}
+    for name, path in paths.items():
+        if stage == "final" and name == "artifact_manifest":
+            if path.is_symlink() or not path.is_file():
+                abort(f"{stage} stage receipt requires a regular artifact manifest: {path}")
+            digests[name] = _artifact_manifest_projection_sha256(path)
+        else:
+            if path.is_symlink() or not path.is_file():
+                abort(f"stage receipt requires a regular {stage} file {name}: {path}")
+            digests[name] = sha256(path)
+    return digests
+
+
+def _stage_receipt_hooks(
+    *,
+    session_file: Path,
+    session_dir: Path,
+    output_root: Path,
+    output: Path,
+    dataset: str,
+    session_id: str,
+    resume_identity: dict[str, object],
+    admission_sha256: str,
+    setup_receipt_sha256: str,
+    native_prove_budget_sha256: str,
+) -> dict[str, Callable[..., object]]:
+    resume_identity_sha256 = canonical_json_digest(resume_identity)
+
+    def expected_base(stage: str) -> dict[str, object]:
+        if stage not in _FORMAL_STAGE_ORDER:
+            abort(f"unknown formal stage receipt: {stage}")
+        base: dict[str, object] = {
+            "schema": "ezkl.formal-stage-receipt.v1",
+            "session_id": session_id,
+            "dataset": dataset,
+            "stage": stage,
+            "resume_identity_sha256": resume_identity_sha256,
+            "admission_sha256": admission_sha256,
+            "setup_receipt_sha256": setup_receipt_sha256,
+        }
+        if stage in {"witness", "prove", "verify"}:
+            base["native_prove_budget_sha256"] = native_prove_budget_sha256
+        return base
+
+    def current(stage: str) -> tuple[dict[str, object], dict[str, object]] | None:
+        document = load_json(session_file, "formal session record")
+        all_receipts = document.get("stage_receipts", {})
+        dataset_receipts = all_receipts.get(dataset, {}) if isinstance(all_receipts, dict) else None
+        anchor = dataset_receipts.get(stage) if isinstance(dataset_receipts, dict) else None
+        if (
+            not isinstance(anchor, dict)
+            or set(anchor) != {"receipt", "sha256"}
+            or not isinstance(anchor.get("receipt"), dict)
+            or not isinstance(anchor.get("sha256"), str)
+            or canonical_json_digest(anchor["receipt"]) != anchor["sha256"]
+        ):
+            return None
+        receipt = anchor["receipt"]
+        if any(receipt.get(name) != value for name, value in expected_base(stage).items()):
+            return None
+        return document, receipt
+
+    def try_reuse(stage: str, inputs: dict[str, Path], outputs: dict[str, Path]) -> float | None:
+        value = current(stage)
+        if value is None:
+            return None
+        document, receipt = value
+        try:
+            input_digests = _stage_paths_digest_map("input", inputs)
+            output_digests = _stage_paths_digest_map(stage, outputs)
+        except (ContractError, OSError):
+            return None
+        if receipt.get("inputs_sha256") != input_digests or receipt.get("outputs_sha256") != output_digests:
+            return None
+        elapsed = receipt.get("elapsed_ms")
+        if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed <= 0:
+            return None
+        if stage == "final":
+            snapshot_sha = receipt.get("artifact_manifest_snapshot_sha256")
+            snapshot = session_dir / "stage-artifacts" / dataset / "artifact_manifest.final.json"
+            if (
+                not isinstance(snapshot_sha, str)
+                or snapshot.is_symlink()
+                or not snapshot.is_file()
+                or sha256(snapshot) != snapshot_sha
+                or _artifact_manifest_projection_sha256(snapshot) != output_digests.get("artifact_manifest")
+            ):
+                return None
+        return float(elapsed)
+
+    def record(stage: str, inputs: dict[str, Path], outputs: dict[str, Path], elapsed_ms: float) -> None:
+        if isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, (int, float)) or not math.isfinite(elapsed_ms) or elapsed_ms <= 0:
+            abort(f"{dataset} {stage} stage produced an invalid wall timing")
+        receipt: dict[str, object] = {
+            **expected_base(stage),
+            "inputs_sha256": _stage_paths_digest_map("input", inputs),
+            "outputs_sha256": _stage_paths_digest_map(stage, outputs),
+            "elapsed_ms": float(elapsed_ms),
+            "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+        }
+        if stage == "final":
+            snapshot = session_dir / "stage-artifacts" / dataset / "artifact_manifest.final.json"
+            snapshot.parent.mkdir(parents=True, exist_ok=True)
+            payload = (output / "artifact_manifest.json").read_bytes()
+            temporary = snapshot.with_name(f".{snapshot.name}.{os.getpid()}.{time.time_ns()}.tmp")
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(temporary, flags, 0o600)
+            try:
+                with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            finally:
+                os.close(descriptor)
+            os.replace(temporary, snapshot)
+            receipt["artifact_manifest_snapshot_sha256"] = sha256(snapshot)
+        document = load_json(session_file, "formal session record")
+        all_receipts = document.setdefault("stage_receipts", {})
+        if not isinstance(all_receipts, dict):
+            abort("formal stage receipt map is malformed")
+        dataset_receipts = all_receipts.setdefault(dataset, {})
+        if not isinstance(dataset_receipts, dict):
+            abort(f"{dataset} stage receipt map is malformed")
+        dataset_receipts[stage] = {"receipt": receipt, "sha256": canonical_json_digest(receipt)}
+        _write_session_record(session_file, document)
+
+    def invalidate_from(stage: str, reason: str) -> None:
+        if stage not in _FORMAL_STAGE_ORDER:
+            abort(f"cannot invalidate unknown formal stage: {stage}")
+        first = _FORMAL_STAGE_ORDER.index(stage)
+        affected = _FORMAL_STAGE_ORDER[first:]
+        if stage in {"witness", "prove"} and current("final") is not None:
+            restore_final_manifest()
+        names = [name for selected in affected for name in _FORMAL_STAGE_OUTPUTS[selected]]
+        existing = [output / name for name in dict.fromkeys(names) if (output / name).exists() or (output / name).is_symlink()]
+        if existing:
+            quarantine = output_root / ".incomplete" / session_id / "quarantine" / f"{dataset}-stages-{time.time_ns()}"
+            quarantine.mkdir(parents=True, exist_ok=False)
+            for path in existing:
+                if path.is_symlink() or not path.is_file():
+                    abort(f"refusing to quarantine non-regular {dataset} stage artifact: {path}")
+                path.rename(quarantine / path.name)
+        document = load_json(session_file, "formal session record")
+        all_receipts = document.get("stage_receipts", {})
+        dataset_receipts = all_receipts.get(dataset, {}) if isinstance(all_receipts, dict) else None
+        if isinstance(dataset_receipts, dict):
+            for selected in affected:
+                dataset_receipts.pop(selected, None)
+        _write_session_record(session_file, document)
+        print(f"[ezkl-formal] invalidated {dataset} stages {','.join(affected)}: {reason}", flush=True)
+
+    def restore_final_manifest() -> None:
+        value = current("final")
+        if value is None:
+            return
+        receipt = value[1]
+        snapshot = session_dir / "stage-artifacts" / dataset / "artifact_manifest.final.json"
+        snapshot_sha = receipt.get("artifact_manifest_snapshot_sha256")
+        if (
+            not isinstance(snapshot_sha, str)
+            or snapshot.is_symlink()
+            or not snapshot.is_file()
+            or sha256(snapshot) != snapshot_sha
+            or _artifact_manifest_projection_sha256(snapshot) != receipt.get("outputs_sha256", {}).get("artifact_manifest")
+        ):
+            abort(f"{dataset} final-stage artifact manifest snapshot failed authentication")
+        destination = output / "artifact_manifest.json"
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            abort(f"refusing to restore final-stage manifest over a non-regular path: {destination}")
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.{time.time_ns()}.restore")
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(temporary, flags, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(snapshot.read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, destination)
+
+    return {
+        "try_reuse": try_reuse,
+        "record": record,
+        "invalidate_from": invalidate_from,
+        "restore_final_manifest": restore_final_manifest,
+    }
+
+
+_FORMAL_FINALIZATION_SCHEMA = "ezkl.formal-finalization-stage-receipt.v1"
+
+
+def _latest_successful_log_wall_ms(path: Path, exit_field: str, label: str) -> float:
+    if path.is_symlink() or not path.is_file():
+        abort(f"{label} has no regular stage log: {path}")
+    contents = path.read_text(encoding="utf-8", errors="replace")
+    matches = list(re.finditer(
+        rf"{re.escape(exit_field)}=([0-9]+) wall_ms=([0-9]+(?:\.[0-9]+)?) outcome=(success|failed)",
+        contents,
+    ))
+    if not matches:
+        abort(f"{label} log has no durable exit-code/wall-time footer")
+    match = matches[-1]
+    if match.group(1) != "0" or match.group(3) != "success":
+        abort(f"{label} log's latest completed attempt did not exit successfully")
+    elapsed = float(match.group(2))
+    if not math.isfinite(elapsed) or elapsed <= 0:
+        abort(f"{label} log footer has an invalid wall timing")
+    return elapsed
+
+
+def _finalization_result_identity(
+    *,
+    output_root: Path,
+    session_dir: Path,
+    session_file: Path,
+    session_id: str,
+) -> tuple[str, dict[str, object]]:
+    """Bind the five independently verified results to their original stages and logs."""
+    document = load_json(session_file, "formal session record before finalization")
+    if not isinstance(document, dict) or document.get("session_id") != session_id:
+        abort("finalization receipts require the exact active formal session")
+    completed = document.get("completed_cells")
+    admissions = document.get("native_admissions")
+    setups = document.get("setup_reuse_receipts")
+    all_stage_receipts = document.get("stage_receipts")
+    resume_identity = document.get("resume_identity")
+    if not all(isinstance(value, dict) for value in (completed, admissions, setups, all_stage_receipts, resume_identity)):
+        abort("finalization receipt inputs lack complete session, Admission, setup, or stage anchors")
+    resume_digest = canonical_json_digest(resume_identity)
+    datasets: list[dict[str, object]] = []
+    output_names = {
+        "producer": {"statement": "statement.json", "public_output": "public_output.json", "producer_manifest": "producer_manifest.json"},
+        "final": {"artifact_manifest": "artifact_manifest.json", "srs": "srs.kzg", "final_log": "logs/final.log"},
+        "witness": {"witness": "witness.json", "witness_log": "logs/witness.log"},
+        "prove": {"proof": "proof.json", "native_proof_metrics": "native_proof_metrics.json", "native_pk_read_timing": "native_pk_read_timing.json", "gpu_evidence": "gpu_evidence.json", "gpu_prover_record": "gpu_prover_record.json", "prove_log": "logs/prove.log"},
+        "verify": {"native_verify_metrics": "native_verify_metrics.json", "core_run_manifest": "core_run_manifest.json", "verify_log": "logs/verify.log"},
+    }
+    for dataset in DATASETS:
+        output = output_root / dataset
+        if not _completed_cell_checkpoint(output, dataset, session_id, session_file):
+            abort(f"{dataset} finalization inputs are not a durable independently verified result")
+        result_path = output / "result.json"
+        result = load_json(result_path, f"{dataset} finalization result")
+        checkpoint = completed.get(dataset)
+        admission = admissions.get(dataset)
+        setup_digest = setups.get(dataset)
+        dataset_receipts = all_stage_receipts.get(dataset)
+        if (
+            not isinstance(checkpoint, dict)
+            or checkpoint.get("session_id") != session_id
+            or checkpoint.get("status") != "VERIFY_OK"
+            or checkpoint.get("result_sha256") != sha256(result_path)
+            or not isinstance(admission, dict)
+            or not isinstance(admission.get("sha256"), str)
+            or not isinstance(admission.get("settings_sha256"), str)
+            or result.get("settings_sha256") != admission.get("settings_sha256")
+            or not isinstance(setup_digest, str)
+            or not isinstance(dataset_receipts, dict)
+        ):
+            abort(f"{dataset} finalization inputs do not match the active VERIFY_OK, Admission, and setup anchors")
+        setup_path = output / "setup_receipt.json"
+        if setup_path.is_symlink() or not setup_path.is_file() or sha256(setup_path) != setup_digest:
+            abort(f"{dataset} finalization setup receipt differs from its session anchor")
+        admission_path = session_dir / "admission" / dataset / "admission.json"
+        settings_path = session_dir / "admission" / dataset / "settings.json"
+        if (
+            admission_path.is_symlink() or not admission_path.is_file() or sha256(admission_path) != admission["sha256"]
+            or settings_path.is_symlink() or not settings_path.is_file() or sha256(settings_path) != admission["settings_sha256"]
+        ):
+            abort(f"{dataset} finalization Admission/settings differ from the current session anchors")
+
+        stage_identities: dict[str, object] = {}
+        for stage in _FORMAL_STAGE_ORDER:
+            anchor = dataset_receipts.get(stage)
+            if (
+                not isinstance(anchor, dict)
+                or set(anchor) != {"receipt", "sha256"}
+                or not isinstance(anchor.get("receipt"), dict)
+                or not isinstance(anchor.get("sha256"), str)
+                or canonical_json_digest(anchor["receipt"]) != anchor["sha256"]
+            ):
+                abort(f"{dataset} {stage} stage receipt is missing or unauthenticated before result collection")
+            receipt = anchor["receipt"]
+            elapsed = receipt.get("elapsed_ms")
+            inputs = receipt.get("inputs_sha256")
+            outputs = receipt.get("outputs_sha256")
+            if (
+                receipt.get("schema") != "ezkl.formal-stage-receipt.v1"
+                or receipt.get("session_id") != session_id
+                or receipt.get("dataset") != dataset
+                or receipt.get("stage") != stage
+                or receipt.get("resume_identity_sha256") != resume_digest
+                or receipt.get("admission_sha256") != admission.get("sha256")
+                or receipt.get("setup_receipt_sha256") != setup_digest
+                or isinstance(elapsed, bool)
+                or not isinstance(elapsed, (int, float))
+                or not math.isfinite(elapsed)
+                or elapsed <= 0
+                or not isinstance(inputs, dict)
+                or not inputs
+                or any(not isinstance(name, str) or not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None for name, value in inputs.items())
+                or not isinstance(outputs, dict)
+            ):
+                abort(f"{dataset} {stage} stage receipt has invalid identity, raw timing, or digest maps")
+            expected_paths = {name: output / path for name, path in output_names[stage].items()}
+            current_outputs = _stage_paths_digest_map(stage, expected_paths)
+            if outputs != current_outputs:
+                abort(f"{dataset} {stage} receipt outputs changed before five-result collection")
+            log_exit_field = "return_code" if stage == "producer" else "phase_exit_code"
+            logged_elapsed = _latest_successful_log_wall_ms(
+                output / _FORMAL_FINALIZATION_STAGE_LOGS[stage], log_exit_field, f"{dataset} {stage}"
+            )
+            if round(logged_elapsed, 6) != round(float(elapsed), 6):
+                abort(f"{dataset} {stage} log wall time differs from its session receipt")
+            expected_timing = {
+                "producer": ("public_statement_production", 6),
+                "final": ("final_statement_binding", 6),
+                "witness": ("witness_generation", 3),
+                "prove": ("prove_command_wall_ms", 6),
+                "verify": ("verify", 3),
+            }[stage]
+            timing_value = result.get("phase_timings_ms", {}).get(expected_timing[0]) if stage != "prove" else result.get(expected_timing[0])
+            if (
+                isinstance(timing_value, bool)
+                or not isinstance(timing_value, (int, float))
+                or not math.isfinite(timing_value)
+                or round(float(elapsed), expected_timing[1]) != timing_value
+            ):
+                abort(f"{dataset} {stage} receipt timing differs from the original result timing")
+            if stage == "verify" and result.get("independent_verifier_log_sha256") != outputs.get("verify_log"):
+                abort(f"{dataset} independent verifier log differs from its successful Verify receipt")
+            stage_identities[stage] = {
+                "receipt_sha256": anchor["sha256"],
+                "elapsed_ms": float(elapsed),
+                "inputs_sha256": inputs,
+                "outputs_sha256": outputs,
+            }
+
+        log_paths = {
+            "native_admission": session_dir / "logs" / dataset / "native_admission.log",
+            "native_setup": session_dir / "logs" / dataset / "native_setup.log",
+            "producer": output / "logs" / "producer.log",
+            "final": output / "logs" / "final.log",
+            "witness": output / "logs" / "witness.log",
+            "prove": output / "logs" / "prove.log",
+            "verify": output / "logs" / "verify.log",
+        }
+        log_digests: dict[str, str] = {}
+        for name, path in log_paths.items():
+            if path.is_symlink() or not path.is_file():
+                abort(f"{dataset} finalization is missing its original {name} stage log")
+            log_digests[name] = sha256(path)
+        if log_digests["verify"] != result.get("independent_verifier_log_sha256"):
+            abort(f"{dataset} finalization Verify log no longer matches the verified result")
+        setup_timing = load_json(output / "setup_timing.json", f"{dataset} native setup timing")
+        native_setup_wall_ms = _latest_successful_log_wall_ms(
+            log_paths["native_setup"], "command_exit_code", f"{dataset} native setup"
+        )
+        setup_elapsed = setup_timing.get("duration_ms") if isinstance(setup_timing, dict) else None
+        reported_setup_elapsed = result.get("phase_timings_ms", {}).get("prepare_compile_setup")
+        if (
+            isinstance(setup_elapsed, bool) or not isinstance(setup_elapsed, (int, float))
+            or not math.isfinite(setup_elapsed) or setup_elapsed <= 0
+            or round(float(setup_elapsed), 6) != round(native_setup_wall_ms, 6)
+            or round(float(setup_elapsed), 3) != reported_setup_elapsed
+        ):
+            abort(f"{dataset} native setup log/timing differs from the verified result")
+        datasets.append({
+            "dataset": dataset,
+            "result_sha256": sha256(result_path),
+            "proof_sha256": result.get("proof_sha256"),
+            "checkpoint_sha256": canonical_json_digest(checkpoint),
+            "admission_sha256": admission["sha256"],
+            "setup_receipt_sha256": setup_digest,
+            "stage_receipts": stage_identities,
+            "stage_logs_sha256": log_digests,
+            "phase_timings_ms": result.get("phase_timings_ms"),
+        })
+    identity: dict[str, object] = {
+        "schema": "ezkl.formal-five-result-inputs.v1",
+        "session_id": session_id,
+        "source_tree_sha256": document.get("source_tree_sha256"),
+        "resource_manifest_sha256": document.get("resource_manifest_sha256"),
+        "resume_identity_sha256": resume_digest,
+        "datasets": datasets,
+    }
+    return canonical_json_digest(identity), identity
+
+
+def _finalization_receipt_anchor(document: dict[str, object], stage: str) -> dict[str, object] | None:
+    all_receipts = document.get("finalization_receipts")
+    anchor = all_receipts.get(stage) if isinstance(all_receipts, dict) else None
+    if (
+        not isinstance(anchor, dict)
+        or set(anchor) != {"receipt", "sha256"}
+        or not isinstance(anchor.get("receipt"), dict)
+        or not isinstance(anchor.get("sha256"), str)
+        or canonical_json_digest(anchor["receipt"]) != anchor["sha256"]
+    ):
+        return None
+    return anchor
+
+
+def _try_reuse_finalization_receipt(
+    *,
+    session_file: Path,
+    session_id: str,
+    stage: str,
+    inputs_sha256: str,
+    matrix: Path,
+    log_path: Path,
+    status: str,
+    collector_receipt_sha256: str | None = None,
+) -> tuple[float, str] | None:
+    document = load_json(session_file, "formal session record for result-stage reuse")
+    anchor = _finalization_receipt_anchor(document, stage)
+    if anchor is None:
+        return None
+    receipt = anchor["receipt"]
+    if (
+        set(receipt) != {
+            "schema", "session_id", "stage", "inputs_sha256", "matrix_path", "matrix_sha256",
+            "log_sha256", "status", "elapsed_ms", "collector_receipt_sha256", "recorded_at_utc",
+        }
+        or receipt.get("schema") != _FORMAL_FINALIZATION_SCHEMA
+        or receipt.get("session_id") != session_id
+        or receipt.get("stage") != stage
+        or receipt.get("inputs_sha256") != inputs_sha256
+        or receipt.get("matrix_path") != matrix.relative_to(ROOT).as_posix()
+        or receipt.get("status") != status
+        or receipt.get("matrix_sha256") != (sha256(matrix) if matrix.is_file() and not matrix.is_symlink() else None)
+        or receipt.get("log_sha256") != (sha256(log_path) if log_path.is_file() and not log_path.is_symlink() else None)
+        or receipt.get("collector_receipt_sha256") != collector_receipt_sha256
+    ):
+        return None
+    elapsed = receipt.get("elapsed_ms")
+    if isinstance(elapsed, bool) or not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed <= 0:
+        return None
+    try:
+        logged_elapsed = _latest_successful_log_wall_ms(log_path, "command_exit_code", stage)
+    except (ContractError, OSError):
+        return None
+    if round(logged_elapsed, 6) != round(float(elapsed), 6):
+        return None
+    return float(elapsed), str(anchor["sha256"])
+
+
+def _clear_finalization_receipts(session_file: Path, stages: tuple[str, ...], reason: str) -> None:
+    document = load_json(session_file, "formal session record before result-stage invalidation")
+    all_receipts = document.setdefault("finalization_receipts", {})
+    if not isinstance(all_receipts, dict):
+        abort("formal finalization receipt map is malformed")
+    changed = False
+    for stage in stages:
+        changed = all_receipts.pop(stage, None) is not None or changed
+    if changed:
+        _write_session_record(session_file, document)
+    print(f"[ezkl-formal] invalidated finalization receipts {','.join(stages)}: {reason}", flush=True)
+
+
+def _record_finalization_receipt(
+    *,
+    session_file: Path,
+    session_id: str,
+    stage: str,
+    inputs_sha256: str,
+    matrix: Path,
+    log_path: Path,
+    status: str,
+    elapsed_ms: float,
+    collector_receipt_sha256: str | None = None,
+) -> str:
+    if isinstance(elapsed_ms, bool) or not math.isfinite(elapsed_ms) or elapsed_ms <= 0:
+        abort(f"{stage} stage produced an invalid raw wall timing")
+    if round(_latest_successful_log_wall_ms(log_path, "command_exit_code", stage), 6) != round(float(elapsed_ms), 6):
+        abort(f"{stage} stage log timing does not match its raw runner wall timing")
+    _fsync_regular_file(matrix, f"{stage} result matrix")
+    _fsync_regular_file(log_path, f"{stage} log")
+    receipt: dict[str, object] = {
+        "schema": _FORMAL_FINALIZATION_SCHEMA,
+        "session_id": session_id,
+        "stage": stage,
+        "inputs_sha256": inputs_sha256,
+        "matrix_path": matrix.relative_to(ROOT).as_posix(),
+        "matrix_sha256": sha256(matrix),
+        "log_sha256": sha256(log_path),
+        "status": status,
+        "elapsed_ms": float(elapsed_ms),
+        "collector_receipt_sha256": collector_receipt_sha256,
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    document = load_json(session_file, "formal session record after result-stage success")
+    anchors = document.setdefault("finalization_receipts", {})
+    if not isinstance(anchors, dict):
+        abort("formal finalization receipt map is malformed")
+    anchor_sha256 = canonical_json_digest(receipt)
+    anchors[stage] = {"receipt": receipt, "sha256": anchor_sha256}
+    _write_session_record(session_file, document)
+    return anchor_sha256
 
 
 def prepare_output_dir(output_root: Path, dataset: str) -> Path:
@@ -3835,10 +4585,207 @@ def _dataset_failure_log_paths(output_root: Path, session_dir: Path, dataset: st
     ]
     output_logs = output_root / dataset / "logs"
     if output_logs.is_dir() and not output_logs.is_symlink():
-        for name in ("setup.log", "witness.log", "prove.log", "verify.log"):
+        for name in ("setup.log", "producer.log", "final.log", "witness.log", "prove.log", "verify.log"):
             candidates.append(output_logs / name)
     paths = [path for path in candidates if path.is_file() and not path.is_symlink()]
     return [path.relative_to(output_root).as_posix() for path in paths]
+
+
+def _capacity_precheck_api():
+    try:
+        return importlib.import_module("resource_capacity_precheck")
+    except ImportError as exc:
+        abort(f"authenticated EZKL resource-capacity precheck is unavailable: {exc}")
+
+
+def _record_capacity_source_identity(
+    *,
+    output_root: Path,
+    session_dir: Path,
+    session_file: Path,
+    resume: bool,
+    capacity_only: bool,
+) -> dict[str, object]:
+    api = _capacity_precheck_api()
+    identity = api.capacity_source_identity()
+    if not isinstance(identity, dict):
+        abort("current EZKL capacity source identity is malformed")
+    session_document = load_json(session_file, "formal session record")
+    previous = session_document.get("capacity_source_identity")
+    if resume and previous != identity:
+        abort("resume capacity geometry/native-PK/config/resource identity changed or was never authenticated")
+    if not resume:
+        session_document["capacity_source_identity"] = identity
+        _write_session_record(session_file, session_document)
+
+    capacity_dir = session_dir / "capacity"
+    if capacity_dir.is_symlink() or (capacity_dir.exists() and not capacity_dir.is_dir()):
+        abort(f"formal capacity evidence path is not a regular directory: {capacity_dir}")
+    capacity_dir.mkdir(parents=True, exist_ok=True)
+    historical: dict[str, object] = {"status": "no_authenticated_historical_session"}
+    old_session: Path | None = None
+    try:
+        old_session = api.latest_authenticated_historical_session(output_root)
+    except ContractError as exc:
+        historical = {"status": "historical_scan_unavailable", "error": str(exc)[:2000]}
+    if old_session is not None:
+        report_path = capacity_dir / "historical_resource_capacity_precheck.json"
+        try:
+            report = api.audit_historical_session(old_session, report_path, output_root=output_root)
+            if not isinstance(report, dict):
+                abort("historical EZKL capacity report is malformed")
+            historical = {
+                "status": "authenticated_historical_report",
+                "session_path": old_session.relative_to(ROOT).as_posix(),
+                "report_path": report_path.relative_to(ROOT).as_posix(),
+                "report_sha256": sha256(report_path),
+                "historical_source_match": report.get("historical_source_match") is True,
+                "source_matched_disk_floor_failure": report.get("source_matched_disk_floor_failure") is True,
+            }
+        except ContractError as exc:
+            historical = {
+                "status": "historical_report_unavailable",
+                "session_path": old_session.relative_to(ROOT).as_posix(),
+                "error": str(exc)[:2000],
+            }
+    session_document = load_json(session_file, "formal session record")
+    session_document["historical_capacity_evidence"] = historical
+    _write_session_record(session_file, session_document)
+    if (
+        not capacity_only
+        and not resume
+        and historical.get("source_matched_disk_floor_failure") is True
+    ):
+        abort(
+            "authenticated same-source historical capacity evidence shows a fixed-payload disk-floor failure; "
+            "stopping before GPU build or any Setup"
+        )
+    return identity
+
+
+def _run_five_admission_preflight(
+    *,
+    binary: Path,
+    srs: Path,
+    output_root: Path,
+    session_id: str,
+    session_file: Path,
+    authenticated_context: object,
+    selected_device: dict[str, object],
+    saved_admissions: dict[str, dict[str, object]],
+    capacity_only: bool,
+) -> dict[str, dict[str, object]]:
+    api = _capacity_precheck_api()
+    admissions: dict[str, dict[str, object]] = {}
+    failures: dict[str, dict[str, str]] = {}
+    session_dir = output_root / ".sessions" / session_id
+    logs_dir = session_dir / "logs"
+    for dataset in DATASETS:
+        log_path = logs_dir / dataset / "native_admission.log"
+        try:
+            selected = native_admit_all_datasets(
+                binary,
+                srs,
+                output_root,
+                session_id,
+                selected_device,
+                datasets=(dataset,),
+                reuse_receipt=saved_admissions,
+                receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
+                command_runner=lambda command, label, selected_log=log_path: run(
+                    command,
+                    label,
+                    gpu=True,
+                    log_path=selected_log,
+                ),
+            )
+            admission = selected[dataset]
+            admissions[dataset] = admission
+            saved_admissions[dataset] = admission
+        except Exception as exc:
+            failures[dataset] = {"exception_type": type(exc).__name__, "error": str(exc)[:2000]}
+            print(f"[ezkl-formal] Admission attempt failed dataset={dataset}; continuing all-five preflight: {type(exc).__name__}: {exc}", flush=True)
+
+    records: list[dict[str, object]] = []
+    audit_failures: dict[str, dict[str, str]] = {}
+    for dataset in DATASETS:
+        admission = admissions.get(dataset)
+        if admission is None:
+            records.append(
+                api.audit_fresh_admission(
+                    session_file,
+                    dataset,
+                    None,
+                    None,
+                    output_root=output_root,
+                    authenticated_context=authenticated_context,
+                )
+            )
+            continue
+        prepared = local_path(str(admission.get("prepared_dir")), f"{dataset} fresh admission directory")
+        admission_path = prepared / "admission.json"
+        settings_path = prepared / "settings.json"
+        try:
+            record = api.audit_fresh_admission(
+                session_file,
+                dataset,
+                admission_path,
+                settings_path,
+                output_root=output_root,
+                authenticated_context=authenticated_context,
+            )
+            records.append(record)
+        except Exception as exc:
+            audit_failures[dataset] = {"exception_type": type(exc).__name__, "error": str(exc)[:2000]}
+            print(f"[ezkl-formal] current capacity audit failed dataset={dataset}; continuing all-five audit: {type(exc).__name__}: {exc}", flush=True)
+            records.append(
+                api.audit_fresh_admission(
+                    session_file,
+                    dataset,
+                    None,
+                    None,
+                    output_root=output_root,
+                    authenticated_context=authenticated_context,
+                )
+            )
+
+    capacity_dir = session_dir / "capacity"
+    capacity_dir.mkdir(parents=True, exist_ok=True)
+    report_path = capacity_dir / "resource_capacity_precheck.json"
+    # The helper writes its diagnostic report before raising for any gate or
+    # provenance failure. Never let a prior report turn that exception into a
+    # Setup authorization.
+    report = api.write_and_require_fresh_report(
+        session_file,
+        records,
+        report_path,
+        output_root=output_root,
+        authenticated_context=authenticated_context,
+    )
+
+    session_document = load_json(session_file, "formal session record")
+    session_document["capacity_admission_attempts"] = {
+        "datasets": [dataset for dataset in DATASETS if dataset in admissions],
+        "failures": failures,
+        "audit_failures": audit_failures,
+        "report_path": report_path.relative_to(ROOT).as_posix(),
+        "report_sha256": sha256(report_path),
+        "gate_status": report.get("gate_status"),
+        "readiness": report.get("readiness", "NOT_ESTABLISHED"),
+        "purpose": "all-five-native-admission-and-current-fixed-disk-floor-only; no setup or proof success implied",
+    }
+    _write_session_record(session_file, session_document)
+
+    failure_items = [f"{dataset} Admission {entry['exception_type']}: {entry['error']}" for dataset, entry in failures.items()]
+    failure_items.extend(f"{dataset} capacity audit {entry['exception_type']}: {entry['error']}" for dataset, entry in audit_failures.items())
+    gate_status = report.get("gate_status")
+    if failure_items or gate_status != "current_disk_floor_pass":
+        summary = "; ".join(failure_items) if failure_items else f"capacity gate status={gate_status}"
+        if capacity_only:
+            print(f"[ezkl-formal] admission/capacity preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
+        abort(f"five-dataset admission/capacity preflight did not pass before any Setup: {summary}")
+    print(f"[ezkl-formal] all-five current fixed-payload disk-floor preflight PASS; report={report_path.relative_to(ROOT)}", flush=True)
+    return admissions
 
 
 def _load_dataset_failure_state(
@@ -4136,14 +5083,17 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     _set_stage(session_file, "canonical_resource_authentication")
     authenticated_resource_file_identities, preflight_config_sha256s = _authenticate_or_prepare_resources(
         python,
-        allow_prepare=not args.preflight_only and args.resume_session is None,
+        allow_prepare=not (args.preflight_only or args.capacity_preflight_only) and args.resume_session is None,
         session_id=session_id,
         preflight_config_sha256s=preflight_config_sha256s,
     )
     print("[ezkl-formal] authenticated complete five-dataset canonical resources", flush=True)
 
     _set_stage(session_file, "official_srs_authentication")
-    srs_manifest = _authenticate_or_provision_srs(python, allow_provision=not args.preflight_only and args.resume_session is None)
+    srs_manifest = _authenticate_or_provision_srs(
+        python,
+        allow_provision=not (args.preflight_only or args.capacity_preflight_only) and args.resume_session is None,
+    )
     entries = srs_manifest["entries"]
     shared_paths = {entry["path"] for entry in entries.values()}
     if len(shared_paths) != 1:
@@ -4169,6 +5119,15 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     config_values = _preflight_dataset_configs()
     _validate_config_srs_bindings(config_values, srs_manifest)
 
+    session_dir = output_root / ".sessions" / session_id
+    _record_capacity_source_identity(
+        output_root=output_root,
+        session_dir=session_dir,
+        session_file=session_file,
+        resume=args.resume_session is not None,
+        capacity_only=args.capacity_preflight_only,
+    )
+
     _set_stage(session_file, "gpu_runtime_identity")
     gpu_identity: dict[str, object] | None = None
     if NATIVE_FORMAL_BACKEND == "gpu":
@@ -4180,6 +5139,8 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 abort(f"resume requires the already-authenticated GPU runtime and cannot provision it: {exc}")
             if args.preflight_only:
                 print(f"[ezkl-formal] GPU_SETUP_REQUIRED: {exc}", flush=True)
+            elif args.capacity_preflight_only:
+                abort(f"capacity preflight requires the already-installed authenticated GPU runtime: {exc}")
             else:
                 run_prerequisite(
                     [
@@ -4225,6 +5186,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             print("[ezkl-formal] PREFLIGHT_ONLY_READY: resources/SRS/GPU/build identities passed; no setup/prove was run", flush=True)
             _set_stage(session_file, "preflight_complete")
         return 0
+
+    if args.capacity_preflight_only and not build_reusable:
+        abort("capacity-only preflight requires the existing source/resource/runtime-matched GPU build; rebuilding is forbidden in this mode")
 
     if not build_reusable:
         if args.resume_session is not None:
@@ -4336,7 +5300,31 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 abort(f"{dataset} durable result checkpoint has no active dataset directory")
             if output.is_dir() and _completed_cell_checkpoint(output, dataset, session_id, session_file):
                 completed_datasets.add(dataset)
-    session_dir = output_root / ".sessions" / session_id
+    _set_stage(session_file, "five_dataset_native_admission_preflight")
+    admissions = _run_five_admission_preflight(
+        binary=binary,
+        srs=srs,
+        output_root=output_root,
+        session_id=session_id,
+        session_file=session_file,
+        authenticated_context=context,
+        selected_device=selected_device,
+        saved_admissions=saved_admissions,
+        capacity_only=args.capacity_preflight_only,
+    )
+    if args.capacity_preflight_only:
+        session_document = load_json(session_file, "formal session record")
+        session_document["capacity_preflight_only"] = {
+            "status": "ADMISSION_CAPACITY_ONLY",
+            "setup_started": False,
+            "proof_started": False,
+            "result_status": "NOT_A_FORMAL_RESULT",
+        }
+        _write_session_record(session_file, session_document)
+        _set_stage(session_file, "capacity_admission_preflight_complete")
+        print("[ezkl-formal] capacity-only preflight complete; Setup/Keygen/Witness/Prove/Verify were not run", flush=True)
+        return 0
+
     session_document = load_json(session_file, "formal session record")
     workspace_receipt_value = session_document.get("native_cub_workspace_receipt")
     if workspace_receipt_value is not None and not isinstance(workspace_receipt_value, dict):
@@ -4354,25 +5342,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         nonlocal workspace_receipt
         dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
-        _set_stage(session_file, f"{dataset}_native_relation_admission", active_dataset=dataset)
-        admissions = native_admit_all_datasets(
-            binary,
-            srs,
-            output_root,
-            session_id,
-            selected_device,
-            datasets=(dataset,),
-            reuse_receipt=saved_admissions,
-            receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
-            command_runner=lambda command, label: run(
-                command,
-                label,
-                gpu=True,
-                log_path=dataset_log_dir / "native_admission.log",
-            ),
-        )
         admission = admissions[dataset]
-        saved_admissions[dataset] = admission
         session_document = load_json(session_file, "formal session record")
         archived_value = session_document.get("outputs_archived_for_session", False)
         if not isinstance(archived_value, bool):
@@ -4424,9 +5394,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         if output.exists() and not output.is_dir():
             abort(f"formal output path is not a regular directory: {output}")
         if output.is_dir():
-            if setup_reused:
-                quarantine_partial_production(output, output_root, session_id, dataset)
-            else:
+            if not setup_reused:
                 _quarantine_session_path(output, output_root, session_id, f"{dataset}-partial-cell")
         item = _formal_dataset_command_plan(binary, srs, output_root, admissions, datasets=(dataset,))[0]
         if not setup_reused:
@@ -4534,7 +5502,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             build_environment=build_environment,
             disk_budget_components=proof_disk_components,
         )
-        native_prove_budget_sha256 = _write_native_prove_budget_receipt(
+        native_prove_budget_sha256 = _load_reusable_native_prove_budget_receipt(
             output,
             dataset=dataset,
             session_id=session_id,
@@ -4544,9 +5512,25 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             native_keygen_budget_sha256=sha256(output / "native_keygen_budget.json"),
             native_keygen_receipt_sha256=native_keygen_receipt_sha256,
             capacity=capacity_requirements[dataset],
-            prove_check=prove_check,
             workspace_query=workspace_receipt["query"],
         )
+        if native_prove_budget_sha256 is None:
+            native_prove_budget_path = output / "native_prove_budget.json"
+            if native_prove_budget_path.exists() or native_prove_budget_path.is_symlink():
+                _quarantine_session_path(native_prove_budget_path, output_root, session_id, f"{dataset}-stale-native-prove-budget")
+            native_prove_budget_sha256 = _write_native_prove_budget_receipt(
+                output,
+                dataset=dataset,
+                session_id=session_id,
+                admission=admission,
+                resume_identity=resume_identity,
+                setup_receipt_sha256=setup_receipt_sha256,
+                native_keygen_budget_sha256=sha256(output / "native_keygen_budget.json"),
+                native_keygen_receipt_sha256=native_keygen_receipt_sha256,
+                capacity=capacity_requirements[dataset],
+                prove_check=prove_check,
+                workspace_query=workspace_receipt["query"],
+            )
         prove_check["native_prove_budget_sha256"] = native_prove_budget_sha256
         prepare_budget = _native_prepare_budget(
             capacity_requirements[dataset], initial_available_bytes=int(prove_check["host_available_bytes"]), workspace_query=workspace_receipt["query"]
@@ -4555,9 +5539,44 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         session_document = load_json(session_file, "formal session record")
         session_document.setdefault("capacity_checks", []).append(prove_check)
         _write_session_record(session_file, session_document)
-        invoke_python_entrypoint(
-            "produce_public_statement", item["producer"], f"{dataset} independent public statement/Y producer", context=context, session_id=session_id
+        stage_receipt_hooks = _stage_receipt_hooks(
+            session_file=session_file,
+            session_dir=session_dir,
+            output_root=output_root,
+            output=output,
+            dataset=dataset,
+            session_id=session_id,
+            resume_identity=resume_identity,
+            admission_sha256=str(admission.get("sha256")),
+            setup_receipt_sha256=setup_receipt_sha256,
+            native_prove_budget_sha256=native_prove_budget_sha256,
         )
+        producer_inputs = {
+            "setup_context": output / "producer_context.json",
+            "settings": output / "settings.json",
+            "secure_config": ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg",
+            "resource_manifest": ROOT / "resources/resource_manifest.json",
+            "native_admission": local_path(str(admission["path"]), f"{dataset} authenticated native admission"),
+        }
+        producer_outputs = {
+            "statement": output / "statement.json",
+            "public_output": output / "public_output.json",
+            "producer_manifest": output / "producer_manifest.json",
+        }
+        producer_ms = stage_receipt_hooks["try_reuse"]("producer", producer_inputs, producer_outputs)
+        if producer_ms is None:
+            stage_receipt_hooks["invalidate_from"]("producer", "producer receipt or its input/output identities are missing or stale")
+            producer_ms = invoke_python_entrypoint(
+                "produce_public_statement",
+                item["producer"],
+                f"{dataset} independent public statement/Y producer",
+                context=context,
+                session_id=session_id,
+                log_path=output / "logs" / "producer.log",
+            )
+        else:
+            print(f"[ezkl-formal] reuse authenticated {dataset} public statement producer ({float(producer_ms):.3f} ms original wall)", flush=True)
+        stage_receipt_hooks["record"]("producer", producer_inputs, producer_outputs, float(producer_ms))
         cardinality_bounds = admission["native_memory_model"]["lookup_table_cardinality_upper_bounds"]
         taskcap_env, device_headroom_env, cardinality_env = _validated_native_prepare_exports(
             prepare_budget,
@@ -4571,7 +5590,13 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         try:
             _set_stage(session_file, f"{dataset}_witness_prove_independent_verify", active_dataset=dataset)
             invoke_python_entrypoint(
-                "run_single_dataset", item["single"], f"{dataset} final/witness/prove/independent verify", context=context, session_id=session_id
+                "run_single_dataset",
+                item["single"],
+                f"{dataset} final/witness/prove/independent verify",
+                context=context,
+                session_id=session_id,
+                stage_receipt_hooks=stage_receipt_hooks,
+                producer_wall_ms=float(producer_ms),
             )
         finally:
             for name in ("EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"):
@@ -4610,55 +5635,122 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         ):
             abort(f"formal run has no independently verified durable result for {dataset}")
 
-    _set_stage(session_file, "collect_five_results")
-    try:
-        finalization_capacity = check_finalization_capacity(
-            output_root=output_root,
-            matrix_path=matrix,
+    result_inputs_sha256, _ = _finalization_result_identity(
+        output_root=output_root,
+        session_dir=session_dir,
+        session_file=session_file,
+        session_id=session_id,
+    )
+    collect_log = session_dir / "logs" / "collect.log"
+    collect_reuse = _try_reuse_finalization_receipt(
+        session_file=session_file,
+        session_id=session_id,
+        stage="collector",
+        inputs_sha256=result_inputs_sha256,
+        matrix=matrix,
+        log_path=collect_log,
+        status="COLLECTED_PENDING_FINAL_VALIDATION",
+    )
+    if collect_reuse is None:
+        _clear_finalization_receipts(session_file, ("collector", "final_validator"), "collector receipt or one of its result/matrix/log identities is missing or stale")
+        _set_stage(session_file, "collect_five_results")
+        try:
+            finalization_capacity = check_finalization_capacity(
+                output_root=output_root,
+                matrix_path=matrix,
+                session_file=session_file,
+                session_id=session_id,
+                source_tree_sha256=source_tree_hash(),
+                resource_manifest_sha256=resource_manifest_hash(),
+                phase="collector",
+            )
+        except FinalizationCapacityError as exc:
+            abort(str(exc))
+        session_document = json.loads(session_file.read_text())
+        session_document["finalization_capacity"] = finalization_capacity
+        _write_session_record(session_file, session_document)
+        collector_ms = run(
+            [
+                python,
+                local_cli(collect, "result collector"),
+                "--runs-root",
+                local_cli(output_root, "output-root"),
+                "--output",
+                local_cli(matrix, "matrix"),
+                "--session-id",
+                session_id,
+            ],
+            "collect five-dataset result matrix",
+            log_path=collect_log,
+        )
+        collector_receipt_sha256 = _record_finalization_receipt(
             session_file=session_file,
             session_id=session_id,
-            source_tree_sha256=source_tree_hash(),
-            resource_manifest_sha256=resource_manifest_hash(),
-            phase="collector",
+            stage="collector",
+            inputs_sha256=result_inputs_sha256,
+            matrix=matrix,
+            log_path=collect_log,
+            status="COLLECTED_PENDING_FINAL_VALIDATION",
+            elapsed_ms=collector_ms,
         )
-    except FinalizationCapacityError as exc:
-        abort(str(exc))
-    session_document = json.loads(session_file.read_text())
-    session_document["finalization_capacity"] = finalization_capacity
-    _write_session_record(session_file, session_document)
-    run(
-        [
-            python,
-            local_cli(collect, "result collector"),
-            "--runs-root",
-            local_cli(output_root, "output-root"),
-            "--output",
-            local_cli(matrix, "matrix"),
-            "--session-id",
-            session_id,
-        ],
-        "collect five-dataset result matrix",
+    else:
+        collector_ms, collector_receipt_sha256 = collect_reuse
+        print(f"[ezkl-formal] reuse authenticated five-result collection ({collector_ms:.3f} ms original wall)", flush=True)
+
+    validator_inputs_sha256 = canonical_json_digest({
+        "schema": "ezkl.formal-final-validator-inputs.v1",
+        "five_result_inputs_sha256": result_inputs_sha256,
+        "matrix_sha256": sha256(matrix),
+        "collector_receipt_sha256": collector_receipt_sha256,
+    })
+    validate_log = session_dir / "logs" / "validate.log"
+    validator_reuse = _try_reuse_finalization_receipt(
+        session_file=session_file,
+        session_id=session_id,
+        stage="final_validator",
+        inputs_sha256=validator_inputs_sha256,
+        matrix=matrix,
+        log_path=validate_log,
+        status="FINAL_VALIDATION_OK",
+        collector_receipt_sha256=collector_receipt_sha256,
     )
-    _set_stage(session_file, "final_matrix_validation")
-    try:
-        validation_capacity = check_finalization_capacity(
-            output_root=output_root,
-            matrix_path=matrix,
+    if validator_reuse is None:
+        _clear_finalization_receipts(session_file, ("final_validator",), "final-validator receipt or its verified collection/matrix/log identities is missing or stale")
+        _set_stage(session_file, "final_matrix_validation")
+        try:
+            validation_capacity = check_finalization_capacity(
+                output_root=output_root,
+                matrix_path=matrix,
+                session_file=session_file,
+                session_id=session_id,
+                source_tree_sha256=source_tree_hash(),
+                resource_manifest_sha256=resource_manifest_hash(),
+                phase="validator",
+            )
+        except FinalizationCapacityError as exc:
+            abort(str(exc))
+        session_document = json.loads(session_file.read_text())
+        session_document["final_validation_capacity"] = validation_capacity
+        _write_session_record(session_file, session_document)
+        validation_ms = run(
+            [python, local_cli(validate, "result validator"), "--matrix", local_cli(matrix, "matrix"), "--session-id", session_id],
+            "validate five-dataset result matrix",
+            log_path=validate_log,
+        )
+        _record_finalization_receipt(
             session_file=session_file,
             session_id=session_id,
-            source_tree_sha256=source_tree_hash(),
-            resource_manifest_sha256=resource_manifest_hash(),
-            phase="validator",
+            stage="final_validator",
+            inputs_sha256=validator_inputs_sha256,
+            matrix=matrix,
+            log_path=validate_log,
+            status="FINAL_VALIDATION_OK",
+            elapsed_ms=validation_ms,
+            collector_receipt_sha256=collector_receipt_sha256,
         )
-    except FinalizationCapacityError as exc:
-        abort(str(exc))
-    session_document = json.loads(session_file.read_text())
-    session_document["final_validation_capacity"] = validation_capacity
-    _write_session_record(session_file, session_document)
-    run(
-        [python, local_cli(validate, "result validator"), "--matrix", local_cli(matrix, "matrix"), "--session-id", session_id],
-        "validate five-dataset result matrix",
-    )
+    else:
+        validation_ms, _ = validator_reuse
+        print(f"[ezkl-formal] reuse authenticated final validation ({validation_ms:.3f} ms original wall)", flush=True)
     print(f"validated five formal results: {matrix.relative_to(ROOT)}")
     print(f"view: {python} -m json.tool {matrix.relative_to(ROOT)}")
     return 0
@@ -4680,6 +5772,8 @@ def _main(args: argparse.Namespace) -> int:
     if not args._from_ezkl_entry:
         abort("start EZKL formal sessions with scripts/run_formal_matrix.py")
     normalize_formal_execution_environment()
+    if args.capacity_preflight_only and (args.preflight_only or args.resume_session is not None):
+        abort("--capacity-preflight-only cannot be combined with --preflight-only or --resume-session")
     if args.resume_session is not None:
         if args.preflight_only:
             abort("--resume-session cannot be combined with --preflight-only")
@@ -4693,7 +5787,7 @@ def _main(args: argparse.Namespace) -> int:
     args.matrix = matrix.relative_to(ROOT).as_posix()
     args.binary = binary.relative_to(ROOT).as_posix()
     check_output_paths(output_root, matrix)
-    session_id, session_file, lock_fd = begin_formal_session(output_root, matrix, args.resume_session)
+    session_id, session_file, lock_fd = begin_formal_session(output_root, matrix, args.resume_session, args._session_id)
     try:
         guardian = ProcessGuardian.start(root=ROOT, session_id=session_id, session_file=session_file, lock_fd=lock_fd)
     except BaseException as exc:
@@ -4707,7 +5801,9 @@ def _main(args: argparse.Namespace) -> int:
     try:
         result = _run_session(args, session_id=session_id, session_file=session_file)
         guardian.shutdown()
-        if args.preflight_only:
+        if args.capacity_preflight_only:
+            status, stage = "CAPACITY_PREFLIGHT_COMPLETE", "capacity_admission_preflight_complete"
+        elif args.preflight_only:
             stage = str(json.loads(session_file.read_text()).get("stage", "preflight_complete"))
             status = "PREFLIGHT_BUILD_REQUIRED" if stage == "preflight_build_required" else "PREFLIGHT_ONLY_READY"
         else:

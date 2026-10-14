@@ -1,0 +1,21 @@
+{
+  "schema": "zkgpt-gat-formal-fixture-v2",
+  "dataset": "synthetic",
+  "backend": "cpu",
+  "statement_digest": "15ac12d91e2432f16e09a760592ffbc5fc01c59583b168c6c3e56552eae7a37a",
+  "plan_digest": "0e5f256950c0f41a47333aa3c6fb62446571130a2dd940066268ef6d72301810",
+  "circuit_id": "R_GAT-zkGPT/0e5f256950c0f41a47333aa3c6fb62446571130a2dd940066268ef6d72301810",
+  "proof_digest": "06c8b162407f03f9604d3292daeae86a6dc93e4d834562fd435628a0dd505740",
+  "registration_digest": "0798fe41d4bb813af811732818921068e5a132aa8bdde5d3803f82143748f27a",
+  "registration_binding_digest": "075f2124a30d92b23221e8655a35f02d661477dfe0b4d9400b44045353840559",
+  "registration_layout_digest": "0aac87d2c15c3290a29fddbf52aca7b237cbea9d88c56def570711d6ae0bf326",
+  "com_W_point": "29e9ce1adaec82ecbb3315fb94db0c32e951ee6a29a362b932e35bfa7d85f924",
+  "full_dataset_identity": "canonical:synthetic",
+  "checkpoint_identity": "baseline-local/checkpoints/synthetic_gat/integrity.sha256",
+  "cache_identity": "baseline-local/data/cache/synthetic/integrity.sha256",
+  "verifier_context_path": "baseline-local/repair/runner-contract-fixture-20261013-01/tiny-proof/verifier_context.bin",
+  "public_logits_path": "baseline-local/repair/runner-contract-fixture-20261013-01/tiny-proof/public_logits.txt",
+  "artifact_path": "baseline-local/repair/runner-contract-fixture-20261013-01/tiny-proof/proof.artifact",
+  "artifact_sha256": "0268c2ff69a037efcabba2843dc69c6d8b9443651a626884da06e2414ab1f0a1",
+  "artifact_size_bytes": 8244272
+}

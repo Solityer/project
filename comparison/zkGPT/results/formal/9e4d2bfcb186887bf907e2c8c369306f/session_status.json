@@ -1,0 +1,96 @@
+{
+  "active_stage": "cell:ogbn_arxiv",
+  "completed_stages": [
+    "prepare"
+  ],
+  "dataset_failures": {
+    "citeseer": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/9e4d2bfcb186887bf907e2c8c369306f/cell-citeseer.stderr.log",
+    "cora": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/9e4d2bfcb186887bf907e2c8c369306f/cell-cora.stderr.log",
+    "ppi": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/9e4d2bfcb186887bf907e2c8c369306f/cell-ppi.stderr.log",
+    "pubmed": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/9e4d2bfcb186887bf907e2c8c369306f/cell-pubmed.stderr.log"
+  },
+  "failure": "",
+  "local_capacity_rechecks": [
+    {
+      "checked_unix_ns": 1791909634692591066,
+      "disk_available_bytes": 1680198221824,
+      "disk_required_bytes": 11814379344,
+      "fs_device_id": "66306",
+      "host_available_bytes": 125040254976,
+      "host_required_bytes": 10342892216,
+      "pending_datasets": [
+        "cora"
+      ],
+      "stage": "before-cell:cora"
+    },
+    {
+      "checked_unix_ns": 1791911771709986914,
+      "disk_available_bytes": 1680106999808,
+      "disk_required_bytes": 13760589639,
+      "fs_device_id": "66306",
+      "host_available_bytes": 122420604928,
+      "host_required_bytes": 11202356812,
+      "pending_datasets": [
+        "citeseer"
+      ],
+      "stage": "before-cell:citeseer"
+    },
+    {
+      "checked_unix_ns": 1791914070673525100,
+      "disk_available_bytes": 1679990693888,
+      "disk_required_bytes": 83811446782,
+      "fs_device_id": "66306",
+      "host_available_bytes": 114380423168,
+      "host_required_bytes": 12906662235,
+      "pending_datasets": [
+        "pubmed"
+      ],
+      "stage": "before-cell:pubmed"
+    },
+    {
+      "checked_unix_ns": 1791914074977831182,
+      "disk_available_bytes": 1679990632448,
+      "disk_required_bytes": 774683804204,
+      "fs_device_id": "66306",
+      "host_available_bytes": 114368233472,
+      "host_required_bytes": 24859202427,
+      "pending_datasets": [
+        "ppi"
+      ],
+      "stage": "before-cell:ppi"
+    },
+    {
+      "checked_unix_ns": 1791914078647446090,
+      "disk_available_bytes": 1679990595584,
+      "disk_required_bytes": 1362213820604,
+      "fs_device_id": "66306",
+      "host_available_bytes": 114337837056,
+      "host_required_bytes": 38875843278,
+      "pending_datasets": [
+        "ogbn_arxiv"
+      ],
+      "stage": "before-cell:ogbn_arxiv"
+    }
+  ],
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906071,
+    "owner_pid": 1777764,
+    "owner_start_ticks": 35773738,
+    "owner_token_sha256": "b24cb9abfb949e07cebac27142382bcd26d660f8bab4230fd1bcae9e1c88345d",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "9e4d2bfcb186887bf907e2c8c369306f"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "9e4d2bfcb186887bf907e2c8c369306f",
+  "stage_status": {
+    "cell:citeseer": "FAILED",
+    "cell:cora": "FAILED",
+    "cell:ppi": "FAILED",
+    "cell:pubmed": "FAILED",
+    "prepare": "PASS"
+  },
+  "started_unix_ns": 1791909097579340814,
+  "status": "RUNNING",
+  "updated_unix_ns": 1791914078845948123
+}

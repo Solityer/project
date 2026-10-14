@@ -48,8 +48,10 @@ def _validate_preflight(root: Path, preflight: Mapping[str, Any], resource_diges
                         session_id: str, session_manifest_sha256: str,
                         runtime_source_sha256: str, native_source_sha256: str) -> None:
     if (preflight.get("schema") != PREFLIGHT_SCHEMA or preflight.get("status") != "READY" or
-            preflight.get("formal_experiment_eligible") is not True):
-        raise ChainError("formal preflight is not current schema-v3 READY")
+            preflight.get("formal_experiment_eligible") is not True or
+            preflight.get("shared_preconditions_ready") is not True or
+            preflight.get("source_ready") is not True or preflight.get("resources_ready") is not True):
+        raise ChainError("formal preflight is not current schema-v4 READY")
     if (preflight.get("session_id") != session_id or
             preflight.get("session_manifest_sha256") != session_manifest_sha256 or
             preflight.get("runtime_source_sha256") != runtime_source_sha256 or

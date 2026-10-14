@@ -382,10 +382,10 @@ impl GatOp {
             .ok_or(CircuitError::UnsupportedOp)
     }
 
-    /// Remove private model values from a serialized compiled graph while
-    /// retaining every shape, scale, bound and public H(W) binding needed to
-    /// lay out the runtime witness.  The normal in-memory operation is never
-    /// redacted; this is called only on the clone made by `GraphCircuit::save`.
+    /// Redact private model parameters in compiled-graph and witnessless-setup
+    /// metadata copies, preserving shapes, scales, bounds and the public H(W)
+    /// binding. Runtime private witness W is not redacted; the proving circuit
+    /// still constrains W under the same public inputs and H(W) binding.
     pub fn redact_private_params(&mut self) {
         for layer in &mut self.spec.model.hidden_layers {
             for head in &mut layer.heads {

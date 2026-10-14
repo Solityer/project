@@ -1,0 +1,3 @@
+[ezkl-formal] normalized inherited formal environment selectors: CARGO_HOME, RUSTUP_TOOLCHAIN
+[ezkl-formal] runtime identity PASS: interpreter=/usr/bin/python3.12 Python 3.12.3, NumPy 1.26.4, Rust nightly-2025-12-01, CUDA compiler=/usr/local/cuda-13.0/bin/nvcc
+[recovery] FAIL: full current build environment differs from the authenticated receipt: {'build_environment_sha256': {'receipt': '83714cc557f9a52948913cd5fde18cf245a0c80ee14972df66f4a69251ca07d6', 'current': '7ace4678cb1c651bd64952fb69e3d0f97a0df78fc4724b0022b0d1eb9dd54aae'}, 'path_sha256': {'receipt': '91cb685f6c8358a2d3e4c47041cca4bea9758ea54fa0f5190c43ffeef03e53ab', 'current': 'b78c1e3928494edc5793f1e0aad73d9b9c41530ee746dd8cabf14330aad36899'}}

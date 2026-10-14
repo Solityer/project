@@ -29,6 +29,7 @@ from common import (
     file_fingerprint,
     formal_backend_capability,
     formal_child_environment,
+    ensure_directory,
     load_json,
     invalidate_results,
     relative_path,
@@ -42,6 +43,7 @@ from common import (
     formal_preflight_path,
     require_formal_session,
     runtime_source_sha256,
+    atomic_write_text,
 )
 
 CAPACITY_SCHEMA = "zkgpt-gat-capacity-v8"
@@ -53,6 +55,8 @@ CAPACITY_INTEGER_FIELDS += ("forward_admission_peak_host_memory_bytes_upper_boun
 CAPACITY_INTEGER_FIELDS += ("explicit_unary_gate_buffer_entry_bytes",)
 LASSO_PROFILE_U64_FIELDS = ("padded_queries", "table_domain", "full_domain", "rows", "columns", "private_witness_entries", "private_witness_element_bytes", "private_witness_bytes", "row_blinding_bytes", "row_commitment_bytes", "column_generator_bytes", "row_fold_weights_bytes", "row_fold_values_bytes", "onehot_query_bytes", "t2_column_one_bytes", "onehot_heap_peak_bytes", "masked_opening_generator_bytes", "masked_opening_coefficient_bytes", "masked_opening_response_bytes", "row_ledger_retained_bytes", "commit_peak_bytes", "booleanity_peak_bytes", "row_fold_peak_bytes", "opening_peak_bytes", "family_peak_bytes", "row_commitment_chunk_count", "booleanity_rounds", "onehot_rounds", "lookup_rounds", "hyrax_matrix_masked_openings", "hyrax_l_qry_tensor_openings")
 LASSO_FAMILY_IDS = ("lrelu", "exp", "elu", "range")
+GKR_LAYER_U64_FIELDS = ("size", "size_u0", "size_u1", "size_v0", "size_v1", "unary_gates", "binary_gates", "native_rows", "native_inner", "native_cols", "phase1_rounds", "phase1_first_round_pair_visits", "phase1_followup_pair_visits", "phase1_total_pair_visits", "phase1_extent_visits", "phase1_followup_extent_visits", "phase1_first_round_field_adds_upper_bound", "phase1_first_round_field_subs_upper_bound", "phase1_first_round_field_muls_upper_bound", "phase1_followup_field_adds_upper_bound", "phase1_followup_field_subs_upper_bound", "phase1_followup_field_muls_upper_bound", "phase1_init_active_scalar_assignments", "phase2_rounds", "phase2_first_round_pair_visits", "phase2_followup_pair_visits", "phase2_total_pair_visits", "phase2_extent_visits", "phase2_followup_extent_visits", "phase2_first_round_field_adds_upper_bound", "phase2_first_round_field_subs_upper_bound", "phase2_first_round_field_muls_upper_bound", "phase2_followup_field_adds_upper_bound", "phase2_followup_field_subs_upper_bound", "phase2_followup_field_muls_upper_bound", "phase2_init_active_scalar_assignments")
+GKR_LAYER_PROFILE_FIELDS = frozenset(("layer_type", "bit_length", "max_bl_u", "max_bl_v", "need_phase2", "source_domains_exact", *GKR_LAYER_U64_FIELDS))
 
 
 def capacity_u64(value: Any, key: str, dataset: str, *, positive: bool = False) -> int:
@@ -108,10 +112,29 @@ def reject_floating_json_number(value: str) -> None:
 
 
 def parse_capacity_integer(value: str) -> int:
-    parsed = int(value)
-    if parsed < 0 or parsed > CAPACITY_U64_MAX:
-        raise ValueError(f"capacity integer exceeds uint64: {value}")
-    return parsed
+    return int(value)
+
+
+def validate_gkr_layer_work_profile(payload: Mapping[str, Any], dataset: str) -> None:
+    profiles = payload.get("gkr_layer_work_profile")
+    layer_count = payload.get("gkr_layer_count_upper_bound")
+    if not isinstance(profiles, list) or type(layer_count) is not int or len(profiles) != layer_count:
+        raise ChainError(f"capacity has invalid GKR layer work profile for {dataset}")
+    for index, profile in enumerate(profiles):
+        if not isinstance(profile, dict) or set(profile) != GKR_LAYER_PROFILE_FIELDS:
+            raise ChainError(f"capacity has invalid GKR layer work profile fields at layer {index} for {dataset}")
+        for key in GKR_LAYER_U64_FIELDS:
+            capacity_u64(profile.get(key), f"gkr_layer_work_profile[{index}].{key}", dataset)
+        layer_type = profile.get("layer_type")
+        if type(layer_type) is not int or layer_type < 0 or layer_type > (1 << 32) - 1:
+            raise ChainError(f"capacity has invalid GKR layer type at layer {index} for {dataset}")
+        for key in ("bit_length", "max_bl_u", "max_bl_v"):
+            value = profile.get(key)
+            if type(value) is not int or value < -1 or value > (1 << 31) - 1:
+                raise ChainError(f"capacity has invalid signed GKR {key} at layer {index} for {dataset}")
+        for key in ("need_phase2", "source_domains_exact"):
+            if type(profile.get(key)) is not bool:
+                raise ChainError(f"capacity has invalid GKR {key} flag at layer {index} for {dataset}")
 
 
 def validate_canonical_graph_identity(payload: Mapping[str, Any], dataset: str,
@@ -155,6 +178,7 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         raise ChainError(f"capacity graph/model class counts disagree for {dataset}")
     for key in CAPACITY_INTEGER_FIELDS:
         capacity_u64(payload.get(key), key, dataset)
+    validate_gkr_layer_work_profile(payload, dataset)
     if payload.get("gkr_point_shape_ready") is not True:
         raise ChainError(f"capacity has no successful native GKR point-domain shape admission for {dataset}")
     if payload.get("forward_value_admission_ready") is not True:
@@ -622,22 +646,36 @@ def check_capabilities(root: Path, backend: str, executable: Path) -> Dict[str, 
     return payload
 
 
-def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
+def run_capacity(root: Path, dataset: str, backend: str, log_dir: Path) -> Dict[str, Any]:
     config_path, config = config_with_auth(root, dataset)
     prover = build_binary(root, backend)
+    ensure_directory(log_dir, "capacity diagnostic log directory", root)
+    stdout_log = log_dir / f"{dataset}-{backend}.stdout.log"
+    stderr_log = log_dir / f"{dataset}-{backend}.stderr.log"
     print(f"CAPACITY_ADMISSION_BEGIN dataset={dataset} backend={backend}", file=sys.stderr, flush=True)
     completed = subprocess.run(
         [str(prover), "--capacity-only", "--dataset", dataset, "--backend", backend,
          "--baseline-root", str(root), "--config", relative_path(root, config_path, "dataset config")],
-        cwd=str(root), text=True, stdout=subprocess.PIPE, env=formal_child_environment(), check=False,
+        cwd=str(root), text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=formal_child_environment(), check=False,
     )
+    atomic_write_text(stdout_log, completed.stdout, root)
+    atomic_write_text(stderr_log, completed.stderr, root)
+    print(f"CAPACITY_NATIVE_LOGS dataset={dataset} stdout={relative_path(root, stdout_log, 'capacity stdout log')} stderr={relative_path(root, stderr_log, 'capacity stderr log')}", file=sys.stderr, flush=True)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+        if not completed.stderr.endswith("\n"):
+            sys.stderr.write("\n")
+        sys.stderr.flush()
     try:
         payload = json.loads(completed.stdout, parse_constant=reject_nonfinite_json_constant, parse_float=reject_floating_json_number, parse_int=parse_capacity_integer)
     except ValueError as exc:
         raise ChainError(
-            f"capacity output is not strict uint64 JSON for {dataset}/{backend} "
+            f"capacity output is not strict integer JSON for {dataset}/{backend} "
             f"(exit={completed.returncode}, stdout_chars={len(completed.stdout)}, "
-            f"stdout_prefix={completed.stdout[:128]!r}, parse_error={exc})"
+            f"stdout_prefix={completed.stdout[:128]!r}, parse_error={exc}); "
+            f"native logs: stdout={relative_path(root, stdout_log, 'capacity stdout log')}, "
+            f"stderr={relative_path(root, stderr_log, 'capacity stderr log')}"
         ) from exc
     if not isinstance(payload, dict) or payload.get("schema") != CAPACITY_SCHEMA:
         raise ChainError(f"unsupported capacity schema for {dataset}/{backend}")
@@ -660,7 +698,10 @@ def run_capacity(root: Path, dataset: str, backend: str) -> Dict[str, Any]:
         raise ChainError(f"capacity READY report carries a blocker reason for {dataset}/{backend}")
     if payload.get("status") == "BLOCKED" and (not isinstance(payload.get("reason"), str) or not payload["reason"]):
         raise ChainError(f"capacity blocker has no reason for {dataset}/{backend}")
-    validate_canonical_graph_identity(payload, dataset, config)
+    try:
+        validate_canonical_graph_identity(payload, dataset, config)
+    except ChainError as exc:
+        raise ChainError(f"{exc}; native logs: stdout={relative_path(root, stdout_log, 'capacity stdout log')}, stderr={relative_path(root, stderr_log, 'capacity stderr log')}") from exc
 
     print(
         f"CAPACITY_ADMISSION_END dataset={dataset} status={payload.get('status')} "
@@ -731,32 +772,42 @@ def main(argv: Sequence[str]) -> int:
             entry["blocker"] = str(exc)
             blockers.append(str(exc))
         backend_report[backend] = entry
+    capacity_log_dir = preflight_path.parent / "capacity_logs"
     if not blockers and "cpu" in selected:
         for dataset in DATASETS:
             try:
-                capacity[dataset] = run_capacity(root, dataset, "cpu")
-                if capacity[dataset].get("status") == "BLOCKED":
-                    blockers.append(
-                        f"capacity blocked for {dataset}/cpu: "
-                        f"{capacity[dataset].get('reason', 'unspecified native capacity blocker')}"
-                    )
+                capacity[dataset] = run_capacity(root, dataset, "cpu", capacity_log_dir)
             except (ChainError, OSError, ValueError, subprocess.SubprocessError) as exc:
-                blockers.append(str(exc))
-                capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "reason": str(exc)}
+                stdout_log = capacity_log_dir / f"{dataset}-cpu.stdout.log"
+                stderr_log = capacity_log_dir / f"{dataset}-cpu.stderr.log"
+                log_note = ""
+                if stdout_log.is_file() and stderr_log.is_file():
+                    log_note = f"; native logs: stdout={relative_path(root, stdout_log, 'capacity stdout log')}, stderr={relative_path(root, stderr_log, 'capacity stderr log')}"
+                capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "reason": f"{exc}{log_note}"}
+    all_capacity_ready = set(capacity) == set(DATASETS) and all(
+        isinstance(capacity.get(dataset), dict) and capacity[dataset].get("status") == "READY"
+        for dataset in DATASETS
+    )
+    capacity_matrix_valid = set(capacity) == set(DATASETS) and all(
+        isinstance(capacity.get(dataset), dict) and capacity[dataset].get("status") in ("READY", "BLOCKED")
+        for dataset in DATASETS
+    )
+    preflight_status = "BLOCKED" if blockers or not capacity_matrix_valid else ("READY" if all_capacity_ready else "PARTIAL")
     payload = {
         "schema": PREFLIGHT_SCHEMA,
         "session_id": session_id,
         "session_manifest_sha256": session_manifest_sha256,
         "runtime_source_sha256": runtime_source_sha256(root),
         "native_source_sha256": session.get("native_source_sha256"),
-        "status": "READY" if not blockers else "BLOCKED",
-        "formal_experiment_eligible": not blockers,
+        "status": preflight_status,
+        "formal_experiment_eligible": preflight_status == "READY",
+        "shared_preconditions_ready": not blockers,
         "source_ready": not source_errors,
         "resources_ready": not resource_errors,
         "backends": backend_report,
         "capacity": capacity,
         "readiness_scope": "formal_execution_preconditions",
-        "static_checks_passed": not blockers,
+        "static_checks_passed": preflight_status == "READY",
         "development_e2e_checked": False,
         "development_e2e_check": "tests/check_formal_closure.py (separate development evidence)",
         "formal_results_complete": False,
@@ -773,11 +824,18 @@ def main(argv: Sequence[str]) -> int:
     except ChainError as exc:
         print(f"PREFLIGHT_OUTPUT_FAILED: {exc}", file=sys.stderr)
         return 2
-    if blockers:
+    if preflight_status == "BLOCKED":
         print("FORMAL_PREFLIGHT_BLOCKED", file=sys.stderr)
         for blocker in blockers:
             print(f"- {blocker}", file=sys.stderr)
         return 2
+    if preflight_status == "PARTIAL":
+        print("FORMAL_PREFLIGHT_PARTIAL")
+        for dataset in DATASETS:
+            item = capacity[dataset]
+            if item.get("status") == "BLOCKED":
+                print(f"CAPACITY_BLOCKED dataset={dataset}: {item.get('reason')}")
+        return 0
     print("FORMAL_PREFLIGHT_READY")
     return 0
 

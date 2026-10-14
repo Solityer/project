@@ -52,7 +52,7 @@ from common import (
 from collect_results import _validate_preflight
 from gat_zkgpt_experiment import run_cell
 
-LOCAL_CAPACITY_PROFILE_SCHEMA = "zkgpt-local-capacity-profile-v1"
+LOCAL_CAPACITY_PROFILE_SCHEMA = "zkgpt-local-capacity-profile-v2"
 LOCAL_OWNER_SCHEMA = "zkgpt-local-formal-owner-v1"
 CELL_INTERNAL_LOG_RESERVE_BYTES = 16 * 1024 * 1024
 FINALIZATION_INTERNAL_DISK_RESERVE_BYTES = 64 * 1024 * 1024
@@ -171,12 +171,17 @@ def _capacity_profile(session_id: str, session_dir: Path, preflight: Mapping[str
     datasets: Dict[str, Any] = {}
     for dataset in DATASETS:
         item = capacities[dataset]
-        if (
-            not isinstance(item, dict)
-            or item.get("status") != "READY"
-            or item.get("proof_path") != "formal_native_masked_lasso_hyrax+native_masked_layered_gkr"
-            or item.get("full_relation_bound") is not True
-        ):
+        if not isinstance(item, dict):
+            raise ChainError(f"zkGPT capacity admission is malformed for {dataset}")
+        if item.get("status") == "BLOCKED":
+            reason = item.get("reason")
+            if not isinstance(reason, str) or not reason:
+                raise ChainError(f"zkGPT blocked capacity has no reason for {dataset}")
+            datasets[dataset] = {"status": "BLOCKED", "reason": reason}
+            continue
+        if (item.get("status") != "READY" or
+                item.get("proof_path") != "formal_native_masked_lasso_hyrax+native_masked_layered_gkr" or
+                item.get("full_relation_bound") is not True):
             raise ChainError(f"zkGPT full relation/capacity admission is not READY for {dataset}")
         scratch = item.get("estimated_native_scratch_bytes")
         disk = item.get("disk_requirement_bytes_upper_bound")
@@ -196,6 +201,7 @@ def _capacity_profile(session_id: str, session_dir: Path, preflight: Mapping[str
         retained_upper = retained + CELL_INTERNAL_LOG_RESERVE_BYTES
         host_upper = host + wire + context + HOST_ACCOUNTING_OVERHEAD_BYTES
         datasets[dataset] = {
+            "status": "READY",
             "additional_disk_peak_bytes": additional_disk,
             "cell_retained_artifact_bytes_upper_bound": retained_upper,
             "host_peak_bytes": host_upper,
@@ -203,7 +209,7 @@ def _capacity_profile(session_id: str, session_dir: Path, preflight: Mapping[str
             "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
         }
     fs_device = os.stat(session_dir.parent.parent, follow_symlinks=False).st_dev
-    finalization_host = max(item["host_peak_bytes"] for item in datasets.values())
+    finalization_host = max((item["host_peak_bytes"] for item in datasets.values() if item.get("status") == "READY"), default=HOST_ACCOUNTING_OVERHEAD_BYTES)
     return {
         "schema": LOCAL_CAPACITY_PROFILE_SCHEMA,
         "baseline": "zkgpt",
@@ -566,6 +572,9 @@ def _capacity_requirements(profile: Mapping[str, Any], pending_datasets: Sequenc
         item = datasets[dataset]
         if not isinstance(item, dict):
             raise ChainError(f"zkGPT local capacity entry is malformed for {dataset}")
+        if item.get("status") != "READY":
+            reason = item.get("reason")
+            raise ChainError(f"zkGPT dataset capacity is blocked for {dataset}: {reason if isinstance(reason, str) else 'missing reason'}")
         additional = item.get("additional_disk_peak_bytes")
         kept = item.get("cell_retained_artifact_bytes_upper_bound")
         host = item.get("host_peak_bytes")
@@ -574,6 +583,8 @@ def _capacity_requirements(profile: Mapping[str, Any], pending_datasets: Sequenc
         retained += kept
         scratch_peaks.append(additional - kept)
         host_peaks.append(host)
+    if not pending and any(datasets[dataset].get("status") != "READY" for dataset in DATASETS):
+        raise ChainError("zkGPT finalization capacity requires all five datasets to be READY")
     # Live free space already includes completed cells. Reserve only future
     # retained outputs, one cell's concurrent scratch, and finalization bytes.
     disk_required = retained + max(scratch_peaks, default=0) + final_disk
@@ -658,7 +669,7 @@ def _load_prepared(root: Path, session_id: str, session_dir: Path) -> tuple[Dict
     resource_digest = sha256_file(root / "results" / "resource_manifest.json")
     if context.get("resource_manifest_sha256") != resource_digest or context.get("preflight_sha256") != sha256_file(preflight_path):
         raise ChainError("zkGPT prepared resource/preflight digest is stale")
-    _validate_preflight(root, "cpu", preflight, resource_digest, session_id, session_manifest_sha256, session["native_source_sha256"])
+    _validate_preflight(root, "cpu", preflight, resource_digest, session_id, session_manifest_sha256, session["native_source_sha256"], allow_partial=True)
     local_profile = context.get("local_capacity_profile")
     expected_profile = _capacity_profile(session_id, session_dir, preflight)
     if (
@@ -720,8 +731,9 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
     _run_logged_stage(root, [sys.executable, str(root / "scripts" / "formal_preflight.py")], logs, "five-dataset-preflight")
     preflight_path = formal_preflight_path(root, sid)
     preflight = load_json(preflight_path, "formal preflight")
-    if not isinstance(preflight, dict) or preflight.get("status") != "READY" or preflight.get("formal_experiment_eligible") is not True:
-        raise ChainError("zkGPT all-five native relation/shape/capacity admission did not pass")
+    if (not isinstance(preflight, dict) or preflight.get("status") not in ("READY", "PARTIAL") or
+            preflight.get("shared_preconditions_ready") is not True):
+        raise ChainError("zkGPT shared source/resource/backend/session preconditions did not pass")
     resource_manifest = load_json(root / "results" / "resource_manifest.json", "resource manifest")
     if (
         not isinstance(resource_manifest, dict)
@@ -730,7 +742,7 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
     ):
         raise ChainError("zkGPT resource manifest is not authenticated")
     resource_digest = sha256_file(root / "results" / "resource_manifest.json")
-    _validate_preflight(root, "cpu", preflight, resource_digest, sid, session_manifest_sha256, session["native_source_sha256"])
+    _validate_preflight(root, "cpu", preflight, resource_digest, sid, session_manifest_sha256, session["native_source_sha256"], allow_partial=True)
     profile = _capacity_profile(sid, session_dir, preflight)
     context = {
         "schema": "zkgpt-gat-local-formal-context-v1",
@@ -759,10 +771,13 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
     for dataset in DATASETS:
         report = capacity_matrix[dataset]
         identity = report.get("canonical_graph_identity") if isinstance(report, dict) else None
-        if not isinstance(identity, dict):
-            raise ChainError(f"zkGPT capacity report has no actual graph identity for {dataset}")
-        graph_datasets[dataset] = identity
-    local_graph_identity = {"schema": "zkgpt-local-canonical-graph-set-v1", "datasets": graph_datasets}
+        if isinstance(identity, dict) and report.get("status") == "READY":
+            graph_datasets[dataset] = {"status": "READY", "identity": identity}
+        elif isinstance(report, dict) and report.get("status") == "BLOCKED" and isinstance(report.get("reason"), str) and report["reason"]:
+            graph_datasets[dataset] = {"status": "BLOCKED", "reason": report["reason"]}
+        else:
+            raise ChainError(f"zkGPT capacity report has no valid graph identity or capacity blocker for {dataset}")
+    local_graph_identity = {"schema": "zkgpt-local-canonical-graph-set-v2", "datasets": graph_datasets}
     _set_status(root, sid, "RUNNING", "prepared")
     return {
         "phase": "prepare",
@@ -1059,6 +1074,10 @@ def _run_official(root: Path) -> int:
             for dataset in DATASETS:
                 try:
                     _set_owner_control_stage(root, session_id, f"capacity-admission:before-cell:{dataset}", dataset)
+                    cell_capacity = profile["datasets"].get(dataset)
+                    if not isinstance(cell_capacity, dict) or cell_capacity.get("status") != "READY":
+                        reason = cell_capacity.get("reason") if isinstance(cell_capacity, dict) else None
+                        raise ChainError(f"preflight capacity BLOCKED for {dataset}: {reason if isinstance(reason, str) else 'missing capacity profile'}")
                     _capacity_gate(root, session_id, session_dir, profile, (dataset,), f"before-cell:{dataset}")
                     cell_marker = _run_owner_phase(root, lock_stream, session_id, session_dir, "cell", dataset, owner_token, owner_start_ticks, logs)
                     receipt_path = session_dir / "receipts" / f"{dataset}.json"

@@ -24,6 +24,9 @@ from typing import Any
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BN254_MODULUS = ("21888242871839275222246405745257275088548364400416034343698204186575808495617")
 U64_MAX = (1 << 64) - 1
+U128_MAX = (1 << 128) - 1
+I128_MIN = -(1 << 127)
+I128_MAX = (1 << 127) - 1
 TABLE_MAGIC = b"EZKL-GAT-TABLES\x00"
 TABLE_FORMAT_VERSION = 1
 TABLE_ORDER = ("lrelu", "exp", "elu", "max_relu")
@@ -95,8 +98,8 @@ def scale_list(config: dict[str, str], key: str) -> list[int]:
         values = [int(item.strip()) for item in value.split(",")]
     except ValueError as exc:
         raise ValueError(f"invalid scale-chain key {key}: {value}") from exc
-    if not values or any(item <= 0 for item in values):
-        raise ValueError(f"scale-chain key {key} must contain positive integers")
+    if not values or any(item <= 0 or item > U128_MAX for item in values):
+        raise ValueError(f"scale-chain key {key} must contain positive u128 integers")
     return values
 
 
@@ -105,6 +108,15 @@ def scale_value(config: dict[str, str], key: str) -> int:
     if len(values) != 1:
         raise ValueError(f"scale-chain key {key} must contain one value")
     return values[0]
+
+
+def scale_multipliers(config: dict[str, str], key: str, count: int) -> list[int]:
+    values = scale_list(config, key)
+    if len(values) != count:
+        raise ValueError(f"scale-chain key {key} width {len(values)} does not match authenticated width {count}")
+    if any(value & (value - 1) for value in values):
+        raise ValueError(f"scale-chain key {key} must contain positive power-of-two multipliers")
+    return values
 
 
 def write_cfg(path: Path, updates: dict[str, str]) -> None:
@@ -156,6 +168,8 @@ def load_tensors(path: Path) -> dict[str, tuple[list[int], list[float]]]:
         if tokens[cursor] != "TENSOR" or cursor + 3 >= len(tokens):
             raise ValueError(f"malformed tensor archive {path}")
         name = tokens[cursor + 1]
+        if not name or name in result:
+            raise ValueError(f"duplicate/empty tensor name in checkpoint archive: {name}")
         rank = int(tokens[cursor + 2])
         shape_start = cursor + 3
         shape = [int(x) for x in tokens[shape_start:shape_start + rank]]
@@ -169,21 +183,170 @@ def load_tensors(path: Path) -> dict[str, tuple[list[int], list[float]]]:
     return result
 
 
-def quantized_model(root: Path, dataset: str) -> dict[str, int]:
-    checkpoint = root / "resources/canonical/checkpoints" / f"{dataset}_gat"
-    tensors = load_tensors(checkpoint / "tensors.txt")
+def quantized_tensor_abs_max(
+    tensors: dict[str, tuple[list[int], list[float]]], name: str, multiplier: int, expected_count: int,
+    authenticated_shape: list[int], output_bias_classes: int | None = None,
+) -> int:
+    if multiplier <= 0 or multiplier > U128_MAX or multiplier & (multiplier - 1):
+        raise ValueError(f"quantization multiplier for {name} must be a positive power-of-two u128")
+    tensor = tensors.get(name)
+    if tensor is None:
+        raise ValueError(f"checkpoint is missing authenticated model tensor {name}")
+    shape, values = tensor
+    valid_shape = (
+        isinstance(authenticated_shape, list)
+        and bool(authenticated_shape)
+        and all(isinstance(dimension, int) and not isinstance(dimension, bool) and dimension > 0 for dimension in authenticated_shape)
+    )
+    output_bias_shapes = (
+        ([output_bias_classes], [1, output_bias_classes, 1])
+        if output_bias_classes is not None
+        else ()
+    )
+    shape_matches = shape == authenticated_shape
+    if output_bias_shapes:
+        shape_matches = shape_matches or (shape in output_bias_shapes and authenticated_shape in output_bias_shapes)
+    if (
+        not valid_shape or not shape_matches or not shape
+        or any(dimension <= 0 for dimension in shape)
+        or not values or len(values) != expected_count or math.prod(shape) != expected_count
+    ):
+        raise ValueError(f"checkpoint tensor {name} shape/count disagrees with its authenticated role")
+    maximum = 0
+    for value in values:
+        quantized = quantized_value(value, multiplier, name)
+        if quantized == I128_MIN:
+            raise ValueError(f"quantized checkpoint absolute bound exceeds signed i128 in {name}")
+        maximum = max(maximum, abs(quantized))
+    return maximum
+
+
+def quantized_value(value: float, multiplier: int, label: str) -> int:
+    if (
+        isinstance(multiplier, bool) or not isinstance(multiplier, int)
+        or multiplier <= 0 or multiplier > U128_MAX or multiplier & (multiplier - 1)
+    ):
+        raise ValueError(f"quantization multiplier for {label} must be a positive power-of-two u128")
+    if not math.isfinite(value):
+        raise ValueError(f"non-finite checkpoint value in {label}")
+    scaled = value * multiplier
+    if not math.isfinite(scaled):
+        raise ValueError(f"non-finite scaled checkpoint value in {label}")
+    if scaled > float(I128_MAX) or scaled < float(I128_MIN):
+        raise ValueError(f"scaled checkpoint value exceeds signed i128 range in {label}")
+    quantized = round_away(scaled)
+    # Preserve the native cast result at the representable +/-2^127 endpoints.
+    return min(I128_MAX, max(I128_MIN, quantized))
+
+
+def quantized_model_maxima(
+    tensors: dict[str, tuple[list[int], list[float]]], checkpoint: dict[str, Any], scales: dict[str, str],
+) -> dict[str, int]:
+    """Bound the exact checkpoint tensors using their authenticated per-head scales."""
+    hidden_layers = checkpoint.get("hidden_layers")
+    hidden_specs = checkpoint.get("hidden_head_specs")
+    output_specs = checkpoint.get("output_head_specs")
+    if (
+        not isinstance(hidden_layers, list) or not hidden_layers
+        or not isinstance(hidden_specs, list) or not isinstance(output_specs, list)
+        or checkpoint.get("L") != len(hidden_layers) + 1
+        or checkpoint.get("K_out") != len(output_specs)
+    ):
+        raise ValueError("checkpoint manifest has an incomplete authenticated layer/head schema")
+
+    def manifest_int(value: Any, label: str, minimum: int = 0) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+            raise ValueError(f"checkpoint manifest {label} is invalid")
+        return value
+
     maxima: dict[str, int] = {}
-    for name, (_shape, values) in tensors.items():
-        if name.startswith("hidden/"):
-            scale = 4
-        elif name.startswith("output/"):
-            scale = 16 if name.endswith("/output_bias") else 4
-        else:
-            continue
-        quantized = [round_away(value * scale) for value in values]
-        prefix = name.rsplit("/", 1)[0]
-        maxima[prefix] = max(maxima.get(prefix, 0), max((abs(v) for v in quantized), default=0))
+    used_tensors: set[str] = set()
+    tensor_index = checkpoint.get("tensor_index")
+    if not isinstance(tensor_index, dict):
+        raise ValueError("checkpoint manifest has no authenticated tensor_index")
+
+    def include(
+        name: Any, multiplier: int, expected_count: int, output_bias_classes: int | None = None,
+    ) -> None:
+        if not isinstance(name, str) or not name or name in used_tensors:
+            raise ValueError("checkpoint manifest has a missing or duplicate model tensor reference")
+        used_tensors.add(name)
+        metadata = tensor_index.get(name)
+        if not isinstance(metadata, dict):
+            raise ValueError(f"checkpoint tensor_index is missing authenticated shape for {name}")
+        authenticated_shape = metadata.get("shape")
+        family = name.rsplit("/", 1)[0]
+        maximum = quantized_tensor_abs_max(
+            tensors, name, multiplier, expected_count, authenticated_shape, output_bias_classes,
+        )
+        maxima[family] = max(maxima.get(family, 0), maximum)
+
+    grouped_specs: dict[int, list[dict[str, Any]]] = {}
+    for spec in hidden_specs:
+        if not isinstance(spec, dict):
+            raise ValueError("checkpoint hidden head spec is malformed")
+        layer_index = manifest_int(spec.get("layer_index"), "hidden layer index")
+        head_index = manifest_int(spec.get("local_head_index"), "hidden local head index")
+        if layer_index >= len(hidden_layers):
+            raise ValueError("checkpoint hidden head spec references an unknown layer")
+        grouped_specs.setdefault(layer_index, []).append(spec)
+
+    current_dim: int | None = None
+    for layer_index, layer in enumerate(hidden_layers):
+        if not isinstance(layer, dict) or manifest_int(layer.get("layer_index"), "hidden layer index") != layer_index:
+            raise ValueError("checkpoint hidden layer indices are not contiguous")
+        input_dim = manifest_int(layer.get("input_dim"), "hidden input dimension", 1)
+        head_count = manifest_int(layer.get("head_count"), "hidden head count", 1)
+        head_dim = manifest_int(layer.get("head_dim"), "hidden head dimension", 1)
+        if current_dim is not None and input_dim != current_dim:
+            raise ValueError("checkpoint hidden layer input dimension is not closed")
+        specs = sorted(grouped_specs.get(layer_index, []), key=lambda value: int(value["local_head_index"]))
+        if len(specs) != head_count or [spec["local_head_index"] for spec in specs] != list(range(head_count)):
+            raise ValueError(f"checkpoint hidden layer {layer_index} head specifications are not closed")
+        weight_scales = scale_multipliers(scales, f"s_w_hidden_{layer_index}", head_count)
+        src_scales = scale_multipliers(scales, f"s_a_src_hidden_{layer_index}", head_count)
+        dst_scales = scale_multipliers(scales, f"s_a_dst_hidden_{layer_index}", head_count)
+        for head_index, spec in enumerate(specs):
+            include(spec.get("seq_kernel"), weight_scales[head_index], input_dim * head_dim)
+            include(spec.get("attn_src_kernel"), src_scales[head_index], head_dim)
+            include(spec.get("attn_dst_kernel"), dst_scales[head_index], head_dim)
+        current_dim = head_count * head_dim
+
+    output_count = manifest_int(checkpoint.get("K_out"), "output head count", 1)
+    classes = manifest_int(checkpoint.get("C"), "output class count", 1)
+    if current_dim is None or output_count != len(output_specs):
+        raise ValueError("checkpoint output head count is not closed")
+    if any(not isinstance(spec, dict) for spec in output_specs):
+        raise ValueError("checkpoint output head spec is malformed")
+    for spec in output_specs:
+        manifest_int(spec.get("head_index"), "output head index")
+    outputs = sorted(output_specs, key=lambda value: value["head_index"])
+    if [spec["head_index"] for spec in outputs] != list(range(output_count)):
+        raise ValueError("checkpoint output head specifications are not closed")
+    output_weight_scales = scale_multipliers(scales, "s_w_output", output_count)
+    output_src_scales = scale_multipliers(scales, "s_a_src_output", output_count)
+    output_dst_scales = scale_multipliers(scales, "s_a_dst_output", output_count)
+    output_bias_scales = scale_multipliers(scales, "s_b_output", output_count)
+    for head_index, spec in enumerate(outputs):
+        include(spec.get("seq_kernel"), output_weight_scales[head_index], current_dim * classes)
+        include(spec.get("attn_src_kernel"), output_src_scales[head_index], classes)
+        include(spec.get("attn_dst_kernel"), output_dst_scales[head_index], classes)
+        include(spec.get("output_bias"), output_bias_scales[head_index], classes, classes)
+
+    checkpoint_tensors = {name for name in tensors if name.startswith(("hidden/", "output/"))}
+    if checkpoint_tensors != used_tensors:
+        missing = sorted(used_tensors - checkpoint_tensors)
+        extra = sorted(checkpoint_tensors - used_tensors)
+        raise ValueError(f"checkpoint model tensor manifest mismatch: missing={missing}, unreferenced={extra}")
     return maxima
+
+
+def quantized_model(
+    root: Path, dataset: str, checkpoint: dict[str, Any], scales: dict[str, str],
+) -> dict[str, int]:
+    checkpoint_dir = root / "resources/canonical/checkpoints" / f"{dataset}_gat"
+    tensors = load_tensors(checkpoint_dir / "tensors.txt")
+    return quantized_model_maxima(tensors, checkpoint, scales)
 
 
 def graph_info(root: Path, dataset: str, meta: dict[str, str]) -> tuple[int, int, int]:
@@ -936,8 +1099,15 @@ def generate_dataset(root: Path, dataset: str) -> tuple[str, str]:
     scales = parse_cfg(root / "resources/canonical/configs/quantization_scale_chain.cfg")
     manifest_path = root / "resources/canonical/checkpoints" / f"{dataset}_gat/manifest.json"
     checkpoint = json.loads(manifest_path.read_text())
+    if (
+        checkpoint.get("dataset") != dataset
+        or not checkpoint.get("quant_cfg_id")
+        or checkpoint.get("quant_cfg_id") != config.get("quant_cfg_id")
+        or checkpoint.get("quant_cfg_id") != scales.get("quant_cfg_id")
+    ):
+        raise ValueError(f"{dataset} secure config, checkpoint, and scale chain identities disagree")
     nodes, edges, degree = graph_info(root, dataset, meta)
-    maxima = quantized_model(root, dataset)
+    maxima = quantized_model(root, dataset, checkpoint, scales)
     feature_max = feature_bound(root, dataset, meta)
     bound_plan = derive_bound_plan(meta, checkpoint, scales, maxima, feature_max, degree)
     tables = build_tables(

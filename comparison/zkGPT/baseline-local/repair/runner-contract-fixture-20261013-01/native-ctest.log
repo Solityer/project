@@ -1,0 +1,8 @@
+Internal ctest changing into directory: /home/pzh/project/comparison/zkGPT/build/cpu-tests
+Test project /home/pzh/project/comparison/zkGPT/build/cpu-tests
+    Start 14: native_masked_layered_gkr_smoke
+1/1 Test #14: native_masked_layered_gkr_smoke ...   Passed    2.47 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   2.47 sec

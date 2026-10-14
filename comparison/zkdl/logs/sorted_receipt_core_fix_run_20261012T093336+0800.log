@@ -1,4 +1,0 @@
-timestamp=2026-10-12T09:33:36+08:00
-command=timeout 180s ./tests/segmented_lookup_fixture --sorted-receipt-only
-sorted_lookup_receipt_fixture=FAIL error=prefix-next boundary read failed: sorted-lookup prefix inactive key is nonzero
-exit_code=1

@@ -180,7 +180,9 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
 
         reader = threading.Thread(target=read_output, name=f"ezkl-{phase}-output", daemon=True)
         reader.start()
-        with log_path.open("w") as log:
+        with log_path.open("a") as log:
+            log.write(f"\n--- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} {phase} ---\n")
+            log.flush()
             while True:
                 try:
                     line = output_queue.get(timeout=5)
@@ -208,10 +210,24 @@ def run_command(command: list[str], log_path: Path, *, phase: str, env: dict[str
             _terminate_native_process_group(process)
         if reader is not None:
             reader.join(timeout=5)
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                code = process.poll() if process is not None else None
+                log.write(
+                    f"\n--- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} "
+                    f"phase_exit_code={code} outcome=interrupted_or_runner_error ---\n"
+                )
+        except OSError:
+            pass
         raise
     finally:
         signal.signal(signal.SIGTERM, previous_sigterm)
     elapsed = (time.monotonic() - start) * 1000.0
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(
+            f"\n--- {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())} phase_exit_code={returncode} "
+            f"wall_ms={elapsed:.6f} outcome={'success' if returncode == 0 else 'failed'} ---\n"
+        )
     if returncode != 0:
         abort(f"{phase} failed with exit code {returncode}; see {log_path}")
     if terminated_leftovers:
@@ -326,6 +342,8 @@ def main(
     *,
     authenticated_context: AuthenticatedFormalContext | None = None,
     formal_session_id: str | None = None,
+    stage_receipt_hooks: dict[str, object] | None = None,
+    producer_wall_ms: float | None = None,
 ) -> int:
     reject_reduced_srs(sys.argv[1:])
     config = ensure_relative_arg(args.config, "config", default_config(args.dataset))
@@ -337,6 +355,44 @@ def main(
     if not args.execute_formal:
         print_plan(args, config, output)
         return 0
+
+    if formal_session_id is not None and (
+        stage_receipt_hooks is None
+        or isinstance(producer_wall_ms, bool)
+        or not isinstance(producer_wall_ms, (int, float))
+        or not __import__("math").isfinite(producer_wall_ms)
+        or producer_wall_ms <= 0
+    ):
+        abort("authenticated formal execution requires the parent stage-receipt context and original producer timing")
+
+    def reuse_stage(stage: str, inputs: dict[str, Path], outputs: dict[str, Path]) -> float | None:
+        if formal_session_id is None:
+            return None
+        callback = stage_receipt_hooks.get("try_reuse") if stage_receipt_hooks is not None else None
+        if not callable(callback):
+            abort("formal parent stage-receipt context has no reuse validator")
+        value = callback(stage, inputs, outputs)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not __import__("math").isfinite(value) or value <= 0:
+            abort(f"{args.dataset} authenticated {stage} receipt has an invalid stored timing")
+        return float(value)
+
+    def record_stage(stage: str, inputs: dict[str, Path], outputs: dict[str, Path], elapsed_ms: float) -> None:
+        if formal_session_id is None:
+            return
+        callback = stage_receipt_hooks.get("record") if stage_receipt_hooks is not None else None
+        if not callable(callback):
+            abort("formal parent stage-receipt context has no receipt writer")
+        callback(stage, inputs, outputs, elapsed_ms)
+
+    def invalidate_from(stage: str, reason: str) -> None:
+        if formal_session_id is None:
+            return
+        callback = stage_receipt_hooks.get("invalidate_from") if stage_receipt_hooks is not None else None
+        if not callable(callback):
+            abort("formal parent stage-receipt context has no invalidation handler")
+        callback(stage, reason)
 
     if args.dry_run:
         abort("--dry-run cannot be combined with --execute-formal")
@@ -540,12 +596,38 @@ def main(
     ]
     if args.backend == "gpu":
         final_command.append("--gpu")
-    final_ms = run_command(
-        final_command,
-        logs / "final.log",
-        phase="GAT prepare final (producer statement binding)",
-        env=env,
-    )
+    final_log = logs / "final.log"
+    final_stage_inputs = {
+        "statement": statement,
+        "public_output": public_output,
+        "producer_manifest": producer_manifest,
+        "producer_context": output / "producer_context.json",
+        "settings": settings,
+        "compiled_circuit": compiled,
+        "verification_key": vk,
+        "proving_key": pk,
+        "secure_config": config,
+        "resource_manifest": ROOT / "resources/resource_manifest.json",
+        # The final artifact manifest includes the session-bound prove budget;
+        # bind it here so a repaired budget cannot leave a stale final manifest.
+        "native_prove_budget": output / "native_prove_budget.json",
+    }
+    final_stage_outputs = {
+        "artifact_manifest": artifact_manifest,
+        "srs": output / "srs.kzg",
+        "final_log": final_log,
+    }
+    final_ms = reuse_stage("final", final_stage_inputs, final_stage_outputs)
+    if final_ms is None:
+        invalidate_from("final", "final-binding receipt or its input/output identities are missing or stale")
+        final_ms = run_command(
+            final_command,
+            final_log,
+            phase="GAT prepare final (producer statement binding)",
+            env=env,
+        )
+    else:
+        print(f"[ezkl-formal] reuse authenticated {args.dataset} final statement binding ({final_ms:.3f} ms original wall)", flush=True)
     require_file(artifact_manifest, "artifact identity manifest")
     prepare_ms = setup_ms + final_ms
     artifact = validate_artifact_identity(
@@ -585,8 +667,10 @@ def main(
         if name not in artifact_file_records or artifact_file_records[name]["sha256"] != digest:
             abort(f"artifact file {name} does not bind the independent producer chain")
 
-    witness_ms = run_command(
-        [
+    record_stage("final", final_stage_inputs, final_stage_outputs, final_ms)
+
+    witness_log = logs / "witness.log"
+    witness_command = [
             str(binary),
             contract["witness_command"],
             "--dataset",
@@ -600,14 +684,34 @@ def main(
             "--output",
             cli_path(witness, "witness"),
             *(["--gpu"] if args.backend == "gpu" else []),
-        ],
-        logs / "witness.log",
-        phase="GAT witness generation",
-        env=env,
-    )
+        ]
+    witness_stage_inputs = {
+        "statement": statement,
+        "public_output": public_output,
+        "compiled_circuit": compiled,
+        "settings": settings,
+        "secure_config": config,
+        "resource_manifest": ROOT / "resources/resource_manifest.json",
+        "srs": srs,
+        "native_prove_budget": output / "native_prove_budget.json",
+    }
+    witness_stage_outputs = {"witness": witness, "witness_log": witness_log}
+    witness_ms = reuse_stage("witness", witness_stage_inputs, witness_stage_outputs)
+    if witness_ms is None:
+        invalidate_from("witness", "witness receipt or its input/output identities are missing or stale")
+        witness_ms = run_command(
+            witness_command,
+            witness_log,
+            phase="GAT witness generation",
+            env=env,
+        )
+    else:
+        print(f"[ezkl-formal] reuse authenticated {args.dataset} witness ({witness_ms:.3f} ms original wall)", flush=True)
     require_file(witness, "private witness")
-    prove_ms = run_command(
-        [
+    record_stage("witness", witness_stage_inputs, witness_stage_outputs, witness_ms)
+
+    prove_log = logs / "prove.log"
+    prove_command = [
             str(binary),
             contract["prove_command"],
             "--witness",
@@ -622,11 +726,36 @@ def main(
             cli_path(srs, "SRS"),
             "--check-mode",
             "safe",
-        ],
-        logs / "prove.log",
-        phase="official ezkl prove",
-        env=gpu_env,
-    )
+        ]
+    prove_stage_inputs = {
+        "witness": witness,
+        "compiled_circuit": compiled,
+        "proving_key": pk,
+        "settings": settings,
+        "srs": srs,
+        "native_prove_budget": output / "native_prove_budget.json",
+        "resource_manifest": ROOT / "resources/resource_manifest.json",
+    }
+    prove_stage_outputs = {
+        "proof": proof,
+        "native_proof_metrics": output / "native_proof_metrics.json",
+        "native_pk_read_timing": output / "native_pk_read_timing.json",
+        "gpu_evidence": output / "gpu_evidence.json",
+        "gpu_prover_record": output / "gpu_prover_record.json",
+        "artifact_manifest": artifact_manifest,
+        "prove_log": prove_log,
+    }
+    prove_ms = reuse_stage("prove", prove_stage_inputs, prove_stage_outputs)
+    if prove_ms is None:
+        invalidate_from("prove", "proof receipt or its input/output identities are missing or stale")
+        prove_ms = run_command(
+            prove_command,
+            prove_log,
+            phase="official ezkl prove",
+            env=gpu_env,
+        )
+    else:
+        print(f"[ezkl-formal] reuse authenticated {args.dataset} proof ({prove_ms:.3f} ms original wall); independent Verify will run", flush=True)
     require_file(proof, "verifier-facing proof")
     proof_metrics_path = output / "native_proof_metrics.json"
     proof_metrics = validate_native_proof_metrics(proof_metrics_path, proof_sha256=sha256(proof))
@@ -661,8 +790,10 @@ def main(
         if timing_file is None or timing_file.get("sha256") != sha256(native_pk_read_timing_path):
             abort("artifact manifest does not bind the authenticated native PK read timing")
 
-    verify_ms = run_command(
-        [
+    record_stage("prove", prove_stage_inputs, prove_stage_outputs, prove_ms)
+
+    verify_log = logs / "verify.log"
+    verify_command = [
             str(binary),
             contract["verify_command"],
             "--settings-path",
@@ -681,35 +812,70 @@ def main(
             cli_path(artifact_manifest, "artifact identity manifest"),
             "--resource-manifest",
             "resources/resource_manifest.json",
-        ],
-        logs / "verify.log",
-        phase="independent official ezkl verify",
-        env=env,
-    )
+        ]
+    verify_stage_inputs = {
+        "settings": settings,
+        "proof": proof,
+        "verification_key": vk,
+        "srs": srs,
+        "statement": statement,
+        "public_output": public_output,
+        "artifact_manifest": artifact_manifest,
+        "resource_manifest": ROOT / "resources/resource_manifest.json",
+    }
+    verify_stage_outputs = {
+        "native_verify_metrics": output / "native_verify_metrics.json",
+        "core_run_manifest": output / "core_run_manifest.json",
+        "verify_log": verify_log,
+    }
+    verify_ms = reuse_stage("verify", verify_stage_inputs, verify_stage_outputs)
+    verify_reused = verify_ms is not None
+    if verify_ms is None:
+        invalidate_from("verify", "independent-verify success receipt or its input/output identities are missing or stale")
+        try:
+            verify_ms = run_command(
+                verify_command,
+                verify_log,
+                phase="independent official ezkl verify",
+                env=env,
+            )
+        except ContractError:
+            invalidate_from("prove", "independent Verify rejected or failed for the existing proof")
+            raise
     verify_metrics_path = output / "native_verify_metrics.json"
-    verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=sha256(proof))
+    try:
+        verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=sha256(proof))
 
-    core_manifest = output / "core_run_manifest.json"
-    core = validate_core_manifest(
-        core_manifest,
-        dataset=args.dataset,
-        backend=args.backend,
-        statement=statement,
-        public_output=public_output,
-        circuit_ref=circuit_ref,
-    )
-    proof_instances = read_proof_instances(
-        proof,
-        statement_sha256=sha256(statement),
-        output_sha256=sha256(public_output),
-    )
-    if core["proof_instances_sha256"] != proof_instances["sha256"]:
-        abort("core run manifest proof instance digest mismatch")
-    if core["proof_instance_count"] != proof_instances["count"]:
-        abort("core run manifest proof instance count mismatch")
+        core_manifest = output / "core_run_manifest.json"
+        core = validate_core_manifest(
+            core_manifest,
+            dataset=args.dataset,
+            backend=args.backend,
+            statement=statement,
+            public_output=public_output,
+            circuit_ref=circuit_ref,
+        )
+        proof_instances = read_proof_instances(
+            proof,
+            statement_sha256=sha256(statement),
+            output_sha256=sha256(public_output),
+        )
+        if core["proof_instances_sha256"] != proof_instances["sha256"]:
+            abort("core run manifest proof instance digest mismatch")
+        if core["proof_instance_count"] != proof_instances["count"]:
+            abort("core run manifest proof instance count mismatch")
+    except ContractError:
+        if not verify_reused:
+            invalidate_from("prove", "native independent-verify output did not attest the proof")
+        raise
 
     evidence_path = output / "gpu_evidence.json"
-    evidence = validate_gpu_evidence(evidence_path, backend=args.backend)
+    try:
+        evidence = validate_gpu_evidence(evidence_path, backend=args.backend)
+    except ContractError:
+        if not verify_reused:
+            invalidate_from("prove", "native proof evidence did not validate after Verify")
+        raise
     gpu_prover_record_sha256 = None
     independent_verifier_log_sha256 = sha256(logs / "verify.log")
     if formal_session_id is not None and args.backend == "gpu":
@@ -722,9 +888,12 @@ def main(
             abort("native GPU proof record does not bind the current proof artifact")
         gpu_prover_record_sha256 = sha256(gpu_record_path)
     if core["native_verify_result"] is not True or core["native_public_instance_binding"] is not True:
+        if not verify_reused:
+            invalidate_from("prove", "independent Verify did not attest successful proof/public-instance binding")
         abort("native verify/public-instance binding attestation is not successful")
     if formal_session_id is not None and native_pk_read_timing is None:
         abort("formal proof did not persist its authenticated native PK restore timing")
+    record_stage("verify", verify_stage_inputs, verify_stage_outputs, verify_ms)
     pk_read_validate_ms = 0.0
     pk_sigma_rebuild_ms = 0.0
     prove_wall_scope = "outer_command_wall"
@@ -811,6 +980,14 @@ def main(
             "witness_generation": round(witness_ms, 3),
             "prove": round(prove_phase_ms, 6),
             "verify": round(verify_ms, 3),
+            **(
+                {
+                    "public_statement_production": round(float(producer_wall_ms), 6),
+                    "final_statement_binding": round(final_ms, 6),
+                }
+                if formal_session_id is not None and producer_wall_ms is not None
+                else {}
+            ),
             **(
                 {
                     "pk_artifact_read_validate": round(pk_read_validate_ms, 6),

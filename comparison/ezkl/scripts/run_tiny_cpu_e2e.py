@@ -1877,7 +1877,7 @@ def main(args: argparse.Namespace) -> int:
             admission_elapsed += elapsed
             print(f"[tiny-e2e] {label}: actual production admission command completed", flush=True)
 
-        from run_hybrid_formal import native_admit_all_datasets
+        from run_hybrid_formal import _write_native_keygen_budget_receipt, native_admit_all_datasets
 
         admissions = native_admit_all_datasets(
             binary,
@@ -1920,6 +1920,24 @@ def main(args: argparse.Namespace) -> int:
             env,
         )
         setup_output.mkdir(parents=True, exist_ok=False)
+        native_keygen_budget_sha256 = _write_native_keygen_budget_receipt(
+            setup_output,
+            dataset=TINY_DATASET,
+            session_id=session_id,
+            admission=admission,
+            resume_identity={
+                "binary_sha256": sha256(binary),
+                "build_receipt_sha256": env["EZKL_FORMAL_BUILD_RECEIPT_SHA256"],
+                "build_environment_sha256": env["EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256"],
+            },
+            capacity=capacity["requirements"],
+            setup_check=capacity["setup_check"],
+            workspace_query=capacity["workspace_query"],
+        )
+        print(
+            f"[tiny-e2e] native keygen budget receipt PASS: {native_keygen_budget_sha256}",
+            flush=True,
+        )
         _, initial_setup_elapsed, _ = run_stage(
             "initial-prepare", commands["initial_prepare"], root=temp_root, log_dir=setup_output / "logs",
             env={**env, "EZKL_GAT_RUN_DIR": str(setup_output)}, timeout=args.stage_timeout, overall_deadline=deadline,

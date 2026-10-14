@@ -1488,11 +1488,12 @@ impl GraphCircuit {
     /// `synthesize`; a real proving circuit is loaded from its serialized
     /// compiled form and must supply the complete witness.
     pub fn new_gat_witnessless_from_settings(
-        model: Model,
+        mut model: Model,
         mut settings: GraphSettings,
         check_mode: CheckMode,
     ) -> GraphCircuit {
         settings.check_mode = check_mode;
+        Self::redact_compiled_model_params(&mut model);
         GraphCircuit {
             core: CoreCircuit { model, settings },
             graph_witness: GraphWitness::new(Vec::new(), Vec::new()),

@@ -1,19 +1,20 @@
 {
-  "active_dataset": null,
-  "active_stage": "owner-failed",
+  "active_dataset": "ogbn_arxiv",
+  "active_stage": "cell",
   "baseline": "zkgpt",
-  "completed_stages": [],
-  "failure": "zkGPT local prepare phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/0770c18cde9a9bcba425711882465366/prepare.stderr.log",
+  "completed_stages": [
+    "prepare"
+  ],
   "lock_device": 66306,
   "lock_inode": 24906071,
-  "owner_pid": 1588526,
-  "owner_start_ticks": 22021603,
-  "owner_token_sha256": "23c9258f9649469d7c9d949caf6c73ac0658821ca3d0948922ec9368731a0a85",
-  "recovered_previous_session_id": null,
+  "owner_pid": 1777764,
+  "owner_start_ticks": 35773738,
+  "owner_token_sha256": "b24cb9abfb949e07cebac27142382bcd26d660f8bab4230fd1bcae9e1c88345d",
+  "recovered_previous_session_id": "0770c18cde9a9bcba425711882465366",
   "schema": "zkgpt-local-formal-owner-v1",
-  "session_id": "0770c18cde9a9bcba425711882465366",
-  "stage_nonce": "",
-  "started_unix_ns": 1791771576166845148,
-  "status": "FAILED",
-  "updated_unix_ns": 1791772110893806913
+  "session_id": "9e4d2bfcb186887bf907e2c8c369306f",
+  "stage_nonce": "ee76ed68d994e6dd635bcdf3da4bf5f5",
+  "started_unix_ns": 1791909097529116143,
+  "status": "RUNNING",
+  "updated_unix_ns": 1791914078651518625
 }

@@ -324,6 +324,18 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         require_digest(result[key], f"{path}:{key}")
     if isinstance(result["proof_size_bytes"], bool) or not isinstance(result["proof_size_bytes"], int) or result["proof_size_bytes"] <= 0:
         abort(f"{path} has no positive proof size")
+    if formal:
+        production_timing_fields = ("public_statement_production", "final_statement_binding")
+        phase_timings = result["phase_timings_ms"]
+        if not isinstance(phase_timings, dict) or any(
+            field not in phase_timings
+            or isinstance(phase_timings[field], bool)
+            or not isinstance(phase_timings[field], (int, float))
+            or not math.isfinite(phase_timings[field])
+            or phase_timings[field] <= 0
+            for field in production_timing_fields
+        ):
+            abort(f"{path} formal result omits its authenticated producer/final stage wall timings")
     require_positive_timings(result["phase_timings_ms"], f"{path}:phase_timings_ms")
     for field, digest_field in PATH_DIGESTS.items():
         artifact = path_from_result(result[field], field)

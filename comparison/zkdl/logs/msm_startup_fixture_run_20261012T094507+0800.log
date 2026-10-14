@@ -1,2 +1,0 @@
-segmented_fixture stage=prepared-msm-timing status=PASS basis_points=65553 pippenger_chunks=5 active_workspace_lanes=5 pool_workers=19 raw_seconds=0.210574 prepared_build_seconds=0.155197 prepared_basis_bytes=6293088 workspace_bytes=1638400 prepared_sum_seconds=0.0302113
-segmented_fixture stage=prepared-msm-chunks status=PASS reason=five-workspace prepared MSM matches serial raw output

@@ -1,2 +1,0 @@
-logdir=logs/zkdl_repair_20261012_descriptor_retry_w8n2Ev
-make -j1 sorted-lookup-descriptor-check tests/segmented_lookup_fixture
