@@ -3819,13 +3819,16 @@ void populate_authenticated_resource_wire(const Config &config, NativeRelationWi
 
     AuthenticatedSrsResource srs;
     std::string resource_error;
-    if (!load_authenticated_srs(config, &srs, &resource_error)) return;
+    if (!load_authenticated_srs(config, &srs, &resource_error))
+        fail(resource_error.empty() ? "BLOCKED: authenticated SRS resource load failed without a diagnostic" : resource_error);
 
     AuthenticatedModelRegistry registry;
-    if (!load_authenticated_model_registry(config, srs, &registry, &resource_error)) return;
+    if (!load_authenticated_model_registry(config, srs, &registry, &resource_error))
+        fail(resource_error.empty() ? "BLOCKED: authenticated model registry load failed without a diagnostic" : resource_error);
 
     AuthenticatedModelBlinders blinders;
-    if (prover_sidecar && !load_authenticated_model_blinders(config, registry, &blinders, &resource_error)) return;
+    if (prover_sidecar && !load_authenticated_model_blinders(config, registry, &blinders, &resource_error))
+        fail(resource_error.empty() ? "BLOCKED: authenticated model blinder sidecar load failed without a diagnostic" : resource_error);
 
     output.srs_digest = srs.manifest_digest;
     output.srs_authenticated = srs.authenticated;
@@ -4960,7 +4963,7 @@ struct CliOptions {
 };
 
 void usage() {
-    std::cerr << "usage: gat_runner <inspect|admit|resource-plan|prepare|run|prove|verify> --config FILE "
+    std::cerr << "usage: gat_runner <inspect|admit|resource-check|resource-plan|prepare|run|prove|verify> --config FILE "
                  "[--backend cpu|gpu] [--run-dir DIR] [--planned-shape ANALYSIS_ONLY_JSON]\n";
 }
 
@@ -4971,7 +4974,7 @@ CliOptions parse_cli(int argc, char **argv) {
     }
     CliOptions options;
     options.command = argv[1];
-    const std::set<std::string> commands = {"inspect", "admit", "resource-plan", "prepare", "run", "prove", "verify"};
+    const std::set<std::string> commands = {"inspect", "admit", "resource-check", "resource-plan", "prepare", "run", "prove", "verify"};
     if (!commands.count(options.command)) fail("unknown command: " + options.command);
     for (int i = 2; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -5183,7 +5186,7 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
            << "proof_size_bytes=" << envelope.proof_size_bytes << "\ncommitment_size_bytes=" << envelope.commitment_size_bytes << "\n"
            << "commitment_time_semantics=" << envelope.commitment_time_semantics << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds
-           << "verify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
+           << "\nverify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
            << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
     finish_output(output, path, "proof envelope");
@@ -5487,6 +5490,25 @@ void validate_statement_binding(const Config &config, const Graph &graph, const 
     if (statement.asset_manifest_digest != sha256_file(config.asset_manifest_path)) {
         fail("public statement asset manifest digest is stale or unauthenticated");
     }
+}
+
+int resource_check(const Config &config) {
+    std::string error;
+    AuthenticatedSrsResource srs;
+    if (!load_authenticated_srs(config, &srs, &error))
+        fail(error.empty() ? "BLOCKED: authenticated SRS resource check failed without a diagnostic" : error);
+    std::cout << "resource_check stage=srs status=PASS\n";
+
+    AuthenticatedModelRegistry registry;
+    if (!load_authenticated_model_registry(config, srs, &registry, &error))
+        fail(error.empty() ? "BLOCKED: authenticated model registry check failed without a diagnostic" : error);
+    std::cout << "resource_check stage=model_registry status=PASS tensors=" << registry.model_commitments.size() << "\n";
+
+    AuthenticatedModelBlinders blinders;
+    if (!load_authenticated_model_blinders(config, registry, &blinders, &error))
+        fail(error.empty() ? "BLOCKED: authenticated model blinder sidecar check failed without a diagnostic" : error);
+    std::cout << "resource_check stage=model_blinders status=PASS entries=" << blinders.entries.size() << "\n";
+    return 0;
 }
 
 int admit(const Config &config) {
@@ -6729,6 +6751,7 @@ int main(int argc, char **argv) {
             return 0;
         }
         if (options.command == "admit") return zkdl_gat::admit(config);
+        if (options.command == "resource-check") return zkdl_gat::resource_check(config);
         if (options.command == "resource-plan")
             return zkdl_gat::analysis_only_resource_plan(config, options.planned_shape);
         if (options.command == "prepare") return zkdl_gat::prepare(config, options);

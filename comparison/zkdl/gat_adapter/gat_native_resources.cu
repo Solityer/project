@@ -31,6 +31,7 @@ constexpr std::uint64_t kSrsFrameHeaderBytes = 8U + 4U + 4U + 8U + 8U + 8U;
 constexpr std::uint64_t kMaxSrsFrameBytes = 1ULL << 32U;
 constexpr std::uint64_t kMaxNativeLogicalDomain = 1ULL << 30U;
 constexpr std::size_t kMaxJsonResourceBytes = 1U << 26U;
+constexpr std::uint64_t kMaxStaticTableDescriptorBytes = 128ULL * 1024ULL * 1024ULL;
 constexpr std::uint64_t kMaxSrsFramePoints = kMaxSrsFrameBytes / kG1Size;
 constexpr const char *kUnavailable = "UNAVAILABLE";
 
@@ -81,9 +82,10 @@ bool read_bytes(const std::filesystem::path &path, std::vector<Byte> &bytes, std
     return true;
 }
 
-bool resource_file_digest(const std::filesystem::path &path, Digest &digest, std::string *error) {
+bool resource_file_digest(const std::filesystem::path &path, Digest &digest, std::string *error,
+                          std::uint64_t max_bytes = kMaxJsonResourceBytes) {
     std::vector<Byte> bytes;
-    if (!read_bytes(path, bytes, error)) return false;
+    if (!read_bytes(path, bytes, error, max_bytes)) return false;
     digest = zkdl::sha256(bytes);
     return true;
 }
@@ -706,13 +708,14 @@ bool registry_digest_field(const std::string &text, const std::string &key, std:
     return true;
 }
 
-bool expected_file_digest(const std::filesystem::path &path, std::string &output, std::string *error) {
+bool expected_file_digest(const std::filesystem::path &path, std::string &output, std::string *error,
+                          std::uint64_t max_bytes = kMaxJsonResourceBytes) {
     if (std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path)) {
         set_error(error, "BLOCKED: model registry identity resource is missing: " + path.string());
         return false;
     }
     Digest digest{};
-    if (!resource_file_digest(path, digest, error)) return false;
+    if (!resource_file_digest(path, digest, error, max_bytes)) return false;
     output = resource_digest_hex(digest);
     return true;
 }
@@ -1289,16 +1292,21 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
     std::string static_table_digest;
     std::string integer_bound_ledger_digest;
     std::string model_manifest_digest;
-    const auto required_resource_digest = [&](const char *key, const std::filesystem::path &path_to_check, std::string &captured) {
+    const auto required_resource_digest = [&](const char *key, const std::filesystem::path &path_to_check,
+                                              std::string &captured, std::uint64_t max_bytes) {
         std::string declared;
         std::string actual;
-        if (!registry_digest_field(text, key, declared, error) || !expected_file_digest(path_to_check, actual, error) || declared != actual) return false;
+        if (!registry_digest_field(text, key, declared, error) ||
+            !expected_file_digest(path_to_check, actual, error, max_bytes) || declared != actual) return false;
         captured = std::move(declared);
         return true;
     };
-    if (!required_resource_digest("static_table_digest", config.static_table_descriptor_path, static_table_digest) ||
-        !required_resource_digest("integer_bound_ledger_digest", config.integer_bound_ledger_path, integer_bound_ledger_digest) ||
-        !required_resource_digest("model_manifest_digest", config.checkpoint_bundle / "manifest.json", model_manifest_digest))
+    if (!required_resource_digest("static_table_digest", config.static_table_descriptor_path, static_table_digest,
+                                  kMaxStaticTableDescriptorBytes) ||
+        !required_resource_digest("integer_bound_ledger_digest", config.integer_bound_ledger_path, integer_bound_ledger_digest,
+                                  kMaxJsonResourceBytes) ||
+        !required_resource_digest("model_manifest_digest", config.checkpoint_bundle / "manifest.json", model_manifest_digest,
+                                  kMaxJsonResourceBytes))
         return false;
     std::vector<std::string> tensor_objects;
     if (!json_object_array(text, "model_tensors", tensor_objects) || tensor_objects.empty()) {

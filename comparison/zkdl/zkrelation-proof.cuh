@@ -6692,7 +6692,7 @@ private:
         const zkdl::CpuIpaBasisContext*, zkdl::CpuG1MsmSession*,
         SegmentCommitmentValidationReceipt*);
     friend bool zktr_commitment_wire_from_material(
-        const std::string&, std::uint32_t, const SegmentedTensorProvider&,
+        std::string, std::uint32_t, const SegmentedTensorProvider&,
         const std::vector<zkdl::CpuG1Point>&, const zkdl::CpuG1Point&,
         const zkdl::CpuG1Point&, const RelationStatement&,
         const SegmentCommitmentMaterial&, CommitmentWire&, std::string*,
@@ -6948,7 +6948,7 @@ inline bool zktr_build_segment_commitment_material(
  * while proof assembly may only replay the exact vector against the provider
  * and authenticated IPA basis. */
 inline bool zktr_commitment_wire_from_material(
-    const std::string& tensor_id, std::uint32_t visibility,
+    std::string tensor_id, std::uint32_t visibility,
     const SegmentedTensorProvider& provider,
     const std::vector<zkdl::CpuG1Point>& generators,
     const zkdl::CpuG1Point& blinding_generator,
@@ -11241,8 +11241,9 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
                 if (!zktr_commitment_wire_from_material(
                         commitment.tensor_id, 3U, outer_provider, context.ipa_generators,
                         context.ipa_blinding_generator, context.ipa_u_generator,
-                        proof.statement, material, commitment, error, 0U, nullptr,
-                        &context.ipa_generators, &msm_session, &validation_receipt) ||
+                        proof.statement, material, commitment, error,
+                        context.sorted_lookup_descriptors[lookup_index].segment_size,
+                        nullptr, &context.ipa_generators, &msm_session, &validation_receipt) ||
                     !zkdl::cpu_g1_equal(
                         sorted_outer[lookup_index][role_index],
                         zkdl::cpu_g1_from_native(commitment.commitment)))
