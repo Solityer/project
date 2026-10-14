@@ -40,6 +40,7 @@ COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v3"
 FINAL_SCHEMA = "zkgpt-gat-final-validation-v3"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
+BN254_SCALAR_MODULUS = int("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001", 16)
 PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v4-native-commitment-wire-io-excluded"
 FORMAL_SESSION_SCHEMA = "zkgpt-gat-formal-session-v1"
 
@@ -1114,7 +1115,11 @@ def parse_prover_secret_metadata(path: Path) -> Dict[str, Any]:
         raise ChainError(f"invalid prover secret sizes: {path}")
     if len(fields[6]) != 64 or any(char not in "0123456789abcdef" for char in fields[6]):
         raise ChainError(f"invalid prover secret commitment point: {path}")
-    if len(fields[7]) != 64 or any(char not in "0123456789abcdef" for char in fields[7]):
+    if not 1 <= len(fields[7]) <= 64 or any(char not in "0123456789abcdef" for char in fields[7]):
+        raise ChainError(f"invalid prover secret blinder encoding: {path}")
+    if fields[7] != "0" and fields[7][0] == "0":
+        raise ChainError(f"invalid prover secret blinder encoding: {path}")
+    if int(fields[7], 16) >= BN254_SCALAR_MODULUS:
         raise ChainError(f"invalid prover secret blinder encoding: {path}")
     return {
         "registration_digest": fields[2], "basis_id": fields[3],

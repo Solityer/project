@@ -1,0 +1,11 @@
+STAGE=native_storage_capacity_smoke EXIT=0
+SCRATCH_PAGE_BOUNDARY_OK page_bytes=4096 file_bytes=16777217 live_bytes=4096 allocated_before=16781312 allocated_after=8192
+STAGE=scratch_page_boundary EXIT=0
+SECRET_FIELD_CASE name=zero result=PASS
+SECRET_FIELD_CASE name=native_short_scalar result=PASS
+SECRET_FIELD_CASE name=redundant_leading_zero result=PASS
+SECRET_FIELD_CASE name=native_modulus result=PASS
+SECRET_FIELD_CASE name=uppercase_hex result=PASS
+SECRET_FIELD_CASE name=oversized_hex result=PASS
+STAGE=secret_canonical_fields EXIT=0
+SHORT_CASES_EXIT=0 ELAPSED_SECONDS=2

@@ -194,9 +194,13 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     const std::size_t allocated_tail_bound = round_up(trailing_fragment, mapping.allocation_unit_bytes);
     const std::size_t expected_bound = allocated_live_bound > std::numeric_limits<std::size_t>::max() - allocated_tail_bound
         ? std::numeric_limits<std::size_t>::max() : allocated_live_bound + allocated_tail_bound;
-    if (after > expected_bound) throw std::runtime_error(
+    const std::size_t allocation_margin = mapping.allocation_unit_bytes;
+    if (allocation_margin == 0U || expected_bound > std::numeric_limits<std::size_t>::max() - allocation_margin)
+        throw std::overflow_error("native scratch physical block bound overflows");
+    const std::size_t physical_bound = expected_bound + allocation_margin;
+    if (after > physical_bound) throw std::runtime_error(
         "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
-        std::to_string(after) + ", bound=" + std::to_string(expected_bound) +
+        std::to_string(after) + ", bound=" + std::to_string(physical_bound) +
         ", active=" + std::to_string(active_bytes) + ", page_live=" +
         std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
         ", tail=" + std::to_string(trailing_fragment) + ")");
