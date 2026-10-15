@@ -101,7 +101,10 @@ def _write_detached_session_link(session: Path, session_id: str) -> None:
 
 def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, stage: str,
                             failure: str, *, status: str = "FAILED", replace: bool = False) -> None:
-    require_session_root(ACTIVE_SESSION_IDENTITY, session)
+    try:
+        require_session_root(ACTIVE_SESSION_IDENTITY, session)
+    except SessionRootError as exc:
+        raise SessionRootError(f"cannot record prior failure {failure[:512]!r}: {exc}") from exc
     current = state.setdefault("dataset_status", {}).get(dataset, {})
     if not replace and current.get("status") in ("FAILED", "BLOCKED"):
         return
@@ -116,6 +119,7 @@ def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, 
     })
     log_path = session / "logs" / f"{dataset}.log"
     if log_path.parent.is_dir():
+        require_session_root(ACTIVE_SESSION_IDENTITY, session)
         marker = json.dumps({"dataset": dataset, "status": status, "stage": stage,
                              "failure": failure[:2048]}, sort_keys=True, separators=(",", ":"))
         with log_path.open("a", encoding="utf-8") as stream:
@@ -560,7 +564,10 @@ def _run_phase(lock_fd: int, token: str, session: Path, session_id: str, state: 
         output = formal_phase._run(command, env=env, capture_output=True, capture_mode="phase_marker",
                                    pass_fds=(lock_fd,))
     except formal_phase.PhaseError as exc:
-        require_session_root(ACTIVE_SESSION_IDENTITY, session)
+        try:
+            require_session_root(ACTIVE_SESSION_IDENTITY, session)
+        except SessionRootError as root_exc:
+            raise SessionRootError(f"{root_exc}; original phase failure: {exc}") from exc
         if dataset is not None:
             formal_phase._append_log(session / "logs" / f"{dataset}.log",
                                      json.dumps({"phase": phase, "dataset": dataset, "status": "FAILED",
@@ -629,7 +636,15 @@ def _validate_final_pass(marker: dict[str, Any], session: Path, session_id: str)
 
 
 def _write_interrupted_summary(session: Path, state: dict[str, Any], failure: str) -> None:
-    require_session_root(ACTIVE_SESSION_IDENTITY, session)
+    def require_summary_root() -> None:
+        try:
+            require_session_root(ACTIVE_SESSION_IDENTITY, session)
+        except SessionRootError as exc:
+            raise SessionRootError(
+                f"{exc}; original interruption: {failure[:512]}"
+            ) from exc
+
+    require_summary_root()
     session_id = state["session_id"]
     rows: list[dict[str, Any]] = []
     for dataset in DATASETS:
@@ -663,20 +678,25 @@ def _write_interrupted_summary(session: Path, state: dict[str, Any], failure: st
                      "stage": row.get("stage", "unknown"),
                      "failure": row.get("failure") or failure})
     results_dir = ROOT / "results" / session.name
+    require_summary_root()
     if results_dir.exists() and any(results_dir.iterdir()):
+        require_summary_root()
         return
+    require_summary_root()
     results_dir.mkdir(parents=True, exist_ok=True)
     collection_path = results_dir / "collected.json"
     summary = {"schema": "zkDL_gat_formal_partial_result_summary_v1", "mode": "formal_interrupted",
                "baseline": "zkdl", "session_id": session_id, "runs_path": session.relative_to(ROOT).as_posix(),
                "overall_status": "INTERRUPTED", "strict_pass": False, "failure": failure[:2048],
                "datasets": rows}
+    require_summary_root()
     _write_json(collection_path, summary)
     validation = {"schema": "zkDL_formal_final_validation_receipt_v1", "baseline": "zkdl",
                   "session_id": session_id, "status": "INTERRUPTED", "strict_pass": False,
                   "failure": failure[:2048], "collection_path": collection_path.relative_to(ROOT).as_posix(),
                   "collection_sha256": formal_phase.sha256_file(collection_path),
                   "dataset_status": {row["dataset"]: row for row in rows}}
+    require_summary_root()
     _write_json(results_dir / "final_validation.json", validation)
 
 
@@ -891,6 +911,9 @@ def run() -> int:
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         os.close(lock_fd)
+        if ACTIVE_SESSION_IDENTITY is not None and ACTIVE_SESSION_IDENTITY.root_fd is not None:
+            os.close(ACTIVE_SESSION_IDENTITY.root_fd)
+        ACTIVE_SESSION_IDENTITY = None
 
 def main() -> int:
     if len(sys.argv) != 1:
@@ -899,6 +922,9 @@ def main() -> int:
     try:
         return run()
     except RunnerError as exc:
+        print(f"zkdl_formal_run=FAILED error={exc}", file=sys.stderr, flush=True)
+        return 2
+    except SessionRootError as exc:
         print(f"zkdl_formal_run=FAILED error={exc}", file=sys.stderr, flush=True)
         return 2
 

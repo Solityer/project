@@ -1,5 +1,5 @@
 {
-  "active_dataset": "cora",
+  "active_dataset": "citeseer",
   "active_stage": "cell",
   "baseline": "zkgpt",
   "completed_stages": [
@@ -13,8 +13,8 @@
   "recovered_previous_session_id": null,
   "schema": "zkgpt-local-formal-owner-v1",
   "session_id": "7939c2c6f3213979694485929f35e85c",
-  "stage_nonce": "45150dbeb6a8651f63b4cde0cfd99ebc",
+  "stage_nonce": "6820764e7211e8e1cb3fd38bce0a600c",
   "started_unix_ns": 1792032691864562394,
   "status": "RUNNING",
-  "updated_unix_ns": 1792033229806188839
+  "updated_unix_ns": 1792035379119986849
 }

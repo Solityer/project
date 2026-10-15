@@ -34,9 +34,13 @@ def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None
             raise ValueError(f'formal snapshot input contains a missing directory or symlink: {source}')
     cache_target = root / updates['cache_root'] / dataset
     checkpoint_target = root / updates['checkpoint_bundle']
-    require_session_root(identity, session)
-    cache_target.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint_target.parent.mkdir(parents=True, exist_ok=True)
+    for directory in (session / 'resources', session / 'resources' / 'cache',
+                      session / 'resources' / 'checkpoints'):
+        require_session_root(identity, session)
+        directory.mkdir(exist_ok=True)
+        require_session_root(identity, session)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ValueError(f'formal snapshot target directory is not a safe directory: {directory}')
     shutil.copytree(cache_source, cache_target)
     require_session_root(identity, session)
     shutil.copytree(model_source, checkpoint_target)
@@ -44,14 +48,18 @@ def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None
     manifest_path = root / updates['checkpoint_bundle'] / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     manifest['checkpoint_prefix'] = updates['checkpoint_bundle'] + '/best_model.pt'
+    require_session_root(identity, session)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
+    require_session_root(identity, session)
     values.update(updates)
     config_path = root / 'configs' / (session.name + '_' + dataset + '.cfg')
     require_session_root(identity, session)
     with config_path.open('x') as stream:
         stream.write(''.join(f'{key} = {value}\n' for key, value in values.items()))
+    require_session_root(identity, session)
     run = root / updates['export_dir']
-    run.mkdir(parents=True)
+    run.mkdir()
+    require_session_root(identity, session)
     (run / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
     require_session_root(identity, session)
     if expected_input_identity is not None:
@@ -94,8 +102,10 @@ def main() -> int:
         if dataset not in DATASETS:
             raise SystemExit('formal-session: noncanonical dataset')
         config_path = snapshot(root, session, dataset, source_config)
+        require_session_root(identity, session)
         (session / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
         (session / 'formal_run.path').write_text(relative + '/' + dataset + '\n')
+        require_session_root(identity, session)
     elif args.dataset is not None:
         report_path = session / 'dataset_prerequisites.json'
         if report_path.is_symlink() or not report_path.is_file():

@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from session_lifecycle import (
     SessionRootError,
@@ -140,4 +141,8 @@ def main() -> int:
     return 0
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except SessionRootError as exc:
+        print(f'formal-provenance: {exc}', file=sys.stderr, flush=True)
+        raise SystemExit(2)

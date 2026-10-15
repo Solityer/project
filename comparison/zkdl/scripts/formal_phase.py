@@ -172,6 +172,7 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
             raise PhaseError(f"formal stage log directory is missing or unsafe: {path.parent}")
         log_streams.append(path.open("xb" if fresh_log and index == 0 else "ab", buffering=0))
     output: list[str] = []
+    last_output_line: list[str] = []
     output_lock = threading.Lock()
     log_error: list[OSError] = []
     child_env = dict(os.environ if env is None else env)
@@ -203,6 +204,7 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
         assert process.stdout is not None
         for raw in iter(process.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace")
+            last_output_line[:] = [line.rstrip("\r\n")[:2048]]
             if capture_output and capture_mode == "all":
                 with output_lock:
                     output.append(line)
@@ -261,7 +263,13 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
         ACTIVE_PGID = None
     with output_lock:
         text = "".join(output)
-    require_session_root(identity)
+    try:
+        require_session_root(identity)
+    except SessionRootError as exc:
+        detail = (text.strip().splitlines()[-1][:1024] if text.strip()
+                  else last_output_line[-1][:1024] if last_output_line else "")
+        suffix = f"; original stage output={detail}" if detail else ""
+        raise SessionRootError(f"{exc}{suffix}") from exc
     if log_error:
         raise PhaseError(f"cannot persist complete stage log {log_path}: {log_error[0]}")
     if orphaned_group:
@@ -368,6 +376,7 @@ def _validate_local_owner(session: Path, session_id: str, phase: str, dataset: s
     if not isinstance(stored_token_digest, str) or re.fullmatch(r"[0-9a-f]{64}", stored_token_digest) is None or not hmac.compare_digest(
             stored_token_digest, actual_token_digest):
         raise PhaseError("zkDL-local formal runner owner token does not match the active session")
+    require_session_root(session=session)
 
     owner = state.get("owner")
     lock = state.get("lock")
@@ -986,12 +995,14 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
 
 
 def _session_artifact_bytes(session: Path) -> int:
+    identity = require_bound_session(session, ROOT)
     total = 0
     for path in session.rglob("*"):
         if path.is_symlink():
             raise PhaseError(f"session tree contains a symlink during artifact audit: {path}")
         if path.is_file() and "logs" not in path.relative_to(session).parts:
             total += path.stat(follow_symlinks=False).st_size
+    require_session_root(identity, session)
     return total
 
 
@@ -1028,6 +1039,7 @@ def _remove_failed_snapshot(session: Path, dataset: str) -> None:
     require_session_root(identity, session)
     for path in (session / "resources" / "cache", session / "resources" / "checkpoints",
                  session / "resources", session / "data"):
+        require_session_root(identity, session)
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
 
@@ -1116,6 +1128,7 @@ def prepare(session: Path, session_id: str) -> None:
         _append_log(dataset_logs[dataset], json.dumps({"stage": "preflight", **report["datasets"][dataset]},
                                                        sort_keys=True, separators=(",", ":")))
     for dataset in DATASETS:
+        require_session_root(identity, session)
         if outcomes[dataset]["status"] != "PASS":
             continue
         try:
@@ -1323,6 +1336,7 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             pass
         raise
 
+    require_session_root(identity, session)
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import audit_run
     audited = audit_run(ROOT, run_dir, expected_dataset=dataset, expected_backend="cpu")
@@ -1365,6 +1379,7 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     cell_receipt_path = session / "phase" / f"{dataset}.json"
     require_session_root(identity, session)
     cell_receipt_path.write_text(json.dumps(cell_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require_session_root(identity, session)
     marker = {
         "zkdl_phase": "cell",
         "status": "PASS",
@@ -1483,7 +1498,9 @@ def finalize(session: Path, session_id: str) -> None:
                 "collection_path": collection.relative_to(ROOT).as_posix(),
                 "collection_sha256": sha256_file(collection), "verified_cells": list(DATASETS),
             }
+            require_session_root(identity, session)
             receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            require_session_root(identity, session)
             marker = {
                 "zkdl_phase": "finalize", "status": "PASS", "session_id": session_id,
                 "final_validation_path": receipt_path.relative_to(ROOT).as_posix(),
@@ -1500,7 +1517,9 @@ def finalize(session: Path, session_id: str) -> None:
     else:
         global_failure = "one or more datasets did not complete a proof with independent verification"
     summary, dataset_rows = _partial_result_summary(session, session_id, state, global_failure)
+    require_session_root(identity, session)
     collection.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require_session_root(identity, session)
     receipt = {
         "schema": "zkDL_formal_final_validation_receipt_v1", "baseline": "zkdl",
         "session_id": session_id, "status": "FAILED", "strict_pass": False,
@@ -1509,7 +1528,9 @@ def finalize(session: Path, session_id: str) -> None:
             row["dataset"] for row in dataset_rows if row.get("status") == "PASS"],
         "failed_cells": [row for row in dataset_rows if row.get("status") != "PASS"],
     }
+    require_session_root(identity, session)
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require_session_root(identity, session)
     marker = {
         "zkdl_phase": "finalize", "status": "FAILED", "session_id": session_id,
         "failure": global_failure[:2048], "final_validation_path": receipt_path.relative_to(ROOT).as_posix(),

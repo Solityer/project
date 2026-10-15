@@ -301,3 +301,15 @@ ZKGPT_FORMAL_CHILD_STARTED launch_id=e7c62a27d21f43cf807adb1570de571a child_pid=
 [local-cell-cora] [cora/prover] gat_adapter_prover_stage: witness
 [local-cell-cora] [cora/prover] gat_adapter_prover_stage: generators
 [local-cell-cora] [cora/prover] gat_adapter_prover_stage: lasso-prove
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: restore-native-plan
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: gkr-prove
+[local-cell-cora] [cora/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 begin ty=4 size=153465368 bits=28 u=28 v=27 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=1/28 elapsed_s=218.352
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=7/28 elapsed_s=233.551
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=15/28 elapsed_s=249.375
+[local-cell-cora] [cora/prover] FAILED: native masked GKR proof failed: native scratch tail reclamation released no allocated blocks
+[local-cell-cora] ZKGPT_INTERNAL_PHASE_FAILED phase=cell: native prover failed with 1; see baseline-local/runs/formal/7939c2c6f3213979694485929f35e85c/cora/prover.stderr.log
+ZKGPT_FORMAL_CELL_FAILED dataset=cora error=ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/7939c2c6f3213979694485929f35e85c/cell-cora.stderr.log
+[local-cell-citeseer] [citeseer/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=29665.7

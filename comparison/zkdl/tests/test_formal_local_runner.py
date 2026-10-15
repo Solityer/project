@@ -17,15 +17,110 @@ import unittest
 import uuid
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 TESTS = ROOT / "tests"
 sys.path.insert(0, str(SCRIPTS))
 import formal_runner
+import formal_provenance
+import session_lifecycle
 
 
 class FormalLocalRunnerTests(unittest.TestCase):
+    def test_session_root_lifecycle_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
+            project = Path(temporary)
+            session_id = uuid.uuid4().hex
+            runs = project / "runs"
+            session = runs / f"formal_{session_id}"
+            for directory in (runs, project / "configs", project / "results"):
+                directory.mkdir(parents=True, exist_ok=True)
+            session.mkdir()
+            identity = session_lifecycle.capture_session_root(session)
+            old_identity = formal_runner.ACTIVE_SESSION_IDENTITY
+            old_phase_root = formal_runner.formal_phase.ROOT
+            old_provenance_root = formal_provenance.ROOT
+            environment_names = (
+                session_lifecycle.ROOT_ENV,
+                session_lifecycle.DEVICE_ENV,
+                session_lifecycle.INODE_ENV,
+            )
+            old_environment = {name: os.environ.get(name) for name in environment_names}
+            os.environ.update(identity.child_environment())
+            formal_runner.ACTIVE_SESSION_IDENTITY = identity
+            formal_runner.formal_phase.ROOT = project
+            formal_provenance.ROOT = project
+            try:
+                session_lifecycle.require_session_root(identity, session)
+                for relative in (
+                    "phase", "logs", "build", "cora", "ppi",
+                    "resources/cache/cora", "resources/cache/ppi",
+                    "resources/checkpoints/cora_gat", "resources/checkpoints/ppi_gat",
+                    "resources/canonical/tables",
+                ):
+                    (session / relative).mkdir(parents=True, exist_ok=True)
+                (session / "build/gat_runner").write_text("frozen binary\n")
+                (session / "logs/cora.log").write_text("formal log\n")
+                (session / "resources/canonical/tables/authenticated.json").write_text("authenticated\n")
+                (session / "ppi/manifest.json").write_text("authenticated snapshot\n")
+                (session / "cora/partial.bin").write_text("failed snapshot\n")
+                (project / "configs" / f"{session.name}_cora.cfg").write_text("failed snapshot config\n")
+                result = project / "results" / session.name
+                result.mkdir()
+                (result / "collected.json").write_text("existing result\n")
+
+                formal_runner._write_json(session / "state.json", {"session_id": session_id})
+                state = {"session_id": session_id, "dataset_status": {"cora": {}}}
+                formal_runner._record_dataset_failure(session, state, "cora", "fixture", "ordinary failure")
+                self.assertTrue((session / "phase/cora_failure.json").is_file())
+
+                formal_runner.formal_phase._remove_failed_snapshot(session, "cora")
+                self.assertFalse((session / "cora").exists())
+                self.assertFalse((session / "resources/cache/cora").exists())
+                self.assertFalse((session / "resources/checkpoints/cora_gat").exists())
+                self.assertFalse((project / "configs" / f"{session.name}_cora.cfg").exists())
+                self.assertTrue((session / "build/gat_runner").is_file())
+                self.assertTrue((session / "logs/cora.log").is_file())
+                self.assertFalse((session / "results").exists())
+                self.assertTrue((result / "collected.json").is_file())
+                self.assertTrue((session / "resources/canonical/tables/authenticated.json").is_file())
+                self.assertTrue((session / "ppi/manifest.json").is_file())
+
+                tombstone = runs / f"{session.name}.original"
+                session.rename(tombstone)
+                session.mkdir()
+                with self.assertRaisesRegex(session_lifecycle.SessionRootError, "must not mask"):
+                    formal_runner._record_dataset_failure(session, state, "cora", "fixture", "must not mask")
+                self.assertTrue(session.is_dir())
+                self.assertFalse((session / "phase").exists())
+
+                with mock.patch.object(formal_provenance.subprocess, "run") as build:
+                    with mock.patch.object(sys, "argv", ["formal_provenance.py", "--output",
+                                                           str(session / "build_manifest.json")]):
+                        with self.assertRaises(session_lifecycle.SessionRootError):
+                            formal_provenance.main()
+                    build.assert_not_called()
+
+                shutil.rmtree(session)
+                with self.assertRaises(session_lifecycle.SessionRootError):
+                    session_lifecycle.require_session_root(identity, session)
+                with self.assertRaises(session_lifecycle.SessionRootError):
+                    formal_runner._write_json(session / "state.json", {"session_id": session_id})
+                self.assertFalse(session.exists())
+            finally:
+                formal_runner.ACTIVE_SESSION_IDENTITY = old_identity
+                formal_runner.formal_phase.ROOT = old_phase_root
+                formal_provenance.ROOT = old_provenance_root
+                for name, value in old_environment.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+                if identity.root_fd is not None:
+                    os.close(identity.root_fd)
+
     def test_finalization_capacity_uses_full_u64_segment_integer_size(self) -> None:
         fields = ("segment_index", "logical_offset", "actual_length", "padded_length", "basis_offset", "basis_count")
         expected_segment_bytes = (

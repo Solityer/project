@@ -1,8 +1,11 @@
 {
-  "active_stage": "cell:cora",
+  "active_stage": "cell:citeseer",
   "completed_stages": [
     "prepare"
   ],
+  "dataset_failures": {
+    "cora": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/7939c2c6f3213979694485929f35e85c/cell-cora.stderr.log"
+  },
   "failure": "",
   "local_capacity_rechecks": [
     {
@@ -16,6 +19,18 @@
         "cora"
       ],
       "stage": "before-cell:cora"
+    },
+    {
+      "checked_unix_ns": 1792035379117093106,
+      "disk_available_bytes": 1659013427200,
+      "disk_required_bytes": 13760589639,
+      "fs_device_id": "66306",
+      "host_available_bytes": 126164021248,
+      "host_required_bytes": 11202356812,
+      "pending_datasets": [
+        "citeseer"
+      ],
+      "stage": "before-cell:citeseer"
     }
   ],
   "local_owner": {
@@ -30,9 +45,10 @@
   "schema": "zkgpt-gat-formal-session-v1",
   "session_id": "7939c2c6f3213979694485929f35e85c",
   "stage_status": {
+    "cell:cora": "FAILED",
     "prepare": "PASS"
   },
   "started_unix_ns": 1792032691912111141,
   "status": "RUNNING",
-  "updated_unix_ns": 1792033229982062957
+  "updated_unix_ns": 1792035379294778121
 }
