@@ -72,6 +72,7 @@ use std::io::BufWriter;
 use std::io::Cursor;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tabled::Tabled;
 use thiserror::Error;
@@ -1962,6 +1963,151 @@ fn copy_external_file(source: &Path, destination: &Path) -> Result<(), EZKLError
         get_file_hash(source)?;
     }
     Ok(())
+}
+
+static NEXT_SRS_TEMP_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_srs_temp_path(destination: &Path) -> Result<PathBuf, EZKLError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "bound SRS destination has no parent directory".to_string())?;
+    let file_name = destination
+        .file_name()
+        .ok_or_else(|| "bound SRS destination has no file name".to_string())?;
+    let sequence = NEXT_SRS_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let mut temporary_name = file_name.to_os_string();
+    temporary_name.push(format!(".tmp.{}.{}", std::process::id(), sequence));
+    Ok(parent.join(temporary_name))
+}
+
+fn sync_parent_directory(path: &Path) -> Result<(), EZKLError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| "bound SRS destination has no parent directory".to_string())?;
+    File::open(parent)?.sync_all()?;
+    Ok(())
+}
+
+fn materialize_authenticated_srs(
+    source: &Path,
+    destination: &Path,
+    expected_sha256: &str,
+) -> Result<(), EZKLError> {
+    let source_metadata = std::fs::symlink_metadata(source)?;
+    if source_metadata.file_type().is_symlink() || !source_metadata.is_file() {
+        return Err("authenticated SRS source must be a regular non-symlink file".into());
+    }
+    let source_size = source_metadata.len();
+    let source_sha256 = get_file_hash(source)?;
+    if source_sha256 != expected_sha256 {
+        return Err("authenticated SRS source digest changed before artifact binding".into());
+    }
+
+    let parent = destination
+        .parent()
+        .ok_or_else(|| "bound SRS destination has no parent directory".to_string())?;
+    std::fs::create_dir_all(parent)?;
+    match std::fs::symlink_metadata(destination) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "bound SRS destination must be a regular non-symlink file: {}",
+                    destination.display()
+                )
+                .into());
+            }
+            if metadata.len() == source_size && get_file_hash(destination)? == expected_sha256 {
+                return Ok(());
+            }
+            return Err(format!(
+                "existing bound SRS does not match the authenticated source: {}",
+                destination.display()
+            )
+            .into());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut temporary = None;
+    let mut needs_copy = false;
+    for _ in 0..128 {
+        let candidate = next_srs_temp_path(destination)?;
+        match std::fs::hard_link(source, &candidate) {
+            Ok(()) => {
+                temporary = Some(candidate);
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::CrossesDevices | std::io::ErrorKind::Unsupported
+                ) =>
+            {
+                needs_copy = true;
+                break;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    if needs_copy {
+        for _ in 0..128 {
+            let candidate = next_srs_temp_path(destination)?;
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(_) => {
+                    temporary = Some(candidate);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let candidate = temporary
+            .as_deref()
+            .ok_or_else(|| "could not reserve a unique temporary SRS path".to_string())?;
+        if let Err(error) = std::fs::copy(source, candidate) {
+            let _ = std::fs::remove_file(candidate);
+            return Err(error.into());
+        }
+    }
+
+    let temporary = temporary
+        .ok_or_else(|| "could not create a unique temporary SRS link".to_string())?;
+    let install_result = (|| -> Result<(), EZKLError> {
+        let temporary_metadata = std::fs::metadata(&temporary)?;
+        let temporary_sha256 = get_file_hash(&temporary)?;
+        if temporary_metadata.len() != source_size || temporary_sha256 != expected_sha256 {
+            return Err("temporary bound SRS does not match the authenticated source".into());
+        }
+        File::open(&temporary)?.sync_all()?;
+
+        // The official runner serializes this producer stage. Recheck before
+        // rename so retries never replace a prior artifact or shared SRS link.
+        match std::fs::symlink_metadata(destination) {
+            Ok(_) => {
+                return Err(format!(
+                    "bound SRS destination appeared while installing: {}",
+                    destination.display()
+                )
+                .into())
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::rename(&temporary, destination)?;
+        sync_parent_directory(destination)?;
+        Ok(())
+    })();
+    if install_result.is_err() {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    install_result
 }
 
 fn validate_statement_against_loaded(
@@ -4277,6 +4423,8 @@ fn gat_prepare_setup(
             Ok(())
         },
     )?;
+    drop(params);
+    drop(circuit);
     let expected_fixed_columns = native_census
         .preflight
         .fixed_columns
@@ -4287,6 +4435,8 @@ fn gat_prepare_setup(
     }
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
     save_pk::<G1Affine>(&pk_path, &pk)?;
+    drop(pk);
+    drop(_native_spill);
     write_native_keygen_receipt(
         &output_dir,
         &loaded,
@@ -4923,7 +5073,7 @@ fn gat_prepare_final(
     let bound_srs_path = output_dir.join("srs.kzg");
     copy_external_file(&public_statement_path, &bound_statement_path)?;
     copy_external_file(&public_output_path, &bound_output_path)?;
-    copy_external_file(&srs_path, &bound_srs_path)?;
+    materialize_authenticated_srs(&srs_path, &bound_srs_path, &srs_sha256)?;
     let mut files: Vec<ArtifactFile> = [
         (&settings_path, "settings.json"),
         (&compiled_path, "compiled.circuit"),
@@ -5175,9 +5325,13 @@ pub(crate) fn setup(
         &params,
         disable_selector_compression,
     )?;
+    drop(params);
+    drop(circuit);
 
     save_vk::<G1Affine>(&vk_path, pk.get_vk())?;
     save_pk::<G1Affine>(&pk_path, &pk)?;
+    drop(pk);
+    drop(_native_spill);
     Ok(String::new())
 }
 
@@ -5870,6 +6024,9 @@ pub(crate) fn prove(
         proof_split_commits,
         None,
     )?;
+    drop(pk);
+    drop(params);
+    drop(_native_spill);
 
     snark.pretty_public_inputs = pretty_public_inputs;
 
@@ -6422,6 +6579,7 @@ pub(crate) fn verify_with_formal_inputs(
         GraphCircuit,
         _,
     >(proof_path.clone(), circuit_settings, vk_path, &params, logrows)?;
+    drop(params);
     if let Some((
         statement,
         artifact,

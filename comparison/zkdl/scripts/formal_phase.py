@@ -18,6 +18,12 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from session_lifecycle import (
+    SessionRootError,
+    require_bound_session,
+    require_session_artifact,
+    require_session_root,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
@@ -113,6 +119,7 @@ def _mark_active_session_interrupted(signum: int) -> None:
     if path is None or session_id is None:
         return
     try:
+        require_session_root(session=path.parent)
         if path.is_symlink() or not path.is_file():
             return
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -157,9 +164,12 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
          capture_mode: str = "all", pass_fds: tuple[int, ...] = ()) -> str:
     """Run one owned process group; preserve its exit status and drain logs."""
     global ACTIVE_PGID
+    identity = require_session_root()
     log_streams = []
     for index, path in enumerate(((log_path,) if log_path is not None else ()) + also_log_paths):
-        path.parent.mkdir(parents=True, exist_ok=True)
+        require_session_artifact(path, ROOT)
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise PhaseError(f"formal stage log directory is missing or unsafe: {path.parent}")
         log_streams.append(path.open("xb" if fresh_log and index == 0 else "ab", buffering=0))
     output: list[str] = []
     output_lock = threading.Lock()
@@ -251,6 +261,7 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
         ACTIVE_PGID = None
     with output_lock:
         text = "".join(output)
+    require_session_root(identity)
     if log_error:
         raise PhaseError(f"cannot persist complete stage log {log_path}: {log_error[0]}")
     if orphaned_group:
@@ -315,6 +326,7 @@ def _proc_parent_pid(pid: int) -> int:
 def _validate_local_owner(session: Path, session_id: str, phase: str, dataset: str | None) -> None:
     """Authorize only a live phase child of the zkDL-local lock-owning runner."""
     global ACTIVE_SESSION_STATE, ACTIVE_SESSION_ID, ACTIVE_SESSION_STAGE
+    require_bound_session(session, ROOT)
     token = os.environ.get("ZKDL_FORMAL_OWNER_TOKEN", "")
     lock_fd_text = os.environ.get("ZKDL_FORMAL_LOCK_FD", "")
     if re.fullmatch(r"[0-9a-f]{64}", token) is None or not lock_fd_text.isascii() or not lock_fd_text.isdecimal():
@@ -988,9 +1000,11 @@ def _dataset_status(dataset: str, status: str, stage: str, failure: str = "") ->
 
 
 def _append_log(path: Path, text: str) -> None:
+    require_session_artifact(path, ROOT)
     if path.is_symlink():
         raise PhaseError(f"refusing to append through a symlinked formal log: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink() or not path.parent.is_dir():
+        raise PhaseError(f"formal log directory is missing or unsafe: {path.parent}")
     with path.open("a", encoding="utf-8") as stream:
         stream.write(text.rstrip("\n") + "\n")
         stream.flush()
@@ -998,17 +1012,20 @@ def _append_log(path: Path, text: str) -> None:
 
 
 def _remove_failed_snapshot(session: Path, dataset: str) -> None:
+    identity = require_bound_session(session, ROOT)
     paths = (session / "resources" / "cache" / dataset,
              session / "resources" / "checkpoints" / f"{dataset}_gat",
              session / dataset,
              ROOT / "configs" / f"{session.name}_{dataset}.cfg")
     for path in paths:
+        require_session_root(identity, session)
         if path.is_symlink():
             raise PhaseError(f"refusing to remove symlinked partial snapshot path: {path}")
         if path.is_dir():
             shutil.rmtree(path)
         elif path.is_file():
             path.unlink()
+    require_session_root(identity, session)
     for path in (session / "resources" / "cache", session / "resources" / "checkpoints",
                  session / "resources", session / "data"):
         if path.is_dir() and not any(path.iterdir()):
@@ -1019,6 +1036,7 @@ def _write_prepare_outcome(session: Path, session_id: str, outcomes: dict[str, d
                            preflight: dict[str, Any] | None, error: str,
                            build_manifest: Path | None = None, native: dict[str, dict[str, Any]] | None = None,
                            diagnostics: dict[str, Any] | None = None, profile: dict[str, Any] | None = None) -> dict[str, Any]:
+    identity = require_bound_session(session, ROOT)
     passed = sum(row["status"] == "PASS" for row in outcomes.values())
     overall = "PASS" if passed == len(DATASETS) else "PARTIAL" if passed else "FAILED"
     graph = _graph_identity(native or {}) if native else {
@@ -1037,6 +1055,7 @@ def _write_prepare_outcome(session: Path, session_id: str, outcomes: dict[str, d
                         "build_manifest_sha256": sha256_file(build_manifest)})
     receipt_path = session / "phase" / "prepare.json"
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    require_session_root(identity, session)
     marker: dict[str, Any] = {
         "zkdl_phase": "prepare", "status": overall, "session_id": session_id,
         "session_dir": session.relative_to(ROOT).as_posix(),
@@ -1058,6 +1077,7 @@ def _write_prepare_outcome(session: Path, session_id: str, outcomes: dict[str, d
 
 
 def prepare(session: Path, session_id: str) -> None:
+    identity = require_bound_session(session, ROOT)
     if session.is_symlink() or not session.is_dir():
         raise PhaseError(f"zkDL session must be created by the baseline-local formal runner: {session}")
     entries = list(session.iterdir())
@@ -1071,8 +1091,10 @@ def prepare(session: Path, session_id: str) -> None:
             state.get("baseline") != "zkdl" or state.get("session_id") != session_id or
             state.get("status") != "RUNNING" or state.get("stage") != "prepare"):
         raise PhaseError("zkDL formal runner session state is not fresh for prepare")
+    require_session_root(identity, session)
     (session / "logs").mkdir()
     (session / "phase").mkdir()
+    require_session_root(identity, session)
     admission_log = session / "logs" / "admission.log"
     report_path = session / "dataset_prerequisites.json"
     env = dict(os.environ)
@@ -1097,8 +1119,11 @@ def prepare(session: Path, session_id: str) -> None:
         if outcomes[dataset]["status"] != "PASS":
             continue
         try:
+            require_session_root(identity)
             _run([sys.executable, str(ROOT / "scripts/formal_session.py"), "--session", str(session),
                   "--dataset", dataset], log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env)
+        except SessionRootError:
+            raise
         except Exception as exc:
             _remove_failed_snapshot(session, dataset)
             outcomes[dataset] = _dataset_status(dataset, "FAILED", "snapshot", f"{type(exc).__name__}: {exc}")
@@ -1113,12 +1138,15 @@ def prepare(session: Path, session_id: str) -> None:
     build_log = session / "logs" / "build.log"
     build_manifest = _build_manifest(session)
     try:
+        require_session_root(identity, session)
         _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--output", str(build_manifest)],
              log_path=build_log, fresh_log=True, env=env)
         env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
         env["ZKDL_RUNNER_BINARY"] = str(session / "build" / "gat_runner")
         _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],
              log_path=admission_log, also_log_paths=tuple(dataset_logs.values()), env=env)
+    except SessionRootError:
+        raise
     except Exception as exc:
         shared_error = f"shared build/provenance failure: {type(exc).__name__}: {exc}"
         for dataset in DATASETS:
@@ -1136,6 +1164,7 @@ def prepare(session: Path, session_id: str) -> None:
         config = _config(session, dataset)
         run_dir = session / dataset
         try:
+            require_session_root(identity, session)
             shutil.copy2(build_manifest, run_dir / "build_manifest.json")
             for command in (
                 [sys.executable, str(ROOT / "scripts/prepare_form_resources.py"),
@@ -1152,6 +1181,8 @@ def prepare(session: Path, session_id: str) -> None:
                     result.get("status") != "PASS" or result.get("dataset") != dataset):
                 raise PhaseError(f"native production relation admission rejected {dataset}")
             native[dataset] = result
+        except SessionRootError:
+            raise
         except Exception as exc:
             outcomes[dataset] = _dataset_status(dataset, "FAILED", "resource_admission",
                                                 f"{type(exc).__name__}: {exc}")
@@ -1164,11 +1195,14 @@ def prepare(session: Path, session_id: str) -> None:
         if dataset not in native:
             continue
         try:
+            require_session_root(identity, session)
             one_report = {**report, "datasets": {dataset: report["datasets"][dataset]}}
             one_profile, one_diagnostics = _admission_profile(session, session_id, one_report,
                                                                {dataset: native[dataset]})
             profiles[dataset] = one_profile
             diagnostics[dataset] = one_diagnostics[dataset]
+        except SessionRootError:
+            raise
         except Exception as exc:
             outcomes[dataset] = _dataset_status(dataset, "FAILED", "capacity_profile",
                                                 f"{type(exc).__name__}: {exc}")
@@ -1213,6 +1247,8 @@ def _cell_stage(stage: str, dataset: str, operation: Any, log_path: Path | None 
         _append_log(log_path, json.dumps(start_marker, separators=(",", ":")))
     try:
         result = operation()
+    except SessionRootError:
+        raise
     except BaseException as exc:
         marker = {"zkdl_cell_stage": stage, "dataset": dataset, "status": "FAIL",
                   "elapsed_seconds": round(time.monotonic() - started, 6), "error": str(exc)[:512]}
@@ -1229,6 +1265,7 @@ def _cell_stage(stage: str, dataset: str, operation: Any, log_path: Path | None 
 
 
 def cell(session: Path, session_id: str, dataset: str) -> None:
+    identity = require_bound_session(session, ROOT)
     if dataset not in DATASETS:
         raise PhaseError(f"cell dataset is not canonical: {dataset}")
     receipt_path = session / "phase" / "prepare.json"
@@ -1256,7 +1293,9 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
              log_path=log_path, env=env)
         _run([str(ROOT / "scripts/setup_register.sh"), str(config)], log_path=log_path, env=env)
     def cleanup() -> None:
+        require_session_root(identity, session)
         for private_path in (run_dir / ".private_native", run_dir / "scratch" / "sorted_lookup"):
+            require_session_root(identity, session)
             if private_path.is_symlink():
                 raise PhaseError(f"refusing to clean symlinked private prover scratch: {private_path}")
             if private_path.exists():
@@ -1275,6 +1314,8 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         _cell_stage("cleanup", dataset, cleanup, log_path)
         _cell_stage("verify", dataset, lambda: _run([str(ROOT / "scripts/verify_single.sh"), str(config), str(run_dir)],
                                                       log_path=log_path, env=env), log_path)
+    except SessionRootError:
+        raise
     except BaseException:
         try:
             cleanup()
@@ -1322,6 +1363,7 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         "run_log_sha256": sha256_file(log_path),
     }
     cell_receipt_path = session / "phase" / f"{dataset}.json"
+    require_session_root(identity, session)
     cell_receipt_path.write_text(json.dumps(cell_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     marker = {
         "zkdl_phase": "cell",
@@ -1346,10 +1388,12 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
 
 def _partial_result_summary(session: Path, session_id: str, state: dict[str, Any],
                             global_failure: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    identity = require_bound_session(session, ROOT)
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import ArtifactError, audit_run
     dataset_rows: list[dict[str, Any]] = []
     for dataset in DATASETS:
+        require_session_root(identity, session)
         state_row = state.get("dataset_status", {}).get(dataset, {})
         cell_receipt_path = session / "phase" / f"{dataset}.json"
         if state_row.get("status") == "PASS" and cell_receipt_path.is_file() and not cell_receipt_path.is_symlink():
@@ -1404,6 +1448,7 @@ def _partial_result_summary(session: Path, session_id: str, state: dict[str, Any
 
 
 def finalize(session: Path, session_id: str) -> None:
+    identity = require_bound_session(session, ROOT)
     state_path = session / "state.json"
     if state_path.is_symlink() or not state_path.is_file():
         raise PhaseError("finalization requires the local formal-runner state")
@@ -1415,6 +1460,7 @@ def finalize(session: Path, session_id: str) -> None:
     if output_dir.exists() and any(output_dir.iterdir()):
         raise PhaseError(f"final result directory is not empty for this formal session: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
+    require_session_root(identity, session)
     collection = output_dir / "collected.json"
     receipt_path = output_dir / "final_validation.json"
     all_success = (not state.get("global_failure") and
@@ -1447,6 +1493,8 @@ def finalize(session: Path, session_id: str) -> None:
             }
             print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
             return
+        except SessionRootError:
+            raise
         except Exception as exc:
             global_failure = f"strict final collection/validation failed: {type(exc).__name__}: {exc}"
     else:

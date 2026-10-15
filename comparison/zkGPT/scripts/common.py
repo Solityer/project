@@ -407,15 +407,9 @@ def _join_output_pumps(
     )
 
 
-def _terminate_registered_processes() -> None:
-    with _ACTIVE_PROCESS_LOCK:
-        active = list(_ACTIVE_OWNED_PROCESSES.items())
-    for pgid, process in active:
-        _stop_child(process, pgid)
-
-
 def _process_signal_handler(signum: int, _frame: Any) -> None:
-    _terminate_registered_processes()
+    for handled_signal in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(handled_signal, signal.SIG_IGN)
     raise KeyboardInterrupt(f"formal runner interrupted by signal {signum}")
 
 
@@ -447,30 +441,43 @@ def run_logged(
     if owns_group:
         child_env["ZKGPT_OWNED_PROCESS_GROUP"] = "1"
     with stdout_path.open("w", encoding="utf-8") as stdout_log, stderr_path.open("w", encoding="utf-8") as stderr_log:
-        process = subprocess.Popen(
-            list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, bufsize=1, env=child_env, start_new_session=owns_group, pass_fds=tuple(pass_fds),
-        )
-        owned_pgid = process.pid if owns_group else None
-        if owned_pgid is not None:
-            with _ACTIVE_PROCESS_LOCK:
-                _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
+        process: Optional[subprocess.Popen] = None
+        owned_pgid: Optional[int] = None
         failures: List[BaseException] = []
-        def pump(stream: Any, output: Any, terminal: Any) -> None:
-            try:
-                for line in iter(stream.readline, ""):
-                    output.write(line)
-                    output.flush()
-                    print(f"[{label}] {line}", end="", file=terminal, flush=True)
-            except BaseException as exc:
-                failures.append(exc)
-                _signal_child_termination(process, owned_pgid)
-            finally:
-                stream.close()
-        threads = [threading.Thread(target=pump, args=(process.stdout, stdout_log, sys.stdout), daemon=True), threading.Thread(target=pump, args=(process.stderr, stderr_log, sys.stderr), daemon=True)]
-        for thread in threads:
-            thread.start()
+        threads: List[threading.Thread] = []
         try:
+            managed_signals = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+            old_signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, managed_signals)
+            try:
+                process = subprocess.Popen(
+                    list(command), cwd=str(root), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1, env=child_env, start_new_session=owns_group,
+                    pass_fds=tuple(pass_fds),
+                    preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, old_signal_mask),
+                )
+                owned_pgid = process.pid if owns_group else None
+                if owned_pgid is not None:
+                    with _ACTIVE_PROCESS_LOCK:
+                        _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_signal_mask)
+
+            def pump(stream: Any, output: Any, terminal: Any) -> None:
+                try:
+                    for line in iter(stream.readline, ""):
+                        output.write(line)
+                        output.flush()
+                        print(f"[{label}] {line}", end="", file=terminal, flush=True)
+                except BaseException as exc:
+                    failures.append(exc)
+                    _signal_child_termination(process, owned_pgid)
+                finally:
+                    stream.close()
+
+            assert process is not None
+            threads = [threading.Thread(target=pump, args=(process.stdout, stdout_log, sys.stdout), daemon=True), threading.Thread(target=pump, args=(process.stderr, stderr_log, sys.stderr), daemon=True)]
+            for thread in threads:
+                thread.start()
             if telemetry is not None and hasattr(os, "wait4"):
                 _, status, usage = os.wait4(process.pid, 0)
                 returncode = os.waitstatus_to_exitcode(status)
@@ -481,17 +488,20 @@ def run_logged(
                 if telemetry is not None:
                     raise ChainError("native per-process resource accounting requires wait4")
         except BaseException:
-            _stop_child(process, owned_pgid)
+            if process is not None:
+                _stop_child(process, owned_pgid)
             raise
         finally:
-            try:
-                _join_output_pumps(threads, process, owned_pgid, label)
-                if owned_pgid is not None:
-                    _stop_child(process, owned_pgid, grace_seconds=0.5)
-            finally:
-                if owned_pgid is not None:
-                    with _ACTIVE_PROCESS_LOCK:
-                        _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
+            if process is not None:
+                started_threads = [thread for thread in threads if thread.ident is not None]
+                try:
+                    _join_output_pumps(started_threads, process, owned_pgid, label)
+                    if owned_pgid is not None:
+                        _stop_child(process, owned_pgid, grace_seconds=0.5)
+                finally:
+                    if owned_pgid is not None:
+                        with _ACTIVE_PROCESS_LOCK:
+                            _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
         if failures:
             raise ChainError(f"native output logging failed: {failures[0]}")
         return returncode
@@ -508,35 +518,45 @@ def run_captured(
     owns_group = not inherited_owned_group
     if owns_group:
         child_env["ZKGPT_OWNED_PROCESS_GROUP"] = "1"
-    process = subprocess.Popen(
-        list(command), cwd=str(root), text=True, stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE, env=child_env, start_new_session=owns_group,
-    )
-    owned_pgid = process.pid if owns_group else None
-    if owned_pgid is not None:
-        with _ACTIVE_PROCESS_LOCK:
-            _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
+    process: Optional[subprocess.Popen] = None
+    owned_pgid: Optional[int] = None
     stdout_parts: List[str] = []
     stderr_parts: List[str] = []
     pump_failures: List[BaseException] = []
-
-    def capture(stream: Any, parts: List[str]) -> None:
-        try:
-            for line in iter(stream.readline, ""):
-                parts.append(line)
-        except BaseException as exc:
-            pump_failures.append(exc)
-            _signal_child_termination(process, owned_pgid)
-        finally:
-            stream.close()
-
-    threads = [
-        threading.Thread(target=capture, args=(process.stdout, stdout_parts), daemon=True),
-        threading.Thread(target=capture, args=(process.stderr, stderr_parts), daemon=True),
-    ]
-    for thread in threads:
-        thread.start()
+    threads: List[threading.Thread] = []
     try:
+        managed_signals = {signal.SIGINT, signal.SIGTERM, signal.SIGHUP}
+        old_signal_mask = signal.pthread_sigmask(signal.SIG_BLOCK, managed_signals)
+        try:
+            process = subprocess.Popen(
+                list(command), cwd=str(root), text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, env=child_env, start_new_session=owns_group,
+                preexec_fn=lambda: signal.pthread_sigmask(signal.SIG_SETMASK, old_signal_mask),
+            )
+            owned_pgid = process.pid if owns_group else None
+            if owned_pgid is not None:
+                with _ACTIVE_PROCESS_LOCK:
+                    _ACTIVE_OWNED_PROCESSES[owned_pgid] = process
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_signal_mask)
+
+        def capture(stream: Any, parts: List[str]) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    parts.append(line)
+            except BaseException as exc:
+                pump_failures.append(exc)
+                _signal_child_termination(process, owned_pgid)
+            finally:
+                stream.close()
+
+        assert process is not None
+        threads = [
+            threading.Thread(target=capture, args=(process.stdout, stdout_parts), daemon=True),
+            threading.Thread(target=capture, args=(process.stderr, stderr_parts), daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
         try:
             process.wait(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
@@ -556,12 +576,19 @@ def run_captured(
             command, process.returncode, "".join(stdout_parts), "".join(stderr_parts)
         )
     except BaseException:
-        _stop_child(process, owned_pgid)
+        if process is not None:
+            _stop_child(process, owned_pgid)
         raise
     finally:
-        if owned_pgid is not None:
-            with _ACTIVE_PROCESS_LOCK:
-                _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
+        if process is not None:
+            started_threads = [thread for thread in threads if thread.ident is not None]
+            try:
+                if started_threads and any(thread.is_alive() for thread in started_threads):
+                    _join_output_pumps(started_threads, process, owned_pgid, "captured helper")
+            finally:
+                if owned_pgid is not None:
+                    with _ACTIVE_PROCESS_LOCK:
+                        _ACTIVE_OWNED_PROCESSES.pop(owned_pgid, None)
 
 
 def new_run_nonce() -> str:

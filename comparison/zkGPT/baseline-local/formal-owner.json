@@ -1,5 +1,5 @@
 {
-  "active_dataset": "ogbn_arxiv",
+  "active_dataset": "cora",
   "active_stage": "cell",
   "baseline": "zkgpt",
   "completed_stages": [
@@ -7,14 +7,14 @@
   ],
   "lock_device": 66306,
   "lock_inode": 24906071,
-  "owner_pid": 1777764,
-  "owner_start_ticks": 35773738,
-  "owner_token_sha256": "b24cb9abfb949e07cebac27142382bcd26d660f8bab4230fd1bcae9e1c88345d",
-  "recovered_previous_session_id": "0770c18cde9a9bcba425711882465366",
+  "owner_pid": 5784,
+  "owner_start_ticks": 815887,
+  "owner_token_sha256": "61015e847b7649ade69886f0ad3218a070cd0791a2910f1a5486b0c9e2c0c265",
+  "recovered_previous_session_id": null,
   "schema": "zkgpt-local-formal-owner-v1",
-  "session_id": "9e4d2bfcb186887bf907e2c8c369306f",
-  "stage_nonce": "ee76ed68d994e6dd635bcdf3da4bf5f5",
-  "started_unix_ns": 1791909097529116143,
+  "session_id": "7939c2c6f3213979694485929f35e85c",
+  "stage_nonce": "45150dbeb6a8651f63b4cde0cfd99ebc",
+  "started_unix_ns": 1792032691864562394,
   "status": "RUNNING",
-  "updated_unix_ns": 1791914078651518625
+  "updated_unix_ns": 1792033229806188839
 }

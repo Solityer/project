@@ -1,0 +1,9 @@
+[logged] ready=SIGTERM_BLOCKED=False\n; parent_rc=130; child_term=True
+PARENT_LOCKED
+PARENT_INTERRUPTED
+
+[captured] ready=SIGTERM_BLOCKED=False\n; parent_rc=130; child_term=True
+PARENT_LOCKED
+PARENT_INTERRUPTED
+
+BUNDLE_OK logged: parent_rc=130 child_received_SIGTERM lock_reacquired=YES; captured: parent_rc=130 child_received_SIGTERM lock_reacquired=YES

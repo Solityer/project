@@ -608,7 +608,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         ):
             abort(f"{path} native keygen census exceeds its VK/PK resource caps")
         expected_prove = {
-            "schema": "ezkl.native-prove-budget.v1",
+            "schema": "ezkl.native-prove-budget.v3",
             "session_id": session_id,
             "dataset": dataset,
             "admission_sha256": setup_receipt.get("admission_sha256"),

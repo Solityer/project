@@ -9,6 +9,11 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from session_lifecycle import (
+    SessionRootError,
+    require_session_artifact,
+    require_session_root,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,10 +82,16 @@ def main() -> int:
     args = parser.parse_args()
     if bool(args.output) == bool(args.check):
         parser.error('supply exactly one of --output or --check')
-    path = (args.output or args.check).resolve()
+    path = Path(os.path.abspath(args.output or args.check))
+    session_identity = require_session_artifact(path, ROOT)
+    path = path.resolve(strict=False)
     path.relative_to(ROOT)
     if args.check:
+        if session_identity is not None:
+            require_session_root(session_identity)
         value = validate_manifest(ROOT, path)
+        if session_identity is not None:
+            require_session_root(session_identity)
         if args.binary:
             print(ROOT / next(item['path'] for item in value['binaries'] if item['name'] == args.binary))
         else:
@@ -88,6 +99,8 @@ def main() -> int:
         return 0
     with (ROOT / '.formal_build.lock').open('a') as build_lock:
         fcntl.flock(build_lock.fileno(), fcntl.LOCK_EX)
+        if session_identity is not None:
+            require_session_root(session_identity)
         before = source_entries(ROOT)
         build_env = dict(os.environ)
         for variable in ('MAKEFLAGS', 'MFLAGS', 'GNUMAKEFLAGS'):
@@ -96,19 +109,32 @@ def main() -> int:
         after = source_entries(ROOT)
         if before != after:
             raise SystemExit('formal build sources changed during compilation')
+        if session_identity is not None:
+            require_session_root(session_identity)
         binaries = []
         snapshot_dir = path.parent / 'build'
+        if snapshot_dir.parent.is_symlink() or not snapshot_dir.parent.is_dir():
+            raise SystemExit(f'formal session root disappeared before build snapshot: {snapshot_dir.parent}')
         snapshot_dir.mkdir()
         for name in ('gat_runner', 'gat_resource_setup'):
+            if session_identity is not None:
+                require_session_root(session_identity)
             binary = ROOT / name
             if binary.is_symlink() or not binary.is_file():
                 raise SystemExit(f'formal build did not produce a regular binary: {binary}')
             frozen = snapshot_dir / name
             shutil.copy2(binary, frozen)
+            if session_identity is not None:
+                require_session_root(session_identity)
             binaries.append({'name': name, 'path': frozen.relative_to(ROOT).as_posix(), 'bytes': frozen.stat().st_size, 'sha256': digest(frozen)})
         value = {'schema': 'zkDL_gat_build_manifest_v1', 'backend': 'cpu', 'build_target': 'baseline-local-build', 'source_digest': identity(after), 'sources': after, 'binaries': binaries}
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.parent.is_symlink() or not path.parent.is_dir():
+            raise SystemExit(f'formal session root disappeared before build manifest write: {path.parent}')
+        if session_identity is not None:
+            require_session_root(session_identity)
         path.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+        if session_identity is not None:
+            require_session_root(session_identity)
         validate_manifest(ROOT, path)
         print(f'build_provenance=PASS source_digest={value["source_digest"]} manifest={path}')
     return 0

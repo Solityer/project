@@ -1412,6 +1412,160 @@ fn native_gat_fixture_proof_verifies_independently() {
 }
 
 #[test]
+fn native_h_part_relation() {
+    use halo2_proofs::{
+        circuit::{Layouter, SimpleFloorPlanner, Value},
+        plonk::{
+            create_proof, keygen_pk, keygen_vk, verify_proof, Advice, Circuit, Column,
+            ConstraintSystem, Error, Fixed, Selector,
+        },
+        poly::{
+            commitment::Params,
+            kzg::{
+                commitment::{KZGCommitmentScheme, ParamsKZG},
+                multiopen::{ProverSHPLONK, VerifierSHPLONK},
+                strategy::SingleStrategy,
+            },
+            Rotation,
+        },
+        transcript::{
+            Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+        },
+    };
+    use halo2curves::bn256::{Bn256, Fr, G1Affine};
+    use rand::rngs::OsRng;
+
+    #[derive(Clone, Copy)]
+    struct HPartCircuit;
+
+    #[derive(Clone)]
+    struct HPartConfig {
+        advice: Vec<Column<Advice>>,
+        table: Column<Fixed>,
+        selector: Selector,
+    }
+
+    impl Circuit<Fr> for HPartCircuit {
+        type Config = HPartConfig;
+        type FloorPlanner = SimpleFloorPlanner;
+        type Params = ();
+
+        fn without_witnesses(&self) -> Self {
+            *self
+        }
+
+        fn configure(meta: &mut ConstraintSystem<Fr>) -> Self::Config {
+            let advice = (0..8)
+                .map(|_| meta.advice_column())
+                .collect::<Vec<_>>();
+            for column in &advice {
+                meta.enable_equality(*column);
+            }
+            let table = meta.fixed_column();
+            let selector = meta.selector();
+            meta.create_gate("strided H rotation", |meta| {
+                let q = meta.query_selector(selector);
+                let current = meta.query_advice(advice[0], Rotation::cur());
+                let next = meta.query_advice(advice[0], Rotation::next());
+                vec![q * (current - next)]
+            });
+            meta.lookup_any("strided H lookup", |meta| {
+                vec![(
+                    meta.query_advice(advice[0], Rotation::cur()),
+                    meta.query_fixed(table, Rotation::cur()),
+                )]
+            });
+            meta.shuffle("strided H shuffle", |meta| {
+                vec![(
+                    meta.query_advice(advice[0], Rotation::cur()),
+                    meta.query_advice(advice[1], Rotation::cur()),
+                )]
+            });
+            // k=5 and degree 9 produce an 8-way extended domain, so the proof
+            // evaluates all eight strided H parts.
+            meta.set_minimum_degree(9);
+            HPartConfig {
+                advice,
+                table,
+                selector,
+            }
+        }
+
+        fn synthesize(
+            &self,
+            config: Self::Config,
+            mut layouter: impl Layouter<Fr>,
+        ) -> Result<(), Error> {
+            layouter.assign_region(
+                || "strided H rotations and arguments",
+                |mut region| {
+                    for row in 0..2 {
+                        let value = Fr::from(1);
+                        if row == 0 {
+                            config.selector.enable(&mut region, row)?;
+                        }
+                        region.assign_fixed(
+                            || "lookup table value",
+                            config.table,
+                            row,
+                            || Value::known(value),
+                        )?;
+                        let mut cells = Vec::with_capacity(config.advice.len());
+                        for (column_index, column) in config.advice.iter().enumerate() {
+                            cells.push(region.assign_advice(
+                                || "advice value",
+                                *column,
+                                row,
+                                || Value::known(value),
+                            )?);
+                            if column_index > 0 {
+                                region.constrain_equal(cells[0].cell(), cells[column_index].cell())?;
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            )?;
+            Ok(())
+        }
+    }
+
+    let k = 5;
+    let circuit = HPartCircuit;
+    let mut rng = OsRng;
+    let params = ParamsKZG::<Bn256>::setup(k, &mut rng);
+    let vk = keygen_vk(&params, &circuit).expect("H-part relation VK");
+    assert_eq!(
+        vk.get_domain().extended_k() - k,
+        3,
+        "k=5 and minimum degree 9 must exercise all m=8 H parts"
+    );
+    let pk = keygen_pk(&params, vk, &circuit).expect("H-part relation PK");
+    let instances: &[&[&[Fr]]] = &[&[]];
+    let mut writer = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(Vec::new());
+    create_proof::<KZGCommitmentScheme<Bn256>, ProverSHPLONK<_>, _, _, _, _>(
+        &params,
+        &pk,
+        &[circuit],
+        instances,
+        &mut rng,
+        &mut writer,
+    )
+    .expect("strided H proof satisfies gate, permutation, lookup, and shuffle relations");
+    let proof = writer.finalize();
+    let mut reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&proof[..]);
+    verify_proof::<KZGCommitmentScheme<Bn256>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+        &params,
+        pk.get_vk(),
+        SingleStrategy::new(&params),
+        instances,
+        &mut reader,
+        params.n(),
+    )
+    .expect("independent verification accepts the strided H proof");
+}
+
+#[test]
 fn native_roundtrip_single_phase_instance_copy_proof_verifies() {
     use halo2_proofs::{
         circuit::{Layouter, SimpleFloorPlanner, Value},

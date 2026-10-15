@@ -1,0 +1,6 @@
+[cora/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=10195.6
+[cora/prover] gat_adapter_prover_stage: begin
+[cora/prover] gat_adapter_prover_stage: lasso-build
+[cora/prover] gat_adapter_prover_stage: witness
+[cora/prover] gat_adapter_prover_stage: generators
+[cora/prover] gat_adapter_prover_stage: lasso-prove

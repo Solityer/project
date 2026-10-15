@@ -24,6 +24,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import traceback
@@ -2130,6 +2131,45 @@ def _host_os_diagnostic_reserve_bytes() -> tuple[int, dict[str, object]]:
     return reserve, {**accounting, "os_diagnostic_reserve_bytes": reserve}
 
 
+def _regular_file_mmap_reserve_bytes(
+    effective_limit_bytes: int, active_mapping_count: int, worker_count: int
+) -> tuple[int, int, dict[str, int]]:
+    """Bound active regular-file mmap pages separately from their disk backing.
+
+    Native loops touch each active mapping row-wise. Two pages per mapping and
+    worker cover the current fault plus its immediately adjacent I/O page; dirty
+    file pages are separately bounded by the kernel's configured dirty limit.
+    This does not charge the full virtual mapping as mandatory physical RAM.
+    """
+    try:
+        page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        dirty_bytes = int(Path("/proc/sys/vm/dirty_bytes").read_text().strip())
+        dirty_ratio = int(Path("/proc/sys/vm/dirty_ratio").read_text().strip())
+    except (OSError, ValueError, TypeError) as exc:
+        abort(f"cannot bound regular-file mmap working pages for EZKL admission: {exc}")
+    if (
+        effective_limit_bytes <= 0
+        or page_size <= 0
+        or active_mapping_count < 0
+        or worker_count < 0
+        or dirty_bytes < 0
+        or not 0 <= dirty_ratio <= 100
+    ):
+        abort("regular-file mmap page-cache inputs are outside their valid range")
+    if dirty_bytes:
+        dirty_pagecache_upper = min(effective_limit_bytes, dirty_bytes)
+    else:
+        dirty_pagecache_upper = (effective_limit_bytes * dirty_ratio + 99) // 100
+    active_window = active_mapping_count * max(1, worker_count) * 2 * page_size
+    if active_window > sys.maxsize or dirty_pagecache_upper > sys.maxsize:
+        abort("regular-file mmap resident working-set bound exceeds the native address range")
+    return active_window, dirty_pagecache_upper, {
+        "page_size_bytes": page_size,
+        "configured_dirty_bytes": dirty_bytes,
+        "configured_dirty_ratio_percent": dirty_ratio,
+    }
+
+
 def _filesystem_available_bytes(path: Path) -> tuple[int, dict[str, int]]:
     try:
         stat = os.statvfs(path)
@@ -2140,6 +2180,32 @@ def _filesystem_available_bytes(path: Path) -> tuple[int, dict[str, int]]:
     if available < 0:
         abort(f"filesystem returned a negative capacity for EZKL formal path {path}")
     return available, {"available_bytes": available, "device_id": device_id}
+
+
+def _filesystem_type(path: Path) -> str:
+    """Resolve the mounted filesystem for a formal artifact or native spill path."""
+    try:
+        target = path.resolve(strict=True)
+        mountinfo = Path("/proc/self/mountinfo").read_text().splitlines()
+    except (OSError, RuntimeError) as exc:
+        abort(f"cannot identify filesystem backing EZKL path {path}: {exc}")
+    matches: list[tuple[int, str]] = []
+    for line in mountinfo:
+        left, separator, right = line.partition(" - ")
+        before = left.split()
+        after = right.split()
+        if not separator or len(before) < 5 or not after:
+            continue
+        mount_text = re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), before[4])
+        mount = Path(mount_text)
+        try:
+            target.relative_to(mount)
+        except ValueError:
+            continue
+        matches.append((len(mount_text), after[0]))
+    if not matches:
+        abort(f"cannot map EZKL path to a mounted filesystem: {path}")
+    return max(matches)[1]
 
 
 def _std_hashmap_bucket_count_for_capacity(entry_capacity: int) -> int:
@@ -2476,6 +2542,19 @@ def _native_capacity_requirements(
     parallel_lut_elements = int(memory["parallel_fft_lookup_table_elements"])
     icicle_scalar_bytes = int(icicle_type_sizes["scalar_bytes"])
     icicle_affine_bytes = int(icicle_type_sizes["affine_bytes"])
+    effective_host_limit, _ = _effective_host_memory_limit_bytes()
+    _, mmap_dirty_pagecache_upper, mmap_pagecache_config = _regular_file_mmap_reserve_bytes(
+        effective_host_limit, 0, parallel_threads
+    )
+
+    def mmap_active_window(mapping_count: int, workers: int = parallel_threads) -> int:
+        if mapping_count < 0 or workers < 0:
+            abort("regular-file mmap active-window geometry is malformed")
+        value = mapping_count * max(1, workers) * 2 * mmap_pagecache_config["page_size_bytes"]
+        if value > sys.maxsize:
+            abort("regular-file mmap active-window bound exceeds the native address range")
+        return value
+
     if degree < 2:
         abort("EZKL native admission has invalid quotient degree for the local capacity gate")
     selector_census_storage = int(memory["selector_activation_storage_bytes_upper"])
@@ -2717,27 +2796,23 @@ def _native_capacity_requirements(
         int(table_bounds[int(group)]) * 8 for group in lookup_group_indices
     )
     lookup_phi_blind_bytes = proof_instance_count * lookup_arguments * blinding_factors * fr
-    lookup_compact_source_bytes = (
-        lookup_query_spill_bytes
-        + lookup_table_spill_bytes
-        + lookup_table_codebook_bytes
-        + lookup_sparse_count_bytes
-        + lookup_phi_blind_bytes
+    lookup_compact_source_mapped_bytes = lookup_query_spill_bytes + lookup_table_spill_bytes
+    lookup_compact_source_heap_bytes = (
+        lookup_table_codebook_bytes + lookup_sparse_count_bytes + lookup_phi_blind_bytes
     )
     # During prepare, the mapped full-field window is one compressed Q; during
     # later commit/H/opening consumers the analogous single window is m or phi.
     lookup_prepare_q_window_bytes = lookup_prepare_workers * n * fr
     lookup_commit_phi_window_bytes = lookup_commit_workers * n * fr
     lookup_h_source_rebuild_mapped_window_bytes = 2 * n * fr if lookup_arguments else 0
-    lookup_h_source_rebuild_host_window_bytes = (
-        (2 * n + active_lookup_rows) * fr if lookup_arguments else 0
+    lookup_h_source_rebuild_host_window_bytes = active_lookup_rows * fr if lookup_arguments else 0
+    lookup_prepare_mmap_active_window = mmap_active_window(
+        4 + instances + 2 * lookup_prepare_workers if lookup_arguments else 0,
+        parallel_threads,
     )
-    lookup_spill_known = (
-        lookup_query_spill_bytes
-        + lookup_table_spill_bytes
-        + lookup_prepare_q_window_bytes
-        + lookup_commit_phi_window_bytes
-        + lookup_h_source_rebuild_mapped_window_bytes
+    lookup_commit_mmap_active_window = mmap_active_window(
+        4 + instances + 2 * lookup_commit_workers if lookup_arguments else 0,
+        parallel_threads,
     )
     max_gate_dependencies = max(custom_gate_dependencies, default=0)
     max_lookup_dependencies = max(lookup_dependencies, default=0)
@@ -2756,30 +2831,71 @@ def _native_capacity_requirements(
         max_shuffle_dependencies + 1 if int(cs["num_shuffle_arguments"]) else 0,
         3 if permutation else 0,
     )
-    evaluation_temporary_mapped_bytes = evaluation_coset_window * proof_domain * fr
+    # Native H evaluation advances over N-row coset parts. Keep only this
+    # group's D_H dependency columns and the current H-part output mapped;
+    # the complete E-row H result and three E-row selector boundaries are
+    # already charged in proof_persistent_mapped_bytes.
+    evaluation_temporary_mapped_bytes = evaluation_coset_window * n * fr
+    evaluation_part_result_mapped_bytes = n * fr
     evaluation_source_hot_bytes = evaluation_source_column_window * n * fr
-    # `evaluate_h` always keeps the three PK boundary-selector cosets and the
-    # quotient accumulator mapped; only the current expression group's exact
-    # source dependencies and their cosets are additionally touched.
-    proof_eval_hot_mmap = (
-        4 * proof_domain * fr
-        + evaluation_temporary_mapped_bytes
-        + evaluation_source_hot_bytes
-        + permutation_grand_product_window_bytes
+    # Regular-file mappings remain fully charged to disk, but the host gate
+    # reserves only their row-wise active pages plus the kernel dirty-page cap.
+    # H's dependency cosets are held only for the current native group.
+    proof_eval_hot_mmap = mmap_active_window(
+        5
+        + evaluation_coset_window
+        + evaluation_source_column_window
+        + (2 if lookup_arguments else 0)
+        + (1 if permutation_grand_product_window_bytes else 0),
+        parallel_threads,
     )
-    proof_spill_known = (
+    lookup_spill_transient_peak = max(
+        lookup_prepare_q_window_bytes,
+        lookup_commit_phi_window_bytes,
+        lookup_h_source_rebuild_mapped_window_bytes,
+    )
+    lookup_spill_known = lookup_compact_source_mapped_bytes + lookup_spill_transient_peak
+    advice_polynomial_mapped_bytes = advice * n * fr
+    proof_persistent_mapped_bytes = (
         setup_persisted_maps
         + 2 * instances * n * fr
         + proof_domain * fr
         + quotient_coefficients * fr
-        + lookup_spill_known
-        + advice_phase_mapped_peak
-        + permutation_reconstruction_mapped_bytes
+        + advice_polynomial_mapped_bytes
+        + lookup_compact_source_mapped_bytes
         + permutation_grand_product_bank_mapped_bytes
+    )
+    proof_persistent_without_advice = proof_persistent_mapped_bytes - advice_polynomial_mapped_bytes
+    proof_advice_phase_disk_peak = proof_persistent_without_advice + advice_phase_mapped_peak
+    proof_lookup_prepare_disk_peak = proof_persistent_mapped_bytes + lookup_prepare_q_window_bytes
+    proof_lookup_commit_disk_peak = proof_persistent_mapped_bytes + lookup_commit_phi_window_bytes
+    proof_h_disk_peak = (
+        proof_persistent_mapped_bytes
         + evaluation_temporary_mapped_bytes
-        + shplonk_transient_spill_upper
+        + evaluation_part_result_mapped_bytes
+        + (n * fr if fixed_post else 0)
+        + lookup_h_source_rebuild_mapped_window_bytes
+        + permutation_reconstruction_mapped_bytes
+    )
+    proof_opening_disk_peak = proof_persistent_mapped_bytes + shplonk_transient_spill_upper
+    proof_permutation_commit_disk_peak = (
+        proof_persistent_mapped_bytes
+        + permutation_reconstruction_mapped_bytes
+        + permutation_grand_product_commit_workspace_bytes
+    )
+    proof_pk_read_disk_peak = (
+        proof_persistent_mapped_bytes
         + native_pk_read_backing_required
         + native_pk_read_mapped_extra
+    )
+    proof_spill_known = max(
+        proof_advice_phase_disk_peak,
+        proof_lookup_prepare_disk_peak,
+        proof_lookup_commit_disk_peak,
+        proof_h_disk_peak,
+        proof_opening_disk_peak,
+        proof_permutation_commit_disk_peak,
+        proof_pk_read_disk_peak,
     )
     # The bounded native proving-key reader uses one lazily allocated
     # successor-store cache, one target-bitmap cache, its source-derived
@@ -2897,10 +3013,10 @@ def _native_capacity_requirements(
     # remain mapped. The sparse permutation successor vector is heap-backed.
     selector_bitmap_host = selectors
     proof_nonprepare_heap = graph_witness_scalars * fr + selector_bitmap_host + permutation_mapping_host + srs_loaded
-    # The three PK selector cosets are persistent in the loaded key. Other
-    # proof polynomials are mmap-backed but are touched one exact evaluator
-    # group at a time and are bounded by proof_eval_hot_mmap below.
-    proof_nonprepare_hot_mmap = 3 * proof_domain * fr
+    # The three PK selector cosets, quotient value, and instance sources are
+    # regular-file mappings. Their full bytes are disk-backed; host admission
+    # reserves only the row-wise pages that are simultaneously active.
+    proof_nonprepare_hot_mmap = mmap_active_window(4 + instances, parallel_threads)
     proof_nonprepare_resident = proof_nonprepare_heap + proof_nonprepare_hot_mmap
     # Commit's live mapped/heap windows are omega powers, sigma, the current
     # Z polynomial, and its modified-values accumulator. Z conversion to
@@ -2917,16 +3033,18 @@ def _native_capacity_requirements(
     # later has one latest-index map, one current field map (already covered
     # by A*N*Fr proof spill), and one bounded record/decoded/inversion batch.
     gat_proof_synthesis_host_peak = (
-        proof_nonprepare_resident
+        proof_nonprepare_heap
         + gat_transient_witness_bytes
         + advice_event_column_state_resident_bytes
         + advice_event_flush_scratch_bytes
+        + mmap_active_window(4 + instances + advice_event_active_columns, parallel_threads)
     )
     advice_conversion_mapped_host_upper = n * (latest_element_bytes + fr)
     advice_conversion_host_peak = (
-        proof_nonprepare_resident
+        proof_nonprepare_heap
         + advice * int(memory["advice_event_column_metadata_bytes_upper"])
-        + advice_phase_allocation_peak
+        + advice_event_batch_bytes
+        + mmap_active_window(3 + advice_event_active_columns, parallel_threads)
     )
     lookup_map_allocations: list[int] = []
     previous_bucket_growth: list[int] = []
@@ -2954,7 +3072,10 @@ def _native_capacity_requirements(
             )
         )
     )
-    lookup_compact_source_host_retained = lookup_compact_source_bytes + lookup_metadata_retained
+    # Packed query/table ID tapes are regular-file mappings, not resident
+    # vectors. Keep only codebooks, sparse counts, phi blinds, and descriptors
+    # in the mandatory heap reservation.
+    lookup_compact_source_host_retained = lookup_compact_source_heap_bytes + lookup_metadata_retained
     lookup_table_cache_retained_host = (
         lookup_maps_retained + lookup_compact_source_host_retained
     )
@@ -2979,12 +3100,21 @@ def _native_capacity_requirements(
         else 0
     )
     lookup_table_cache_peak_host = lookup_table_cache_retained_host + lookup_table_build_peak
+    # Lookup maps/codebooks survive preparation and are reused by commit, H,
+    # permutation commitments, and opening. Count that retained heap in each
+    # later phase, while the one-time table-build growth remains preparation-only.
+    proof_permutation_grand_product_commit_host_peak = (
+        proof_nonprepare_resident
+        + lookup_table_cache_retained_host
+        + permutation_grand_product_commit_workspace_bytes
+        + icicle_msm_staging
+    )
     # One active input expression is evaluated at a time. Its expression Vec
     # overlaps the mapped compressed Q, and the count conversion briefly owns
     # both AtomicU64 and u64 vectors bounded by the largest table codebook.
     lookup_prepare_task_bytes = (
         (
-            2 * n * fr
+            n * fr
             + max((int(bound) for bound in table_bounds), default=0) * (atomic_u64 + 8)
             + polynomial_header
             + prepared_header
@@ -2994,29 +3124,27 @@ def _native_capacity_requirements(
         else 0
     )
     lookup_prepare_host_peak = (
-        proof_nonprepare_resident
+        proof_nonprepare_heap
         + lookup_table_cache_peak_host
         + lookup_prepare_workers * lookup_prepare_task_bytes
         + icicle_msm_staging
+        + lookup_prepare_mmap_active_window
     )
     # Compact grand-sum reconstruction has one R-row heap accumulator and
     # one N-row mapped phi polynomial. The shared beta-inverse codebook and
     # all encoded tapes are retained-source backing, counted above.
     lookup_commit_heap_per_task = active_lookup_rows * fr
-    lookup_commit_active_map_per_task = n * fr
     lookup_commit_task_bytes = (
         lookup_commit_heap_per_task
-        + lookup_commit_active_map_per_task
         + 4 * vec_header
     ) if lookup_arguments else 0
-    lookup_commit_active_map_window = (
-        lookup_commit_workers * n * fr if lookup_arguments else 0
-    )
+    lookup_commit_active_map_window = lookup_commit_workers * n * fr if lookup_arguments else 0
     lookup_commit_host_peak = (
-        proof_nonprepare_resident
-        + lookup_compact_source_host_retained
+        proof_nonprepare_heap
+        + lookup_table_cache_retained_host
         + lookup_commit_workers * lookup_commit_task_bytes
         + icicle_msm_staging
+        + lookup_commit_mmap_active_window
     )
     parallel_split_m = 1 << (parallel_threads.bit_length() - 1)
     parallel_task_elements = parallel_threads * parallel_split_m
@@ -3024,6 +3152,19 @@ def _native_capacity_requirements(
     recursive_fft_transient = 2 * proof_domain * fr if uses_recursive_fft else 0
     fft_cache_build_scratch = proof_domain * fr if uses_recursive_fft else 0
     proof_fft_transient = max(parallel_fft_transient, recursive_fft_transient, fft_cache_build_scratch)
+    # H's part evaluator uses N-row field staging. The process-wide FFT cache
+    # below remains sized at the full proof domain E and is retained through
+    # later proof phases; only this active transform buffer follows the part.
+    proof_h_parallel_fft_transient = n * fr + parallel_lut_elements * fr + parallel_task_elements * fr
+    proof_h_recursive_fft_transient = 2 * n * fr if uses_recursive_fft else 0
+    # Cache initialization may still touch the E-sized FFT domain even though
+    # the active transform vector is one N-row part.
+    proof_h_fft_cache_build_scratch = fft_cache_build_scratch
+    proof_h_fft_transient = max(
+        proof_h_parallel_fft_transient,
+        proof_h_recursive_fft_transient,
+        proof_h_fft_cache_build_scratch,
+    )
     native_pk_materialize_decode_host = (
         native_pk_fixed_value_decode_host
         + n * fr
@@ -3055,19 +3196,24 @@ def _native_capacity_requirements(
     lookup_eval_task_host_peak = (lookup_eval_workers * 4096 * max_lookup_input_count * (fr + batch_invert_entry)) if lookup_arguments else 0
     proof_eval_h_host_peak = (
         proof_nonprepare_heap
-        + lookup_compact_source_host_retained
+        + lookup_table_cache_retained_host
         + proof_eval_hot_mmap
         + proof_fft_cache_bytes
+        + n * fr
         + max(
-            proof_fft_transient,
+            proof_h_fft_transient,
             lookup_eval_task_host_peak + lookup_h_source_rebuild_host_window_bytes,
         )
     )
+    shplonk_mmap_active_window = mmap_active_window(
+        4 + evaluation_source_column_window + shplonk_batch_width_upper,
+        parallel_threads,
+    )
     shplonk_host_peak = (
         proof_nonprepare_heap
-        + proof_eval_hot_mmap
+        + shplonk_mmap_active_window
         + proof_fft_cache_bytes
-        + lookup_compact_source_host_retained
+        + lookup_table_cache_retained_host
         + icicle_msm_staging
         + shplonk_extension_host_upper
         + shplonk_fixed_workspace_bytes
@@ -3082,14 +3228,18 @@ def _native_capacity_requirements(
         gat_proof_synthesis_host_peak,
         advice_conversion_host_peak,
         native_pk_read_host_peak,
+    ) + mmap_dirty_pagecache_upper
+    setup_mmap_active_window = mmap_active_window(
+        fixed_uncompressed + fixed_post + 3 + 4 + 2,
+        parallel_threads,
     )
-    setup_fixed_assignment_dirty_host_upper = fixed_assignment_maps
+    setup_fixed_assignment_dirty_host_upper = setup_mmap_active_window + mmap_dirty_pagecache_upper
     setup_keygen_host_peak = (
         srs_loaded_and_witness
         + setup_witnessless_shape_values_upper
-        + setup_fixed_assignment_dirty_host_upper
         + gat_transient_witness_bytes
         + max(selector_phase, pk_phase, read_scratch, icicle_msm_staging, permutation_vk_phase)
+        + setup_fixed_assignment_dirty_host_upper
     )
     host_known = max(setup_keygen_host_peak, srs_setup_peak, proof_host_peak)
     return {
@@ -3108,6 +3258,7 @@ def _native_capacity_requirements(
         "setup_mapped_peak_bytes": setup_mapped_peak,
         "proof_spill_known_bytes": proof_spill_known,
         "advice_polynomial_mapped_bytes": advice * n * fr,
+        "regular_file_mmap_dirty_pagecache_upper_bytes": mmap_dirty_pagecache_upper,
         "advice_event_log_records_upper_bytes": advice_event_log_records_upper,
         "advice_event_log_rounding_upper_bytes": advice_event_log_rounding_upper,
         "advice_event_log_reserved_upper_bytes": advice_event_log_reserved_upper,
@@ -3196,9 +3347,10 @@ def _native_capacity_requirements(
         "proof_permutation_grand_product_eval_mapped_window_bytes": permutation_grand_product_window_bytes,
         "proof_evaluation_hot_mmap_host_bytes": proof_eval_hot_mmap,
         "proof_evaluation_coset_mapped_window_bytes": evaluation_temporary_mapped_bytes,
+        "proof_evaluation_part_result_mapped_bytes": evaluation_part_result_mapped_bytes,
         "proof_evaluation_source_mapped_window_bytes": evaluation_source_hot_bytes,
         "proof_evaluation_fft_cache_host_bytes": proof_fft_cache_bytes,
-        "proof_evaluation_fft_transient_host_bytes": proof_fft_transient,
+        "proof_evaluation_fft_transient_host_bytes": proof_h_fft_transient,
         "proof_evaluation_lookup_task_host_bytes": lookup_eval_task_host_peak,
         "proof_evaluation_host_peak_bytes": proof_eval_h_host_peak,
         "shplonk_batch_width_upper": shplonk_batch_width_upper,
@@ -3266,6 +3418,27 @@ def _check_dataset_capacity(
     host_available, host_accounting = _effective_host_memory_available_bytes()
     os_reserve, reserve_accounting = _host_os_diagnostic_reserve_bytes()
     disk_available, disk_accounting = _filesystem_available_bytes(output_root.parent)
+    native_temp_root = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    try:
+        native_temp_root = native_temp_root.resolve(strict=True)
+        if not native_temp_root.is_dir():
+            abort(f"EZKL native temporary path is not a directory: {native_temp_root}")
+    except (OSError, RuntimeError) as exc:
+        abort(f"cannot resolve EZKL native temporary backing path: {exc}")
+    output_fs_type = _filesystem_type(output_root.parent)
+    temp_fs_type = _filesystem_type(native_temp_root)
+    ram_backed_filesystems = {"tmpfs", "ramfs", "devtmpfs"}
+    if output_fs_type in ram_backed_filesystems or temp_fs_type in ram_backed_filesystems:
+        abort(
+            "EZKL regular-file spill backing cannot use a RAM-backed filesystem; "
+            f"output filesystem={output_fs_type}, native temporary filesystem={temp_fs_type}"
+        )
+    _, temp_disk_accounting = _filesystem_available_bytes(native_temp_root)
+    if temp_disk_accounting["device_id"] != disk_accounting["device_id"]:
+        abort(
+            "EZKL output artifacts and native regular-file spill must share one filesystem "
+            "for the authenticated combined disk budget; set TMPDIR to a directory on the output filesystem"
+        )
     device_free = int(device_sample["free_memory_bytes"])
     device_peak = int(workspace_query["device_workspace_peak_bytes"])
     integrated = bool(workspace_query["integrated_device"])
@@ -3298,7 +3471,14 @@ def _check_dataset_capacity(
         "disk_available_bytes": disk_available,
         "disk_required_known_bytes": remaining_known_disk_bytes,
         "disk_budget_components": disk_budget_components or {"total_required_bytes": remaining_known_disk_bytes},
-        "disk_accounting": disk_accounting,
+        "disk_accounting": {
+            **disk_accounting,
+            "filesystem_type": output_fs_type,
+            "native_temp_path": str(native_temp_root),
+            "native_temp_filesystem_type": temp_fs_type,
+            "native_temp_device_id": temp_disk_accounting["device_id"],
+            "native_temp_available_bytes": temp_disk_accounting["available_bytes"],
+        },
         "cuda_free_bytes": device_free,
         "cuda_required_workspace_bytes": device_peak,
         "cuda_total_bytes": device_sample["total_memory_bytes"],
@@ -3557,7 +3737,7 @@ def _write_native_prove_budget_receipt(
     if not isinstance(required_identity, dict):
         abort(f"{dataset} native prove budget lacks the admitted relation identity")
     value = {
-        "schema": "ezkl.native-prove-budget.v2",
+        "schema": "ezkl.native-prove-budget.v3",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -3632,7 +3812,7 @@ def _load_reusable_native_prove_budget_receipt(
     if not isinstance(budget, dict) or not isinstance(relation, dict):
         return None
     expected = {
-        "schema": "ezkl.native-prove-budget.v2",
+        "schema": "ezkl.native-prove-budget.v3",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -3755,24 +3935,28 @@ def _disk_budget_components(
         "pending_output_srs_copy_count": pending_srs["pending_output_srs_copy_count"],
         "pending_output_srs_copy_bytes": pending_srs["pending_output_srs_copy_bytes"],
     }
-    total = 0
-    for name in (
-        "future_setup_key_artifact_upper_bytes",
-        "setup_mapped_peak_bytes",
-        "proof_spill_known_bytes",
-        "pending_output_srs_copy_bytes",
-    ):
+    for name in numeric:
         value = numeric[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
             abort(f"disk capacity component {name} is invalid/unrepresentable")
-        if value > sys.maxsize - total:
-            abort("known disk capacity budget exceeds the representable byte range")
-        total += value
+    output_required = (
+        setup_key_artifact_upper_bytes + int(pending_srs["pending_output_srs_copy_bytes"])
+    )
+    scratch_required = max(setup_mapped_peak_bytes, proof_spill_known_bytes)
+    total = output_required + scratch_required
+    if any(value > sys.maxsize for value in (output_required, scratch_required, total)):
+        abort("known disk capacity budget exceeds the representable byte range")
     for name in ("output_srs_copy_size_bytes", "pending_output_srs_copy_count"):
         value = numeric[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
             abort(f"disk capacity component {name} is invalid/unrepresentable")
-    return {**numeric, "pending_output_srs_copy_datasets": list(pending_srs["pending_output_srs_copy_datasets"]), "total_required_bytes": total}
+    return {
+        **numeric,
+        "output_volume_required_bytes": output_required,
+        "scratch_volume_required_bytes": scratch_required,
+        "pending_output_srs_copy_datasets": list(pending_srs["pending_output_srs_copy_datasets"]),
+        "total_required_bytes": total,
+    }
 
 
 def _native_prepare_budget(requirements: dict[str, int], *, initial_available_bytes: int, workspace_query: dict[str, object]) -> dict[str, int]:
@@ -3783,7 +3967,12 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
     device_peak = int(workspace_query["device_workspace_peak_bytes"])
     device_headroom = device_peak if integrated else 0
     baseline_heap = requirements["proof_nonprepare_heap_host_bytes"]
-    baseline_hot_mmap = requirements["proof_nonprepare_hot_mmap_host_bytes"]
+    # Include the active mmap pages and the kernel dirty-page ceiling in the
+    # single shared host pool before selecting native lookup task concurrency.
+    baseline_hot_mmap = (
+        requirements["proof_nonprepare_hot_mmap_host_bytes"]
+        + requirements["regular_file_mmap_dirty_pagecache_upper_bytes"]
+    )
     tablecache = requirements["lookup_table_cache_retained_host_bytes"]
     icicle_staging = requirements["icicle_msm_host_staging_bytes"]
     shplonk_extensions = requirements["shplonk_extension_host_upper_bytes"]
@@ -3947,16 +4136,14 @@ def _admit_local_capacity(
         pending_srs=initial_srs_budget,
         setup_key_artifact_upper_bytes=future_key_artifacts,
         setup_mapped_peak_bytes=max_setup_map_peak,
+        proof_spill_known_bytes=max_future_proof_spill,
     )
     # Setup's transient maps and a later dataset's proof spill are separate
     # phases. Keep all retained key files and SRS copies, then reserve the
     # larger of those two transient peaks instead of summing unrelated phases.
-    srs_pending_bytes = int(initial_srs_budget["pending_output_srs_copy_bytes"])
     initial_phase_peak = max(max_setup_map_peak, max_future_proof_spill)
-    initial_disk_components["proof_spill_known_bytes"] = max_future_proof_spill
-    initial_disk_components["total_required_bytes"] = future_key_artifacts + initial_phase_peak + srs_pending_bytes
-    if initial_disk_components["total_required_bytes"] > sys.maxsize:
-        abort("initial known setup/proof disk peak exceeds the native address range")
+    if initial_disk_components["scratch_volume_required_bytes"] != initial_phase_peak:
+        abort("initial setup/proof scratch peak does not match the phase-max disk budget")
     initial_disk_required = int(initial_disk_components["total_required_bytes"])
     initial_sample = {
         "device_uuid": query["device_uuid"],

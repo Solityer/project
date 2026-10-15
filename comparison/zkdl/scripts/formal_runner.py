@@ -18,6 +18,12 @@ from typing import Any
 
 import formal_phase
 import formal_provenance
+from session_lifecycle import (
+    SessionRootError,
+    SessionRootIdentity,
+    capture_session_root,
+    require_session_root,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = formal_phase.DATASETS
@@ -25,6 +31,7 @@ SESSION_RE = re.compile(r"formal_([0-9a-f]{32})\Z")
 OWNER_TOKEN_ENV = "ZKDL_FORMAL_OWNER_TOKEN"
 LOCK_FD_ENV = "ZKDL_FORMAL_LOCK_FD"
 DETACHED_LAUNCH_ENV = "ZKDL_DETACHED_LAUNCH_DIR"
+ACTIVE_SESSION_IDENTITY: SessionRootIdentity | None = None
 
 
 class RunnerError(RuntimeError):
@@ -43,6 +50,13 @@ def _boot_id() -> str:
 
 
 def _write_json(path: Path, document: dict[str, Any]) -> None:
+    if ACTIVE_SESSION_IDENTITY is not None:
+        try:
+            Path(os.path.abspath(path)).relative_to(ACTIVE_SESSION_IDENTITY.path)
+        except ValueError:
+            pass
+        else:
+            require_session_root(ACTIVE_SESSION_IDENTITY)
     if path.is_symlink() or path.parent.is_symlink() or not path.parent.is_dir():
         raise RunnerError(f"refusing to write local runner state through a symlink or missing directory: {path}")
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
@@ -64,6 +78,7 @@ def _write_json(path: Path, document: dict[str, Any]) -> None:
 
 
 def _write_detached_session_link(session: Path, session_id: str) -> None:
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     raw = os.environ.get(DETACHED_LAUNCH_ENV)
     if not raw:
         return
@@ -86,6 +101,7 @@ def _write_detached_session_link(session: Path, session_id: str) -> None:
 
 def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, stage: str,
                             failure: str, *, status: str = "FAILED", replace: bool = False) -> None:
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     current = state.setdefault("dataset_status", {}).get(dataset, {})
     if not replace and current.get("status") in ("FAILED", "BLOCKED"):
         return
@@ -93,6 +109,7 @@ def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, 
     state["dataset_status"][dataset] = row
     phase_dir = session / "phase"
     phase_dir.mkdir(exist_ok=True)
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     _write_json(phase_dir / f"{dataset}_failure.json", {
         "schema": "zkdl_formal_dataset_failure_v1", "baseline": "zkdl",
         "session_id": state["session_id"], **row, "recorded_at_utc": _now(),
@@ -524,6 +541,7 @@ def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session:
 
 def _run_phase(lock_fd: int, token: str, session: Path, session_id: str, state: dict[str, Any],
                phase: str, dataset: str | None = None) -> dict[str, Any]:
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     stage = f"cell:{dataset}" if phase == "cell" else phase
     state["stage"] = stage
     state["updated_at_utc"] = _now()
@@ -535,16 +553,20 @@ def _run_phase(lock_fd: int, token: str, session: Path, session_id: str, state: 
     env = {key: value for key, value in os.environ.items() if not key.startswith("COMPARISON_FORMAL_")}
     env[OWNER_TOKEN_ENV] = token
     env[LOCK_FD_ENV] = str(lock_fd)
+    assert ACTIVE_SESSION_IDENTITY is not None
+    env.update(ACTIVE_SESSION_IDENTITY.child_environment())
     print(f"zkdl_formal_stage=START stage={stage} session={session_id}", flush=True)
     try:
         output = formal_phase._run(command, env=env, capture_output=True, capture_mode="phase_marker",
                                    pass_fds=(lock_fd,))
     except formal_phase.PhaseError as exc:
+        require_session_root(ACTIVE_SESSION_IDENTITY, session)
         if dataset is not None:
             formal_phase._append_log(session / "logs" / f"{dataset}.log",
                                      json.dumps({"phase": phase, "dataset": dataset, "status": "FAILED",
                                                  "error": str(exc)}, sort_keys=True, separators=(",", ":")))
         raise RunnerError(str(exc)) from exc
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     marker = _phase_marker(output, phase, dataset, session_id)
     state.setdefault("completed_phases", []).append(_marker_summary(phase, marker))
     if phase == "prepare" and isinstance(marker.get("dataset_status"), dict):
@@ -577,6 +599,7 @@ def _shared_capacity_identity_failure(exc: Exception) -> bool:
 
 
 def _validate_final_pass(marker: dict[str, Any], session: Path, session_id: str) -> tuple[str, str]:
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     expected_receipt = f"results/{session.name}/final_validation.json"
     expected_collection = f"results/{session.name}/collected.json"
     if marker.get("final_validation_path") != expected_receipt or marker.get("collection_path") != expected_collection:
@@ -606,6 +629,7 @@ def _validate_final_pass(marker: dict[str, Any], session: Path, session_id: str)
 
 
 def _write_interrupted_summary(session: Path, state: dict[str, Any], failure: str) -> None:
+    require_session_root(ACTIVE_SESSION_IDENTITY, session)
     session_id = state["session_id"]
     rows: list[dict[str, Any]] = []
     for dataset in DATASETS:
@@ -667,11 +691,15 @@ def run() -> int:
     lock_fd, _lock_path, lock_stat = _acquire_local_lock(runs)
     session: Path | None = None
     state: dict[str, Any] | None = None
+    global ACTIVE_SESSION_IDENTITY
+    ACTIVE_SESSION_IDENTITY = None
     try:
         _mark_stale_sessions(runs)
         session_id = secrets.token_hex(16)
         session = runs / f"formal_{session_id}"
         session.mkdir(mode=0o700, exist_ok=False)
+        ACTIVE_SESSION_IDENTITY = capture_session_root(session)
+        os.environ.update(ACTIVE_SESSION_IDENTITY.child_environment())
         token = secrets.token_hex(32)
         owner_pid = os.getpid()
         owner = {"pid": owner_pid, "boot_id": _boot_id(), "start_ticks": str(formal_phase._proc_start_ticks(owner_pid))}
@@ -824,8 +852,12 @@ def run() -> int:
         _write_json(session / "state.json", state)
         print(f"zkdl_formal_run=FAILED session={session_id} failure={state['failure']}", file=sys.stderr, flush=True)
         return 2
+    except SessionRootError as exc:
+        print(f"zkdl_formal_run=FAILED error={exc}", file=sys.stderr, flush=True)
+        return 2
     except KeyboardInterrupt as exc:
         if state is not None and session is not None:
+            require_session_root(ACTIVE_SESSION_IDENTITY, session)
             interruption = str(exc) or "formal run interrupted"
             stage = str(state.get("stage", "unknown"))
             active_dataset = stage.split(":", 1)[1] if stage.startswith("cell:") else None
@@ -848,6 +880,7 @@ def run() -> int:
         return 130 if formal_phase.INTERRUPTED == signal.SIGINT else 143
     except Exception as exc:
         if state is not None and session is not None:
+            require_session_root(ACTIVE_SESSION_IDENTITY, session)
             state["status"] = "FAILED"
             state["failure"] = str(exc)
             state["finished_at_utc"] = _now()

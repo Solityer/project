@@ -9,7 +9,9 @@ use crate::plonk::lookup;
 use crate::poly::Basis;
 use crate::{
     arithmetic::{parallelize, CurveAffine},
-    poly::{Coeff, EvaluationDomain, ExtendedLagrangeCoeff, Polynomial, Rotation},
+    poly::{
+        Coeff, EvaluationDomain, ExtendedLagrangeCoeff, LagrangeCoeff, Polynomial, Rotation,
+    },
 };
 
 use group::ff::{Field, PrimeField, WithSmallOrderMulGroup};
@@ -477,7 +479,8 @@ fn load_cosets<F: WithSmallOrderMulGroup<3>>(
     domain: &EvaluationDomain<F>,
     polys: &[Polynomial<F, Coeff>],
     columns: &BTreeSet<usize>,
-) -> io::Result<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> {
+    extended_omega_factor: F,
+) -> io::Result<Vec<Polynomial<F, LagrangeCoeff>>> {
     let mut cosets = (0..polys.len())
         .map(|_| Polynomial::from_vec(Vec::new()))
         .collect::<Vec<_>>();
@@ -488,7 +491,7 @@ fn load_cosets<F: WithSmallOrderMulGroup<3>>(
                 "constraint references an absent polynomial",
             )
         })?;
-        cosets[column] = domain.coeff_to_extended_spilled(poly)?;
+        cosets[column] = domain.coeff_to_extended_part_spilled(poly, extended_omega_factor)?;
     }
     Ok(cosets)
 }
@@ -500,7 +503,8 @@ fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
     domain: &EvaluationDomain<F>,
     sources: &[FixedColumnSource<F>],
     columns: &BTreeSet<usize>,
-) -> io::Result<Vec<Polynomial<F, ExtendedLagrangeCoeff>>> {
+    extended_omega_factor: F,
+) -> io::Result<Vec<Polynomial<F, LagrangeCoeff>>> {
     let mut cosets = (0..sources.len())
         .map(|_| Polynomial::from_vec(Vec::new()))
         .collect::<Vec<_>>();
@@ -513,9 +517,7 @@ fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
         })?;
         let lagrange = source.materialize_lagrange()?;
         let coeff = domain.lagrange_to_coeff(lagrange).spill()?;
-        let coset = domain.coeff_to_extended_spilled(&coeff)?;
-        drop(coeff);
-        cosets[column] = coset;
+        cosets[column] = domain.coeff_to_extended_part(coeff, extended_omega_factor);
     }
     Ok(cosets)
 }
@@ -534,17 +536,36 @@ fn evaluate_graph_group<C: CurveAffine>(
     theta: C::ScalarExt,
     rot_scale: i32,
     isize: i32,
+    extended_omega_factor: C::ScalarExt,
+    part_index: usize,
+    part_stride: usize,
 ) -> io::Result<()> {
     let dependencies = graph.column_dependencies();
     let domain = &pk.vk.domain;
-    let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)?;
-    let advice = load_cosets(domain, advice_polys, &dependencies.advice)?;
-    let instance = load_cosets(domain, instance_polys, &dependencies.instance)?;
+    let fixed = load_fixed_cosets(
+        domain,
+        &pk.fixed_values,
+        &dependencies.fixed,
+        extended_omega_factor,
+    )?;
+    let advice = load_cosets(
+        domain,
+        advice_polys,
+        &dependencies.advice,
+        extended_omega_factor,
+    )?;
+    let instance = load_cosets(
+        domain,
+        instance_polys,
+        &dependencies.instance,
+        extended_omega_factor,
+    )?;
     parallelize(&mut values[..], |h, start| {
         let mut data = graph.instance();
         for (offset, value) in h.iter_mut().enumerate() {
-            let idx = start + offset;
-            let contribution = graph.evaluate(
+            let row = start + offset;
+            let idx = row * part_stride + part_index;
+            let contribution = graph.evaluate_part(
                 &mut data,
                 &fixed,
                 &advice,
@@ -558,6 +579,7 @@ fn evaluate_graph_group<C: CurveAffine>(
                 idx,
                 rot_scale,
                 isize,
+                part_stride,
             );
             *value = *value * y + contribution;
         }
@@ -752,10 +774,10 @@ impl<C: CurveAffine> Evaluator<C> {
         }
     }
 
-    /// Evaluate the native quotient polynomial a constraint group at a time.
-    /// The Horner order remains gate -> permutation -> lookup -> shuffle, while
-    /// each group's extended-domain inputs are reconstructed in mapped storage
-    /// and released before the next group starts.
+    /// Evaluate the native quotient polynomial one extended-domain part at a
+    /// time. Within each part the Horner order remains gate -> permutation ->
+    /// lookup -> shuffle; inputs use the native part FFT and the completed
+    /// values are scattered into the full extended-domain output.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::plonk) fn evaluate_h(
         &self,
@@ -784,281 +806,418 @@ impl<C: CurveAffine> Evaluator<C> {
         let mut values: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
             Polynomial::mapped_filled(size, C::ScalarExt::ZERO)
                 .map_err(super::Error::NativeStorage)?;
+        assert!(rot_scale > 0);
+        let part_stride = rot_scale as usize;
+        assert_eq!(size % part_stride, 0);
+        let part_size = size / part_stride;
 
-        for (((advice, instance), lookup_sets), (shuffle_sets, permutation)) in advice_polys
-            .iter()
-            .zip(instance_polys.iter())
-            .zip(lookups.iter())
-            .zip(shuffles.iter().zip(permutations.iter()))
-        {
-            // Custom gate polynomials are folded in their existing native order.
-            for graph in &self.custom_gates {
-                evaluate_graph_group(
-                    graph,
-                    pk,
-                    advice,
-                    instance,
-                    challenges,
-                    &mut values,
-                    y,
-                    beta,
-                    gamma,
-                    theta,
-                    rot_scale,
-                    isize,
-                )?;
-            }
-
-            // Permutation boundary and copy constraints.
-            let sets = &permutation.sets;
-            if !sets.is_empty() {
-                let sigma_omega_powers = permutation::omega_powers(domain)
+        for part_index in 0..part_stride {
+            let extended_omega_factor = extended_omega.pow_vartime([part_index as u64]);
+            let mut part_values: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+                Polynomial::mapped_filled(part_size, C::ScalarExt::ZERO)
                     .map_err(super::Error::NativeStorage)?;
-                let chunk_len = pk.vk.cs.degree() - 2;
-                let column_groups = p.columns.chunks(chunk_len).collect::<Vec<_>>();
-                if sets.len() != column_groups.len() {
-                    return Err(super::Error::NativeStorage(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "permutation product set count does not match circuit columns",
-                    )));
-                }
-                let last_rotation = Rotation(-((pk.vk.cs.blinding_factors() + 1) as i32));
 
-                let first_z = domain
-                    .coeff_to_extended_spilled(&sets[0].permutation_product_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                parallelize(&mut values[..], |h, start| {
-                    for (offset, value) in h.iter_mut().enumerate() {
-                        let idx = start + offset;
-                        *value = *value * y + ((one - first_z[idx]) * l0[idx]);
-                    }
-                });
-                drop(first_z);
-
-                let last_z = domain
-                    .coeff_to_extended_spilled(&sets.last().unwrap().permutation_product_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                parallelize(&mut values[..], |h, start| {
-                    for (offset, value) in h.iter_mut().enumerate() {
-                        let idx = start + offset;
-                        let z = last_z[idx];
-                        *value = *value * y + ((z.square() - z) * l_last[idx]);
-                    }
-                });
-                drop(last_z);
-
-                if sets.len() > 1 {
-                    let mut previous_z = domain
-                        .coeff_to_extended_spilled(&sets[0].permutation_product_poly)
-                        .map_err(super::Error::NativeStorage)?;
-                    for set in sets.iter().skip(1) {
-                        let current_z = domain
-                            .coeff_to_extended_spilled(&set.permutation_product_poly)
-                            .map_err(super::Error::NativeStorage)?;
-                        parallelize(&mut values[..], |h, start| {
-                            for (offset, value) in h.iter_mut().enumerate() {
-                                let idx = start + offset;
-                                let r_last =
-                                    get_rotation_idx(idx, last_rotation.0, rot_scale, isize);
-                                *value =
-                                    *value * y + ((current_z[idx] - previous_z[r_last]) * l0[idx]);
-                            }
-                        });
-                        previous_z = current_z;
-                    }
+            for (((advice, instance), lookup_sets), (shuffle_sets, permutation)) in advice_polys
+                .iter()
+                .zip(instance_polys.iter())
+                .zip(lookups.iter())
+                .zip(shuffles.iter().zip(permutations.iter()))
+            {
+                // Custom gate polynomials are folded in their existing native order.
+                for graph in &self.custom_gates {
+                    evaluate_graph_group(
+                        graph,
+                        pk,
+                        advice,
+                        instance,
+                        challenges,
+                        &mut part_values,
+                        y,
+                        beta,
+                        gamma,
+                        theta,
+                        rot_scale,
+                        isize,
+                        extended_omega_factor,
+                        part_index,
+                        part_stride,
+                    )?;
                 }
 
-                // One set at a time, and one source/sigma pair at a time. The
-                // running products are mapped arrays; no all-column coset bank
-                // or all-set product coset bank is retained.
-                let mut column_index = 0usize;
-                let mut delta_power = C::ScalarExt::ONE;
-                for (set, columns) in sets.iter().zip(column_groups.into_iter()) {
-                    let z = domain
-                        .coeff_to_extended_spilled(&set.permutation_product_poly)
+                // Permutation boundary and copy constraints.
+                let sets = &permutation.sets;
+                if !sets.is_empty() {
+                    let sigma_omega_powers = permutation::omega_powers(domain)
                         .map_err(super::Error::NativeStorage)?;
-                    let mut left: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
-                        Polynomial::mapped_filled(size, C::ScalarExt::ONE)
-                            .map_err(super::Error::NativeStorage)?;
-                    let mut right: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
-                        Polynomial::mapped_filled(size, C::ScalarExt::ONE)
-                            .map_err(super::Error::NativeStorage)?;
-                    parallelize(&mut left[..], |out, start| {
-                        for (offset, value) in out.iter_mut().enumerate() {
-                            let idx = start + offset;
-                            let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                            *value = z[r_next];
+                    let chunk_len = pk.vk.cs.degree() - 2;
+                    let column_groups = p.columns.chunks(chunk_len).collect::<Vec<_>>();
+                    if sets.len() != column_groups.len() {
+                        return Err(super::Error::NativeStorage(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "permutation product set count does not match circuit columns",
+                        )));
+                    }
+                    let last_rotation = Rotation(-((pk.vk.cs.blinding_factors() + 1) as i32));
+
+                    let first_z = domain
+                        .coeff_to_extended_part_spilled(
+                            &sets[0].permutation_product_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    parallelize(&mut part_values[..], |h, start| {
+                        for (offset, value) in h.iter_mut().enumerate() {
+                            let row = start + offset;
+                            let idx = row * part_stride + part_index;
+                            *value = *value * y + ((one - first_z[row]) * l0[idx]);
                         }
                     });
-                    parallelize(&mut right[..], |out, start| {
-                        out.copy_from_slice(&z[start..start + out.len()]);
+                    drop(first_z);
+
+                    let last_z = domain
+                        .coeff_to_extended_part_spilled(
+                            &sets.last().unwrap().permutation_product_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    parallelize(&mut part_values[..], |h, start| {
+                        for (offset, value) in h.iter_mut().enumerate() {
+                            let row = start + offset;
+                            let idx = row * part_stride + part_index;
+                            let z = last_z[row];
+                            *value = *value * y + ((z.square() - z) * l_last[idx]);
+                        }
                     });
-                    drop(z);
+                    drop(last_z);
 
-                    for column in columns {
-                        let source_coset = match column.column_type() {
-                            Any::Advice(_) => domain
-                                .coeff_to_extended_spilled(&advice[column.index()])
-                                .map_err(super::Error::NativeStorage)?,
-                            Any::Fixed => {
-                                let lagrange = pk.fixed_values[column.index()]
-                                    .materialize_lagrange()
-                                    .map_err(super::Error::NativeStorage)?;
-                                let coeff = domain
-                                    .lagrange_to_coeff(lagrange)
-                                    .spill()
-                                    .map_err(super::Error::NativeStorage)?;
-                                let coset = domain
-                                    .coeff_to_extended_spilled(&coeff)
-                                    .map_err(super::Error::NativeStorage)?;
-                                drop(coeff);
-                                coset
-                            }
-                            Any::Instance => domain
-                                .coeff_to_extended_spilled(&instance[column.index()])
-                                .map_err(super::Error::NativeStorage)?,
-                        };
-                        let sigma_poly = pk
-                            .permutation
-                            .sigma_coeff(domain, column_index, &sigma_omega_powers[..])
+                    if sets.len() > 1 {
+                        let mut previous_z = domain
+                            .coeff_to_extended_part_spilled(
+                                &sets[0].permutation_product_poly,
+                                extended_omega_factor,
+                            )
                             .map_err(super::Error::NativeStorage)?;
-                        let sigma_coset = domain
-                            .coeff_to_extended_spilled(&sigma_poly)
-                            .map_err(super::Error::NativeStorage)?;
-                        drop(sigma_poly);
+                        for set in sets.iter().skip(1) {
+                            let current_z = domain
+                                .coeff_to_extended_part_spilled(
+                                    &set.permutation_product_poly,
+                                    extended_omega_factor,
+                                )
+                                .map_err(super::Error::NativeStorage)?;
+                            parallelize(&mut part_values[..], |h, start| {
+                                for (offset, value) in h.iter_mut().enumerate() {
+                                    let row = start + offset;
+                                    let idx = row * part_stride + part_index;
+                                    let r_last =
+                                        get_rotation_idx(idx, last_rotation.0, rot_scale, isize);
+                                    *value = *value * y
+                                        + ((current_z[row]
+                                            - previous_z[r_last / part_stride])
+                                            * l0[idx]);
+                                }
+                            });
+                            previous_z = current_z;
+                        }
+                    }
 
+                    // One set at a time, and one source/sigma pair at a time. The
+                    // running products are mapped arrays; no all-column coset bank
+                    // or all-set product coset bank is retained.
+                    let mut column_index = 0usize;
+                    let mut delta_power = C::ScalarExt::ONE;
+                    for (set, columns) in sets.iter().zip(column_groups.into_iter()) {
+                        let z = domain
+                            .coeff_to_extended_part_spilled(
+                                &set.permutation_product_poly,
+                                extended_omega_factor,
+                            )
+                            .map_err(super::Error::NativeStorage)?;
+                        let mut left: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+                            Polynomial::mapped_filled(part_size, C::ScalarExt::ONE)
+                                .map_err(super::Error::NativeStorage)?;
+                        let mut right: Polynomial<C::ScalarExt, ExtendedLagrangeCoeff> =
+                            Polynomial::mapped_filled(part_size, C::ScalarExt::ONE)
+                                .map_err(super::Error::NativeStorage)?;
                         parallelize(&mut left[..], |out, start| {
                             for (offset, value) in out.iter_mut().enumerate() {
-                                let idx = start + offset;
-                                *value *= source_coset[idx] + beta * sigma_coset[idx] + gamma;
+                                let row = start + offset;
+                                let idx = row * part_stride + part_index;
+                                let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
+                                *value = z[r_next / part_stride];
                             }
                         });
-                        let delta_start = beta * C::ScalarExt::ZETA * delta_power;
                         parallelize(&mut right[..], |out, start| {
-                            let mut beta_term =
-                                delta_start * extended_omega.pow_vartime([start as u64]);
-                            for (offset, value) in out.iter_mut().enumerate() {
-                                let idx = start + offset;
-                                *value *= source_coset[idx] + beta_term + gamma;
-                                beta_term *= &extended_omega;
+                            out.copy_from_slice(&z[start..start + out.len()]);
+                        });
+                        drop(z);
+
+                        for column in columns {
+                            let source_coset = match column.column_type() {
+                                Any::Advice(_) => domain
+                                    .coeff_to_extended_part_spilled(
+                                        &advice[column.index()],
+                                        extended_omega_factor,
+                                    )
+                                    .map_err(super::Error::NativeStorage)?,
+                                Any::Fixed => {
+                                    let lagrange = pk.fixed_values[column.index()]
+                                        .materialize_lagrange()
+                                        .map_err(super::Error::NativeStorage)?;
+                                    let coeff = domain
+                                        .lagrange_to_coeff(lagrange)
+                                        .spill()
+                                        .map_err(super::Error::NativeStorage)?;
+                                    let coset = domain
+                                        .coeff_to_extended_part(coeff, extended_omega_factor);
+                                    coset
+                                }
+                                Any::Instance => domain
+                                    .coeff_to_extended_part_spilled(
+                                        &instance[column.index()],
+                                        extended_omega_factor,
+                                    )
+                                    .map_err(super::Error::NativeStorage)?,
+                            };
+                            let sigma_poly = pk
+                                .permutation
+                                .sigma_coeff(domain, column_index, &sigma_omega_powers[..])
+                                .map_err(super::Error::NativeStorage)?;
+                            let sigma_coset = domain
+                                .coeff_to_extended_part(sigma_poly, extended_omega_factor);
+
+                            parallelize(&mut left[..], |out, start| {
+                                for (offset, value) in out.iter_mut().enumerate() {
+                                    let row = start + offset;
+                                    *value *= source_coset[row] + beta * sigma_coset[row] + gamma;
+                                }
+                            });
+                            let delta_start = beta * C::ScalarExt::ZETA * delta_power;
+                            let domain_omega = domain.get_omega();
+                            parallelize(&mut right[..], |out, start| {
+                                let full_start = start * part_stride + part_index;
+                                let mut beta_term =
+                                    delta_start * extended_omega.pow_vartime([full_start as u64]);
+                                for (offset, value) in out.iter_mut().enumerate() {
+                                    let row = start + offset;
+                                    *value *= source_coset[row] + beta_term + gamma;
+                                    beta_term *= &domain_omega;
+                                }
+                            });
+                            delta_power *= &C::ScalarExt::DELTA;
+                            column_index += 1;
+                            drop(sigma_coset);
+                            drop(source_coset);
+                        }
+
+                        parallelize(&mut part_values[..], |h, start| {
+                            for (offset, value) in h.iter_mut().enumerate() {
+                                let row = start + offset;
+                                let idx = row * part_stride + part_index;
+                                *value = *value * y
+                                    + ((left[row] - right[row]) * l_active_row[idx]);
                             }
                         });
-                        delta_power *= &C::ScalarExt::DELTA;
-                        column_index += 1;
-                        drop(sigma_coset);
-                        drop(source_coset);
+                        drop(left);
+                        drop(right);
                     }
-
-                    parallelize(&mut values[..], |h, start| {
-                        for (offset, value) in h.iter_mut().enumerate() {
-                            let idx = start + offset;
-                            *value = *value * y + ((left[idx] - right[idx]) * l_active_row[idx]);
-                        }
-                    });
-                    drop(left);
-                    drop(right);
                 }
-            }
 
-            #[cfg(feature = "mv-lookup")]
-            for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
-                let (input_graphs, table_graph) = &self.lookups[lookup_index];
-                if input_graphs.is_empty() {
-                    return Err(super::Error::NativeStorage(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "multi-lookup argument has no input expressions",
-                    )));
-                }
-                let mut dependencies = ColumnDependencies::default();
-                for graph in input_graphs.iter().chain(std::iter::once(table_graph)) {
-                    dependencies.extend(&graph.column_dependencies());
-                }
-                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
-                    .map_err(super::Error::NativeStorage)?;
-                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
-                    .map_err(super::Error::NativeStorage)?;
-                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
-                    .map_err(super::Error::NativeStorage)?;
-                let phi_poly = lookup
-                    .source
-                    .materialize_coeff(lookup::prover::LookupPolynomialKind::GrandSum)
-                    .map_err(super::Error::NativeStorage)?;
-                let phi_coset = domain
-                    .coeff_to_extended_spilled(&phi_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                drop(phi_poly);
-                let m_poly = lookup
-                    .source
-                    .materialize_coeff(lookup::prover::LookupPolynomialKind::Multiplicity)
-                    .map_err(super::Error::NativeStorage)?;
-                let m_coset = domain
-                    .coeff_to_extended_spilled(&m_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                drop(m_poly);
-                const LOOKUP_ROW_CHUNK: usize = 4096;
-                (&mut values[..])
-                    .par_chunks_mut(LOOKUP_ROW_CHUNK)
-                    .enumerate()
-                    .for_each(|(chunk_index, h)| {
-                        let start = chunk_index * LOOKUP_ROW_CHUNK;
-                        let mut input_data = input_graphs
-                            .iter()
-                            .map(GraphEvaluator::instance)
-                            .collect::<Vec<_>>();
-                        let mut inverse_values = Vec::with_capacity(h.len() * input_graphs.len());
-                        for offset in 0..h.len() {
-                            let idx = start + offset;
-                            for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
-                                inverse_values.push(graph.evaluate(
-                                    data,
-                                    &fixed,
-                                    &advice_cosets,
-                                    &instance_cosets,
-                                    challenges,
-                                    &beta,
-                                    &gamma,
-                                    &theta,
-                                    &y,
-                                    &C::ScalarExt::ZERO,
-                                    idx,
-                                    rot_scale,
-                                    isize,
-                                ));
-                            }
-                        }
-                        inverse_values.batch_invert();
-
-                        let mut input_data = input_graphs
-                            .iter()
-                            .map(GraphEvaluator::instance)
-                            .collect::<Vec<_>>();
-                        let mut table_data = table_graph.instance();
-                        for (offset, h_value) in h.iter_mut().enumerate() {
-                            let idx = start + offset;
-                            let mut inputs_product = C::ScalarExt::ONE;
-                            for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
-                                inputs_product *= graph.evaluate(
-                                    data,
-                                    &fixed,
-                                    &advice_cosets,
-                                    &instance_cosets,
-                                    challenges,
-                                    &beta,
-                                    &gamma,
-                                    &theta,
-                                    &y,
-                                    &C::ScalarExt::ZERO,
-                                    idx,
-                                    rot_scale,
-                                    isize,
-                                );
-                            }
-                            let inverse_sum = inverse_values
-                                [offset * input_graphs.len()..(offset + 1) * input_graphs.len()]
+                #[cfg(feature = "mv-lookup")]
+                for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
+                    let (input_graphs, table_graph) = &self.lookups[lookup_index];
+                    if input_graphs.is_empty() {
+                        return Err(super::Error::NativeStorage(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "multi-lookup argument has no input expressions",
+                        )));
+                    }
+                    let mut dependencies = ColumnDependencies::default();
+                    for graph in input_graphs.iter().chain(std::iter::once(table_graph)) {
+                        dependencies.extend(&graph.column_dependencies());
+                    }
+                    let fixed = load_fixed_cosets(
+                        domain,
+                        &pk.fixed_values,
+                        &dependencies.fixed,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let advice_cosets = load_cosets(
+                        domain,
+                        advice,
+                        &dependencies.advice,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let instance_cosets = load_cosets(
+                        domain,
+                        instance,
+                        &dependencies.instance,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let phi_poly = lookup
+                        .source
+                        .materialize_coeff(lookup::prover::LookupPolynomialKind::GrandSum)
+                        .map_err(super::Error::NativeStorage)?;
+                    let phi_coset = domain
+                        .coeff_to_extended_part(phi_poly, extended_omega_factor);
+                    let m_poly = lookup
+                        .source
+                        .materialize_coeff(lookup::prover::LookupPolynomialKind::Multiplicity)
+                        .map_err(super::Error::NativeStorage)?;
+                    let m_coset = domain
+                        .coeff_to_extended_part(m_poly, extended_omega_factor);
+                    const LOOKUP_ROW_CHUNK: usize = 4096;
+                    (&mut part_values[..])
+                        .par_chunks_mut(LOOKUP_ROW_CHUNK)
+                        .enumerate()
+                        .for_each(|(chunk_index, h)| {
+                            let start = chunk_index * LOOKUP_ROW_CHUNK;
+                            let mut input_data = input_graphs
                                 .iter()
-                                .fold(C::ScalarExt::ZERO, |sum, inverse| sum + inverse);
-                            let table_value = table_graph.evaluate(
-                                &mut table_data,
+                                .map(GraphEvaluator::instance)
+                                .collect::<Vec<_>>();
+                            let mut inverse_values =
+                                Vec::with_capacity(h.len() * input_graphs.len());
+                            for offset in 0..h.len() {
+                                let row = start + offset;
+                                let idx = row * part_stride + part_index;
+                                for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
+                                    inverse_values.push(graph.evaluate_part(
+                                        data,
+                                        &fixed,
+                                        &advice_cosets,
+                                        &instance_cosets,
+                                        challenges,
+                                        &beta,
+                                        &gamma,
+                                        &theta,
+                                        &y,
+                                        &C::ScalarExt::ZERO,
+                                        idx,
+                                        rot_scale,
+                                        isize,
+                                        part_stride,
+                                    ));
+                                }
+                            }
+                            inverse_values.batch_invert();
+
+                            let mut input_data = input_graphs
+                                .iter()
+                                .map(GraphEvaluator::instance)
+                                .collect::<Vec<_>>();
+                            let mut table_data = table_graph.instance();
+                            for (offset, h_value) in h.iter_mut().enumerate() {
+                                let row = start + offset;
+                                let idx = row * part_stride + part_index;
+                                let mut inputs_product = C::ScalarExt::ONE;
+                                for (graph, data) in input_graphs.iter().zip(input_data.iter_mut()) {
+                                    inputs_product *= graph.evaluate_part(
+                                        data,
+                                        &fixed,
+                                        &advice_cosets,
+                                        &instance_cosets,
+                                        challenges,
+                                        &beta,
+                                        &gamma,
+                                        &theta,
+                                        &y,
+                                        &C::ScalarExt::ZERO,
+                                        idx,
+                                        rot_scale,
+                                        isize,
+                                        part_stride,
+                                    );
+                                }
+                                let inverse_sum = inverse_values[offset * input_graphs.len()
+                                    ..(offset + 1) * input_graphs.len()]
+                                    .iter()
+                                    .fold(C::ScalarExt::ZERO, |sum, inverse| sum + inverse);
+                                let table_value = table_graph.evaluate_part(
+                                    &mut table_data,
+                                    &fixed,
+                                    &advice_cosets,
+                                    &instance_cosets,
+                                    challenges,
+                                    &beta,
+                                    &gamma,
+                                    &theta,
+                                    &y,
+                                    &C::ScalarExt::ZERO,
+                                    idx,
+                                    rot_scale,
+                                    isize,
+                                    part_stride,
+                                );
+                                let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
+                                let lhs = table_value
+                                    * inputs_product
+                                    * (phi_coset[r_next / part_stride] - phi_coset[row]);
+                                let rhs = inputs_product * (table_value * inverse_sum - m_coset[row]);
+                                *h_value = *h_value * y + l0[idx] * phi_coset[row];
+                                *h_value = *h_value * y + l_last[idx] * phi_coset[row];
+                                *h_value = *h_value * y + (lhs - rhs) * l_active_row[idx];
+                            }
+                        });
+                    drop(m_coset);
+                    drop(phi_coset);
+                    drop(instance_cosets);
+                    drop(advice_cosets);
+                    drop(fixed);
+                }
+
+                #[cfg(not(feature = "mv-lookup"))]
+                for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
+                    let graph = &self.lookups[lookup_index];
+                    let dependencies = graph.column_dependencies();
+                    let fixed = load_fixed_cosets(
+                        domain,
+                        &pk.fixed_values,
+                        &dependencies.fixed,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let advice_cosets = load_cosets(
+                        domain,
+                        advice,
+                        &dependencies.advice,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let instance_cosets = load_cosets(
+                        domain,
+                        instance,
+                        &dependencies.instance,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let product_coset = domain
+                        .coeff_to_extended_part_spilled(
+                            &lookup.product_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    let input_coset = domain
+                        .coeff_to_extended_part_spilled(
+                            &lookup.permuted_input_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    let table_coset = domain
+                        .coeff_to_extended_part_spilled(
+                            &lookup.permuted_table_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    parallelize(&mut part_values[..], |h, start| {
+                        let mut data = graph.instance();
+                        for (offset, h_value) in h.iter_mut().enumerate() {
+                            let row = start + offset;
+                            let idx = row * part_stride + part_index;
+                            let table_value = graph.evaluate_part(
+                                &mut data,
                                 &fixed,
                                 &advice_cosets,
                                 &instance_cosets,
@@ -1071,145 +1230,124 @@ impl<C: CurveAffine> Evaluator<C> {
                                 idx,
                                 rot_scale,
                                 isize,
+                                part_stride,
                             );
                             let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                            let lhs =
-                                table_value * inputs_product * (phi_coset[r_next] - phi_coset[idx]);
-                            let rhs = inputs_product * (table_value * inverse_sum - m_coset[idx]);
-                            *h_value = *h_value * y + l0[idx] * phi_coset[idx];
-                            *h_value = *h_value * y + l_last[idx] * phi_coset[idx];
-                            *h_value = *h_value * y + (lhs - rhs) * l_active_row[idx];
+                            let r_prev = get_rotation_idx(idx, -1, rot_scale, isize);
+                            let input_minus_table = input_coset[row] - table_coset[row];
+                            *h_value = *h_value * y + ((one - product_coset[row]) * l0[idx]);
+                            *h_value = *h_value * y
+                                + ((product_coset[row].square() - product_coset[row])
+                                    * l_last[idx]);
+                            *h_value = *h_value * y
+                                + ((product_coset[r_next / part_stride]
+                                    * (input_coset[row] + beta)
+                                    * (table_coset[row] + gamma)
+                                    - product_coset[row] * table_value)
+                                    * l_active_row[idx]);
+                            *h_value = *h_value * y + (input_minus_table * l0[idx]);
+                            *h_value = *h_value * y
+                                + (input_minus_table
+                                    * (input_coset[row] - input_coset[r_prev / part_stride])
+                                    * l_active_row[idx]);
                         }
                     });
-                drop(m_coset);
-                drop(phi_coset);
-                drop(instance_cosets);
-                drop(advice_cosets);
-                drop(fixed);
+                }
+
+                for (shuffle_index, shuffle) in shuffle_sets.iter().enumerate() {
+                    let input_graph = &self.shuffles[2 * shuffle_index];
+                    let shuffle_graph = &self.shuffles[2 * shuffle_index + 1];
+                    let mut dependencies = input_graph.column_dependencies();
+                    dependencies.extend(&shuffle_graph.column_dependencies());
+                    let fixed = load_fixed_cosets(
+                        domain,
+                        &pk.fixed_values,
+                        &dependencies.fixed,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let advice_cosets = load_cosets(
+                        domain,
+                        advice,
+                        &dependencies.advice,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let instance_cosets = load_cosets(
+                        domain,
+                        instance,
+                        &dependencies.instance,
+                        extended_omega_factor,
+                    )
+                        .map_err(super::Error::NativeStorage)?;
+                    let product_coset = domain
+                        .coeff_to_extended_part_spilled(
+                            &shuffle.product_poly,
+                            extended_omega_factor,
+                        )
+                        .map_err(super::Error::NativeStorage)?;
+                    parallelize(&mut part_values[..], |h, start| {
+                        let mut input_data = input_graph.instance();
+                        let mut shuffle_data = shuffle_graph.instance();
+                        for (offset, h_value) in h.iter_mut().enumerate() {
+                            let row = start + offset;
+                            let idx = row * part_stride + part_index;
+                            let input_value = input_graph.evaluate_part(
+                                &mut input_data,
+                                &fixed,
+                                &advice_cosets,
+                                &instance_cosets,
+                                challenges,
+                                &beta,
+                                &gamma,
+                                &theta,
+                                &y,
+                                &C::ScalarExt::ZERO,
+                                idx,
+                                rot_scale,
+                                isize,
+                                part_stride,
+                            );
+                            let shuffle_value = shuffle_graph.evaluate_part(
+                                &mut shuffle_data,
+                                &fixed,
+                                &advice_cosets,
+                                &instance_cosets,
+                                challenges,
+                                &beta,
+                                &gamma,
+                                &theta,
+                                &y,
+                                &C::ScalarExt::ZERO,
+                                idx,
+                                rot_scale,
+                                isize,
+                                part_stride,
+                            );
+                            let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
+                            *h_value = *h_value * y + ((one - product_coset[row]) * l0[idx]);
+                            *h_value = *h_value * y
+                                + ((product_coset[row].square() - product_coset[row]) * l_last[idx]);
+                            *h_value = *h_value * y
+                                + l_active_row[idx]
+                                    * (product_coset[r_next / part_stride] * shuffle_value
+                                        - product_coset[row] * input_value);
+                        }
+                    });
+                    drop(product_coset);
+                    drop(instance_cosets);
+                    drop(advice_cosets);
+                    drop(fixed);
+                }
             }
 
-            #[cfg(not(feature = "mv-lookup"))]
-            for (lookup_index, lookup) in lookup_sets.iter().enumerate() {
-                let graph = &self.lookups[lookup_index];
-                let dependencies = graph.column_dependencies();
-                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
-                    .map_err(super::Error::NativeStorage)?;
-                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
-                    .map_err(super::Error::NativeStorage)?;
-                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
-                    .map_err(super::Error::NativeStorage)?;
-                let product_coset = domain
-                    .coeff_to_extended_spilled(&lookup.product_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                let input_coset = domain
-                    .coeff_to_extended_spilled(&lookup.permuted_input_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                let table_coset = domain
-                    .coeff_to_extended_spilled(&lookup.permuted_table_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                parallelize(&mut values[..], |h, start| {
-                    let mut data = graph.instance();
-                    for (offset, h_value) in h.iter_mut().enumerate() {
-                        let idx = start + offset;
-                        let table_value = graph.evaluate(
-                            &mut data,
-                            &fixed,
-                            &advice_cosets,
-                            &instance_cosets,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &y,
-                            &C::ScalarExt::ZERO,
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                        let r_prev = get_rotation_idx(idx, -1, rot_scale, isize);
-                        let input_minus_table = input_coset[idx] - table_coset[idx];
-                        *h_value = *h_value * y + ((one - product_coset[idx]) * l0[idx]);
-                        *h_value = *h_value * y
-                            + ((product_coset[idx].square() - product_coset[idx]) * l_last[idx]);
-                        *h_value = *h_value * y
-                            + ((product_coset[r_next]
-                                * (input_coset[idx] + beta)
-                                * (table_coset[idx] + gamma)
-                                - product_coset[idx] * table_value)
-                                * l_active_row[idx]);
-                        *h_value = *h_value * y + (input_minus_table * l0[idx]);
-                        *h_value = *h_value * y
-                            + (input_minus_table
-                                * (input_coset[idx] - input_coset[r_prev])
-                                * l_active_row[idx]);
-                    }
-                });
-            }
-
-            for (shuffle_index, shuffle) in shuffle_sets.iter().enumerate() {
-                let input_graph = &self.shuffles[2 * shuffle_index];
-                let shuffle_graph = &self.shuffles[2 * shuffle_index + 1];
-                let mut dependencies = input_graph.column_dependencies();
-                dependencies.extend(&shuffle_graph.column_dependencies());
-                let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed)
-                    .map_err(super::Error::NativeStorage)?;
-                let advice_cosets = load_cosets(domain, advice, &dependencies.advice)
-                    .map_err(super::Error::NativeStorage)?;
-                let instance_cosets = load_cosets(domain, instance, &dependencies.instance)
-                    .map_err(super::Error::NativeStorage)?;
-                let product_coset = domain
-                    .coeff_to_extended_spilled(&shuffle.product_poly)
-                    .map_err(super::Error::NativeStorage)?;
-                parallelize(&mut values[..], |h, start| {
-                    let mut input_data = input_graph.instance();
-                    let mut shuffle_data = shuffle_graph.instance();
-                    for (offset, h_value) in h.iter_mut().enumerate() {
-                        let idx = start + offset;
-                        let input_value = input_graph.evaluate(
-                            &mut input_data,
-                            &fixed,
-                            &advice_cosets,
-                            &instance_cosets,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &y,
-                            &C::ScalarExt::ZERO,
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
-                        let shuffle_value = shuffle_graph.evaluate(
-                            &mut shuffle_data,
-                            &fixed,
-                            &advice_cosets,
-                            &instance_cosets,
-                            challenges,
-                            &beta,
-                            &gamma,
-                            &theta,
-                            &y,
-                            &C::ScalarExt::ZERO,
-                            idx,
-                            rot_scale,
-                            isize,
-                        );
-                        let r_next = get_rotation_idx(idx, 1, rot_scale, isize);
-                        *h_value = *h_value * y + ((one - product_coset[idx]) * l0[idx]);
-                        *h_value = *h_value * y
-                            + ((product_coset[idx].square() - product_coset[idx]) * l_last[idx]);
-                        *h_value = *h_value * y
-                            + l_active_row[idx]
-                                * (product_coset[r_next] * shuffle_value
-                                    - product_coset[idx] * input_value);
-                    }
-                });
-                drop(product_coset);
-                drop(instance_cosets);
-                drop(advice_cosets);
-                drop(fixed);
+            // The source part is disjoint from the final extended polynomial,
+            // and each row maps to exactly one strided output slot. The
+            // parallel chunks partition `part_values`, so every destination is
+            // written once without retaining more than one domain part.
+            let output = values.as_mut_slice();
+            for (row, value) in part_values.iter().enumerate() {
+                output[row * part_stride + part_index] = *value;
             }
         }
 
@@ -1441,9 +1579,83 @@ impl<C: CurveAffine> GraphEvaluator<C> {
         rot_scale: i32,
         isize: i32,
     ) -> C::ScalarExt {
+        self.evaluate_with_part_stride(
+            data,
+            fixed,
+            advice,
+            instance,
+            challenges,
+            beta,
+            gamma,
+            theta,
+            y,
+            previous_value,
+            idx,
+            rot_scale,
+            isize,
+            1,
+        )
+    }
+
+    /// Evaluate with full-domain rotations while reading row-strided parts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn evaluate_part<B: Basis>(
+        &self,
+        data: &mut EvaluationData<C>,
+        fixed: &[Polynomial<C::ScalarExt, B>],
+        advice: &[Polynomial<C::ScalarExt, B>],
+        instance: &[Polynomial<C::ScalarExt, B>],
+        challenges: &[C::ScalarExt],
+        beta: &C::ScalarExt,
+        gamma: &C::ScalarExt,
+        theta: &C::ScalarExt,
+        y: &C::ScalarExt,
+        previous_value: &C::ScalarExt,
+        idx: usize,
+        rot_scale: i32,
+        isize: i32,
+        part_stride: usize,
+    ) -> C::ScalarExt {
+        self.evaluate_with_part_stride(
+            data,
+            fixed,
+            advice,
+            instance,
+            challenges,
+            beta,
+            gamma,
+            theta,
+            y,
+            previous_value,
+            idx,
+            rot_scale,
+            isize,
+            part_stride,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn evaluate_with_part_stride<B: Basis>(
+        &self,
+        data: &mut EvaluationData<C>,
+        fixed: &[Polynomial<C::ScalarExt, B>],
+        advice: &[Polynomial<C::ScalarExt, B>],
+        instance: &[Polynomial<C::ScalarExt, B>],
+        challenges: &[C::ScalarExt],
+        beta: &C::ScalarExt,
+        gamma: &C::ScalarExt,
+        theta: &C::ScalarExt,
+        y: &C::ScalarExt,
+        previous_value: &C::ScalarExt,
+        idx: usize,
+        rot_scale: i32,
+        isize: i32,
+        part_stride: usize,
+    ) -> C::ScalarExt {
+        assert!(part_stride > 0);
         // All rotation index values
         for (rot_idx, rot) in self.rotations.iter().enumerate() {
-            data.rotations[rot_idx] = get_rotation_idx(idx, *rot, rot_scale, isize);
+            data.rotations[rot_idx] = get_rotation_idx(idx, *rot, rot_scale, isize) / part_stride;
         }
 
         // All calculations, with cached intermediate results

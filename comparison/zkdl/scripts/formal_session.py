@@ -8,6 +8,7 @@ import re
 import shutil
 from pathlib import Path
 from asset_manifest import local_path, read_config, reject_source_path_values
+from session_lifecycle import require_bound_session, require_session_root
 
 DATASETS = ('cora', 'citeseer', 'pubmed', 'ppi', 'ogbn_arxiv')
 
@@ -19,6 +20,7 @@ def session_updates(dataset: str, session: str) -> dict[str, str]:
 
 def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None = None,
              expected_input_identity: dict[str, object] | None = None) -> Path:
+    identity = require_bound_session(session, root)
     original = source_config or root / 'configs' / (dataset + '_secure.cfg')
     values = read_config(original)
     reject_source_path_values(values)
@@ -32,21 +34,26 @@ def snapshot(root: Path, session: Path, dataset: str, source_config: Path | None
             raise ValueError(f'formal snapshot input contains a missing directory or symlink: {source}')
     cache_target = root / updates['cache_root'] / dataset
     checkpoint_target = root / updates['checkpoint_bundle']
+    require_session_root(identity, session)
     cache_target.parent.mkdir(parents=True, exist_ok=True)
     checkpoint_target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(cache_source, cache_target)
+    require_session_root(identity, session)
     shutil.copytree(model_source, checkpoint_target)
+    require_session_root(identity, session)
     manifest_path = root / updates['checkpoint_bundle'] / 'manifest.json'
     manifest = json.loads(manifest_path.read_text())
     manifest['checkpoint_prefix'] = updates['checkpoint_bundle'] + '/best_model.pt'
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
     values.update(updates)
     config_path = root / 'configs' / (session.name + '_' + dataset + '.cfg')
+    require_session_root(identity, session)
     with config_path.open('x') as stream:
         stream.write(''.join(f'{key} = {value}\n' for key, value in values.items()))
     run = root / updates['export_dir']
     run.mkdir(parents=True)
     (run / 'formal_config.path').write_text(config_path.relative_to(root).as_posix() + '\n')
+    require_session_root(identity, session)
     if expected_input_identity is not None:
         from formal_preflight import check_config
         snapshot_evidence = check_config(root, dataset, config_path)
@@ -70,7 +77,9 @@ def main() -> int:
     if os.environ.get('ZKDL_ALLOW_FULL_DATASET_RUN') != '1':
         raise SystemExit('formal-session: full input snapshots belong to the user formal entry')
     root = Path(__file__).resolve().parent.parent
-    session = args.session.resolve()
+    identity = require_bound_session(args.session, root)
+    session = Path(os.path.abspath(args.session))
+    require_session_root(identity, session)
     relative = session.relative_to(root).as_posix()
     if (args.session.is_symlink() or not session.is_dir() or not re.fullmatch(r'runs/[A-Za-z0-9_]+', relative) or
             ((session / 'resources').exists() and args.dataset is None and args.config is None)):

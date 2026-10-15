@@ -445,6 +445,19 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
         a.into_basis()
     }
 
+    /// Converts one coefficient polynomial to one native extended-domain
+    /// strided part in mapped storage, preserving the native forward FFT.
+    pub(crate) fn coeff_to_extended_part_spilled(
+        &self,
+        coefficients: &Polynomial<F, Coeff>,
+        extended_omega_factor: F,
+    ) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        assert_eq!(coefficients.len(), 1 << self.k);
+        let mut part_input = Polynomial::mapped_filled(coefficients.len(), F::ZERO)?;
+        part_input.copy_from_slice(coefficients);
+        Ok(self.coeff_to_extended_part(part_input, extended_omega_factor))
+    }
+
     /// Rotate the extended domain polynomial over the original domain.
     pub fn rotate_extended(
         &self,
