@@ -12185,11 +12185,16 @@ namespace gatzk::protocol
             return total;
         };
 
-        const auto shared_file_backed_semantic_source_count = [&](std::size_t first_index, std::size_t second_index)
+        struct SharedStreamReuseEstimate
+        {
+            std::size_t source_count = 0;
+            std::size_t saved_bytes = 0;
+        };
+        const auto shared_file_backed_semantic_source_reuse = [&](std::size_t first_index, std::size_t second_index) -> SharedStreamReuseEstimate
         {
             constexpr std::size_t kMinimumSharedStreamSourceValues = 1ULL << 22;
 
-            std::unordered_map<std::string, std::string> first_sources;
+            std::unordered_map<std::string, std::size_t> first_sources;
 
             for (const auto &claim : point_groups[first_index].claims)
             {
@@ -12217,10 +12222,10 @@ namespace gatzk::protocol
                 const auto key = spilled.domain_name + ":" + std::to_string(spilled.size) + ":" + std::to_string(spilled_file_value_count(spilled)) + ":" +
                                  (spilled.zero_tail_compacted ? "compact:" : "full:") + spilled.path + ":" + std::to_string(spilled.semantic_source_id);
 
-                first_sources.try_emplace(key, commitment.name);
+                first_sources.try_emplace(key, spilled_file_value_count(spilled));
             }
 
-            std::size_t shared = 0;
+            SharedStreamReuseEstimate shared;
 
             std::unordered_map<std::string, bool> counted;
 
@@ -12259,7 +12264,12 @@ namespace gatzk::protocol
 
                 if (counted.emplace(key, true).second)
                 {
-                    ++shared;
+                    ++shared.source_count;
+                    const auto bytes = algebra::field_elements_binary_size(first->second);
+                    if (bytes > std::numeric_limits<std::size_t>::max() - shared.saved_bytes)
+                        shared.saved_bytes = std::numeric_limits<std::size_t>::max();
+                    else
+                        shared.saved_bytes += bytes;
                 }
             }
 
@@ -12385,6 +12395,8 @@ namespace gatzk::protocol
 
             std::size_t shared_source_count = 0;
 
+            std::size_t saved_stream_bytes = 0;
+
             std::size_t estimated_work = 0;
         };
 
@@ -12446,9 +12458,9 @@ namespace gatzk::protocol
                             continue;
                         }
 
-                        const auto shared = shared_file_backed_semantic_source_count(lhs, rhs);
+                        const auto shared = shared_file_backed_semantic_source_reuse(lhs, rhs);
 
-                        if (shared == 0)
+                        if (shared.source_count == 0)
                         {
                             continue;
                         }
@@ -12475,14 +12487,19 @@ namespace gatzk::protocol
 
                         const auto work = estimate_point_group_work(lhs) + estimate_point_group_work(rhs);
 
-                        if (!found || shared > best.shared_source_count || (shared == best.shared_source_count && work > best.estimated_work))
+                        if (!found || shared.saved_bytes > best.saved_stream_bytes ||
+                            (shared.saved_bytes == best.saved_stream_bytes && shared.source_count > best.shared_source_count) ||
+                            (shared.saved_bytes == best.saved_stream_bytes && shared.source_count == best.shared_source_count &&
+                             work > best.estimated_work))
                         {
                             best.groups = {
                                 lhs,
                                 rhs,
                             };
 
-                            best.shared_source_count = shared;
+                            best.shared_source_count = shared.source_count;
+
+                            best.saved_stream_bytes = shared.saved_bytes;
 
                             best.estimated_work = work;
 
@@ -12598,7 +12615,8 @@ namespace gatzk::protocol
                           "shared_stream_pair:"
                           "first_owner=" +
                           point_groups[pair[0]].owner_block + ":second_owner=" + point_groups[pair[1]].owner_block +
-                          ":shared_sources=" + std::to_string(selection.shared_source_count) + ":ms=" + std::to_string(pair_wall_ms));
+                          ":shared_sources=" + std::to_string(selection.shared_source_count) +
+                          ":saved_stream_bytes=" + std::to_string(selection.saved_stream_bytes) + ":ms=" + std::to_string(pair_wall_ms));
         };
 
         const auto erase_opened_pair = [](std::vector<std::size_t> *indices, const std::array<std::size_t, 2> &pair) {

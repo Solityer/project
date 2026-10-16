@@ -5911,10 +5911,12 @@ namespace gatzk::crypto
             polynomial.name = name;
 
             auto material = std::make_shared<algebra::Polynomial>(std::move(polynomial));
-
+            if (const auto *resident = validated_cuda_resident_coefficients(*material);
+                resident != nullptr && resident->host_transfer != nullptr && !resident->nonzero_count_known)
+            {
+                resident->host_transfer->wait();
+            }
             const auto point = commit_polynomial_point(*material, key.pk, profile != nullptr ? &object_profile : nullptr, options);
-
-            finalize_cuda_resident_coefficient_material(material.get());
 
             out[index] = Commitment{
                 .name = name,
@@ -6033,6 +6035,13 @@ namespace gatzk::crypto
         {
             throw std::runtime_error("owned KZG commitment wave "
                                      "left an object uncommitted");
+        }
+
+        for (auto &commitment : out)
+        {
+            if (commitment.opening_polynomial == nullptr)
+                throw std::runtime_error("owned KZG commitment is missing opening polynomial material");
+            finalize_cuda_resident_coefficient_material(commitment.opening_polynomial.get());
         }
 
         if (profile != nullptr)

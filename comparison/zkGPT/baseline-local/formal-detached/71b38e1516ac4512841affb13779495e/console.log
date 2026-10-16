@@ -1693,3 +1693,4 @@ ZKGPT_FORMAL_CHILD_STARTED launch_id=71b38e1516ac4512841affb13779495e child_pid=
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: witness
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: generators
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: lasso-prove
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: restore-native-plan

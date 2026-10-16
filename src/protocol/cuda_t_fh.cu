@@ -42,7 +42,7 @@ namespace gatzk::protocol
             return out;
         }
 
-        __global__ void prepare_boundary_denominator_kernel(GpuFr *denominators, std::size_t logical_begin, std::size_t count, GpuFr shift, GpuFr last_point,
+        __global__ void prepare_boundary_denominator_kernel(GpuFr *denominators, std::size_t logical_begin, std::size_t count, GpuFr last_point,
                                                             const GpuFr *lane_root_powers, const GpuFr *block_root_powers)
         {
             const auto local = static_cast<std::size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
@@ -52,18 +52,19 @@ namespace gatzk::protocol
             const auto global = logical_begin + local;
             const auto lane = static_cast<std::size_t>(global & (kBlockSize - 1U));
             const auto block = global / kBlockSize;
-            const auto z = algebra::gpu::fr_mul(shift, algebra::gpu::fr_mul(block_root_powers[block], lane_root_powers[lane]));
+            const auto z = algebra::gpu::fr_mul(block_root_powers[block], lane_root_powers[lane]);
             const auto first_denominator = algebra::gpu::fr_sub(z, algebra::gpu::fr_one());
             const auto last_denominator = algebra::gpu::fr_sub(z, last_point);
             denominators[local] = algebra::gpu::fr_mul(first_denominator, last_denominator);
         }
 
-        __global__ void evaluate_t_fh_kernel(GpuFr *quotient, std::size_t logical_begin, std::size_t count, std::size_t cycle_size, GpuFr shift,
-                                             GpuFr last_point, GpuFr inv_domain_size, GpuFr alpha_quot, GpuFr beta_feat, GpuFr eta_feat,
-                                             const GpuFr *lane_root_powers, const GpuFr *block_root_powers, const GpuFr *zero_cycle,
-                                             const GpuFr *zero_inverse_cycle, const GpuFr *boundary_inverse_products, const GpuFr *q_table,
-                                             const GpuFr *q_query, const GpuFr *table, const GpuFr *query, const GpuFr *multiplicity, const GpuFr *j_table,
-                                             const GpuFr *j_query, const GpuFr *accumulator, const GpuFr *accumulator_next, const GpuFr *table_row,
+        __global__ void evaluate_t_fh_kernel(GpuFr *quotient, std::size_t logical_begin, std::size_t count, std::size_t cycle_size,
+                                             GpuFr last_point, GpuFr alpha_quot, GpuFr beta_feat, GpuFr eta_feat, GpuFr eta_squared,
+                                             const GpuFr *lane_root_powers, const GpuFr *block_root_powers, const GpuFr *first_boundary_cycle,
+                                             const GpuFr *last_boundary_cycle, const GpuFr *zero_inverse_cycle,
+                                             const GpuFr *boundary_inverse_products, const GpuFr *q_table, const GpuFr *q_query, const GpuFr *table,
+                                             const GpuFr *query, const GpuFr *multiplicity, const GpuFr *j_table, const GpuFr *j_query,
+                                             const GpuFr *accumulator, const GpuFr *accumulator_next, const GpuFr *table_row,
                                              const GpuFr *table_column, const GpuFr *table_feature, const GpuFr *query_row, const GpuFr *query_column,
                                              const GpuFr *query_feature, bool feature_encoding_terms_enabled)
         {
@@ -74,15 +75,16 @@ namespace gatzk::protocol
             const auto global = logical_begin + local;
             const auto lane = static_cast<std::size_t>(global & (kBlockSize - 1U));
             const auto block = global / kBlockSize;
-            const auto z = algebra::gpu::fr_mul(shift, algebra::gpu::fr_mul(block_root_powers[block], lane_root_powers[lane]));
-            const auto zero = zero_cycle[global % cycle_size];
-            const auto zero_inverse = zero_inverse_cycle[global % cycle_size];
-            const auto zero_scaled = algebra::gpu::fr_mul(zero, inv_domain_size);
+            const auto z = algebra::gpu::fr_mul(block_root_powers[block], lane_root_powers[lane]);
+            const auto cycle = global % cycle_size;
+            const auto first_scaled = first_boundary_cycle[cycle];
+            const auto last_scaled = last_boundary_cycle[cycle];
+            const auto zero_inverse = zero_inverse_cycle[cycle];
             const auto first_denominator = algebra::gpu::fr_sub(z, algebra::gpu::fr_one());
             const auto last_denominator = algebra::gpu::fr_sub(z, last_point);
             const auto inverse_product = boundary_inverse_products[local];
-            const auto first = algebra::gpu::fr_mul(algebra::gpu::fr_mul(zero_scaled, last_denominator), inverse_product);
-            const auto last = algebra::gpu::fr_mul(algebra::gpu::fr_mul(algebra::gpu::fr_mul(zero_scaled, last_point), first_denominator), inverse_product);
+            const auto first = algebra::gpu::fr_mul(algebra::gpu::fr_mul(first_scaled, last_denominator), inverse_product);
+            const auto last = algebra::gpu::fr_mul(algebra::gpu::fr_mul(last_scaled, first_denominator), inverse_product);
             const auto not_last = algebra::gpu::fr_sub(algebra::gpu::fr_one(), last);
 
             const auto term0 = algebra::gpu::fr_mul(first, accumulator[local]);
@@ -113,7 +115,6 @@ namespace gatzk::protocol
             }
             else
             {
-                const auto eta_squared = algebra::gpu::fr_mul(eta_feat, eta_feat);
                 auto encoded_table = algebra::gpu::fr_add(table_row[local], algebra::gpu::fr_mul(eta_feat, table_column[local]));
                 encoded_table = algebra::gpu::fr_add(encoded_table, algebra::gpu::fr_mul(eta_squared, table_feature[local]));
                 auto encoded_query = algebra::gpu::fr_add(query_row[local], algebra::gpu::fr_mul(eta_feat, query_column[local]));
@@ -165,6 +166,10 @@ namespace gatzk::protocol
                 algebra::geometric_powers_native(algebra::FieldElement::mutable_native_array_data(lane_root_powers.data()), lane_root_powers.size(), root);
                 algebra::geometric_powers_native(algebra::FieldElement::mutable_native_array_data(block_root_powers.data()), block_root_powers.size(),
                                                  root.pow(kBlockSize));
+                for (auto &block_root : block_root_powers)
+                {
+                    block_root *= shift_;
+                }
 
                 auto zero_power = shift_.pow(domain_size_);
                 const auto zero_step = root.pow(domain_size_);
@@ -179,10 +184,19 @@ namespace gatzk::protocol
 
                 last_point_ = domain_omega.pow(domain_size_ - 1);
                 inv_domain_size_ = algebra::FieldElement(domain_size_).inv();
+                eta_squared_ = parameters_.eta_feat * parameters_.eta_feat;
+                std::vector<algebra::FieldElement> first_boundary_cycle(cycle_size);
+                std::vector<algebra::FieldElement> last_boundary_cycle(cycle_size);
+                for (std::size_t i = 0; i < cycle_size; ++i)
+                {
+                    first_boundary_cycle[i] = zero_cycle[i] * inv_domain_size_;
+                    last_boundary_cycle[i] = first_boundary_cycle[i] * last_point_;
+                }
 
                 allocate_and_upload(&device_lane_root_powers_, lane_root_powers);
                 allocate_and_upload(&device_block_root_powers_, block_root_powers);
-                allocate_and_upload(&device_zero_cycle_, zero_cycle);
+                allocate_and_upload(&device_first_boundary_cycle_, first_boundary_cycle);
+                allocate_and_upload(&device_last_boundary_cycle_, last_boundary_cycle);
                 allocate_and_upload(&device_zero_inverse_cycle_, zero_inverse_cycle);
 
                 const auto quotient_bytes = target_size_ * sizeof(GpuFr);
@@ -271,8 +285,7 @@ namespace gatzk::protocol
                 }
 
                 prepare_boundary_denominator_kernel<<<blocks, kBlockSize, 0, stream>>>(device_boundary_products_[slot], tile.logical_begin, tile.count,
-                                                                                       gpu_field(shift_), gpu_field(last_point_), device_lane_root_powers_,
-                                                                                       device_block_root_powers_);
+                                                                                       gpu_field(last_point_), device_lane_root_powers_, device_block_root_powers_);
 
                 auto status = cudaGetLastError();
 
@@ -287,10 +300,11 @@ namespace gatzk::protocol
                                                  reinterpret_cast<mcl::Fr *>(device_boundary_inverse_products_[slot]), tile.count);
 
                 evaluate_t_fh_kernel<<<blocks, kBlockSize, 0, stream>>>(
-                    device_quotient_, tile.logical_begin, tile.count, target_size_ / domain_size_, gpu_field(shift_), gpu_field(last_point_),
-                    gpu_field(inv_domain_size_), gpu_field(parameters_.alpha_quot), gpu_field(parameters_.beta_feat), gpu_field(parameters_.eta_feat),
-                    device_lane_root_powers_, device_block_root_powers_, device_zero_cycle_, device_zero_inverse_cycle_,
-                    device_boundary_inverse_products_[slot], reinterpret_cast<const GpuFr *>(tile.q_table), reinterpret_cast<const GpuFr *>(tile.q_query),
+                    device_quotient_, tile.logical_begin, tile.count, target_size_ / domain_size_, gpu_field(last_point_),
+                    gpu_field(parameters_.alpha_quot), gpu_field(parameters_.beta_feat), gpu_field(parameters_.eta_feat), gpu_field(eta_squared_),
+                    device_lane_root_powers_, device_block_root_powers_, device_first_boundary_cycle_, device_last_boundary_cycle_,
+                    device_zero_inverse_cycle_, device_boundary_inverse_products_[slot], reinterpret_cast<const GpuFr *>(tile.q_table),
+                    reinterpret_cast<const GpuFr *>(tile.q_query),
                     reinterpret_cast<const GpuFr *>(tile.table), reinterpret_cast<const GpuFr *>(tile.query),
                     reinterpret_cast<const GpuFr *>(tile.multiplicity), reinterpret_cast<const GpuFr *>(tile.j_table),
                     reinterpret_cast<const GpuFr *>(tile.j_query), reinterpret_cast<const GpuFr *>(tile.accumulator),
@@ -439,14 +453,17 @@ namespace gatzk::protocol
                     (void)cudaFree(device_lane_root_powers_);
                 if (device_block_root_powers_ != nullptr)
                     (void)cudaFree(device_block_root_powers_);
-                if (device_zero_cycle_ != nullptr)
-                    (void)cudaFree(device_zero_cycle_);
+                if (device_first_boundary_cycle_ != nullptr)
+                    (void)cudaFree(device_first_boundary_cycle_);
+                if (device_last_boundary_cycle_ != nullptr)
+                    (void)cudaFree(device_last_boundary_cycle_);
                 if (device_zero_inverse_cycle_ != nullptr)
                     (void)cudaFree(device_zero_inverse_cycle_);
                 device_quotient_ = nullptr;
                 device_lane_root_powers_ = nullptr;
                 device_block_root_powers_ = nullptr;
-                device_zero_cycle_ = nullptr;
+                device_first_boundary_cycle_ = nullptr;
+                device_last_boundary_cycle_ = nullptr;
                 device_zero_inverse_cycle_ = nullptr;
             }
 
@@ -456,6 +473,7 @@ namespace gatzk::protocol
             algebra::FieldElement last_point_;
             algebra::FieldElement inv_domain_size_;
             CudaTFHParameters parameters_;
+            algebra::FieldElement eta_squared_;
             std::size_t tile_capacity_ = kDefaultTileSize;
             GpuFr *device_quotient_ = nullptr;
 
@@ -469,7 +487,8 @@ namespace gatzk::protocol
 
             GpuFr *device_lane_root_powers_ = nullptr;
             GpuFr *device_block_root_powers_ = nullptr;
-            GpuFr *device_zero_cycle_ = nullptr;
+            GpuFr *device_first_boundary_cycle_ = nullptr;
+            GpuFr *device_last_boundary_cycle_ = nullptr;
             GpuFr *device_zero_inverse_cycle_ = nullptr;
         };
     }

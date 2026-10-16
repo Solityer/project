@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "gatzk/algebra/cuda_ntt_device.hpp"
@@ -1452,15 +1453,11 @@ namespace gatzk::protocol
                     host_leaf_bound_[slot] = false;
                     host_leaf_uploaded_prefix_[slot] = 0;
 
-                    const auto layout_status =
-                        cudaMemcpy(device_leaf_split_layout_ + slot, &host_leaf_split_layout_[slot], sizeof(std::uint8_t), cudaMemcpyHostToDevice);
-
+                    const auto layout_status = cudaMemsetAsync(device_leaf_split_layout_ + slot, 0, sizeof(std::uint8_t), nullptr);
                     if (layout_status != cudaSuccess)
                     {
-                        throw_cuda_t_edge_error("fallback leaf-layout upload", layout_status);
+                        throw_cuda_t_edge_error("fallback leaf-layout reset", layout_status);
                     }
-
-                    algebra::record_cuda_h2d(sizeof(std::uint8_t));
                 }
                 else if (logical_offset != host_leaf_uploaded_prefix_[slot])
                 {
@@ -1513,21 +1510,59 @@ namespace gatzk::protocol
                 const auto access_slot_bytes = checked_bytes(access_slots.size(), sizeof(std::uint32_t), "access slots");
 
                 auto status = cudaSuccess;
-
-                if (!access_slots_uploaded_ || host_access_slots_cache_ != access_slots)
+                if (!access_slots_uploaded_ || host_access_slots_cache_.size() != access_slots.size())
                 {
-                    status = cudaMemcpyAsync(device_access_slots_, access_slots.data(), access_slot_bytes, cudaMemcpyHostToDevice, 0);
-
+                    status = cudaMemcpyAsync(device_access_slots_, access_slots.data(), access_slot_bytes, cudaMemcpyHostToDevice, nullptr);
                     if (status != cudaSuccess)
-                    {
-                        throw_cuda_t_edge_error("access-slot upload", status);
-                    }
-
+                        throw_cuda_t_edge_error("access-slot initial upload", status);
                     algebra::record_cuda_h2d(access_slot_bytes);
-
                     host_access_slots_cache_ = access_slots;
-
                     access_slots_uploaded_ = true;
+                }
+                else if (host_access_slots_cache_ != access_slots)
+                {
+                    std::vector<std::pair<std::size_t, std::size_t>> changed_ranges;
+                    std::size_t changed_count = 0;
+                    for (std::size_t index = 0; index < access_slots.size();)
+                    {
+                        if (host_access_slots_cache_[index] == access_slots[index])
+                        {
+                            ++index;
+                            continue;
+                        }
+                        const auto begin = index;
+                        do
+                        {
+                            ++index;
+                        } while (index < access_slots.size() && host_access_slots_cache_[index] != access_slots[index]);
+                        changed_ranges.emplace_back(begin, index);
+                        changed_count += index - begin;
+                    }
+                    constexpr std::size_t kMaximumSparseTransfers = 8;
+                    constexpr std::size_t kSparseTransferSetupEquivalentScalars = 32;
+                    const auto transfer_overhead = changed_ranges.size() * kSparseTransferSetupEquivalentScalars;
+                    const bool sparse_transfer = changed_ranges.size() <= kMaximumSparseTransfers &&
+                                                 transfer_overhead < access_slots.size() &&
+                                                 changed_count < access_slots.size() - transfer_overhead;
+                    if (sparse_transfer)
+                    {
+                        for (const auto &[begin, end] : changed_ranges)
+                        {
+                            const auto bytes = checked_bytes(end - begin, sizeof(std::uint32_t), "partial access slots");
+                            status = cudaMemcpyAsync(device_access_slots_ + begin, access_slots.data() + begin, bytes, cudaMemcpyHostToDevice, nullptr);
+                            if (status != cudaSuccess)
+                                throw_cuda_t_edge_error("access-slot partial upload", status);
+                            algebra::record_cuda_h2d(bytes);
+                        }
+                    }
+                    else
+                    {
+                        status = cudaMemcpyAsync(device_access_slots_, access_slots.data(), access_slot_bytes, cudaMemcpyHostToDevice, nullptr);
+                        if (status != cudaSuccess)
+                            throw_cuda_t_edge_error("access-slot full upload", status);
+                        algebra::record_cuda_h2d(access_slot_bytes);
+                    }
+                    host_access_slots_cache_ = access_slots;
                 }
 
                 constexpr unsigned kBlockSize = 256;
