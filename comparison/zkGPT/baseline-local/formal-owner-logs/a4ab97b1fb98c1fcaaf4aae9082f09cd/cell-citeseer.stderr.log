@@ -1,0 +1,11 @@
+[citeseer/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=29457.9
+[citeseer/prover] gat_adapter_prover_stage: begin
+[citeseer/prover] gat_adapter_prover_stage: lasso-build
+[citeseer/prover] gat_adapter_prover_stage: witness
+[citeseer/prover] gat_adapter_prover_stage: generators
+[citeseer/prover] gat_adapter_prover_stage: lasso-prove
+[citeseer/prover] gat_adapter_prover_stage: restore-native-plan
+[citeseer/prover] gat_adapter_prover_stage: gkr-prove
+[citeseer/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[citeseer/prover] [zkGPT][gkr] layer=112 begin ty=4 size=163804737 bits=28 u=28 v=27 phase2=1
+[citeseer/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28

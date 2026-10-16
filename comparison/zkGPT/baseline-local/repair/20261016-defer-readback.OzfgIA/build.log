@@ -1,0 +1,68 @@
+[  3%] Built target gen_bint.o
+[  6%] Built target gen_base.o
+[ 12%] Built target mcl
+[ 15%] Building CXX object src/CMakeFiles/gpt_lib.dir/circuit.cpp.o
+[ 18%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax.cpp.o
+/home/pzh/project/comparison/zkGPT/src/hyrax.cpp: In function ‘std::pair<double, double> hyrax::open(mcl::Fr*, mcl::Fr*, mcl::Fr, mcl::G1&, mcl::G1*, mcl::Fr*, mcl::Fr*, mcl::G1*, int)’:
+/home/pzh/project/comparison/zkGPT/src/hyrax.cpp:562:91: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+  562 | pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
+      |                                                                                           ^
+[ 21%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax_rp.cpp.o
+[ 25%] Building CXX object src/CMakeFiles/gpt_lib.dir/models.cpp.o
+[ 28%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_lasso.cpp.o
+[ 31%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_masked_sumcheck.cpp.o
+[ 34%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_pedersen_relation.cpp.o
+[ 37%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_protocol.cpp.o
+[ 40%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_range.cpp.o
+[ 43%] Building CXX object src/CMakeFiles/gpt_lib.dir/neuralNetwork.cpp.o
+[ 46%] Building CXX object src/CMakeFiles/gpt_lib.dir/proof_session.cpp.o
+[ 50%] Building CXX object src/CMakeFiles/gpt_lib.dir/prover.cpp.o
+[ 53%] Building CXX object src/CMakeFiles/gpt_lib.dir/range_prover.cpp.o
+[ 56%] Building CXX object src/CMakeFiles/gpt_lib.dir/utils.cpp.o
+[ 59%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp: In member function ‘bool verifier::openCommit()’:
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:1610:39: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+ 1610 |         tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1611 |                                        comm.G, comm.g, Lp.get(), Rp.get(), comm.comm,
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1612 |                                        comm.l, *session_, "hyrax/opening");
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[ 62%] Linking CXX static library libgpt_lib.a
+[ 68%] Built target gpt_lib
+[ 71%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_parser.cpp.o
+[ 75%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_forward.cpp.o
+[ 78%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_native.cpp.o
+[ 81%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_input_oracle.cpp.o
+[ 84%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_sparse_gkr.cpp.o
+[ 87%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[ 90%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_cuda_stub.cpp.o
+[ 93%] Linking CXX static library libgat_adapter.a
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_prover
+[100%] Built target zkgpt_gat_prover
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_verifier.dir/gat_verifier_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_verifier
+[100%] Built target zkgpt_gat_verifier
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_proof_session_smoke.dir/native_proof_session_smoke.cpp.o
+[100%] Linking CXX executable native_proof_session_smoke
+[100%] Built target native_proof_session_smoke
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/gat_adapter_smoke.dir/gat_adapter_smoke.cpp.o
+[100%] Linking CXX executable gat_adapter_smoke
+[100%] Built target gat_adapter_smoke

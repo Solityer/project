@@ -1,0 +1,35 @@
+=== build stdout ===
+-- Configuring done (0.0s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 15%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+[ 18%] Linking CXX static library libgpt_lib.a
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_prover
+[100%] Built target zkgpt_gat_prover
+[  3%] Built target gen_bint.o
+[  6%] Built target gen_base.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_verifier.dir/gat_verifier_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_verifier
+[100%] Built target zkgpt_gat_verifier
+built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/
+
+=== build stderr ===
+bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
+base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp: In member function ‘bool verifier::openCommit()’:
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:1610:39: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+ 1610 |         tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1611 |                                        comm.G, comm.g, Lp.get(), Rp.get(), comm.comm,
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1612 |                                        comm.l, *session_, "hyrax/opening");
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -64,9 +64,9 @@ struct NativeProofMessage {
 
 class NativeProofSession {
   public:
-    static const std::uint32_t kVersion = 4;
+    static const std::uint32_t kVersion = 5;
 
-    NativeProofSession() = default;
+    NativeProofSession();
     NativeProofSession(const std::string& domain, const NativeProofStatement& statement);
 
     void absorb(const std::string& label, const std::string& payload);
@@ -111,7 +111,7 @@ class NativeProofSession {
     NativeProofStatement statement_;
     std::vector<NativeProofMessage> messages_;
 
-    std::string message_body_cache_;
+    std::string message_body_chain_digest_;
     std::unordered_map<std::string, std::vector<std::size_t>> label_positions_;
     std::unordered_map<std::string, std::uint64_t> challenge_round_last_;
     mutable std::unordered_set<std::string> verified_opening_cache_;
@@ -119,7 +119,7 @@ class NativeProofSession {
     mutable std::unordered_set<std::string> validated_challenge_labels_;
     mutable std::unordered_map<std::string, std::uint64_t> validated_challenge_round_last_;
     mutable std::size_t replayed_prefix_size_ = 0;
-    mutable std::string replayed_message_body_;
+    mutable std::string replayed_body_chain_digest_;
 
     std::uint64_t content_version_ = 0;
     mutable bool valid_cache_ = false;
@@ -133,7 +133,8 @@ class NativeProofSession {
 
     F derive(const std::string& label) const;
     void invalidate_validation_cache();
-    void rebuild_message_body_cache();
+    void append_message_body_chain(const NativeProofMessage& message);
+    void rebuild_message_body_chain();
     bool valid_uncached(std::string* reason) const;
     bool replay_uncached(std::string* reason) const;
     static std::string field_encoding(const F& value);

@@ -1092,11 +1092,20 @@ def prepare(session: Path, session_id: str) -> None:
     identity = require_bound_session(session, ROOT)
     if session.is_symlink() or not session.is_dir():
         raise PhaseError(f"zkDL session must be created by the baseline-local formal runner: {session}")
-    entries = list(session.iterdir())
-    if len(entries) != 1 or entries[0].name != "state.json" or entries[0].is_symlink() or not entries[0].is_file():
-        raise PhaseError("zkDL formal prepare refuses a session containing artifacts before local ownership is established")
+    entries = {entry.name: entry for entry in session.iterdir()}
+    expected_entries = {"state.json", "build", "build_manifest.json", "logs"}
+    if set(entries) != expected_entries:
+        raise PhaseError("zkDL formal prepare found unexpected or missing prepublished build artifacts")
+    state_path = entries["state.json"]
+    build_dir = entries["build"]
+    build_manifest = entries["build_manifest.json"]
+    logs_dir = entries["logs"]
+    if (state_path.is_symlink() or not state_path.is_file() or build_dir.is_symlink() or not build_dir.is_dir() or
+            build_manifest.is_symlink() or not build_manifest.is_file() or logs_dir.is_symlink() or
+            not logs_dir.is_dir() or (logs_dir / "build.log").is_symlink() or not (logs_dir / "build.log").is_file()):
+        raise PhaseError("zkDL formal prepare found unsafe or incomplete prepublished build artifacts")
     try:
-        state = json.loads(entries[0].read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PhaseError("zkDL formal runner session state is unreadable before prepare") from exc
     if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
@@ -1104,7 +1113,8 @@ def prepare(session: Path, session_id: str) -> None:
             state.get("status") != "RUNNING" or state.get("stage") != "prepare"):
         raise PhaseError("zkDL formal runner session state is not fresh for prepare")
     require_session_root(identity, session)
-    (session / "logs").mkdir()
+    # The build log and the build snapshot are atomically published before
+    # this formal root is created. Prepare only adds its phase-local records.
     (session / "phase").mkdir()
     require_session_root(identity, session)
     admission_log = session / "logs" / "admission.log"
@@ -1148,12 +1158,9 @@ def prepare(session: Path, session_id: str) -> None:
                                "no dataset passed full-input preflight and snapshot admission")
         return
 
-    build_log = session / "logs" / "build.log"
     build_manifest = _build_manifest(session)
     try:
         require_session_root(identity, session)
-        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--output", str(build_manifest)],
-             log_path=build_log, fresh_log=True, env=env)
         env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
         env["ZKDL_RUNNER_BINARY"] = str(session / "build" / "gat_runner")
         _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],

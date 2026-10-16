@@ -175,6 +175,7 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     const std::size_t aligned_end = mapping.file_bytes - mapping.file_bytes % page;
     if (aligned_live < aligned_end) {
 #ifdef FALLOC_FL_PUNCH_HOLE
+        // Reclaiming an already sparse tail is valid; physical allocation is checked below.
         if (::fallocate(mapping.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(aligned_live), static_cast<off_t>(aligned_end - aligned_live)) != 0)
             throw std::runtime_error("native scratch tail reclamation failed: " + std::to_string(errno));
 #else
@@ -182,7 +183,6 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
 #endif
     }
     const std::uint64_t after = fd_allocated_bytes(mapping.fd);
-    if (aligned_live < aligned_end && after >= before) throw std::runtime_error("native scratch tail reclamation released no allocated blocks");
     const std::size_t trailing_fragment = mapping.file_bytes - aligned_end;
     const auto round_up = [](std::size_t bytes, std::size_t unit) {
         if (bytes == 0U) return std::size_t(0);

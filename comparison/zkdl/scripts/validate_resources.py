@@ -242,7 +242,7 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
     counts = (setup.get("generator_count"), setup.get("h_count"), setup.get("u_count"))
     if (not isinstance(domain, int) or domain < 1 or domain & (domain - 1) or
             not isinstance(basis_domain, int) or basis_domain != NATIVE_BASIS_DOMAIN or
-            not isinstance(logical_domain, int) or logical_domain < basis_domain or
+            not isinstance(logical_domain, int) or logical_domain < 1 or
             logical_domain > MAX_NATIVE_DOMAIN or logical_domain & (logical_domain - 1) or
             domain != basis_domain or
             not isinstance(segment_size, int) or segment_size != basis_domain or

@@ -1,0 +1,9 @@
+CHECK_LOG_ROOT=/home/pzh/project/comparison/zkGPT/baseline-local/repair/20261015-native-sumcheck-check.Izi88g
+BUILD_ROOT=/tmp/zkgpt-maskedeqlookup-build.EHoP0d
+1c29cbd75f6f5811bae6f94b6ea7f3f58150c86ef7c867767116080364cddfae  src/native_masked_sumcheck.cpp
+b6e1a431b151804f3fd960a3d2ea41010e8f8c13e068382b421df0a0dd2bbe10  tests/native_masked_sumcheck_smoke.cpp
+CMAKE_BUILD_TYPE:STRING=Release
+MCL_TEST_WITH_GMP:BOOL=OFF
+ZKGPT_BUILD_TESTS:BOOL=ON
+ZKGPT_ENABLE_CUDA:BOOL=OFF
+65444ffbc890d7ebf640e111987e22f2653e1cfef7bc74246fdc9d72e63e22a3  /tmp/zkgpt-maskedeqlookup-build.EHoP0d/tests/native_masked_sumcheck_smoke

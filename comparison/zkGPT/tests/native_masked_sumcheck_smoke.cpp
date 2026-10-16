@@ -285,6 +285,45 @@ int main() {
         std::cerr << "masked product honest path failed: " << reason << '\n';
         return 1;
     }
+
+    NativeProofSession malformed_opening_session(
+        "native-masked-unmasked-opening-guard-v1", statement_fixture());
+    const auto malformed_opening_basis = zkgpt::native_pedersen::derive_basis(
+        "zkgpt/masked-sumcheck/v2/" + malformed_opening_session.statement_digest());
+    const auto malformed_initial =
+        zkgpt::native_pedersen::commit_fresh(malformed_opening_basis, Fr(2));
+    NativeMaskedTerminalSpec malformed_opening_spec = product_spec;
+    malformed_opening_spec.initial_opening = malformed_initial;
+    malformed_opening_spec.initial_commitment = malformed_initial.commitment;
+    malformed_opening_spec.unmasked_terminal_openings = {
+        zkgpt::native_pedersen::commit_fresh(malformed_opening_basis, Fr(1)),
+        zkgpt::native_pedersen::commit_fresh(malformed_opening_basis, Fr(1))};
+    NativeMaskedSumcheckProver malformed_opening_prover(
+        malformed_opening_session, "malformed-unmasked-opening/masked", 2,
+        Fr(2), malformed_opening_spec);
+    if (!malformed_opening_prover.append_round(
+            {Fr(1), Fr(1), Fr(1)}, nullptr, &reason)) {
+        std::cerr << "malformed-opening guard round setup failed: " << reason << '\n';
+        return 8;
+    }
+    malformed_opening_spec.unmasked_terminal_openings[0] = {};
+    if (!malformed_opening_prover.set_terminal_spec(malformed_opening_spec,
+                                                    &reason)) {
+        std::cerr << "malformed-opening terminal spec setup failed: " << reason << '\n';
+        return 8;
+    }
+    NativeMaskedSumcheckResult malformed_opening_result;
+    if (malformed_opening_prover.finish({Fr(1), Fr(1)},
+                                        &malformed_opening_result, &reason)) {
+        std::cerr << "prover accepted malformed unmasked terminal opening\n";
+        return 8;
+    }
+    if (reason != "masked Sumcheck opening value does not match relation") {
+        std::cerr << "malformed opening was rejected before the relation guard: "
+                  << reason << '\n';
+        return 8;
+    }
+
     if (proved.terminal_values.size() != 2 || proved.terminal_values[0] == Fr(1) || proved.terminal_values[1] == Fr(1)) {
         std::cerr << "masked terminal exposed the witness values\n";
         return 2;

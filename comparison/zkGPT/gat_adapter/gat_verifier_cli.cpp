@@ -261,7 +261,12 @@ int main(int argc, char** argv) {
         std::unique_ptr<VerifierContext> context_storage(new VerifierContext());
         VerifierContext& context = *context_storage;
         std::string context_reason;
-        if (!zkgpt::gat::read_verifier_context(context_path, context, &context_reason)) {
+        std::cerr << "[zkGPT][verifier] public_context_load_plan_restore_begin\n" << std::flush;
+        const auto context_load_begin = std::chrono::steady_clock::now();
+        const bool context_loaded = zkgpt::gat::read_verifier_context(context_path, context, &context_reason);
+        const double context_load_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - context_load_begin).count();
+        std::cerr << "[zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=" << context_load_ms << " ok=" << (context_loaded ? "true" : "false") << '\n' << std::flush;
+        if (!context_loaded) {
             const std::string report = report_json("REJECTED", context_reason, "", context_rel, logits_rel, artifact_rel);
             write_report(options.report, report);
             std::cout << report;
@@ -294,8 +299,12 @@ int main(int argc, char** argv) {
 
         std::string artifact_wire;
         std::string artifact_reason;
+        std::cerr << "[zkGPT][verifier] artifact_read_parse_begin\n" << std::flush;
+        const auto artifact_read_parse_begin = std::chrono::steady_clock::now();
         if (!GatProofArtifact::read_wire_bytes(artifact_path, artifact_wire,
                                               artifact_wire_limit, &artifact_reason)) {
+            const double artifact_read_parse_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - artifact_read_parse_begin).count();
+            std::cerr << "[zkGPT][verifier] artifact_read_parse_complete elapsed_ms=" << artifact_read_parse_ms << " ok=false\n" << std::flush;
             const std::string report =
                 report_json("REJECTED", artifact_reason, statement_digest, context_rel, logits_rel, artifact_rel, &context);
             write_report(options.report, report);
@@ -311,6 +320,8 @@ int main(int argc, char** argv) {
         const double decode_crypto_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - decode_begin).count();
         if (!decoded) {
+            const double artifact_read_parse_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - artifact_read_parse_begin).count();
+            std::cerr << "[zkGPT][verifier] artifact_read_parse_complete elapsed_ms=" << artifact_read_parse_ms << " ok=false\n" << std::flush;
             const std::string report = report_json(
                 "REJECTED", artifact_reason, statement_digest, context_rel, logits_rel,
                 artifact_rel, &context, nullptr, &artifact_wire, decode_crypto_ms, 0.0);
@@ -318,10 +329,14 @@ int main(int argc, char** argv) {
             std::cout << report;
             return 1;
         }
+        const double artifact_read_parse_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - artifact_read_parse_begin).count();
+        std::cerr << "[zkGPT][verifier] artifact_read_parse_complete elapsed_ms=" << artifact_read_parse_ms << " ok=true\n" << std::flush;
         std::string verify_reason;
+        std::cerr << "[zkGPT][verifier] crypto_verify_begin\n" << std::flush;
         const auto crypto_verify_begin = std::chrono::steady_clock::now();
         const bool crypto_verified = zkgpt::gat::verify_gat(context, artifact, &verify_reason);
         const double verify_crypto_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - crypto_verify_begin).count();
+        std::cerr << "[zkGPT][verifier] crypto_verify_complete elapsed_ms=" << verify_crypto_ms << " ok=" << (crypto_verified ? "true" : "false") << '\n' << std::flush;
         if (!crypto_verified) {
             const std::string report = report_json("REJECTED", verify_reason.empty() ? "verify_gat rejected proof" : verify_reason, statement_digest,
                                                    context_rel, logits_rel, artifact_rel, &context, &artifact, &artifact_wire,

@@ -1016,6 +1016,15 @@ int run_existing_artifact_io_profile(const std::string& standalone_dir) {
 }
 
 int main(int argc, char** argv) {
+    GatProofArtifact stale_transcript_version;
+    stale_transcript_version.native_domain = "zkgpt-native-gat-fs-v6";
+    NativeProofSession stale_session;
+    std::string stale_reason;
+    if (stale_transcript_version.native_session(stale_session, &stale_reason)) {
+        std::cerr << "legacy GAT transcript domain was accepted\n";
+        return 30;
+    }
+
     bool formal = false;
     bool private_formal_fixture = false;
     bool owner_check_only = false;

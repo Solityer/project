@@ -20,6 +20,9 @@ from formal_common import (
     local_path,
     print_error,
     resource_manifest_hash,
+    require_authenticated_formal_context,
+    require_final_authenticated_formal_context,
+    sha256,
     source_tree_hash,
 )
 
@@ -31,8 +34,20 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def main(args: argparse.Namespace) -> int:
-    return validate_matrix(local_path(args.matrix, "formal matrix"), session_id=args.session_id)
+def main(
+    args: argparse.Namespace,
+    *,
+    authenticated_context: object | None = None,
+    formal_session_id: str | None = None,
+    expected_result_sha256s: dict[str, str] | None = None,
+) -> int:
+    return validate_matrix(
+        local_path(args.matrix, "formal matrix"),
+        session_id=args.session_id,
+        authenticated_context=authenticated_context,
+        formal_session_id=formal_session_id,
+        expected_result_sha256s=expected_result_sha256s,
+    )
 
 
 def validate_matrix(
@@ -41,6 +56,9 @@ def validate_matrix(
     selected_datasets: tuple[str, ...] = DATASETS,
     selected_backends: tuple[str, ...] | None = None,
     session_id: str | None = None,
+    authenticated_context: object | None = None,
+    formal_session_id: str | None = None,
+    expected_result_sha256s: dict[str, str] | None = None,
 ) -> int:
     """Validate formal dataset cells; explicit native selections serve only tiny/local checks."""
     formal = selected_backends is None
@@ -49,6 +67,23 @@ def validate_matrix(
     if formal:
         if not isinstance(session_id, str) or not FORMAL_SESSION_ID.fullmatch(session_id):
             abort("formal validation requires the active --session-id")
+        if authenticated_context is not None:
+            if formal_session_id != session_id:
+                abort("sealed final validation session does not match its command-line session")
+            require_authenticated_formal_context(
+                authenticated_context,
+                session_id=session_id,
+                dataset=DATASETS[0],
+                config=ROOT / "resources/canonical/configs" / f"{DATASETS[0]}_secure.cfg",
+                check_config_sha256=False,
+            )
+        if expected_result_sha256s is not None and authenticated_context is None:
+            abort("session checkpoint result identities are accepted only with the sealed in-process context")
+        if expected_result_sha256s is not None and (
+            set(expected_result_sha256s) != set(DATASETS)
+            or any(not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value) for value in expected_result_sha256s.values())
+        ):
+            abort("formal validator checkpoint digest map is incomplete or malformed")
     elif session_id is not None:
         abort("--session-id cannot be combined with local-only validation")
     elif not selected_backends or any(backend not in BACKENDS for backend in selected_backends):
@@ -104,7 +139,13 @@ def validate_matrix(
         abort("local result matrix pair attestation is invalid")
     if not isinstance(matrix["collected_at_utc"], str) or not matrix["collected_at_utc"]:
         abort("formal matrix has no collection timestamp")
-    if matrix["source_tree_sha256"] != source_tree_hash() or matrix["resource_manifest_sha256"] != resource_manifest_hash():
+    if formal and authenticated_context is not None:
+        source_sha256 = authenticated_context.source_tree_sha256
+        resource_sha256 = authenticated_context.resource_manifest_sha256
+    else:
+        source_sha256 = source_tree_hash()
+        resource_sha256 = resource_manifest_hash()
+    if matrix["source_tree_sha256"] != source_sha256 or matrix["resource_manifest_sha256"] != resource_sha256:
         abort("formal matrix source/resource identity is stale")
 
     keys: set[str] | set[tuple[str, str]] = set()
@@ -121,9 +162,22 @@ def validate_matrix(
             result_path.relative_to(ROOT.resolve())
         except ValueError:
             abort(f"formal matrix result path escapes baseline: {result_path}")
+        expected_result_sha256 = (
+            expected_result_sha256s.get(cell.get("dataset"))
+            if formal and expected_result_sha256s is not None
+            else None
+        )
         refreshed_cell = validate_cell(
             result_path,
             expected_session_id=session_id if formal else None,
+            expected_source_tree_sha256=source_sha256 if formal else None,
+            expected_resource_manifest_sha256=resource_sha256 if formal else None,
+            expected_result_sha256=expected_result_sha256,
+            expected_config_values=(
+                authenticated_context.config_values_for(cell.get("dataset"))
+                if formal and authenticated_context is not None
+                else None
+            ),
         )
         if set(cell) != set(refreshed_cell):
             abort(f"formal matrix cell fields are stale for {key}")
@@ -138,6 +192,8 @@ def validate_matrix(
         abort(f"formal matrix is missing or has extra cells: expected={sorted(expected)}, got={sorted(keys)}")
     if not formal:
         check_pair_consistency(refreshed)
+    elif authenticated_context is not None:
+        require_final_authenticated_formal_context(authenticated_context, session_id=session_id)
     print(
         f"validated {len(refreshed)} ezkl result cells: external statement/Y, native instances, "
         f"circuit artifacts, timing, and {'formal session identity' if formal else 'local execution'} are consistent"

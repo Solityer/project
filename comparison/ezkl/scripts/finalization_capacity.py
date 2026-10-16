@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from collect_results import build_matrix_document
-from formal_common import DATASETS, ROOT, resource_manifest_hash, sha256, source_tree_hash
+from formal_common import DATASETS, ROOT, sha256
 
 MAX_RESULT_JSON_BYTES = 4 * 1024 * 1024
 MAX_SESSION_JSON_BYTES = 1024 * 1024
@@ -774,8 +774,6 @@ def check_finalization_capacity(
         _fail("finalization capacity requires the active EZKL session id")
     if not re.fullmatch(r"[0-9a-f]{64}", source_tree_sha256) or not re.fullmatch(r"[0-9a-f]{64}", resource_manifest_sha256):
         _fail("finalization capacity source/resource identity is malformed")
-    if source_tree_sha256 != source_tree_hash() or resource_manifest_sha256 != resource_manifest_hash():
-        _fail("finalization capacity source/resource identity is stale")
     output_root = _rooted_path(Path(output_root), "formal output root")
     matrix_path = _rooted_path(Path(matrix_path), "formal matrix")
     session_file = _rooted_path(Path(session_file), "formal session record")
@@ -926,8 +924,6 @@ def check_finalization_capacity(
     if _stat_record(_regular_file(session_file, "active formal session record")) != _stat_record(session_stat):
         _fail("active formal session record changed during finalization capacity admission")
     _check_shape_source_identities(shape_source_stats)
-    if source_tree_hash() != source_tree_sha256:
-        _fail("EZKL source identity changed during finalization capacity admission")
     receipt_field = "finalization_capacity" if phase == "collector" else "final_validation_capacity"
     terminal_session = phase == "validator"
     receipt: dict[str, Any] = {

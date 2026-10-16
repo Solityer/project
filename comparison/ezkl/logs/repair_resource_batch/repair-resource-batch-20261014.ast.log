@@ -1,3 +1,0 @@
-AST_OK scripts/run_hybrid_formal.py
-AST_OK scripts/generate_gat_resources.py
-AST_PARSE_OK files=2

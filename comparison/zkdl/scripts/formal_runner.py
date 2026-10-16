@@ -11,6 +11,7 @@ import re
 import secrets
 import signal
 import stat
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,11 @@ OWNER_TOKEN_ENV = "ZKDL_FORMAL_OWNER_TOKEN"
 LOCK_FD_ENV = "ZKDL_FORMAL_LOCK_FD"
 DETACHED_LAUNCH_ENV = "ZKDL_DETACHED_LAUNCH_DIR"
 ACTIVE_SESSION_IDENTITY: SessionRootIdentity | None = None
+FORMAL_SESSION_IDENTITY_ENV = (
+    "ZKDL_FORMAL_SESSION_ROOT",
+    "ZKDL_FORMAL_SESSION_ROOT_DEVICE",
+    "ZKDL_FORMAL_SESSION_ROOT_INODE",
+)
 
 
 class RunnerError(RuntimeError):
@@ -97,6 +103,72 @@ def _write_detached_session_link(session: Path, session_id: str) -> None:
         "runner_process_group_id": os.getpgrp(), "runner_session_id": os.getsid(0),
         "boot_id": _boot_id(),
     })
+
+
+def _build_and_publish_session(runs: Path, session_id: str) -> Path:
+    """Build outside the formal session, then atomically publish its artifacts."""
+    if re.fullmatch(r"[0-9a-f]{32}", session_id) is None:
+        raise RunnerError("formal build stage requires a canonical session id")
+    if runs.is_symlink() or not runs.is_dir() or runs.resolve(strict=True) != ROOT / "runs":
+        raise RunnerError(f"zkDL runs directory changed before the formal build: {runs}")
+    stage = runs / f".build_stage_{session_id}"
+    session = runs / f"formal_{session_id}"
+    if stage.exists() or stage.is_symlink() or session.exists() or session.is_symlink():
+        raise RunnerError("formal build stage or session path already exists")
+    stage.mkdir(mode=0o700)
+    (stage / "logs").mkdir(mode=0o700)
+    build_log = stage / "logs" / "build.log"
+    manifest = stage / "build_manifest.json"
+    command = [sys.executable, str(ROOT / "scripts" / "formal_provenance.py"), "--output", str(manifest)]
+    build_env = dict(os.environ)
+    for variable in FORMAL_SESSION_IDENTITY_ENV:
+        build_env.pop(variable, None)
+    try:
+        with build_log.open("xb", buffering=0) as log:
+            subprocess.run(command, cwd=ROOT, env=build_env, stdout=log, stderr=subprocess.STDOUT, check=True)
+            log.flush()
+            os.fsync(log.fileno())
+    except subprocess.CalledProcessError as exc:
+        raise RunnerError(f"baseline-local build/provenance failed with exit {exc.returncode}; see {build_log}") from exc
+
+    # The official CLI produced and checked this manifest against binaries in
+    # the staging directory. Repoint only those two paths before publishing;
+    # all recorded source and binary digests remain the CLI-generated values.
+    value = formal_provenance.validate_manifest(ROOT, manifest)
+    stage_prefix = stage.relative_to(ROOT).as_posix() + "/build/"
+    session_prefix = session.relative_to(ROOT).as_posix() + "/build/"
+    for binary in value["binaries"]:
+        name = binary["name"]
+        if binary.get("path") != stage_prefix + name:
+            raise RunnerError(f"staged formal binary path is not canonical: {binary.get('path')!r}")
+        binary["path"] = session_prefix + name
+    temporary = manifest.with_name(f".{manifest.name}.{secrets.token_hex(8)}.tmp")
+    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, manifest)
+        directory_fd = os.open(stage, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary.exists() and not temporary.is_symlink():
+            temporary.unlink()
+
+    if session.exists() or session.is_symlink():
+        raise RunnerError("formal session path appeared before build publication")
+    os.rename(stage, session)
+    runs_fd = os.open(runs, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(runs_fd)
+    finally:
+        os.close(runs_fd)
+    formal_provenance.validate_manifest(ROOT, session / "build_manifest.json")
+    return session
 
 
 def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, stage: str,
@@ -713,11 +785,16 @@ def run() -> int:
     state: dict[str, Any] | None = None
     global ACTIVE_SESSION_IDENTITY
     ACTIVE_SESSION_IDENTITY = None
+    formal_phase.SIGNAL_GRACE_SECONDS = 10.0
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, formal_phase._signal_handler)
     try:
         _mark_stale_sessions(runs)
         session_id = secrets.token_hex(16)
         session = runs / f"formal_{session_id}"
-        session.mkdir(mode=0o700, exist_ok=False)
+        print(f"zkdl_formal_stage=START stage=baseline_local_build session={session_id}", flush=True)
+        session = _build_and_publish_session(runs, session_id)
+        print(f"zkdl_formal_stage=PASS stage=baseline_local_build session={session_id}", flush=True)
         ACTIVE_SESSION_IDENTITY = capture_session_root(session)
         os.environ.update(ACTIVE_SESSION_IDENTITY.child_environment())
         token = secrets.token_hex(32)
@@ -735,9 +812,6 @@ def run() -> int:
         }
         _write_json(session / "state.json", state)
         _write_detached_session_link(session, session_id)
-        formal_phase.SIGNAL_GRACE_SECONDS = 10.0
-        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            signal.signal(signum, formal_phase._signal_handler)
         global_failure = ""
         profile: dict[str, Any] | None = None
         prepare_marker: dict[str, Any] | None = None
@@ -897,7 +971,7 @@ def run() -> int:
             state["updated_at_utc"] = state["finished_at_utc"]
             _write_json(session / "state.json", state)
         print(f"zkdl_formal_run=INTERRUPTED error={exc}", file=sys.stderr, flush=True)
-        return 130 if formal_phase.INTERRUPTED == signal.SIGINT else 143
+        return 143 if formal_phase.INTERRUPTED in (signal.SIGTERM, signal.SIGHUP) else 130
     except Exception as exc:
         if state is not None and session is not None:
             require_session_root(ACTIVE_SESSION_IDENTITY, session)

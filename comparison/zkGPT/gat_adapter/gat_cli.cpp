@@ -42,11 +42,12 @@ struct Options {
     bool register_only = false;
     bool capacity_only = false;
     bool capacity_profile_only = false;
+    bool defer_self_verify = false;
 };
 
 struct Record {
     std::string schema = "zkgpt-gat-result-v2";
-    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v3-native-commitment-io-excluded";
+    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v4-native-commitment-wire-io-excluded";
     std::string dataset;
     std::string backend;
     std::string capability_status = "FORMAL_CPU_MASKED_FULL";
@@ -1088,6 +1089,8 @@ Options parse_options(int argc, char** argv) {
             options.capacity_only = true;
         } else if (arg == "--capacity-profile-only") {
             options.capacity_profile_only = true;
+        } else if (arg == "--defer-self-verify") {
+            options.defer_self_verify = true;
         } else {
             throw std::runtime_error("unknown or incomplete argument: " + arg);
         }
@@ -1107,6 +1110,8 @@ Options parse_options(int argc, char** argv) {
     const bool capacity_mode = options.capacity_only || options.capacity_profile_only;
     if (capacity_mode && any_session_binding)
         throw std::runtime_error("capacity modes do not accept formal session outputs");
+    if (options.defer_self_verify && (!any_session_binding || options.register_only || capacity_mode))
+        throw std::runtime_error("deferred native verification is only available for a bound formal proof run");
     if (!capacity_mode && !any_session_binding)
         throw std::runtime_error("formal proof/registration requires an explicit session binding");
     if (any_session_binding) {
@@ -1132,6 +1137,7 @@ void print_help() {
                  "       gat_cli ... --register-only\n"
                  "       gat_cli --capacity-only --dataset <...> --backend cpu [--baseline-root <zkGPT-root>] [--config <...>]\n"
                  "       gat_cli --capacity-profile-only --dataset <...> --backend cpu [--baseline-root <zkGPT-root>] [--config <...>]\n"
+                 "       --defer-self-verify leaves a pending result for the formal runner's independent verifier.\n"
                  "The normal command emits one baseline-local run record and exits nonzero on FAILED or UNSUPPORTED.\n"
                  "--register-only writes the long-lived public model registration and its prover-only 0600 secret.\n";
 }
@@ -1553,13 +1559,16 @@ int main(int argc, char** argv) {
 
         const std::string artifact_file = run_dir + "/proof.artifact";
         std::string artifact_reason;
-        const auto artifact_wire_self_check_begin = Clock::now();
-        if (!proved.artifact.valid_wire(&artifact_reason))
-            throw std::runtime_error("proof artifact failed internal wire self-check: " + artifact_reason);
-        record.artifact_wire_self_check_ms = elapsed_ms(artifact_wire_self_check_begin, Clock::now());
+        if (!options.defer_self_verify) {
+            const auto artifact_wire_self_check_begin = Clock::now();
+            if (!proved.artifact.valid_wire(&artifact_reason))
+                throw std::runtime_error("proof artifact failed internal wire self-check: " + artifact_reason);
+            record.artifact_wire_self_check_ms = elapsed_ms(artifact_wire_self_check_begin, Clock::now());
+        }
         std::string artifact_wire;
         const auto artifact_serialize_begin = Clock::now();
         std::cerr << "[zkGPT][artifact] serialize_begin wire_limit_bytes=" << artifact_wire_limit << '\n' << std::flush;
+        // Deferred formal runs keep this artifact pending until the independent verifier accepts its serialized bytes.
         if (!proved.artifact.serialize_after_wire_validation(artifact_wire, artifact_wire_limit, &artifact_reason))
             throw std::runtime_error("proof artifact in-memory serialization failed: " + artifact_reason);
         record.serialize_ms = elapsed_ms(artifact_serialize_begin, Clock::now());
@@ -1591,11 +1600,28 @@ int main(int argc, char** argv) {
         std::string().swap(artifact_wire);
         proved.artifact = GatProofArtifact{};
         GatProofArtifact artifact;
+        std::string artifact_readback_wire;
+        std::cerr << "[zkGPT][artifact] readback_begin\n" << std::flush;
         const auto artifact_readback_begin = Clock::now();
-        if (!GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit,
-                                    &artifact_reason))
-            throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
+        bool artifact_readback_ok = false;
+        if (options.defer_self_verify) {
+            artifact_readback_ok = GatProofArtifact::read_wire_bytes(artifact_file, artifact_readback_wire, artifact_wire_limit, &artifact_reason);
+            if (artifact_readback_ok &&
+                (artifact_readback_wire.size() != record.proof_size_bytes ||
+                 sha256_bytes_digest(artifact_readback_wire) != record.artifact_sha256)) {
+                artifact_readback_ok = false;
+                artifact_reason = "proof artifact readback length or SHA-256 differs from serialized bytes";
+            }
+            if (artifact_readback_ok)
+                artifact_readback_ok = GatProofArtifact::parse_wire(artifact_readback_wire, artifact, artifact_wire_limit, &artifact_reason);
+            std::string().swap(artifact_readback_wire);
+        } else {
+            artifact_readback_ok = GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit, &artifact_reason);
+        }
         record.artifact_readback_ms = elapsed_ms(artifact_readback_begin, Clock::now());
+        std::cerr << "[zkGPT][artifact] readback_complete elapsed_ms=" << record.artifact_readback_ms << " ok=" << (artifact_readback_ok ? "true" : "false") << '\n' << std::flush;
+        if (!artifact_readback_ok)
+            throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
         if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
             !std::isfinite(record.artifact_wire_self_check_ms) ||
             record.artifact_write_ms < 0.0 || record.artifact_readback_ms < 0.0)
@@ -1613,6 +1639,17 @@ int main(int argc, char** argv) {
             static_cast<std::uint64_t>(artifact_stat.st_size) != record.proof_size_bytes)
             throw std::runtime_error("proof artifact file size differs from its in-memory canonical wire");
         record.verifier_report_path = run_rel + "/verifier_report.json";
+
+        if (options.defer_self_verify) {
+            record.status = "PROOF_GENERATED_PENDING_VERIFY";
+            record.verification_status = "PROOF_GENERATED_PENDING_VERIFY";
+            record.verifier_called = false;
+            record.verifier_ok = false;
+            record.verify_ms = 0.0;
+            write_result(result_file, record);
+            std::cout << record.status << " dataset=" << record.dataset << " backend=" << record.backend << " result=" << record.run_dir + "/result.json" << '\n';
+            return 0;
+        }
 
         const auto verify_begin = Clock::now();
         std::string verify_reason;

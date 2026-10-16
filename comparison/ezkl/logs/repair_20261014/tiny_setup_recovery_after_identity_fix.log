@@ -1,2 +1,0 @@
-[ezkl-formal] normalized inherited formal environment selectors: CARGO_HOME, ICICLE_BACKEND_INSTALL_DIR, RUSTUP_TOOLCHAIN
-[recovery] FAIL: formal command has unsupported environment overrides that can change identity: EZKL_FORMAL_SELECTED_CUDA_DEVICE

@@ -1,4 +1,0 @@
-[ezkl-formal] normalized inherited formal environment selectors: CARGO_HOME, RUSTUP_TOOLCHAIN
-[ezkl-formal] runtime identity PASS: interpreter=/usr/bin/python3.12 Python 3.12.3, NumPy 1.26.4, Rust nightly-2025-12-01, CUDA compiler=/usr/local/cuda-13.0/bin/nvcc
-[ezkl-formal] selected CUDA device index=0 uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71 name=NVIDIA GB10 driver=580.142 compute_capability=12.1 logical_device_id=0
-[recovery] FAIL: selected GPU/runtime differs from the preserved build identity

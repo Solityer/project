@@ -58,7 +58,7 @@ const std::uint64_t kContextMaxRecipeBytes = 64ULL << 20;
 
 const std::uint64_t kContextMaxShapeProfile = 128;
 const std::uint64_t kContextMaxShapeDimensions = 16;
-const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v6";
+const char kNativeArtifactDomain[] = "zkgpt-native-gat-fs-v7";
 const char kVerifierContextMagic[] = "ZKGPTVC5";
 constexpr std::uint32_t kVerifierContextVersion = 5;
 const char kVerifierContextSchema[] = "zkgpt-gat-verifier-context-v5";
@@ -11237,8 +11237,8 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                   plan, graph, public_features, model, quant, forward,
                   lasso.query.value_provider, false);
         stage("witness");
-        std::string witness_reason;
-        {
+        if (validated_owner == nullptr) {
+            std::string witness_reason;
             const zkgpt::NativeFieldView validation_terminal_output =
                 canonical_public_output_view(plan, forward.logits, &circuit_witness);
             if (!evaluate_gat_circuit_witness_with_terminal(
@@ -11574,12 +11574,11 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         session = NativeProofSession{};
         std::string verify_reason;
         if (validated_owner != nullptr) {
-            // The formal CLI immediately serializes, reads back, and verifies
-            // these exact bytes, then its independent verifier process and
-            // final validator verify again. Keep public proof API defaults
-            // self-verifying while avoiding only this duplicate in-memory pass.
+            // The formal CLI defers full artifact validation to its independent
+            // verifier after checking serialized readback integrity. Keep public
+            // proof API defaults self-verifying while avoiding this duplicate pass.
             result.self_verify_ms = 0.0;
-            stage("selfverify-deferred-to-serialized-readback");
+            stage("selfverify-deferred-to-independent-verifier");
         } else {
             const auto self_verify_begin = std::chrono::steady_clock::now();
             const bool self_verified = verify_gat(context, artifact, &verify_reason);
@@ -11590,7 +11589,7 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         result.has_artifact = true;
         result.artifact = std::move(artifact);
         result.diagnostic = validated_owner != nullptr
-            ? "masked_full canonical GAT proof generated; serialized readback and independent verification remain required"
+            ? "masked_full canonical GAT proof generated; serialized readback integrity and independent verification remain required"
             : "masked_full canonical GAT proof generated and independently verified";
         return result;
     } catch (const std::exception& error) {

@@ -4,6 +4,7 @@
 #include "verifier.hpp"
 #include "global_var.hpp"
 #include "native_protocol.hpp"
+#include "masked_gkr_coefficients.hpp"
 #include <utils.hpp>
 
 static bool masked_fconn_shape_matches(const layer &current, const NativeGkrMatmulShape &shape, std::string *reason);
@@ -23,6 +24,8 @@ vector<F> beta_v;
 static vector<F> beta_u, beta_gs;
 
 namespace {
+
+using zkgpt::verifier_detail::masked_gkr_coefficients;
 
 class GkrRoundProgress {
   public:
@@ -3671,42 +3674,6 @@ bool masked_product_prove(NativeProofSession &session, const std::string &label,
     return sumcheck.finish({f[0], g[0]}, &result, reason);
 }
 
-F masked_eq_at(const std::vector<F> &point, u64 index) {
-    if (point.size() >= 64 || (point.size() < 64 && (index >> point.size()) != 0))
-        return F_ZERO;
-    F value = F_ONE;
-    for (std::size_t bit = 0; bit < point.size(); ++bit)
-        value *= ((index >> bit) & 1) != 0 ? point[bit] : F_ONE - point[bit];
-    return value;
-}
-
-std::vector<F> masked_gkr_coefficients(const layer &current,
-                                        const std::vector<F> &r0,
-                                        const std::vector<F> &r1,
-                                        const std::vector<F> &ru,
-                                        const F &alpha, const F &beta,
-                                        const F &relu_rou,
-                                        const std::vector<F> *rv = nullptr) {
-    F uni[2] = {F_ZERO, F_ZERO};
-    F bin[3] = {F_ZERO, F_ZERO, F_ZERO};
-    const auto gate_weight = [&](u64 gate, u64 input, u64 right) {
-        F weight = (alpha * masked_eq_at(r0, gate) +
-                    beta * masked_eq_at(r1, gate)) *
-                   masked_eq_at(ru, input);
-        if (current.zero_start_id < current.size && gate >= current.zero_start_id)
-            weight *= relu_rou;
-        if (rv != nullptr) weight *= masked_eq_at(*rv, right);
-        return weight;
-    };
-    for (const uniGate &gate : current.uni_gates) {
-        F weight = gate_weight(gate.g, gate.u, 0);
-        uni[gate.lu] += weight * current.coefficient(gate);
-    }
-    for (const binGate &gate : current.bin_gates)
-        bin[gate.l] += gate_weight(gate.g, gate.u, gate.v) * current.coefficient(gate);
-    return {bin[0], bin[1], bin[2], uni[0], uni[1]};
-}
-
 F masked_fixed_u_predicate(const std::vector<F> &coefficients,
                            const std::vector<F> &u,
                            const std::vector<F> &v) {
@@ -5173,8 +5140,6 @@ bool verify_masked_gkr_transcript(
                 r0.resize(current.bit_length, F_ZERO);
             if (r1.size() < static_cast<std::size_t>(current.bit_length))
                 r1.resize(current.bit_length, F_ZERO);
-            std::vector<F> coefficients = masked_gkr_coefficients(
-                current, r0, r1, r_u[layer_id], alpha, beta, relu_rou);
             std::vector<F> masked_v{F_ZERO, F_ZERO};
             NativeMaskedSumcheckResult phase2_result;
             if (current.need_phase2) {

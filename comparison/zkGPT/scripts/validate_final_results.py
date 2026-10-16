@@ -119,9 +119,69 @@ def independently_verify_final_cell(root: Path, cell: Mapping[str, Any]) -> Dict
     verifier_timing(report, report_path)
     return {
         "dataset": dataset, "backend": backend, "status": "VERIFY_OK",
+        "verification_source": "final_native_verifier", "reused_cell_report": False,
+        "final_native_verifier_invocations": 1,
         "report_path": relative_path(root, report_path, "final verifier report"),
         "report_sha256": sha256_file(report_path), "process_telemetry": telemetry,
     }
+
+
+def _reuse_owner_approved_cell(root: Path, session_id: str, session_manifest_sha256: str, dataset: str,
+                               approved: Mapping[str, Any], audited: Mapping[str, Any]) -> Dict[str, Any]:
+    fields = ("receipt_path", "receipt_sha256", "result_path", "result_sha256", "execution_path", "execution_sha256",
+              "proof_path", "proof_sha256", "verification_report_path", "verification_report_sha256")
+    expected_receipt = f"results/formal/{session_id}/receipts/{dataset}.json"
+    if not isinstance(approved, dict) or approved.get("dataset") != dataset or approved.get("receipt_path") != expected_receipt:
+        raise ChainError(f"owner-approved cell identity mismatch: {dataset}")
+    for key in fields:
+        if not isinstance(approved.get(key), str) or not approved[key]:
+            raise ChainError(f"owner-approved cell is missing {key}: {dataset}")
+    receipt_path = local_path(root, approved["receipt_path"], "owner-approved cell receipt")
+    require_regular(receipt_path, "owner-approved cell receipt")
+    if sha256_file(receipt_path) != approved["receipt_sha256"]:
+        raise ChainError(f"owner-approved cell receipt changed: {dataset}")
+    receipt = load_json(receipt_path, "owner-approved cell receipt")
+    if (not isinstance(receipt, dict) or receipt.get("schema") != "zkgpt-gat-cell-receipt-v1" or
+            receipt.get("status") != "VERIFY_OK" or receipt.get("session_id") != session_id or
+            receipt.get("session_manifest_sha256") != session_manifest_sha256 or
+            receipt.get("dataset") != dataset or receipt.get("independent_verification") is not True):
+        raise ChainError(f"owner-approved cell receipt is invalid: {dataset}")
+    receipt_fields = {"result_path": "result_path", "result_sha256": "result_sha256",
+                      "execution_path": "execution_path", "execution_sha256": "execution_sha256",
+                      "proof_path": "proof_path", "proof_sha256": "proof_sha256",
+                      "verification_report_path": "verification_report_path",
+                      "verification_report_sha256": "verification_report_sha256"}
+    for approval_key, receipt_key in receipt_fields.items():
+        if receipt.get(receipt_key) != approved[approval_key]:
+            raise ChainError(f"owner-approved cell receipt binding changed for {receipt_key}: {dataset}")
+    for path_key, digest_key, description in (("result_path", "result_sha256", "native result"),
+                                               ("execution_path", "execution_sha256", "execution record"),
+                                               ("verification_report_path", "verification_report_sha256", "cell verifier report")):
+        path = local_path(root, approved[path_key], description)
+        require_regular(path, description)
+        if sha256_file(path) != approved[digest_key]:
+            raise ChainError(f"owner-approved {description} changed: {dataset}")
+    if (audited.get("result_path") != approved["result_path"] or
+            approved["execution_path"] != str(Path(audited["result_path"]).parent / "execution.json") or
+            audited.get("artifact_path") != approved["proof_path"] or
+            audited.get("artifact_sha256") != approved["proof_sha256"] or
+            audited.get("verifier_report_path") != approved["verification_report_path"]):
+        raise ChainError(f"owner-approved cell paths/digests differ from final audit: {dataset}")
+    return {"dataset": dataset, "backend": audited["backend"], "status": "VERIFY_OK",
+            "verification_source": "cell_stage_independent_report", "reused_cell_report": True,
+            "final_native_verifier_invocations": 0,
+            "report_path": approved["verification_report_path"],
+            "report_sha256": approved["verification_report_sha256"]}
+
+
+def _final_verification_record(root: Path, session_id: str, session_manifest_sha256: str, dataset: str,
+                               audited: Mapping[str, Any], owner_approved_cells: Mapping[str, Mapping[str, Any]] | None) -> Dict[str, Any]:
+    if owner_approved_cells is None:
+        return independently_verify_final_cell(root, audited)
+    approved = owner_approved_cells.get(dataset)
+    if approved is None:
+        raise ChainError(f"owner approval is missing for {dataset}")
+    return _reuse_owner_approved_cell(root, session_id, session_manifest_sha256, dataset, approved, audited)
 
 
 def require_formal_cells(cells: Any) -> List[Mapping[str, Any]]:
@@ -134,15 +194,14 @@ def require_formal_cells(cells: Any) -> List[Mapping[str, Any]]:
     return cells
 
 
-def main(argv: Sequence[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(list(argv))
-    root = baseline_root()
+def _validate_final_results(root: Path, owner_approved_cells: Mapping[str, Mapping[str, Any]] | None = None) -> int:
     session_id = ""
     final_path: Path | None = None
     try:
         invalidate_results(root, ("final_validation.json",))
         session_id, session, session_manifest_sha256 = require_formal_session(root)
+        if owner_approved_cells is not None and (not isinstance(owner_approved_cells, dict) or set(owner_approved_cells) != set(DATASETS)):
+            raise ChainError("owner-approved verification map must contain exactly the five canonical datasets")
         final_path = formal_final_path(root, session_id)
         if final_path.exists():
             raise ChainError("current formal session already has a final result; refusing stale-result reuse")
@@ -192,7 +251,7 @@ def main(argv: Sequence[str]) -> int:
             if cell != audited:
                 raise ChainError(f"collected row differs from current independent audit: {expected_dataset}")
             audited_cells.append(audited)
-            final_verification.append(independently_verify_final_cell(root, audited))
+            final_verification.append(_final_verification_record(root, session_id, session_manifest_sha256, expected_dataset, audited, owner_approved_cells))
 
         result = {
             "schema": FINAL_SCHEMA,
@@ -217,6 +276,12 @@ def main(argv: Sequence[str]) -> int:
             "preflight_sha256": sha256_file(preflight_path),
             "runtime_source_sha256": session["runtime_source_sha256"],
             "final_native_verification": final_verification,
+            "verification_accounting": {
+                "cell_stage_independent_verifier_invocations": len(audited_cells),
+                "final_stage_native_verifier_invocations": 0 if owner_approved_cells is not None else len(audited_cells),
+                "independent_crypto_verifier_invocations_total": len(audited_cells) if owner_approved_cells is not None else 2 * len(audited_cells),
+                "cell_reports_reused": owner_approved_cells is not None,
+            },
         }
         atomic_write_json(final_path, result, root)
     except (ChainError, OSError, ValueError) as exc:
@@ -227,6 +292,12 @@ def main(argv: Sequence[str]) -> int:
         return 2
     print(f"FINAL_VALIDATION_OK cells={len(audited_cells)} session={session_id} path=results/formal/{session_id}/final_validation.json")
     return 0
+
+
+def main(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.parse_args(list(argv))
+    return _validate_final_results(baseline_root())
 
 
 if __name__ == "__main__":

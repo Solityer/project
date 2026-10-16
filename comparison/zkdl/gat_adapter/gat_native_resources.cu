@@ -1053,7 +1053,7 @@ bool load_authenticated_srs(const Config &config, AuthenticatedSrsResource *reso
         !resource_field_u64(manifest, "setup", "segment_count", setup_segment_count) ||
         !resource_field_u64(manifest, "setup", "generator_count", setup_generator_count) || !resource_field_u64(manifest, "setup", "h_count", setup_h_count) ||
         !resource_field_u64(manifest, "setup", "u_count", setup_u_count) || !power_of_two(setup_domain) || setup_basis_domain != setup_domain ||
-        setup_basis_domain != (1ULL << 18U) || !power_of_two(setup_logical_domain) || setup_logical_domain < setup_basis_domain || setup_logical_domain > kMaxNativeLogicalDomain ||
+        setup_basis_domain != (1ULL << 18U) || !power_of_two(setup_logical_domain) || setup_logical_domain == 0U || setup_logical_domain > kMaxNativeLogicalDomain ||
         setup_segment_size != setup_basis_domain || setup_segment_count == 0U ||
         setup_segment_count != (setup_logical_domain + setup_segment_size - 1U) / setup_segment_size || setup_generator_count != setup_basis_domain ||
         setup_h_count != 1U || setup_u_count != 1U) {

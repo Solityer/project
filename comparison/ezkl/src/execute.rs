@@ -2564,7 +2564,7 @@ fn selector_advice_product(
 fn table_expression_cardinality_upper(
     table: &[plonk::Expression<Fr>],
     selector_activation_counts: &[u64],
-    fixed_value_assignment_counts: &[u64],
+    fixed_assignment_callback_counts: &[u64],
     fixed_value_explicit_zero_seen: &[bool],
     domain_size: u64,
 ) -> Result<u64, EZKLError> {
@@ -2594,7 +2594,7 @@ fn table_expression_cardinality_upper(
         }
     }
 
-    let mut populated_rows_upper = 0u64;
+    let mut fixed_values_upper = 0u64;
     let mut fixed_columns = 0usize;
     let mut fixed_zero_seen = false;
     for expression in table {
@@ -2610,47 +2610,36 @@ fn table_expression_cardinality_upper(
                 if fixed_columns > 1 {
                     return Ok(domain_size);
                 }
-                let count = *fixed_value_assignment_counts
+                // Each fixed assignment or fill callback can introduce at
+                // most one distinct fixed value. `fill_from_row` repeats one
+                // Assigned value over its suffix, so counting every filled
+                // row would overstate the table cardinality and its map cost.
+                let count = *fixed_assignment_callback_counts
                     .get(query.column_index())
-                    .ok_or_else(|| "native mv-lookup fixed table column is outside the fixed-column bound vector".to_string())?;
+                    .ok_or_else(|| "native mv-lookup fixed table column is outside the fixed callback bound vector".to_string())?;
                 fixed_zero_seen = *fixed_value_explicit_zero_seen
                     .get(query.column_index())
                     .ok_or_else(|| "native mv-lookup fixed zero census is outside the fixed-column bound vector".to_string())?;
-                populated_rows_upper = populated_rows_upper
+                fixed_values_upper = fixed_values_upper
                     .checked_add(count)
-                    .ok_or_else(|| "native mv-lookup fixed table row bound overflow".to_string())?;
+                    .ok_or_else(|| "native mv-lookup fixed table value bound overflow".to_string())?;
             }
             _ => return Ok(domain_size),
         }
     }
     // Unassigned fixed rows evaluate to zero. If synthesis explicitly
     // assigned a supported zero representation, that default value is
-    // already included in the assignment count; otherwise reserve one row
-    // value for the implicit zero.
+    // already included in the callback bound; otherwise reserve one value
+    // for the implicit zero.
     let implicit_zero = if fixed_columns == 0 || !fixed_zero_seen { 1 } else { 0 };
-    Ok(populated_rows_upper.saturating_add(implicit_zero).min(domain_size))
-}
-
-#[cfg(feature = "gpu-accelerated")]
-fn native_mv_lookup_shape(
-    cs: &plonk::ConstraintSystem<Fr>,
-    census: &plonk::NativeShapeCensus,
-    domain_size: u64,
-) -> Result<NativeMvLookupShape, EZKLError> {
-    native_mv_lookup_shape_with_bounds(
-        cs,
-        &census.selector_activation_counts,
-        &census.fixed_value_assignment_counts,
-        &census.fixed_value_explicit_zero_seen,
-        domain_size,
-    )
+    Ok(fixed_values_upper.saturating_add(implicit_zero).min(domain_size))
 }
 
 #[cfg(feature = "gpu-accelerated")]
 fn native_mv_lookup_shape_with_bounds(
     cs: &plonk::ConstraintSystem<Fr>,
     selector_activation_counts_upper: &[u64],
-    fixed_value_assignment_counts_upper: &[u64],
+    fixed_assignment_callback_counts_upper: &[u64],
     fixed_value_explicit_zero_seen: &[bool],
     domain_size: u64,
 ) -> Result<NativeMvLookupShape, EZKLError> {
@@ -2681,7 +2670,7 @@ fn native_mv_lookup_shape_with_bounds(
             let bound = table_expression_cardinality_upper(
                 table,
                 selector_activation_counts_upper,
-                fixed_value_assignment_counts_upper,
+                fixed_assignment_callback_counts_upper,
                 fixed_value_explicit_zero_seen,
                 domain_size,
             )?;
@@ -2794,13 +2783,20 @@ fn gat_prepare_admission(
     let domain_size = 1u64
         .checked_shl(logrows)
         .ok_or_else(|| format!("invalid native GAT logrows for admission: {}", logrows))?;
-    // Admission uses the same witnessless floor-planner census that native
-    // keygen uses, so selector aliasing and sparse-permutation storage are
-    // bounded by this circuit's actual layout rather than dense worst cases.
-    let native_shape_census = plonk::census_native_shape::<G1Affine, _>(logrows, &circuit)
-        .map_err(EZKLError::from)?;
-    let selector_fixed_column_count_upper = native_shape_census.selector_fixed_column_count;
-    let lookup_shape = native_mv_lookup_shape(&cs, &native_shape_census, domain_size)?;
+    // This pre-Setup envelope uses only configured constraint-system geometry.
+    // The mandatory VK/PK synthesis in Setup records the exact census and
+    // rejects any observation above these source-derived bounds.
+    let selector_activation_counts_upper = vec![domain_size; cs.num_selectors()];
+    let fixed_assignment_callback_counts_upper = vec![domain_size; cs.num_fixed_columns()];
+    let fixed_value_explicit_zero_seen_upper = vec![false; cs.num_fixed_columns()];
+    let selector_fixed_column_count_upper = cs.num_selectors();
+    let lookup_shape = native_mv_lookup_shape_with_bounds(
+        &cs,
+        &selector_activation_counts_upper,
+        &fixed_assignment_callback_counts_upper,
+        &fixed_value_explicit_zero_seen_upper,
+        domain_size,
+    )?;
     let evaluation_shape = cap_native_selector_resource_shape(
         unshared_evaluation_shape,
         &cs,
@@ -2822,10 +2818,9 @@ fn gat_prepare_admission(
     let permutation_cells = (cs.num_permutation_columns() as u64)
         .checked_mul(1u64.checked_shl(logrows).ok_or_else(|| "native GAT domain size overflow".to_string())?)
         .ok_or_else(|| "native permutation cell count overflow".to_string())?;
-    // Before native synthesis the only exact, source-derived bound is one
-    // sparse-permutation record per domain cell. The mandatory keygen census
-    // below records the actual copy/record counts before committing the key.
-    let permutation_copy_call_count_upper = native_shape_census.permutation_copy_call_count;
+    // A copy callback can touch at most one permutation cell. The Setup
+    // synthesis census narrows this configured bound before accepting the key.
+    let permutation_copy_call_count_upper = permutation_cells;
     if permutation_copy_call_count_upper > permutation_cells {
         return Err("native GAT shape census exceeds the permutation-cell copy bound".into());
     }
@@ -2858,11 +2853,11 @@ fn gat_prepare_admission(
     let advice_event_decoder_record_bytes_upper = 9usize
         .checked_add(2usize.checked_mul(serialized_fr_bytes).ok_or_else(|| "advice event decoder record width overflow".to_string())?)
         .ok_or_else(|| "advice event decoder record width overflow".to_string())?;
-    let advice_event_assignment_count_upper = native_shape_census
-        .advice_assignment_counts
-        .iter()
-        .try_fold(0u64, |total, count| total.checked_add(*count))
-        .ok_or_else(|| "advice event assignment count overflow".to_string())?;
+    let advice_event_assignment_counts_upper = vec![domain_size; cs.num_advice_columns()];
+    let advice_event_assignment_count_upper = u64::try_from(cs.num_advice_columns())
+        .ok()
+        .and_then(|columns| columns.checked_mul(domain_size))
+        .ok_or_else(|| "advice event source-bound count overflow".to_string())?;
     let advice_event_batch_size_upper = 8192usize;
     let advice_event_decoded_entry_bytes_upper =
         plonk::native_assigned_event_bytes::<Fr>();
@@ -2910,7 +2905,7 @@ fn gat_prepare_admission(
         .checked_add(advice_event_record_bytes_upper)
         .ok_or_else(|| "advice event per-column resident bound overflow".to_string())?;
     println!(
-        "EZKL_NATIVE_PHASE DONE stage=static_native_shape_envelope dataset={} selectors={} selector_fixed_columns_upper={} fixed_post_compression_upper={} permutation_copy_calls_upper={} successor_entries_upper={} activation_bitmap_bytes_upper={} activation_storage_bytes_upper={} activation_storage_kind=rle_bitmap_hybrid_v1",
+        "EZKL_NATIVE_PHASE DONE stage=configured_geometry_source_bounds dataset={} selectors={} selector_fixed_columns_upper={} fixed_post_compression_upper={} permutation_copy_calls_upper={} successor_entries_upper={} activation_bitmap_bytes_upper={} activation_storage_bytes_upper={} activation_storage_kind=rle_bitmap_hybrid_v1 evidence=configured_bound_before_native_synthesis",
         loaded.dataset,
         cs.num_selectors(),
         selector_fixed_column_count,
@@ -3038,7 +3033,7 @@ fn gat_prepare_admission(
     let memory_model = serde_json::json!({
         "schema": "ezkl-halo2-static-envelope-v17",
         "evidence_kind": "source_derived_upper_bounds_and_configured_geometry",
-        "coverage": "static_pre_setup_envelope; selector, advice-event, and sparse-permutation geometry are synthesis-census-derived; keygen receipt verifies observed allocations",
+        "coverage": "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt",
         "native_target_arch": std::env::consts::ARCH,
         "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
@@ -3087,7 +3082,7 @@ fn gat_prepare_admission(
         "size_of_shplonk_rotation_set_extension_bytes": size_of_shplonk_rotation_set_extension_bytes,
         "size_of_coeff_polynomial_header_bytes": size_of_coeff_polynomial_header_bytes,
         "lookup_table_cardinality_upper_bounds": lookup_shape.table_cardinality_upper_bounds,
-        "fixed_value_explicit_zero_seen": native_shape_census.fixed_value_explicit_zero_seen,
+        "fixed_value_explicit_zero_seen": fixed_value_explicit_zero_seen_upper,
         "lookup_argument_table_group_indices": lookup_shape.argument_table_group_indices,
         "custom_gate_dependency_columns": evaluation_shape.custom_gate_dependency_columns,
         "lookup_dependency_columns": evaluation_shape.lookup_dependency_columns,
@@ -3115,7 +3110,7 @@ fn gat_prepare_admission(
         "gat_transient_witness_formula_id": "whole-gat-retained-inputs-plus-max-live-head-phase-v1",
         "advice_event_record_bytes_upper": advice_event_record_bytes_upper,
         "advice_event_decoder_record_bytes_upper": advice_event_decoder_record_bytes_upper,
-        "advice_event_assignment_counts_upper": native_shape_census.advice_assignment_counts,
+        "advice_event_assignment_counts_upper": advice_event_assignment_counts_upper,
         "advice_event_count_upper": advice_event_assignment_count_upper,
         "advice_event_reservation_chunk_bytes": 1usize << 20,
         "advice_event_batch_size_upper": advice_event_batch_size_upper,
@@ -3128,7 +3123,7 @@ fn gat_prepare_admission(
         "advice_event_writer_buffer_bytes_upper": advice_event_writer_buffer_bytes_upper,
         "advice_event_column_bytes_upper": advice_event_column_bytes_upper,
         "advice_event_latest_element_bytes": std::mem::size_of::<u64>(),
-        "advice_event_log_bound_evidence_kind": "synthesis-census-exact-advice-assignment-events-v1",
+        "advice_event_log_bound_evidence_kind": "configured-domain-upper-per-advice-column-v1",
         "advice_event_phase_materialization_order": "per-phase-encoded-bytes-descending-index-ascending-v1",
         "cuda_uuid": device_capacity.0,
         "cuda_free_bytes_at_admission": device_capacity.1,
@@ -3136,7 +3131,16 @@ fn gat_prepare_admission(
         "selector_activation_bitmap_bytes_upper": selector_activation_bitmap_bytes,
         "selector_activation_storage_bytes_upper": selector_activation_storage_bytes_upper,
         "selector_activation_storage_kind": "rle_bitmap_hybrid_v1",
-        "selector_cache_encoded_bytes": native_shape_census.selector_cache_encoded_bytes,
+        "selector_cache_encoded_bytes": u64::try_from(
+            5u128
+                .checked_add(
+                    (cs.num_selectors() as u128)
+                        .checked_mul((u128::from(domain_size) + 7) / 8 + 5)
+                        .ok_or_else(|| "selector cache encoded upper bound overflow".to_string())?,
+                )
+                .ok_or_else(|| "selector cache encoded upper bound overflow".to_string())?,
+        )
+        .map_err(|_| "selector cache encoded upper bound exceeds u64".to_string())?,
         "fixed_polynomial_read_mode": "streamed_one_polynomial_chunked_v1",
         "fixed_polynomial_read_chunk_fields_upper": fixed_polynomial_read_chunk_fields_upper,
         "fixed_polynomial_read_raw_chunk_bytes_upper": fixed_polynomial_read_raw_chunk_bytes_upper,
@@ -3166,7 +3170,8 @@ fn gat_prepare_admission(
     let settings_sha256 = get_file_hash(&settings_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 7,
+        "schema_version": 8,
+        "shape_evidence_kind": "configured_geometry_source_upper_bounds_before_native_synthesis_v1",
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -3274,7 +3279,9 @@ fn load_native_admission_circuit(
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(7)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(8)
+        || admission.get("shape_evidence_kind").and_then(JsonValue::as_str)
+            != Some("configured_geometry_source_upper_bounds_before_native_synthesis_v1")
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
         || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
@@ -3411,7 +3418,7 @@ fn load_native_admission_circuit(
         || memory_model.get("evidence_kind").and_then(JsonValue::as_str)
             != Some("source_derived_upper_bounds_and_configured_geometry")
         || memory_model.get("coverage").and_then(JsonValue::as_str)
-            != Some("static_pre_setup_envelope; selector, advice-event, and sparse-permutation geometry are synthesis-census-derived; keygen receipt verifies observed allocations")
+            != Some("configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt")
     {
         return Err("native admission memory model version or polynomial reader mode is unsupported".into());
     }
@@ -3924,7 +3931,7 @@ fn load_native_admission_circuit(
         || memory_model
             .get("advice_event_log_bound_evidence_kind")
             .and_then(JsonValue::as_str)
-            != Some("synthesis-census-exact-advice-assignment-events-v1")
+            != Some("configured-domain-upper-per-advice-column-v1")
         || memory_model
             .get("advice_event_phase_materialization_order")
             .and_then(JsonValue::as_str)
@@ -4018,7 +4025,10 @@ fn native_keygen_preflight_json(preflight: &plonk::NativeKeygenPreflight) -> Jso
     })
 }
 
-fn native_keygen_census_json(census: &plonk::NativeKeygenCensus) -> JsonValue {
+fn native_keygen_census_json(
+    census: &plonk::NativeKeygenCensus,
+    lookup_shape: &NativeMvLookupShape,
+) -> JsonValue {
     serde_json::json!({
         "preflight": native_keygen_preflight_json(&census.preflight),
         "compressed_selector_columns": census.compressed_selector_columns,
@@ -4026,6 +4036,11 @@ fn native_keygen_census_json(census: &plonk::NativeKeygenCensus) -> JsonValue {
         "selector_activation_storage_peak_bytes": census.selector_activation_storage_peak_bytes,
         "selector_activation_counts": census.selector_activation_counts,
         "fixed_assignment_callback_counts": census.fixed_assignment_callback_counts,
+        "fixed_value_assignment_counts": census.fixed_value_assignment_counts,
+        "fixed_value_explicit_zero_seen": census.fixed_value_explicit_zero_seen,
+        "advice_assignment_counts": census.advice_assignment_counts,
+        "lookup_table_cardinality_upper_bounds": lookup_shape.table_cardinality_upper_bounds,
+        "lookup_argument_table_group_indices": lookup_shape.argument_table_group_indices,
         "permutation_copy_calls": census.permutation_copy_calls,
         "permutation_successor_edges": census.permutation_successor_edges,
         "permutation_nondefault_records": census.permutation_nondefault_records,
@@ -4056,7 +4071,7 @@ fn native_keygen_budget_receipt(
     let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
         .map_err(|_| "formal native setup lacks the authenticated build environment digest")?;
     let expected = [
-        ("schema", "ezkl.native-keygen-budget.v2".to_string()),
+        ("schema", "ezkl.native-keygen-budget.v3".to_string()),
         ("session_id", session_id),
         ("dataset", loaded.dataset.clone()),
         ("admission_sha256", get_file_hash(&admission_path)?),
@@ -4078,6 +4093,7 @@ fn native_keygen_budget_receipt(
         "device_workspace_peak_bytes",
         "disk_available_bytes",
         "disk_required_known_bytes",
+        "proof_spill_reserve_bytes",
         "permutation_successor_backing_file_upper_bytes",
         "native_permutation_backing_budget_bytes",
         "native_successor_read_cache_bytes",
@@ -4115,7 +4131,13 @@ fn native_keygen_budget_receipt(
     let host_available = receipt["host_available_bytes"].as_u64().unwrap_or(0);
     let disk_available = receipt["disk_available_bytes"].as_u64().unwrap_or(0);
     let disk_required = receipt["disk_required_known_bytes"].as_u64().unwrap_or(u64::MAX);
-    if host_available == 0 || disk_available == 0 || disk_required > disk_available {
+    if host_available == 0
+        || disk_available == 0
+        || disk_required > disk_available
+        || receipt["proof_spill_reserve_bytes"].as_u64() != Some(0)
+        || receipt["disk_budget_scope"].as_str()
+            != Some("setup_keygen_peak_and_source_bounded_permutation_backing; proof_disk_checked_after_actual_setup_census")
+    {
         return Err("native keygen budget has no admitted host or disk headroom".into());
     }
     Ok((receipt, get_file_hash(&path)?))
@@ -4286,6 +4308,7 @@ fn write_native_keygen_receipt(
     loaded: &crate::gat_adapter::LoadedGat,
     budget_sha256: &str,
     census: &plonk::NativeKeygenCensus,
+    lookup_shape: &NativeMvLookupShape,
     stage_budget_caps: &[JsonValue],
     vk_sha256: &str,
     pk_sha256: &str,
@@ -4301,7 +4324,7 @@ fn write_native_keygen_receipt(
         return Err("native keygen receipt requires separately measured VK and PK allocation caps".into());
     }
     let value = serde_json::json!({
-        "schema": "ezkl.native-keygen-receipt.v3",
+        "schema": "ezkl.native-keygen-receipt.v4",
         "native_pk_format_version": 4,
         "native_pk_sigma_wire_encoding": "packed_source_target_indices_lsb0_v1",
         "session_id": std::env::var("EZKL_FORMAL_SESSION_ID").unwrap_or_default(),
@@ -4314,9 +4337,9 @@ fn write_native_keygen_receipt(
         "vk_sha256": vk_sha256,
         "pk_sha256": pk_sha256,
         "evidence_kind": "mandatory_vk_pk_native_keygen_synthesis_census",
-        "coverage": "one_actual_vk_synthesis_and_matching_pk_synthesis; exact_selector_and_permutation_counts",
+        "coverage": "actual_vk_and_pk_synthesis_census; exact_selector_advice_fixed_permutation_and_lookup_bounds",
         "stage_budget_caps": stage_budget_caps,
-        "native_census": native_keygen_census_json(census),
+        "native_census": native_keygen_census_json(census, lookup_shape),
     });
     let temporary = output_dir.join("native_keygen_receipt.json.tmp");
     let mut file = std::fs::OpenOptions::new()
@@ -4423,6 +4446,52 @@ fn gat_prepare_setup(
             Ok(())
         },
     )?;
+    let setup_cs = configure_canonical_constraint_system(&circuit);
+    let actual_lookup_shape = native_mv_lookup_shape_with_bounds(
+        &setup_cs,
+        &native_census.selector_activation_counts,
+        &native_census.fixed_assignment_callback_counts,
+        &native_census.fixed_value_explicit_zero_seen,
+        native_census.preflight.domain_size,
+    )?;
+    let admission_path = admission_dir
+        .as_deref()
+        .ok_or_else(|| "formal native GAT setup requires its configured-bound admission".to_string())?
+        .join("admission.json");
+    let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
+    let admitted_lookup_bounds = admission
+        .get("native_memory_model")
+        .and_then(JsonValue::as_object)
+        .and_then(|memory| memory.get("lookup_table_cardinality_upper_bounds"))
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "configured admission lacks lookup source bounds".to_string())?;
+    let admitted_lookup_groups = admission
+        .get("native_memory_model")
+        .and_then(JsonValue::as_object)
+        .and_then(|memory| memory.get("lookup_argument_table_group_indices"))
+        .and_then(JsonValue::as_array)
+        .ok_or_else(|| "configured admission lacks lookup group mapping".to_string())?;
+    if actual_lookup_shape.argument_count as usize != setup_cs.lookups().len()
+        || actual_lookup_shape.argument_table_group_indices != native_mv_lookup_argument_table_group_indices(&setup_cs)?
+        || actual_lookup_shape.argument_table_group_indices.len() != admitted_lookup_groups.len()
+        || actual_lookup_shape
+            .argument_table_group_indices
+            .iter()
+            .zip(admitted_lookup_groups)
+            .any(|(actual, admitted)| admitted.as_u64() != Some(*actual))
+        || actual_lookup_shape.table_cardinality_upper_bounds.len() != admitted_lookup_bounds.len()
+        || actual_lookup_shape
+            .table_cardinality_upper_bounds
+            .iter()
+            .zip(admitted_lookup_bounds)
+            .any(|(actual, admitted)| match admitted.as_u64() {
+                Some(upper) => *actual > upper,
+                None => true,
+            })
+    {
+        return Err("actual Setup lookup census exceeds its configured source bounds".into());
+    }
+    drop(setup_cs);
     drop(params);
     drop(circuit);
     let expected_fixed_columns = native_census
@@ -4442,6 +4511,7 @@ fn gat_prepare_setup(
         &loaded,
         &native_budget_sha256,
         &native_census,
+        &actual_lookup_shape,
         &keygen_stage_budget_caps,
         &get_file_hash(&vk_path)?,
         &get_file_hash(&pk_path)?,
@@ -5611,7 +5681,7 @@ fn authenticated_native_prove_backing_budget(
         }
     }
     for (name, value) in [
-        ("schema", Some("ezkl.native-keygen-receipt.v3")),
+        ("schema", Some("ezkl.native-keygen-receipt.v4")),
         ("settings_sha256", Some(current_settings_sha256.as_str())),
         ("compiled_circuit_sha256", Some(current_compiled_sha256.as_str())),
         ("vk_sha256", Some(current_vk_sha256.as_str())),
@@ -6716,91 +6786,138 @@ mod native_geometry_diagnostics {
 
     #[test]
     fn tiny_fixture_lookup_memory_bounds_match_native_census() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/gat_lookup_reuse/compiled.circuit");
-        let saved = GraphCircuit::load(fixture).expect("load tiny GAT fixture");
-        let circuit = GraphCircuit::new(saved.model().clone(), &saved.settings().run_args)
-            .expect("construct fresh tiny GAT circuit");
-        let k = circuit.settings().run_args.logrows;
-        let gat = circuit
-            .model()
-            .graph
-            .nodes
-            .values()
-            .find_map(|node| match node {
-                crate::graph::NodeType::Node(node) => match &node.opkind {
-                    crate::graph::SupportedOp::Gat(op) => Some(&op.spec),
-                    _ => None,
-                },
-                crate::graph::NodeType::SubGraph { .. } => None,
-            })
-            .expect("tiny fixture includes canonical GAT spec");
-        println!(
-            "EZKL_TINY_GAT_FIXTURE k={} domain={} graph_nodes={} assignments={} rows={} n_total={} n={} e={} feature_dim={} feature_values={} hidden_heads_din_dhead={:?} output_heads={} classes={} required_ranges={:?} required_lookups={} dyn_rows={} dyn_max_input={} dyn_lookups={} shuffle_rows={} einsum_rows={} instances={:?}",
-            k,
-            1usize.checked_shl(k).unwrap_or(0),
-            circuit.model().graph.nodes.len(),
-            circuit.settings().total_assignments,
-            circuit.settings().num_rows,
-            gat.graph.n_total,
-            gat.graph.n,
-            gat.graph.e,
-            gat.feature_dim,
-            gat.features.len(),
-            gat.model.hidden_layers.iter().map(|layer| (layer.heads.len(), layer.d_in, layer.d_head)).collect::<Vec<_>>(),
-            gat.model.output_heads.len(),
-            gat.model.classes,
-            circuit.settings().required_range_checks,
-            circuit.settings().required_lookups.len(),
-            circuit.settings().dynamic_lookup_params.total_dynamic_col_size,
-            circuit.settings().dynamic_lookup_params.max_dynamic_input_len,
-            circuit.settings().dynamic_lookup_params.num_dynamic_lookups,
-            circuit.settings().shuffle_params.total_shuffle_col_size,
-            circuit.settings().einsum_params.total_einsum_col_size,
-            circuit.settings().model_instance_shapes,
+        use rand::rngs::OsRng;
+
+        let spec = crate::gat_adapter::geometry::tiny_multigraph_spec_for_tests();
+        let mut run_args = RunArgs::default();
+        run_args.input_scale = spec.scales.s_input;
+        run_args.param_scale = spec.scales.s_w_hidden[0][0];
+        run_args.param_visibility = Visibility::Hashed {
+            hash_is_public: true,
+            outlets: Vec::new(),
+        };
+        run_args.num_inner_cols = 2;
+        run_args.decomp_base = 16_384;
+        run_args.decomp_legs = 2;
+        run_args.ignore_range_check_inputs_outputs = false;
+        run_args.logrows = 15;
+        let model = crate::gat_adapter::build_model_for_run_args(
+            spec.clone(),
+            RoundingMode::NearestTiesAway,
+            &run_args,
+        )
+        .expect("build in-memory tiny canonical GAT model");
+        let settings = crate::gat_adapter::gat_settings_for_run_args(&spec, &run_args)
+            .expect("derive in-memory tiny canonical GAT settings");
+        let k = settings.run_args.logrows;
+        let circuit = GraphCircuit::new_gat_witnessless_from_settings(
+            model,
+            settings,
+            run_args.check_mode,
         );
-        let census_circuit = circuit.without_witnesses();
-        let census = plonk::census_native_shape::<G1Affine, _>(k, &census_circuit)
-            .expect("native tiny GAT selector census");
+        assert!(k >= 15, "14-bit range table requires at least k=15");
+        assert!(!circuit.settings().run_args.ignore_range_check_inputs_outputs);
+        assert!(circuit.settings().required_range_checks.contains(&(0, 16_383)));
+
+        // Exercise the actual GraphCircuit -> HybridOp::Output layout through
+        // Halo2's ordinary VK and PK synthesis. This must configure the native
+        // 14-bit decomposition table and produce the census used by the v4
+        // Setup receipt without a separate shape-only floorplan pass.
+        let spill = tempfile::Builder::new()
+            .prefix("ezkl-output-range-keygen")
+            .tempdir()
+            .expect("create native keygen spill directory");
+        let _spill_scope = halo2_proofs::poly::native_spill_scope(spill.path())
+            .expect("configure native keygen spill directory");
+        let params = ParamsKZG::<Bn256>::setup(k, OsRng);
+        let mut before_stages = Vec::new();
+        let mut after_stages = Vec::new();
+        let (pk, census) = create_keys_with_native_gate::<
+            KZGCommitmentScheme<Bn256>,
+            GraphCircuit,
+            _,
+            _,
+        >(
+            &circuit,
+            &params,
+            false,
+            |stage, preflight| {
+                assert_eq!(preflight.logrows, k);
+                before_stages.push(stage.to_owned());
+                let selector_cap = preflight
+                    .selector_activation_container_bytes
+                    .checked_add(preflight.selector_activation_initial_backing_bytes)
+                    .and_then(|bytes| bytes.checked_add(preflight.selector_dense_bitmap_ceiling_bytes))
+                    .expect("finite selector cap");
+                let permutation_cap = preflight
+                    .permutation_data_virtual_bytes
+                    .checked_add(preflight.permutation_directory_virtual_bytes)
+                    .and_then(|bytes| bytes.checked_add(preflight.permutation_allocation_bitmap_bytes))
+                    .expect("finite permutation cap");
+                Ok(plonk::NativeKeygenBudget {
+                    max_selector_activation_bytes: selector_cap,
+                    max_permutation_backing_bytes: permutation_cap,
+                })
+            },
+            |stage, observed| {
+                after_stages.push(stage.to_owned());
+                assert_eq!(observed.preflight.logrows, k);
+                Ok(())
+            },
+        )
+        .expect("real tiny GraphCircuit VK/PK keygen with native 14-bit range table");
+        drop(pk);
+        assert_eq!(before_stages, vec!["vk".to_owned(), "pk".to_owned()]);
+        assert_eq!(after_stages, vec!["vk".to_owned(), "pk".to_owned()]);
+
         let cs = configure_canonical_constraint_system(&circuit);
-        let shape = native_mv_lookup_shape(&cs, &census, 1u64 << k)
-            .expect("derive source-bounded mv-lookup admission shape");
-        println!(
-            "EZKL_TINY_LOOKUP_CONFIG num_inner_cols={} requires_dynamic={} dynamic_lookup_and_shuffle_cols={} configured_lookups={} advice={} fixed={} selectors={} argument_count={} table_groups={}",
-            circuit.settings().run_args.num_inner_cols,
-            circuit.settings().requires_dynamic_lookup(),
-            circuit.settings().dynamic_lookup_params.total_dynamic_col_size
-                + circuit.settings().shuffle_params.total_shuffle_col_size,
-            cs.lookups().len(),
-            cs.num_advice_columns(),
-            cs.num_fixed_columns(),
-            cs.num_selectors(),
-            shape.argument_count,
-            shape.table_cardinality_upper_bounds.len(),
+        let domain_size = 1u64 << k;
+        let configured_lookup_shape = native_mv_lookup_shape_with_bounds(
+            &cs,
+            &vec![domain_size; cs.num_selectors()],
+            &vec![domain_size; cs.num_fixed_columns()],
+            &vec![false; cs.num_fixed_columns()],
+            domain_size,
+        )
+        .expect("derive configured lookup upper bound");
+        let actual_lookup_shape = native_mv_lookup_shape_with_bounds(
+            &cs,
+            &census.selector_activation_counts,
+            &census.fixed_assignment_callback_counts,
+            &census.fixed_value_explicit_zero_seen,
+            domain_size,
+        )
+        .expect("derive lookup shape from actual Setup census");
+        assert_eq!(actual_lookup_shape.argument_count as usize, cs.lookups().len());
+        assert!(actual_lookup_shape.argument_count > 0);
+        assert_eq!(
+            configured_lookup_shape.argument_table_group_indices,
+            actual_lookup_shape.argument_table_group_indices
         );
-        println!(
-            "EZKL_TINY_LOOKUP_MEMORY_SHAPE arguments={} query_polynomials={} max_queries_per_argument={} table_cardinality_upper_bounds={:?} selectors={} total_selector_activations={} total_fixed_value_assignments={} copy_calls={} table_group_count={}",
-            shape.argument_count,
-            shape.query_polynomial_count,
-            shape.max_query_polynomials_per_argument,
-            shape.table_cardinality_upper_bounds,
-            census.selector_fixed_column_count,
-            census.selector_activation_counts.iter().sum::<u64>(),
-            census.fixed_value_assignment_counts.iter().sum::<u64>(),
-            census.permutation_copy_call_count,
-            shape.table_cardinality_upper_bounds.len(),
-        );
-        assert_eq!(shape.argument_count as usize, cs.lookups().len());
-        assert!(shape.argument_count > 0);
-        assert!(!shape.table_cardinality_upper_bounds.is_empty());
-        assert!(
-            shape.table_cardinality_upper_bounds.len() <= shape.argument_count as usize,
-            "table groups must not exceed the exact post-chunk lookup argument count"
-        );
-        assert!(shape
+        assert!(configured_lookup_shape
             .table_cardinality_upper_bounds
             .iter()
-            .all(|bound| *bound > 0 && *bound <= (1u64 << k)));
+            .zip(&actual_lookup_shape.table_cardinality_upper_bounds)
+            .all(|(configured, actual)| actual <= configured));
+
+        let receipt_census = native_keygen_census_json(&census, &actual_lookup_shape);
+        assert_eq!(receipt_census["preflight"]["logrows"], k);
+        assert_eq!(
+            receipt_census["selector_activation_counts"],
+            serde_json::json!(census.selector_activation_counts)
+        );
+        assert_eq!(
+            receipt_census["fixed_assignment_callback_counts"],
+            serde_json::json!(census.fixed_assignment_callback_counts)
+        );
+        assert_eq!(
+            receipt_census["advice_assignment_counts"],
+            serde_json::json!(census.advice_assignment_counts)
+        );
+        assert_eq!(
+            receipt_census["lookup_table_cardinality_upper_bounds"],
+            serde_json::json!(actual_lookup_shape.table_cardinality_upper_bounds)
+        );
     }
 
     /// Explicitly invoked diagnostic for current-source geometry. This does

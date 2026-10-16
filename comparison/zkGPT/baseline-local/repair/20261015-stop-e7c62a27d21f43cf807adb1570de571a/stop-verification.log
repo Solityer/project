@@ -1,0 +1,4 @@
+launch_status=INTERRUPTED exit_code=130 received_signal=SIGTERM
+original_processes_gone=supervisor:5782,owner:5784,citeseer_native:10445
+formal_lock=FREE_NONBLOCKING_EXCLUSIVE_ACQUIRED_AND_RELEASED
+formal_owner_supervisor_cmdlines=NONE

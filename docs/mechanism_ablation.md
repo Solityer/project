@@ -151,6 +151,19 @@ python3 scripts/run_mechanism_ablation.py audit /home/pzh/project/results/mechan
 python3 /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/report_initial_only.py
 ~~~
 
+## 后续完整运行的自动合并表
+
+当前 runner 对新的 session 自动生成 `combined_summary.csv`、`combined_summary.md` 和 `combined_summary.json`。只有 11 个注册配置的所有配对与初次独立验证均成功、源码/构建身份稳定且导出时工件 SHA-256 检查通过，才会生成合并表；CSV/JSON 为每个配置一行，共 11 行。每行记录机制、数据集、实际 N/E/D/G、PPI 组件、重复次数及四项指标的 Original、Control、Original−Control、Saving、Improvement Factor 统计。Saving 和倍数先对每个配对分别计算，再汇总配对值；重复数至少为 2 时报告均值与样本标准差。单次运行只报告实测值，不生成样本标准差。合并文件的 session 内绝对路径和 SHA-256 写入 `results_manifest.json`。
+
+用于新的三次重复完整运行的统一后台入口如下。`launch` 会创建 detached launcher，日志位于新 session root 下的 `launchers/cuda_*/runner.log`；运行成功后不需要单独的合并命令。以下命令是复现说明，**本轮只实现并测试导出功能，没有启动该正式命令或任何证明**。如果 session 不完整或初验/工件检查失败，合并文件不会生成，失败状态保存在 `summary.json`。合并报告的依据是初次独立 verifier 收据及工件哈希检查；导出器不会执行或宣称全量独立重验。既有 strict `audit --reverify`、`summarize` 和出版完整性门禁未修改。此功能只应用于该 schema 的新 session，不追补或改写历史 session。
+
+~~~bash
+cd /home/pzh/project
+python3 scripts/run_mechanism_ablation.py launch --binary /home/pzh/project/build_cuda/gatzk_mechanism --output-root /home/pzh/project/results/mechanism_ablation_final --device 0 --repetitions 3 --timeout-seconds 0 --prepare-timeout-seconds 0 --allow-shared-gpu
+~~~
+
+CSV 使用 `{metric}_{statistic}_{field}` 列：metric 为 `commitment_time_ms`、`prove_time_ms`、`verify_time_ms`、`proof_size_bytes`；statistic 为 `original`、`control`、`paired_original_minus_control`、`saving_percent`、`improvement_factor`；field 为 `value`、`mean`、`sample_sd`、`n`。三份合并文件分别是 `combined_summary.csv`、`combined_summary.md`、`combined_summary.json`。
+
 GPU/工具链信息实际查询命令为：
 
 ~~~bash

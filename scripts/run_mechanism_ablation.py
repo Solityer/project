@@ -1537,6 +1537,8 @@ def spec_for_cell(dataset: str, mechanism: str, width: int, graphs: int, compone
 def empty_summary(session_id: str, session_root: pathlib.Path, repetitions: int) -> dict[str, Any]:
     return {
         "format": "zkgat_real_mechanism_experiment_v1",
+        "combined_summary_schema": "zkgat_real_mechanism_combined_summary_v1",
+        "combined_summary_status": "pending",
         "session_id": session_id,
         "session_root": str(session_root),
         "created_utc": utc_now(),
@@ -2058,6 +2060,264 @@ def _reported_sd(summary: dict[str, Any]) -> float | None:
     return summary.get("sample_sd")
 
 
+def copy_build_source_manifest(source_path: pathlib.Path, destination: pathlib.Path,
+                               expected_sha256: str) -> None:
+    """Copy the producer's exact manifest bytes and preserve its declared digest."""
+    require(bool(HEX_256.fullmatch(expected_sha256)), "build source manifest has an invalid declared SHA-256")
+    source_bytes = source_path.read_bytes()
+    require(sha256_bytes(source_bytes) == expected_sha256,
+            "build source manifest bytes differ from the producer's declared SHA-256")
+    atomic_write_bytes(destination, source_bytes)
+    require(sha256_file(destination) == expected_sha256,
+            "copied build source manifest does not preserve the producer's raw SHA-256")
+
+
+COMBINED_STAT_ROLES = (
+    "original", "control", "paired_original_minus_control", "saving_percent", "improvement_factor",
+)
+COMBINED_STAT_FIELDS = ("value", "mean", "sample_sd", "n")
+
+
+def combined_summary_rows(document: dict[str, Any], session_root: pathlib.Path,
+                          *, verify_artifact_hashes: bool = True) -> list[dict[str, Any]]:
+    """Validate one complete registered matrix and render rows from its existing groups."""
+    require(document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1",
+            "combined summary export is not enabled for this session schema")
+    require(document.get("format") == "zkgat_real_mechanism_experiment_v1" and
+            document.get("session_status") == "complete" and document.get("provenance_stable") is True,
+            "combined summary requires a complete session with stable provenance")
+    repetitions = document.get("repetitions")
+    require(type(repetitions) is int and repetitions > 0,
+            "combined summary has an invalid repetition count")
+    expected_pairs = len(FORMAL_CONFIGS) * repetitions
+    expected_cells = expected_pairs * len(VARIANTS)
+    require(document.get("expected_config_count") == len(FORMAL_CONFIGS) and
+            document.get("expected_pair_count") == expected_pairs and
+            document.get("expected_cell_count") == expected_cells and
+            document.get("cell_count") == expected_cells and
+            document.get("verified_cells") == expected_cells and
+            document.get("complete_pairs") == expected_pairs,
+            "combined summary requires every registered cell and pair to be complete and initially verified")
+
+    source = document.get("provenance", {}).get("source", {})
+    build = document.get("provenance", {}).get("build", {})
+    for label, record, fields in (
+        ("source", source, ("source_tree_hash", "git_diff_sha256", "git_status_sha256")),
+        ("CUDA build", build, ("binary_sha256", "cmake_cache_sha256", "source_manifest_sha256")),
+    ):
+        require(isinstance(record, dict) and all(
+            isinstance(record.get(field), str) and HEX_256.fullmatch(record[field]) for field in fields
+        ), f"combined summary is missing stable {label} identity hashes")
+
+    expected_ids = [matrix_config_id(spec) for spec in FORMAL_CONFIGS]
+    spec_by_id = {matrix_config_id(spec): spec for spec in FORMAL_CONFIGS}
+    cells = document.get("cells")
+    require(isinstance(cells, list) and len(cells) == expected_cells,
+            "combined summary cell inventory is incomplete")
+    keys: set[tuple[str, int, str]] = set()
+    geometry_by_config: dict[str, tuple[int, int, int, int, tuple[int, ...]]] = {}
+    for cell in cells:
+        key = (cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+        require(key not in keys, f"combined summary contains duplicate cell {key}")
+        keys.add(key)
+        spec = spec_by_id.get(cell.get("config_id"))
+        require(spec is not None, f"combined summary contains an unregistered configuration {cell.get('config_id')}")
+        require(cell.get("cell_status") == "complete" and cell.get("pair_status") == "paired" and
+                cell.get("verification_status") == "VERIFY_OK" and cell.get("backend") == "cuda" and
+                cell.get("cuda_actual") is True and type(cell.get("cuda_kernel_invocations_delta")) is int and
+                cell["cuda_kernel_invocations_delta"] > 0,
+                f"combined summary cell has no accepted initial verification or actual CUDA proof evidence: {key}")
+        require(type(cell.get("repetition")) is int and 1 <= cell["repetition"] <= repetitions and
+                cell.get("variant") in VARIANTS,
+                f"combined summary cell has an invalid repetition or variant: {key}")
+        component_ids = tuple(cell.get("component_ids", []))
+        require(cell.get("D") == spec["width"] and cell.get("G") == spec["graphs"] and
+                component_ids == tuple(spec["components"] or (0,)) and
+                type(cell.get("N")) is int and cell["N"] > 0 and
+                type(cell.get("E")) is int and cell["E"] > 0,
+                f"combined summary cell geometry differs from its registered configuration: {key}")
+        geometry = (cell["N"], cell["E"], cell["D"], cell["G"], component_ids)
+        prior_geometry = geometry_by_config.setdefault(cell["config_id"], geometry)
+        require(prior_geometry == geometry, f"combined summary geometry changed within {cell['config_id']}")
+        for metric in METRIC_FIELDS:
+            value = cell.get(metric)
+            require(type(value) in (int, float) and math.isfinite(float(value)) and float(value) > 0,
+                    f"combined summary cell has an invalid {metric}: {key}")
+        if verify_artifact_hashes:
+            for path_field, digest_field, label in (
+                ("proof_path", "proof_sha256", "proof"),
+                ("statement_path", "statement_file_sha256", "statement"),
+                ("prover_result_path", "prover_result_sha256", "prover receipt"),
+                ("verifier_result_path", "verifier_result_sha256", "initial verifier receipt"),
+                ("prover_log", "prover_log_sha256", "prover log"),
+                ("verifier_log", "verifier_log_sha256", "verifier log"),
+            ):
+                path_text, digest = cell.get(path_field), cell.get(digest_field)
+                require(isinstance(path_text, str) and path_text and isinstance(digest, str),
+                        f"combined summary cell has no {label} path or digest: {key}")
+                require_session_artifact(session_root, path_text, digest, f"{key} {label}")
+            cell_path = cell.get("cell_json_path")
+            require(isinstance(cell_path, str) and cell_path,
+                    f"combined summary cell has no persisted cell record: {key}")
+            require(load_json(pathlib.Path(cell_path), "persisted formal cell") == cell,
+                    f"combined summary cell record differs from its persisted artifact: {key}")
+    require(keys == expected_cell_keys(repetitions),
+            f"combined summary does not contain the exact 11 x 2 x {repetitions} matrix")
+    require(len(geometry_by_config) == len(FORMAL_CONFIGS), "combined summary is missing a registered configuration")
+
+    computed_pairs = summarize_real_pairs(cells)
+    require(document.get("pairs") == computed_pairs and len(computed_pairs) == expected_pairs and
+            all(pair.get("status") == "complete" for pair in computed_pairs),
+            "combined summary paired records differ from the completed Original/Control cells")
+    groups = document.get("groups")
+    expected_groups = summarize_real_groups(computed_pairs, repetitions)
+    require(isinstance(groups, list) and groups == expected_groups and
+            [group.get("config_id") for group in groups] == expected_ids,
+            "combined summary groups differ from the paired measurements or registered configuration order")
+
+    rows: list[dict[str, Any]] = []
+    for group in groups:
+        require(group.get("requested_repetitions") == repetitions and
+                group.get("complete_repetitions") == repetitions and
+                type(group.get("N")) is int and group["N"] > 0 and
+                type(group.get("E")) is int and group["E"] > 0,
+                f"combined summary configuration is incomplete: {group.get('config_id')}")
+        metric_stats = group.get("metrics")
+        require(isinstance(metric_stats, dict) and set(metric_stats) == set(METRIC_FIELDS),
+                f"combined summary metrics are incomplete: {group.get('config_id')}")
+        for metric in METRIC_FIELDS:
+            roles = metric_stats[metric]
+            require(isinstance(roles, dict) and set(roles) == set(COMBINED_STAT_ROLES),
+                    f"combined summary paired statistics are incomplete: {group['config_id']} {metric}")
+            for role in COMBINED_STAT_ROLES:
+                stats = roles[role]
+                require(isinstance(stats, dict) and stats.get("n") == repetitions,
+                        f"combined summary has an incomplete {role} statistic: {group['config_id']} {metric}")
+                estimate_key = "value" if repetitions == 1 else "mean"
+                estimate = stats.get(estimate_key)
+                require(type(estimate) in (int, float) and math.isfinite(float(estimate)),
+                        f"combined summary has an invalid {role} estimate: {group['config_id']} {metric}")
+                if repetitions >= 2:
+                    sd = stats.get("sample_sd")
+                    require(type(sd) in (int, float) and math.isfinite(float(sd)) and float(sd) >= 0,
+                            f"combined summary has an invalid {role} sample standard deviation: {group['config_id']} {metric}")
+        rows.append({
+            "config_id": group["config_id"], "mechanism": group["mechanism"],
+            "dataset": group["dataset"], "N": group["N"], "E": group["E"],
+            "D": group["D"], "G": group["G"], "component_ids": list(group["component_ids"]),
+            "complete_repetitions": group["complete_repetitions"],
+            "requested_repetitions": group["requested_repetitions"],
+            "metrics": group["metrics"],
+        })
+    return rows
+
+
+def combined_summary_csv_fields() -> list[str]:
+    fields = [
+        "config_id", "mechanism", "dataset", "N", "E", "D", "G", "component_ids",
+        "complete_repetitions", "requested_repetitions",
+    ]
+    for metric in METRIC_FIELDS:
+        for role in COMBINED_STAT_ROLES:
+            fields.extend(f"{metric}_{role}_{stat}" for stat in COMBINED_STAT_FIELDS)
+    return fields
+
+
+def write_combined_summary_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
+    fields = combined_summary_csv_fields()
+    with path.open("w", encoding="utf-8", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="raise")
+        writer.writeheader()
+        for row in rows:
+            flat: dict[str, Any] = {key: row[key] for key in fields[:10]}
+            flat["component_ids"] = ",".join(str(value) for value in row["component_ids"])
+            for metric in METRIC_FIELDS:
+                for role in COMBINED_STAT_ROLES:
+                    stats = row["metrics"][metric][role]
+                    for stat in COMBINED_STAT_FIELDS:
+                        flat[f"{metric}_{role}_{stat}"] = stats.get(stat, "")
+            writer.writerow(flat)
+
+
+def _combined_summary_estimate(stats: dict[str, Any]) -> str:
+    if "value" in stats:
+        return f"{float(stats['value']):.8g} (n=1)"
+    return f"{float(stats['mean']):.8g} ± {float(stats['sample_sd']):.8g}"
+
+
+def write_combined_summary_markdown(path: pathlib.Path, document: dict[str, Any],
+                                    rows: list[dict[str, Any]]) -> None:
+    metric_columns: dict[str, str] = {
+        "commitment_time_ms": "Commitment (ms)", "prove_time_ms": "Prove (ms)",
+        "verify_time_ms": "Verify (ms)", "proof_size_bytes": "Proof size (bytes)",
+    }
+    lines = [
+        "# Combined real-data CUDA mechanism ablation summary", "",
+        f"Session `{document['session_id']}`; status **{document['session_status']}**; "
+        f"{document['expected_config_count']} configurations, {document['complete_pairs']} paired repetitions, "
+        f"{document['verified_cells']}/{document['expected_cell_count']} initial independent verifications.",
+        "This combined export checks the initial verification receipts and artifact SHA-256 bindings. "
+        "It does not run or claim a full independent re-verification.",
+        "Each metric cell is `Original; Control; paired O−C; Saving (%); Improvement Factor (Control/Original)`. "
+        "For 2+ repetitions each item is mean ± sample SD of its corresponding observations; paired effects "
+        "are summarized after per-pair calculation. A single repetition is shown as its measured value (n=1), "
+        "without a fabricated SD.",
+        "Formulas: Saving (%) = (Control − Original) / Control × 100; Improvement Factor = Control / Original.",
+        "",
+        "| Mechanism | Dataset | N | E | D | G | PPI components | Repetitions | " +
+        " | ".join(metric_columns.values()) + " |",
+        "|---|---|---:|---:|---:|---:|---|---:|" + "---|" * len(metric_columns),
+    ]
+    for row in rows:
+        metric_cells = []
+        for metric in METRIC_FIELDS:
+            values = row["metrics"][metric]
+            metric_cells.append(
+                f"O {_combined_summary_estimate(values['original'])}; "
+                f"C {_combined_summary_estimate(values['control'])}; "
+                f"Δ {_combined_summary_estimate(values['paired_original_minus_control'])}; "
+                f"save {_combined_summary_estimate(values['saving_percent'])}%; "
+                f"factor {_combined_summary_estimate(values['improvement_factor'])}×"
+            )
+        components = ",".join(str(value) for value in row["component_ids"]) or "—"
+        lines.append("| " + " | ".join(str(value) for value in (
+            row["mechanism"], row["dataset"], row["N"], row["E"], row["D"], row["G"], components,
+            f"{row['complete_repetitions']}/{row['requested_repetitions']}", *metric_cells,
+        )) + " |")
+    atomic_write_text(path, "\n".join(lines) + "\n")
+
+
+def write_combined_summary_json(path: pathlib.Path, document: dict[str, Any],
+                                rows: list[dict[str, Any]]) -> None:
+    report = {
+        "format": "zkgat_real_mechanism_combined_summary_v1",
+        "session_id": document["session_id"], "session_status": document["session_status"],
+        "backend": document["backend"], "repetitions": document["repetitions"],
+        "expected_config_count": document["expected_config_count"],
+        "expected_pair_count": document["expected_pair_count"],
+        "expected_cell_count": document["expected_cell_count"],
+        "initially_verified_cells": document["verified_cells"],
+        "verification_scope": {
+            "initial_independent_verifier_receipts": "VERIFY_OK for every formal cell",
+            "artifact_sha256_bindings_checked": True,
+            "full_reverification_performed_by_exporter": False,
+            "full_reverification_claimed": False,
+        },
+        "paired_statistics": {
+            "paired_original_minus_control": "calculate each repetition's Original - Control, then summarize",
+            "saving_percent": "calculate each repetition as (Control - Original) / Control * 100, then summarize",
+            "improvement_factor": "calculate each repetition as Control / Original, then summarize",
+            "summary_for_repetitions_ge_2": "mean and sample standard deviation",
+            "summary_for_single_repetition": "measured value and n=1; no sample standard deviation",
+        },
+        "metric_units": METRIC_LABELS,
+        "source_identity": document["provenance"]["source"],
+        "build_identity": document["provenance"]["build"],
+        "rows": rows,
+    }
+    atomic_write_json(path, report)
+
+
 def write_cells_csv(path: pathlib.Path, cells: list[dict[str, Any]]) -> None:
     fields = [
         "mechanism", "variant", "dataset", "config_id", "N", "E", "D", "G", "component_ids",
@@ -2257,6 +2517,36 @@ def generate_reports(session_root: pathlib.Path, document: dict[str, Any]) -> di
         write_paper_csv(csv_path, document["groups"], mechanism)
         paths[f"{mechanism}_markdown"] = str(md)
         paths[f"{mechanism}_csv"] = str(csv_path)
+    if document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1":
+        if document.get("session_status") == "complete":
+            try:
+                rows = combined_summary_rows(document, session_root, verify_artifact_hashes=True)
+            except (OSError, ValueError) as exc:
+                document["session_status"] = "incomplete"
+                document["failure_reason"] = document.get("failure_reason") or (
+                    f"combined summary validation failed: {str(exc) or type(exc).__name__}")
+                document["combined_summary_status"] = "not_generated_validation_failed"
+                status_path = session_root / "status.json"
+                if status_path.is_file() and not status_path.is_symlink():
+                    status = load_json(status_path, "formal session status")
+                    status.update({
+                        "session_status": "incomplete", "updated_utc": utc_now(),
+                        "failure_reason": document["failure_reason"],
+                    })
+                    atomic_write_json(status_path, status)
+            else:
+                combined_paths = {
+                    "combined_summary_csv": session_root / "combined_summary.csv",
+                    "combined_summary_markdown": session_root / "combined_summary.md",
+                    "combined_summary_json": session_root / "combined_summary.json",
+                }
+                write_combined_summary_csv(combined_paths["combined_summary_csv"], rows)
+                write_combined_summary_markdown(combined_paths["combined_summary_markdown"], document, rows)
+                write_combined_summary_json(combined_paths["combined_summary_json"], document, rows)
+                paths.update({key: str(value) for key, value in combined_paths.items()})
+                document["combined_summary_status"] = "generated_initial_verification_and_artifact_hash_checks"
+        else:
+            document["combined_summary_status"] = "not_generated_incomplete_session"
     document["result_files"] = paths
     atomic_write_json(session_root / "summary.json", document)
     manifest = {
@@ -2391,7 +2681,10 @@ def execute_formal(args: argparse.Namespace) -> int:
             },
         }
         atomic_write_json(session_root / "source_manifest.json", source_start["source_manifest"])
-        atomic_write_json(session_root / "build_source_manifest.json", build["source_manifest"])
+        copy_build_source_manifest(
+            pathlib.Path(build["source_manifest_path"]), session_root / "build_source_manifest.json",
+            build["source_manifest_sha256"],
+        )
         atomic_write_json(session_root / "configuration_and_srs_manifest.json", document["provenance"]["datasets"])
         document.update({
             "binary_path": str(binary), "srs_by_dataset": {name: info["srs"] for name, info in dataset_info.items()},
@@ -2518,6 +2811,11 @@ def execute_formal(args: argparse.Namespace) -> int:
                 f"formal session did not produce {document['expected_cell_count']} independently verified cells "
                 f"and {document['expected_pair_count']} complete pairs")
         document["session_status"] = "complete"
+        if document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1":
+            # Validate the matrix before final reporting; the report writer repeats this with
+            # artifact SHA-256 checks after all proof/receipt files are closed.
+            combined_summary_rows(document, session_root, verify_artifact_hashes=False)
+            document["combined_summary_status"] = "ready_for_artifact_hash_check"
     except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         if document.get("failure_reason") is None:
             document["failure_reason"] = str(exc) or "interrupted"

@@ -1,0 +1,10 @@
+Isolated build: /tmp/zkgpt-maskedeqlookup-build.EHoP0d
+Mode: Release; MCL_TEST_WITH_GMP=OFF; ZKGPT_BUILD_TESTS=ON; ZKGPT_ENABLE_CUDA=OFF; baseline source directory.
+Incremental targets: zkgpt_gat_prover, gat_adapter_smoke, zkgpt_gat_verifier.
+Build result: PASS, 19 seconds, exit 0; gat_proof.cpp.o rebuilt and three targets linked.
+Owner-branch fixture: `gat_adapter_smoke --formal-private --formal-proof-verify --standalone-dir baseline-local/repair/20261016-witness-reuse.qIzcgw/tiny`.
+Tiny prove: PASS, 2 seconds, exit 0; fixture emitted verifier_context.bin, public_logits.txt, proof.artifact, fixture.json.
+Independent CLI verifier on that same proof: PASS, 4 seconds, exit 0, report status VERIFY_OK. Total tiny prove+verify wall time: 6 seconds.
+Verifier timing: context load 2.74409 ms; artifact read/parse 10.4798 ms; crypto verify 3309.69 ms. Proof artifact size: 8244231 bytes.
+Protocol identity: NS5 session wire; challenge v5 message-body digest chain; native GAT domain v7; SparseGkrProofWire version 8.
+No other test, full dataset, formal run, benchmark, or Git operation was performed in this bundle.

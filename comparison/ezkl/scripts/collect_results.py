@@ -33,6 +33,7 @@ from formal_common import (
     abort,
     canonical_json_digest,
     load_json,
+    load_json_with_sha256,
     local_path,
     print_error,
     reject_forbidden_path,
@@ -53,9 +54,9 @@ from formal_common import (
     validate_native_verify_metrics,
     validate_gpu_evidence,
     validate_gpu_evidence_document,
-    validate_gpu_environment,
     validate_public_output,
     validate_public_statement,
+    require_authenticated_formal_context,
 )
 
 REQUIRED_RESULT_KEYS = {
@@ -201,8 +202,22 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
     return expected
 
 
-def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict[str, Any]:
-    result = load_json(path, f"result cell {path}")
+def validate_cell(
+    path: Path,
+    *,
+    expected_session_id: str | None = None,
+    expected_source_tree_sha256: str | None = None,
+    expected_resource_manifest_sha256: str | None = None,
+    expected_config_values: dict[str, str] | None = None,
+    expected_result_sha256: str | None = None,
+) -> dict[str, Any]:
+    if expected_result_sha256 is None:
+        result = load_json(path, f"result cell {path}")
+    else:
+        require_digest(expected_result_sha256, f"{path} expected checkpoint digest")
+        result, actual_result_sha256 = load_json_with_sha256(path, f"result cell {path}")
+        if actual_result_sha256 != expected_result_sha256:
+            abort(f"{path} result bytes differ from the active session checkpoint")
     formal_gpu_identity_fields = {
         "selected_cuda_device", "build_receipt_sha256", "build_environment_sha256",
         "gpu_prover_record_sha256", "independent_verifier_log_sha256",
@@ -246,7 +261,13 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
             abort(f"{path} belongs to a different formal session")
         if path.parent.name != dataset:
             abort(f"{path} is outside its canonical dataset result directory")
-        secure_config = validate_config(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", dataset)
+        secure_config = (
+            validate_config(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg", dataset)
+            if expected_config_values is None
+            else dict(expected_config_values)
+        )
+        if secure_config.get("dataset") != dataset:
+            abort(f"{path} authenticated config values belong to another dataset")
         if result["quant_cfg_id"] != secure_config["quant_cfg_id"] or result["static_tables_id"] != secure_config["static_table_id"]:
             abort(f"{path} quantization/static-table identities differ from the canonical config")
         for field in formal_gpu_identity_fields:
@@ -262,9 +283,6 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
             or any(not isinstance(selected_device[key], str) or not selected_device[key] for key in ("uuid", "name", "driver_version", "compute_capability"))
         ):
             abort(f"{path} selected CUDA device identity contains invalid values")
-        current_gpu = validate_gpu_environment()
-        if current_gpu["selected_cuda_device"] != selected_device:
-            abort(f"{path} selected CUDA device does not match the live formal execution device")
         for field in ("build_receipt_sha256", "build_environment_sha256", "gpu_prover_record_sha256", "independent_verifier_log_sha256"):
             require_digest(result[field], f"{path} {field}")
         receipt_path = ROOT / "artifacts/build/gpu/build_receipt.json"
@@ -519,7 +537,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         ):
             abort(f"{path} setup receipt does not bind its exact key/circuit artifacts")
         expected_keygen = {
-            "schema": "ezkl.native-keygen-receipt.v2",
+            "schema": "ezkl.native-keygen-receipt.v4",
             "session_id": session_id,
             "dataset": dataset,
             "budget_receipt_sha256": receipt_digests["native_keygen_budget.json"],
@@ -527,6 +545,8 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
             "compiled_circuit_sha256": result["compiled_circuit_sha256"],
             "vk_sha256": result["vk_sha256"],
             "pk_sha256": result["pk_sha256"],
+            "evidence_kind": "mandatory_vk_pk_native_keygen_synthesis_census",
+            "coverage": "actual_vk_and_pk_synthesis_census; exact_selector_advice_fixed_permutation_and_lookup_bounds",
         }
         if any(keygen_receipt.get(name) != value for name, value in expected_keygen.items()):
             abort(f"{path} native keygen census receipt does not match its formal cell")
@@ -534,7 +554,7 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         if not isinstance(relation_identity, dict) or relation_identity.get("dataset") != dataset or relation_identity.get("resource_manifest_sha256") != result["resource_manifest_sha256"]:
             abort(f"{path} native keygen relation identity does not match the canonical result")
         expected_native_budget = {
-            "schema": "ezkl.native-keygen-budget.v1",
+            "schema": "ezkl.native-keygen-budget.v3",
             "session_id": session_id,
             "dataset": dataset,
             "admission_sha256": setup_receipt.get("admission_sha256"),
@@ -546,6 +566,25 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
         }
         if any(keygen_budget.get(name) != value for name, value in expected_native_budget.items()):
             abort(f"{path} native keygen budget does not match its formal build/resource identity")
+        setup_disk_required = keygen_budget.get("setup_disk_required_known_bytes")
+        proof_spill_reserve = keygen_budget.get("proof_spill_reserve_bytes")
+        disk_required = keygen_budget.get("disk_required_known_bytes")
+        disk_available = keygen_budget.get("disk_available_bytes")
+        if (
+            any(
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > sys.maxsize
+                for value in (setup_disk_required, proof_spill_reserve, disk_required, disk_available)
+            )
+            or proof_spill_reserve != 0
+            or keygen_budget.get("disk_budget_scope")
+            != "setup_keygen_peak_and_source_bounded_permutation_backing; proof_disk_checked_after_actual_setup_census"
+            or setup_disk_required != disk_required
+            or disk_required > disk_available
+        ):
+            abort(f"{path} native keygen budget confuses Setup storage with the post-census proof disk gate")
         native_census = keygen_receipt.get("native_census")
         if not isinstance(native_census, dict) or not isinstance(native_census.get("preflight"), dict):
             abort(f"{path} native keygen receipt has no exact synthesis census")
@@ -743,7 +782,9 @@ def validate_cell(path: Path, *, expected_session_id: str | None = None) -> dict
             if sha256(proof.parent / "gpu_prover_record.json") != result["gpu_prover_record_sha256"]:
                 abort("native GPU prover record identity is stale")
 
-    if result["source_tree_sha256"] != source_tree_hash() or result["resource_manifest_sha256"] != resource_manifest_hash():
+    source_identity = source_tree_hash() if expected_source_tree_sha256 is None else expected_source_tree_sha256
+    resource_identity = resource_manifest_hash() if expected_resource_manifest_sha256 is None else expected_resource_manifest_sha256
+    if result["source_tree_sha256"] != source_identity or result["resource_manifest_sha256"] != resource_identity:
         abort(f"{path} source/resource identity is stale")
     result["_result_path"] = path.relative_to(ROOT).as_posix()
     return result
@@ -777,7 +818,39 @@ def build_matrix_document(cells: list[dict[str, Any]], *, datasets: tuple[str, .
     return document
 
 
-def main(args: argparse.Namespace) -> int:
+def _pending_formal_cell(
+    path: Path,
+    *,
+    dataset: str,
+    session_id: str,
+    source_sha256: str,
+    resource_sha256: str,
+) -> dict[str, Any]:
+    """Load only enough identity to construct the pending matrix; final validation owns acceptance."""
+    result = load_json(path, f"pending formal result cell {path}")
+    if (
+        result.get("dataset") != dataset
+        or result.get("status") != "VERIFY_OK"
+        or result.get("formal_session_id") != session_id
+        or result.get("native_verify_result") is not True
+        or result.get("source_tree_sha256") != source_sha256
+        or result.get("resource_manifest_sha256") != resource_sha256
+        or path.parent.name != dataset
+    ):
+        abort(f"{path} is not a current-session independently verified result for the pending matrix")
+    missing = REQUIRED_RESULT_KEYS - set(result)
+    if missing:
+        abort(f"{path} is missing pending formal result fields: {sorted(missing)}")
+    result["_result_path"] = path.relative_to(ROOT).as_posix()
+    return result
+
+
+def main(
+    args: argparse.Namespace,
+    *,
+    authenticated_context: Any | None = None,
+    formal_session_id: str | None = None,
+) -> int:
     selected_datasets = tuple(args.datasets)
     if len(set(selected_datasets)) != len(selected_datasets):
         abort("--datasets must not contain duplicates")
@@ -788,6 +861,15 @@ def main(args: argparse.Namespace) -> int:
     if formal:
         if not isinstance(args.session_id, str) or not FORMAL_SESSION_ID.fullmatch(args.session_id):
             abort("formal collection requires the active --session-id")
+        if authenticated_context is not None:
+            if formal_session_id != args.session_id:
+                abort("sealed result collection session does not match its command-line session")
+            require_authenticated_formal_context(
+                authenticated_context,
+                session_id=args.session_id,
+                dataset=DATASETS[0],
+                config=ROOT / "resources/canonical/configs" / f"{DATASETS[0]}_secure.cfg",
+            )
     elif args.session_id is not None:
         abort("--session-id cannot be combined with local-only collection")
     elif len(selected_datasets) != 1 or len(selected_backends) != 1:
@@ -799,15 +881,27 @@ def main(args: argparse.Namespace) -> int:
         abort("local-only collection cannot write the formal result matrix path")
     if output.is_symlink():
         abort(f"collector output must not be a symlink: {output}")
+    if formal and authenticated_context is not None:
+        source_sha256 = authenticated_context.source_tree_sha256
+        resource_sha256 = authenticated_context.resource_manifest_sha256
+    else:
+        source_sha256 = source_tree_hash()
+        resource_sha256 = resource_manifest_hash()
     cells: list[dict[str, Any]] = []
     for dataset in selected_datasets:
         for backend in selected_backends if not formal else (None,):
             result_path = runs_root / dataset / "result.json" if formal else runs_root / dataset / str(backend) / "result.json"
             reject_forbidden_path(result_path, f"{dataset}/{backend} result")
-            cell = validate_cell(
-                result_path,
-                expected_session_id=args.session_id if formal else None,
-            )
+            if formal:
+                cell = _pending_formal_cell(
+                    result_path,
+                    dataset=dataset,
+                    session_id=args.session_id,
+                    source_sha256=source_sha256,
+                    resource_sha256=resource_sha256,
+                )
+            else:
+                cell = validate_cell(result_path, expected_session_id=None)
             if cell["dataset"] != dataset or (not formal and cell["backend"] != backend):
                 abort(f"result identity does not match its collection path: {result_path}")
             cells.append(cell)
@@ -816,7 +910,7 @@ def main(args: argparse.Namespace) -> int:
         abort("collector did not obtain the requested result cells")
     check_pair_consistency(cells)
     output.parent.mkdir(parents=True, exist_ok=True)
-    document = build_matrix_document(cells, datasets=selected_datasets, source_sha256=source_tree_hash(), resource_sha256=resource_manifest_hash(), collected_at_utc=datetime.now(timezone.utc).isoformat(), formal_session_id=args.session_id if formal else None, backends=None if formal else selected_backends)
+    document = build_matrix_document(cells, datasets=selected_datasets, source_sha256=source_sha256, resource_sha256=resource_sha256, collected_at_utc=datetime.now(timezone.utc).isoformat(), formal_session_id=args.session_id if formal else None, backends=None if formal else selected_backends)
     output.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
     mode = "formal dataset results" if formal else "local-only results"
     print(f"collected {len(cells)} verified {mode} into {output.relative_to(ROOT)}; final validation remains required")

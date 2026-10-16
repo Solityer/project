@@ -2099,6 +2099,8 @@ $$
 
 尤其必须保证：Lasso-native commitments 在其随机 query point 之前固定；GKR/MatMul/Sumcheck 每一轮 message 在下一轮 challenge 之前吸收；input-layer combine 与最终 Hyrax openings 继续沿同一 transcript 顺序。任何 challenge 都不能由 prover 自由指定。
 
+当前原生 transcript v5 对 canonical message 编码 $E_i=(kind,sequence,|label|,label,|payload|,payload)$ 按序维护 domain-separated SHA-256 链；整数使用 little-endian u64 编码，字符串带 u64 长度：$h_0=H(\operatorname{enc}(\texttt{zkgpt-native-fs-v5/body-init}))$，$h_{i+1}=H(\operatorname{enc}(\texttt{zkgpt-native-fs-v5/body-step})\|h_i\|i\| |E_i|\|E_i)$。第 $i$ 个 challenge 为 $F::setHashOf(\operatorname{enc}(\texttt{zkgpt-native-fs-v5/challenge})\|\operatorname{enc}(domain)\|\operatorname{enc}(statement)\|i\|\operatorname{enc}(label)\|\operatorname{enc}(h_i))$，其中 statement 使用完整原生 statement 编码；challenge message 在派生后加入链。session wire 使用 `ZKGPTNS5`/version 5，GAT native domain 为 `zkgpt-native-gat-fs-v7`；旧 v6 transcript 会被拒绝。该版本只改变 Fiat--Shamir challenge 派生，原生 GKR、MatMul/Sumcheck、commitment、masking、message 与 relation 顺序保持不变，v4 与 v5 challenge 字节不等价。
+
 ### 3.17 最终证明对象
 
 抽象地：

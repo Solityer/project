@@ -1,0 +1,231 @@
+{
+  "entries": [
+    {
+      "blinder": "8684311bef6def71b2324294a6f27ce52968dd72c899c02e4959fc2f02226e18",
+      "tensor_id": "hidden/layer0/head0/model/attn_dst"
+    },
+    {
+      "blinder": "332433400dde740b4f4057c14c7f63a59ef0653424087f8355583c619b77df4d",
+      "tensor_id": "hidden/layer0/head0/model/attn_src"
+    },
+    {
+      "blinder": "5789227b8cda6f62ebb947ee98b9e8bf9c12544b539ffb5121d718a3cd1b960f",
+      "tensor_id": "hidden/layer0/head0/model/seq_kernel"
+    },
+    {
+      "blinder": "7b1cef278c15596ba4721187ec73505706ba90ee1f4c8e64005eeb3b4e70af69",
+      "tensor_id": "hidden/layer0/head1/model/attn_dst"
+    },
+    {
+      "blinder": "c6221287ea8ff89f6b76d154cd2a8332cd5c8ff751a835f9ebaa884f1973d234",
+      "tensor_id": "hidden/layer0/head1/model/attn_src"
+    },
+    {
+      "blinder": "9bed4e5a7a43cd1216d0d3515db68042873472e26a2f417952ed79235818183a",
+      "tensor_id": "hidden/layer0/head1/model/seq_kernel"
+    },
+    {
+      "blinder": "517d61fd7f311e3d14cd8c32a13e3ba1eddd2ddcc1b80fc9ad3cbeb2eb425407",
+      "tensor_id": "hidden/layer0/head2/model/attn_dst"
+    },
+    {
+      "blinder": "6a57d8beb4274a7781fc96aa8db0aa7bccbd19bc803aacb1ab4e792fe379e906",
+      "tensor_id": "hidden/layer0/head2/model/attn_src"
+    },
+    {
+      "blinder": "f5fda8190dfab840c4f741f86f8a6e0453ad5437d099bbda66ebd61dfd7ee342",
+      "tensor_id": "hidden/layer0/head2/model/seq_kernel"
+    },
+    {
+      "blinder": "1db1d25ba07e1e2ce84393eb16e07174896eb24b1ce20b3c103a5ca52601d04e",
+      "tensor_id": "hidden/layer0/head3/model/attn_dst"
+    },
+    {
+      "blinder": "c08105cbaa62dfcbec1bcef28536a9b591a9b982fb93af1085cc6cdc3c08fc18",
+      "tensor_id": "hidden/layer0/head3/model/attn_src"
+    },
+    {
+      "blinder": "865ae6fe384253d1e52f4afbe1ceafdb061a914e30696bff94ba3d80e98c8b17",
+      "tensor_id": "hidden/layer0/head3/model/seq_kernel"
+    },
+    {
+      "blinder": "a265f083b7617490fa61499e997aa60814938f381a17561528816ddc03bdbb55",
+      "tensor_id": "hidden/layer0/head4/model/attn_dst"
+    },
+    {
+      "blinder": "83ba3bf6a46d2de88a6d4751044e18b4707aa2b07fe67229064a61a61457e342",
+      "tensor_id": "hidden/layer0/head4/model/attn_src"
+    },
+    {
+      "blinder": "f646055049e74bb46cf261dd9cf3ea4f999f7daffc715726d46083f02367af1c",
+      "tensor_id": "hidden/layer0/head4/model/seq_kernel"
+    },
+    {
+      "blinder": "2dfd997d1386ac35caa3cd06ece67116e449dd10c25a4830a1ea53f0694a0653",
+      "tensor_id": "hidden/layer0/head5/model/attn_dst"
+    },
+    {
+      "blinder": "81b269cf734c2d4df82e44b6a071257dca3a088bd18e5c64a19a34e6f0597a5b",
+      "tensor_id": "hidden/layer0/head5/model/attn_src"
+    },
+    {
+      "blinder": "30bf8bbf1b6046f23a55b770d6f589758956b68c714c9c03da9c269bf7184035",
+      "tensor_id": "hidden/layer0/head5/model/seq_kernel"
+    },
+    {
+      "blinder": "8010729c6c683dbc4cce2061bd86c122b2728de4f3bc070b426a766af5284402",
+      "tensor_id": "hidden/layer0/head6/model/attn_dst"
+    },
+    {
+      "blinder": "3938a0d60617dd1ca738d1c2b6ed0ae709b59b752267d1aab40df7eece784324",
+      "tensor_id": "hidden/layer0/head6/model/attn_src"
+    },
+    {
+      "blinder": "c275c45acc5499a5f3fd91600dd6647f17a4fdf8a8c5112a57bd8948e1d9d70a",
+      "tensor_id": "hidden/layer0/head6/model/seq_kernel"
+    },
+    {
+      "blinder": "eceb7b71fd6b9fe08e31fc7d8baf31eaeda455b5993d4c37f9d727e37a9bc902",
+      "tensor_id": "hidden/layer0/head7/model/attn_dst"
+    },
+    {
+      "blinder": "ce4945bb6dbf1a70cbc0fd530c906a961f0bd111da67ec05885a1883e28fde43",
+      "tensor_id": "hidden/layer0/head7/model/attn_src"
+    },
+    {
+      "blinder": "f5477b132e6095862556585d0b70128ec3925c83f7256e1c824638a82d54d825",
+      "tensor_id": "hidden/layer0/head7/model/seq_kernel"
+    },
+    {
+      "blinder": "dc4d366cff8ba0c3e14cb0051b6fe42a8c70c27f980592d257495cd76daa5240",
+      "tensor_id": "hidden/layer1/head0/model/attn_dst"
+    },
+    {
+      "blinder": "69bcc21f1246b498f6696e9560f4b4b1030e4f7bce31a0cf63c2ab802c75fb20",
+      "tensor_id": "hidden/layer1/head0/model/attn_src"
+    },
+    {
+      "blinder": "72ba5208c0c5a639a1a485939b21d71f2d134730a6d5a6fb1fb8b5bc0ef5b65d",
+      "tensor_id": "hidden/layer1/head0/model/seq_kernel"
+    },
+    {
+      "blinder": "9aaf30806d146036cdac8683fd015fb7e6218f0d7ae3202c51bc3762af615270",
+      "tensor_id": "hidden/layer1/head1/model/attn_dst"
+    },
+    {
+      "blinder": "7919790c9bbcad647bf0ec569add061c15aba5f292f322540e45bc19e3aff805",
+      "tensor_id": "hidden/layer1/head1/model/attn_src"
+    },
+    {
+      "blinder": "a5e0d60f86fac83abf91579b8621573e4dce0191397cc7d4acbcc8d2158b1367",
+      "tensor_id": "hidden/layer1/head1/model/seq_kernel"
+    },
+    {
+      "blinder": "d9c4d8e97f5a44545d7fcf0d3343febd245ceede24172d04c940ac9c6c3bde21",
+      "tensor_id": "hidden/layer1/head2/model/attn_dst"
+    },
+    {
+      "blinder": "14e9264a9ed1047cc0fbe9f05cfb98b053a3809c7964fad9339c6b27068c391f",
+      "tensor_id": "hidden/layer1/head2/model/attn_src"
+    },
+    {
+      "blinder": "d6b73fceb8cda921d9eeb2c3827fabee06f62495574bae5bda6bec6d4eff070a",
+      "tensor_id": "hidden/layer1/head2/model/seq_kernel"
+    },
+    {
+      "blinder": "682973365c313f327e4a3c7f866ceb1c40828aaf807c30f883970ec5ba0a8f2d",
+      "tensor_id": "hidden/layer1/head3/model/attn_dst"
+    },
+    {
+      "blinder": "58884f5fa7520af5f2e902c84900b0f04d0e35592c973a9a39f853089fc8254b",
+      "tensor_id": "hidden/layer1/head3/model/attn_src"
+    },
+    {
+      "blinder": "364f5bbb0b299f0eecb80b2ef315b44141216992dca9bae61a9ac3d7a8663d0d",
+      "tensor_id": "hidden/layer1/head3/model/seq_kernel"
+    },
+    {
+      "blinder": "7397364308f8f2de6536a7111a4caed0ea705ca2570c0be143ef2a60d1601920",
+      "tensor_id": "hidden/layer1/head4/model/attn_dst"
+    },
+    {
+      "blinder": "34887f690165a133d2fbf145eb25961c534e3f6096cb465a025244dff5c7c65c",
+      "tensor_id": "hidden/layer1/head4/model/attn_src"
+    },
+    {
+      "blinder": "5bce7328a7bf11e8111174b3f24904832dc60d3ee2884ccc2c4809c9f60c891c",
+      "tensor_id": "hidden/layer1/head4/model/seq_kernel"
+    },
+    {
+      "blinder": "ca7b5841c9a166fe217b275c05a2dbf20f1505676f5d399f6e6c2f6c003b955b",
+      "tensor_id": "hidden/layer1/head5/model/attn_dst"
+    },
+    {
+      "blinder": "92efea510c9555a257631e8224e429ea5c6267eb44bad97970c05ddfb71a1e6b",
+      "tensor_id": "hidden/layer1/head5/model/attn_src"
+    },
+    {
+      "blinder": "fbc0c7a5ba439536a14e591e5f631a51a5fed0bf990f2b00eebd8c30cf9e4051",
+      "tensor_id": "hidden/layer1/head5/model/seq_kernel"
+    },
+    {
+      "blinder": "594a5e6ed666fe03f38fbecf118b50743afe734fff4f8f5fd898938fe95b7119",
+      "tensor_id": "hidden/layer1/head6/model/attn_dst"
+    },
+    {
+      "blinder": "d46d51992887fa2d3354bbfba67edc03f494005b68779d61bc0d1e3881787120",
+      "tensor_id": "hidden/layer1/head6/model/attn_src"
+    },
+    {
+      "blinder": "ff4dfe04571377e083e2dada3c8e623dc16a4c92855caa5f3a4f03ff431ee368",
+      "tensor_id": "hidden/layer1/head6/model/seq_kernel"
+    },
+    {
+      "blinder": "3ab4be4e812f3693742b192e4bacf5b79889dbdd2bce87f9091811ae3f870963",
+      "tensor_id": "hidden/layer1/head7/model/attn_dst"
+    },
+    {
+      "blinder": "7d8a0ded238f290d3ec3c0346055f4f768c41a764c2eed77bc13008287c6e84d",
+      "tensor_id": "hidden/layer1/head7/model/attn_src"
+    },
+    {
+      "blinder": "31451442411c9a611633cb1075d5f180b57e55ca88d5a2919ef43d203f78ad19",
+      "tensor_id": "hidden/layer1/head7/model/seq_kernel"
+    },
+    {
+      "blinder": "946a9510b286e267c0979c40a84c5d84b2f96088abda7b1e226dd9fad829081e",
+      "tensor_id": "output/head0/model/attn_dst"
+    },
+    {
+      "blinder": "cdb12fc811e7afc04f8cdef0056f48a7bc2154dfcbd8cda06d8c04d6c23faa59",
+      "tensor_id": "output/head0/model/attn_src"
+    },
+    {
+      "blinder": "4120050a873aef799b8fb2949be0148fb88088c387f9b12622386d6c317aa40a",
+      "tensor_id": "output/head0/model/output_bias"
+    },
+    {
+      "blinder": "520854d1eabd79ba5bad253dfe70782af378a917bbe6d6a740520b211332366a",
+      "tensor_id": "output/head0/model/seq_kernel"
+    },
+    {
+      "blinder": "233c9b87eef748663b46054edea59e04f5b44097922102b88925fc2b24d0b45e",
+      "tensor_id": "output/head1/model/attn_dst"
+    },
+    {
+      "blinder": "d58c9c9341c3254f039f30498939a1a360c73b37a0eda30e49a5c08a78f96151",
+      "tensor_id": "output/head1/model/attn_src"
+    },
+    {
+      "blinder": "c85a1cb60df963e08a8b095d810bf6da0d92564d8a9f629a14188972906f2e6d",
+      "tensor_id": "output/head1/model/output_bias"
+    },
+    {
+      "blinder": "6d27d24d670c73a12e866db07c6ef13b14d1a82df0e240ff6b5b59fdc1854018",
+      "tensor_id": "output/head1/model/seq_kernel"
+    }
+  ],
+  "registry_digest": "28d2523df4b85eecd639df9066cc2505b9287c07fe2b66428dfc9e717ab9d378",
+  "schema": "zkDL_gat_model_blinder_sidecar_v1",
+  "source_root": "baseline-local"
+}

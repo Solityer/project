@@ -1238,7 +1238,7 @@ impl Model {
 
         match settings.gat_range_gadget_version {
             None => {
-                for range in required_range_checks {
+                for range in required_range_checks.iter().copied() {
                     base_gate.configure_range_check(meta, input, index, range, logrows)?;
                 }
             }
@@ -1246,7 +1246,7 @@ impl Model {
                 if version == crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION =>
             {
                 let mut adapter_ranges = Vec::new();
-                for range in required_range_checks {
+                for range in required_range_checks.iter().copied() {
                     let span = range
                         .1
                         .checked_sub(range.0)
@@ -1257,6 +1257,30 @@ impl Model {
                         adapter_ranges.push(range);
                     } else {
                         base_gate.configure_range_check(meta, input, index, range, logrows)?;
+                    }
+                }
+                // Generic input/output decomposition still uses the native
+                // range-check table. A wide range may also be handled by the
+                // adapter gadget elsewhere; keep both configurations when the
+                // dummy layout recorded the generic input/output range.
+                if !settings.run_args.ignore_range_check_inputs_outputs {
+                    let decomp_upper = settings
+                        .run_args
+                        .decomp_base
+                        .checked_sub(1)
+                        .and_then(|upper| IntegerRep::try_from(upper).ok())
+                        .ok_or_else(|| GraphError::MisformedParams(
+                            "generic decomposition range upper bound is invalid".into(),
+                        ))?;
+                    let generic_decomposition_range = (0, decomp_upper);
+                    if required_range_checks.contains(&generic_decomposition_range) {
+                        base_gate.configure_range_check(
+                            meta,
+                            input,
+                            index,
+                            generic_decomposition_range,
+                            logrows,
+                        )?;
                     }
                 }
                 crate::gat_adapter::range_gadget::configure(

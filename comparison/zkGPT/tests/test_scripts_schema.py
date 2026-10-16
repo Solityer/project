@@ -19,6 +19,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import common  # noqa: E402
 import formal_preflight  # noqa: E402
+import gat_zkgpt_experiment as formal_experiment  # noqa: E402
+import validate_final_results as final_validator  # noqa: E402
 from common import (  # noqa: E402
     ChainError,
     PAPER_TIMING_SEMANTICS,
@@ -54,6 +56,139 @@ def valid_result_shape() -> dict:
         "capability_status": "FORMAL_CPU_MASKED_FULL",
         "formal_backend_supported": True,
     }
+
+
+class PendingVerificationContractTests(unittest.TestCase):
+    def run_stubbed_cell(self, native_status: str, verifier_mode: str) -> tuple[Path, int]:
+        temporary = tempfile.TemporaryDirectory(prefix="pending-verifier-contract-")
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        run_path = root / "runs" / "cora"
+        run_path.mkdir(parents=True)
+        for name in ("proof.artifact", "verifier_context.bin", "public_logits.txt", "public_statement.json"):
+            (run_path / name).write_bytes(b"fixture")
+        session_id, run_nonce, session_digest = "1" * 32, "2" * 32, "3" * 64
+        result = valid_result_shape()
+        result.update({"status": native_status, "verification_status": native_status,
+                       "session_id": session_id, "run_nonce": run_nonce,
+                       "session_manifest_sha256": session_digest, "proof_generated": True,
+                       "verifier_called": native_status == "VERIFY_OK", "verifier_ok": native_status == "VERIFY_OK",
+                       "verifier_reads_witness": False, "cpu_fallback": False,
+                       "artifact_path": "runs/cora/proof.artifact", "verifier_context_path": "runs/cora/verifier_context.bin",
+                       "public_logits_path": "runs/cora/public_logits.txt", "statement_path": "runs/cora/public_statement.json"})
+        result_path = run_path / "result.json"
+        calls = 0
+        def fake_run_logged(command: list[str], _root: Path, _stdout: Path, _stderr: Path, label: str, _telemetry: dict) -> int:
+            nonlocal calls
+            calls += 1
+            if label.endswith("/prover"):
+                self.assertIn("--defer-self-verify", command)
+                result_path.write_text(json.dumps(result), encoding="utf-8")
+                return 0
+            if verifier_mode == "exit_failure": return 1
+            (run_path / "verifier_report.json").write_text(json.dumps({"status": "REJECTED"}), encoding="utf-8")
+            return 0
+        config = {"privacy_policy": "model_and_trace_hidden", "privacy_profile": "masked_full"}
+        resource = {"full_dataset_identity": "dataset", "checkpoint_identity": "checkpoint", "cache_identity": "cache"}
+        identity_patches = (
+            mock.patch.object(formal_experiment, "formal_backend_capability", return_value={"supported": True, "reason": ""}),
+            mock.patch.object(formal_experiment, "validate_preflight_binding"),
+            mock.patch.object(formal_experiment, "config_with_auth", return_value=(root / "config.cfg", config)),
+            mock.patch.object(formal_experiment, "resource_identity", return_value=resource),
+            mock.patch.object(formal_experiment, "run_directory", return_value=("runs/cora", run_path)),
+            mock.patch.object(formal_experiment, "cleanup_run_outputs"),
+            mock.patch.object(formal_experiment, "derive_run_nonce", return_value=run_nonce),
+            mock.patch.object(formal_experiment, "build_binary", return_value=root / "prover"),
+            mock.patch.object(formal_experiment, "verifier_binary", return_value=root / "verifier"),
+            mock.patch.object(formal_experiment, "binary_fingerprint", return_value={"sha256": "a" * 64}),
+            mock.patch.object(formal_experiment, "relative_path", side_effect=lambda base, path, _what: str(Path(path).relative_to(base))),
+            mock.patch.object(formal_experiment, "ensure_registration", return_value=("registration.json", "secret", {})),
+            mock.patch.object(formal_experiment, "run_logged", side_effect=fake_run_logged),
+            mock.patch.object(formal_experiment, "_result_identity", return_value={}),
+            mock.patch.object(formal_experiment, "_resource_result_identity"),
+            mock.patch.object(formal_experiment, "require_timing", return_value={}),
+            mock.patch.object(formal_experiment, "artifact_fields", return_value=(run_path / "proof.artifact", "")),
+            mock.patch.object(formal_experiment, "require_run_file", side_effect=lambda _base, _run, rel, _what: (rel, run_path / Path(rel).name)),
+            mock.patch.object(formal_experiment, "assert_fresh_files"),
+        )
+        with mock.patch.object(formal_experiment, "atomic_write_json") as persist:
+            for patcher in identity_patches:
+                patcher.start()
+                self.addCleanup(patcher.stop)
+            try:
+                formal_experiment.run_cell(root, "cora", "cpu", {}, "4" * 64, session_id, {}, session_digest, root / "preflight.json")
+            except ChainError:
+                pass
+            else:
+                self.fail("the rejected pending-state fixture unexpectedly completed")
+            persist.assert_not_called()
+        return result_path, calls
+
+    def test_native_verify_ok_claim_is_rejected_before_external_verifier(self) -> None:
+        result_path, calls = self.run_stubbed_cell("VERIFY_OK", "bad_report")
+        self.assertEqual(calls, 1)
+        self.assertEqual(json.loads(result_path.read_text(encoding="utf-8"))["status"], "VERIFY_OK")
+
+    def test_pending_result_is_not_promoted_when_external_verification_fails(self) -> None:
+        for mode in ("exit_failure", "bad_report"):
+            with self.subTest(mode=mode):
+                result_path, calls = self.run_stubbed_cell("PROOF_GENERATED_PENDING_VERIFY", mode)
+                self.assertEqual(calls, 2)
+                persisted = json.loads(result_path.read_text(encoding="utf-8"))
+                self.assertEqual(persisted["status"], "PROOF_GENERATED_PENDING_VERIFY")
+                self.assertEqual(persisted["verification_status"], "PROOF_GENERATED_PENDING_VERIFY")
+                self.assertIs(persisted["verifier_called"], False)
+                self.assertIs(persisted["verifier_ok"], False)
+
+
+def owner_approval_fixture(root: Path) -> tuple[str, str, dict, dict]:
+    session_id, session_digest, dataset = "1" * 32, "2" * 64, "cora"
+    receipt_path = root / "results" / "formal" / session_id / "receipts" / f"{dataset}.json"
+    receipt_path.parent.mkdir(parents=True)
+    run_path = root / "baseline-local" / "runs" / "formal" / session_id / dataset
+    run_path.mkdir(parents=True)
+    paths = {"result_path": run_path / "result.json", "execution_path": run_path / "execution.json",
+             "proof_path": run_path / "proof.artifact", "verification_report_path": run_path / "verifier_report.json"}
+    for path in paths.values(): path.write_bytes(path.name.encode("ascii"))
+    receipt = {"schema": "zkgpt-gat-cell-receipt-v1", "status": "VERIFY_OK", "dataset": dataset,
+               "session_id": session_id, "session_manifest_sha256": session_digest, "independent_verification": True}
+    for key, path in paths.items():
+        receipt[key] = str(path.relative_to(root))
+        receipt[key.replace("_path", "_sha256")] = common.sha256_file(path)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    approved = {"dataset": dataset, "receipt_path": str(receipt_path.relative_to(root)),
+                "receipt_sha256": common.sha256_file(receipt_path)}
+    for key, path in paths.items():
+        approved[key] = str(path.relative_to(root))
+        approved[key.replace("_path", "_sha256")] = common.sha256_file(path)
+    audited = {"dataset": dataset, "backend": "cpu", "result_path": approved["result_path"],
+               "artifact_path": approved["proof_path"], "artifact_sha256": approved["proof_sha256"],
+               "verifier_report_path": approved["verification_report_path"]}
+    return session_id, session_digest, approved, audited
+
+
+class FinalVerificationReuseContractTests(unittest.TestCase):
+    def test_owner_approved_cell_reuses_original_report_without_final_verify(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="owner-approved-reuse-") as name:
+            root = Path(name)
+            session_id, session_digest, approved, audited = owner_approval_fixture(root)
+            with mock.patch.object(final_validator, "independently_verify_final_cell", side_effect=AssertionError("final verifier must be skipped")):
+                result = final_validator._final_verification_record(root, session_id, session_digest, "cora", audited, {"cora": approved})
+            self.assertEqual(result["verification_source"], "cell_stage_independent_report")
+            self.assertIs(result["reused_cell_report"], True)
+            self.assertEqual(result["final_native_verifier_invocations"], 0)
+            self.assertEqual(result["report_path"], approved["verification_report_path"])
+            self.assertEqual(result["report_sha256"], approved["verification_report_sha256"])
+
+    def test_owner_approved_cell_rejects_changed_report_or_execution_identity(self) -> None:
+        for changed_path in ("verification_report_path", "execution_path"):
+            with self.subTest(changed_path=changed_path), tempfile.TemporaryDirectory(prefix="owner-approved-tamper-") as name:
+                root = Path(name)
+                session_id, session_digest, approved, audited = owner_approval_fixture(root)
+                changed = root / approved[changed_path]
+                changed.write_bytes(b"changed after owner approval")
+                with self.assertRaises(ChainError):
+                    final_validator._final_verification_record(root, session_id, session_digest, "cora", audited, {"cora": approved})
 
 
 class ProductionContractTests(unittest.TestCase):
@@ -209,6 +344,14 @@ class ProductionContractTests(unittest.TestCase):
         value["schema"] = "unsupported-result-v0"
         with self.assertRaises(ChainError):
             require_result_shape(value, ROOT / "unsupported-result.json")
+
+    def test_native_result_timing_semantics_matches_consumer_and_rejects_v3(self) -> None:
+        native_source = (ROOT / "gat_adapter" / "gat_cli.cpp").read_text(encoding="utf-8")
+        self.assertIn(f'paper_timing_semantics = "{PAPER_TIMING_SEMANTICS}"', native_source)
+        value = valid_result_shape()
+        value["paper_timing_semantics"] = "zkgpt-gat-paper-timing-v3-native-commitment-io-excluded"
+        with self.assertRaises(ChainError):
+            require_result_shape(value, ROOT / "stale-timing-result.json")
 
     def test_final_validator_rejects_noncanonical_cell_without_io(self) -> None:
         with self.assertRaises(ChainError):

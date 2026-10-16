@@ -52,6 +52,7 @@ add_test(NAME native_pedersen_relation_smoke COMMAND native_pedersen_relation_sm
 
 add_executable(native_masked_layered_gkr_smoke native_masked_layered_gkr_smoke.cpp)
 target_link_libraries(native_masked_layered_gkr_smoke PRIVATE gat_adapter)
+target_compile_options(native_masked_layered_gkr_smoke PRIVATE -UNDEBUG)
 add_test(NAME native_masked_layered_gkr_smoke COMMAND native_masked_layered_gkr_smoke)
 
 add_executable(gat_matmul_layout_smoke gat_matmul_layout_smoke.cpp)

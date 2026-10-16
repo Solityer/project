@@ -199,7 +199,16 @@ class AuthenticatedFormalContext:
     srs_sha256: str
     srs_file_identity: tuple[int, int, int, int, int]
     config_sha256s: tuple[tuple[str, str], ...]
+    config_values: tuple[tuple[str, tuple[tuple[str, str], ...]], ...]
     _seal: object = field(repr=False, compare=False)
+
+    def config_values_for(self, dataset: str) -> dict[str, str]:
+        if self._seal is not _FORMAL_CONTEXT_SEAL or dataset not in DATASETS:
+            abort("authenticated config values require the sealed formal context and a canonical dataset")
+        for name, values in self.config_values:
+            if name == dataset:
+                return dict(values)
+        abort(f"sealed formal context has no preflight config values for {dataset}")
 
 
 def resource_file_identities() -> tuple[tuple[str, tuple[int, int, int, int, int]], ...]:
@@ -260,6 +269,9 @@ def create_authenticated_formal_context(
     *,
     authenticated_resource_file_identities: tuple[tuple[str, tuple[int, int, int, int, int]], ...],
     preflight_config_sha256s: tuple[tuple[str, str], ...],
+    preflight_config_values: dict[str, dict[str, str]],
+    handoff_source_tree_sha256: str | None = None,
+    handoff_resource_manifest_sha256: str | None = None,
 ) -> AuthenticatedFormalContext:
     if resource_file_identities() != authenticated_resource_file_identities:
         abort("manifest-listed resource files changed before the authenticated session context was sealed")
@@ -278,18 +290,27 @@ def create_authenticated_formal_context(
     config_sha256s = tuple(preflight_config_sha256s)
     if tuple(dataset for dataset, _ in config_sha256s) != DATASETS:
         abort("formal authentication context has an incomplete preflight config identity")
+    if tuple(preflight_config_values) != DATASETS:
+        abort("formal authentication context has incomplete preflight config values")
     if any(sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg") != digest for dataset, digest in config_sha256s):
         abort("formal secure configs changed after the five-dataset prerequisite")
+    current_resource_manifest_sha256 = resource_manifest_hash()
+    current_source_tree_sha256 = source_tree_hash()
+    if handoff_resource_manifest_sha256 is not None and current_resource_manifest_sha256 != handoff_resource_manifest_sha256:
+        abort("resource manifest changed after the current-session authentication handoff")
+    if handoff_source_tree_sha256 is not None and current_source_tree_sha256 != handoff_source_tree_sha256:
+        abort("source tree changed after the current-session resource authentication handoff")
     return AuthenticatedFormalContext(
         session_id=session_id,
-        resource_manifest_sha256=resource_manifest_hash(),
+        resource_manifest_sha256=current_resource_manifest_sha256,
         resource_file_identities=authenticated_resource_file_identities,
-        source_tree_sha256=source_tree_hash(),
+        source_tree_sha256=current_source_tree_sha256,
         srs_manifest_sha256=sha256(SRS_MANIFEST),
         srs_path=srs_path,
         srs_sha256=srs_sha256,
         srs_file_identity=(srs_stat.st_dev, srs_stat.st_ino, srs_stat.st_size, srs_stat.st_mtime_ns, srs_stat.st_ctime_ns),
         config_sha256s=config_sha256s,
+        config_values=tuple((dataset, tuple(sorted(preflight_config_values[dataset].items()))) for dataset in DATASETS),
         _seal=_FORMAL_CONTEXT_SEAL,
     )
 
@@ -300,26 +321,42 @@ def require_authenticated_formal_context(
     session_id: str,
     dataset: str,
     config: Path,
+    check_config_sha256: bool = True,
 ) -> None:
     if not isinstance(context, AuthenticatedFormalContext) or context._seal is not _FORMAL_CONTEXT_SEAL:
         abort("formal shared authentication context was not created by this process after preflight")
     if context.session_id != session_id or dataset not in DATASETS:
         abort("formal shared authentication context belongs to another session/dataset")
+    expected_config = dict(context.config_sha256s).get(dataset)
+    if expected_config is None:
+        abort(f"{dataset} secure config has no identity in the formal preflight context")
+    if check_config_sha256 and sha256(config) != expected_config:
+        abort(f"{dataset} secure config changed after formal preflight")
+
+
+def require_final_authenticated_formal_context(
+    context: AuthenticatedFormalContext,
+    *,
+    session_id: str,
+) -> None:
+    if not isinstance(context, AuthenticatedFormalContext) or context._seal is not _FORMAL_CONTEXT_SEAL:
+        abort("final formal validation requires the process-sealed authentication context")
+    if context.session_id != session_id:
+        abort("final formal validation context belongs to a different session")
     if resource_file_identities() != context.resource_file_identities:
-        abort("manifest-listed resource files changed after formal preflight; current session is invalid")
+        abort("manifest-listed resources changed during the formal session")
     srs_path = local_path(context.srs_path, "authenticated official SRS")
     srs_stat = require_formal_srs(srs_path).stat()
     if (srs_stat.st_dev, srs_stat.st_ino, srs_stat.st_size, srs_stat.st_mtime_ns, srs_stat.st_ctime_ns) != context.srs_file_identity:
-        abort("authenticated official SRS file changed after formal preflight")
-    expected_config = dict(context.config_sha256s).get(dataset)
-    if expected_config is None or sha256(config) != expected_config:
-        abort(f"{dataset} secure config changed after formal preflight")
+        abort("authenticated official SRS changed during the formal session")
+    for dataset, expected in context.config_sha256s:
+        config = ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"
+        if sha256(config) != expected:
+            abort(f"{dataset} secure config changed during the formal session")
     if resource_manifest_hash() != context.resource_manifest_sha256:
-        abort("resource manifest changed after formal preflight")
+        abort("resource manifest changed during the formal session")
     if sha256(SRS_MANIFEST) != context.srs_manifest_sha256:
-        abort("native SRS manifest changed after formal preflight")
-    if source_tree_hash() != context.source_tree_sha256:
-        abort("formal source tree changed after preflight")
+        abort("native SRS manifest changed during the formal session")
 
 
 def _resolve_executable(name: str) -> str:
@@ -881,7 +918,12 @@ def load_cli_contract() -> dict[str, Any]:
     return contract
 
 
-def validate_config(config: Path, dataset: str) -> dict[str, str]:
+def validate_config(
+    config: Path,
+    dataset: str,
+    *,
+    metadata_values: dict[str, str] | None = None,
+) -> dict[str, str]:
     require_file(config, "canonical secure config")
     values = parse_cfg(config)
     if values.get("dataset") != dataset:
@@ -891,6 +933,7 @@ def validate_config(config: Path, dataset: str) -> dict[str, str]:
         "cache_root": "resources/canonical/cache",
         "checkpoint_bundle": f"resources/canonical/checkpoints/{'ogbn_arxiv_gat' if dataset == 'ogbn_arxiv' else dataset + '_gat'}",
     }
+    validated_metadata: dict[Path, dict[str, str]] = {}
     for key, expected in expected_roots.items():
         if values.get(key) != expected:
             abort(f"{config} has non-canonical {key}: {values.get(key)!r}")
@@ -900,7 +943,11 @@ def validate_config(config: Path, dataset: str) -> dict[str, str]:
         else:
             metadata = ROOT / expected / dataset / "meta.cfg"
             require_file(metadata, f"{dataset} dataset-scoped {key} metadata")
-            validate_dataset_metadata(metadata, dataset, values)
+            if metadata not in validated_metadata:
+                validated_metadata[metadata] = validate_dataset_metadata(metadata, dataset, values)
+            if metadata_values is not None:
+                metadata_values.clear()
+                metadata_values.update(validated_metadata[metadata])
     if values.get("auto_prepare_dataset") != "false":
         abort(f"{config} must disable dataset auto-preparation")
     srs_path = values.get("srs_path")
@@ -997,7 +1044,7 @@ def native_srs_contract() -> tuple[str, int, dict[int, str]]:
     return url_match.group(1), max(hashes), hashes
 
 
-def validate_native_srs_manifest() -> dict[str, Any]:
+def validate_native_srs_manifest(*, config_values: dict[str, dict[str, str]] | None = None) -> dict[str, Any]:
     """Validate native get-srs provenance and every config/path/digest binding."""
 
     manifest = load_json(SRS_MANIFEST, "native SRS manifest")
@@ -1082,7 +1129,9 @@ def validate_native_srs_manifest() -> dict[str, Any]:
         elif (entry["path"], entry["srs_id"], entry["sha256"]) != (shared_path, shared_id, shared_digest):
             abort("native SRS entries do not share one authenticated cache")
         config = ROOT / "resources" / "canonical" / "configs" / f"{dataset}_secure.cfg"
-        values = parse_cfg(config)
+        values = parse_cfg(config) if config_values is None else config_values.get(dataset)
+        if not isinstance(values, dict):
+            abort(f"native SRS validation has no authenticated config values for {dataset}")
         if values.get("srs_type") != "trusted_srs":
             abort(f"{config} is not a trusted_srs config")
         if values.get("srs_id") != entry["srs_id"] or values.get("srs_path") != entry["path"]:
@@ -1101,6 +1150,19 @@ def load_json(path: Path, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         abort(f"{label} must be a JSON object")
     return value
+
+
+def load_json_with_sha256(path: Path, label: str) -> tuple[dict[str, Any], str]:
+    """Parse a bounded-use JSON object while deriving its identity from the same read."""
+    require_file(path, label)
+    try:
+        payload = path.read_bytes()
+        value = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        abort(f"invalid {label}: {exc}")
+    if not isinstance(value, dict):
+        abort(f"{label} must be a JSON object")
+    return value, hashlib.sha256(payload).hexdigest()
 
 
 def require_exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
@@ -1700,7 +1762,7 @@ def native_backend_identity() -> dict[str, Any]:
     }
 
 
-def validate_gpu_environment() -> dict[str, Any]:
+def validate_gpu_environment(*, authenticated_identity: dict[str, Any] | None = None) -> dict[str, Any]:
     expected_dir = ROOT / "artifacts/build/icicle-cuda"
     for path in (expected_dir, expected_dir.parent, expected_dir.parent.parent):
         if path.is_symlink():
@@ -1720,27 +1782,57 @@ def validate_gpu_environment() -> dict[str, Any]:
     for name in ("libingo_field_bn254.a", "libingo_curve_bn254.a"):
         require_file(directory / "lib" / name, "native ICICLE CUDA library")
     selected = _selected_cuda_device_from_environment()
+    if authenticated_identity is not None:
+        expected_identity = {"install_dir": str(directory.resolve()), **identity, "native_backend_identity": identity}
+        if type(authenticated_identity) is not dict or authenticated_identity != expected_identity:
+            abort("reused formal GPU identity does not match the current native backend manifest, source, libraries, or selected device")
+
     nvcc_path = _resolve_executable("nvcc")
     cmake_path = _resolve_executable("cmake")
     cc_path = _resolve_executable("cc")
     cxx_path = _resolve_executable("c++")
     nvidia_smi_path = _resolve_executable("nvidia-smi")
     make_path = _resolve_executable("make")
-    runtime_identity = {
+    runtime_paths = {
         "nvcc_path": nvcc_path,
-        "cuda_home": str(Path(nvcc_path).resolve().parent.parent),
-        "cuda_runtime": _tool_output(nvcc_path, "--version"),
         "cmake_path": cmake_path,
-        "cmake": _tool_output(cmake_path, "--version").splitlines()[0],
         "cc_path": cc_path,
-        "cc": _tool_output(cc_path, "--version").splitlines()[0],
         "cxx_path": cxx_path,
-        "cxx": _tool_output(cxx_path, "--version").splitlines()[0],
         "nvidia_smi_path": nvidia_smi_path,
-        "nvidia_smi": _tool_output(nvidia_smi_path, "--version").splitlines()[0],
         "make_path": make_path,
-        "make": _tool_output(make_path, "--version").splitlines()[0],
     }
+    if authenticated_identity is None:
+        runtime_identity = {
+            **runtime_paths,
+            "cuda_home": str(Path(nvcc_path).resolve().parent.parent),
+            "cuda_runtime": _tool_output(nvcc_path, "--version"),
+            "cmake": _tool_output(cmake_path, "--version").splitlines()[0],
+            "cc": _tool_output(cc_path, "--version").splitlines()[0],
+            "cxx": _tool_output(cxx_path, "--version").splitlines()[0],
+            "nvidia_smi": _tool_output(nvidia_smi_path, "--version").splitlines()[0],
+            "make": _tool_output(make_path, "--version").splitlines()[0],
+        }
+    else:
+        expected_paths = {
+            "nvcc_path": identity["cuda_compiler_path"],
+            "cmake_path": identity["cmake_path"],
+            "cc_path": identity["cc_path"],
+            "cxx_path": identity["cxx_path"],
+            "nvidia_smi_path": identity["nvidia_smi_path"],
+            "make_path": identity["make_path"],
+        }
+        if runtime_paths != expected_paths:
+            abort("formal GPU tool executable paths changed after the parent session authenticated them")
+        runtime_identity = {
+            **runtime_paths,
+            "cuda_home": identity["cuda_toolkit_root"],
+            "cuda_runtime": identity["cuda_runtime"],
+            "cmake": identity["cmake"],
+            "cc": identity["cc"],
+            "cxx": identity["cxx"],
+            "nvidia_smi": identity["nvidia_smi"],
+            "make": identity["make"],
+        }
     live_devices = _gpu_inventory(runtime_identity["nvidia_smi_path"])
     live_selected = next((device for device in live_devices if device["uuid"] == selected["uuid"]), None)
     if live_selected is None or live_selected != selected:
@@ -1776,6 +1868,7 @@ def validate_gpu_environment() -> dict[str, Any]:
     return {
         "install_dir": str(directory.resolve()),
         "nvidia_smi": f"index={selected['index']} uuid={selected['uuid']} {device_name}, {driver_version}, {compute_capability}",
+        "native_backend_identity": identity,
         "selected_cuda_device": selected,
         **identity,
     }

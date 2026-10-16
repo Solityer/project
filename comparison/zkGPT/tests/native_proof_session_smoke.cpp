@@ -9,6 +9,8 @@
 
 using namespace mcl::bn;
 
+static_assert(NativeProofSession::kVersion == 5, "native proof session wire version must track transcript v5");
+
 int main() {
     initPairing(mcl::BN254);
     const std::string path = "/tmp/zkgpt-native-proof-session-smoke.bin";
@@ -39,6 +41,22 @@ int main() {
     if (!produced.write(path, &reason)) {
         std::cerr << "write failed: " << reason << '\n';
         return 1;
+    }
+    {
+        std::ifstream wire(path.c_str(), std::ios::binary);
+        char header[12];
+        if (!wire.read(header, sizeof(header)) || std::string(header, 8) != "ZKGPTNS5") {
+            std::cerr << "native proof session wire magic is not v5\n";
+            return 30;
+        }
+        const std::uint32_t wire_version = static_cast<std::uint32_t>(static_cast<unsigned char>(header[8])) |
+                                           (static_cast<std::uint32_t>(static_cast<unsigned char>(header[9])) << 8) |
+                                           (static_cast<std::uint32_t>(static_cast<unsigned char>(header[10])) << 16) |
+                                           (static_cast<std::uint32_t>(static_cast<unsigned char>(header[11])) << 24);
+        if (wire_version != NativeProofSession::kVersion) {
+            std::cerr << "native proof session wire version is not v5\n";
+            return 31;
+        }
     }
     NativeProofSession restored;
     if (!NativeProofSession::read(path, restored, &reason) || restored.digest() != produced.digest() ||

@@ -1,4 +1,5 @@
 #include "verifier.hpp"
+#include "masked_gkr_coefficients.hpp"
 
 #include <mcl/bn256.hpp>
 
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -361,11 +363,119 @@ bool replace_opening_payload(std::vector<NativeProofMessage>& messages, const st
     return false;
 }
 
+void test_masked_eq_lookup_matches_scalar() {
+    using zkgpt::verifier_detail::MaskedEqLookup;
+    using zkgpt::verifier_detail::masked_eq_at;
+    const auto check = [](const std::vector<Fr> &point, bool expect_table,
+                          const std::vector<u64> &indices) {
+        const MaskedEqLookup lookup(point);
+        assert(lookup.uses_table() == expect_table);
+        for (u64 index : indices)
+            assert(lookup.at(index) == masked_eq_at(point, index));
+    };
+
+    check({}, false, {0, 1});
+    check({Fr(0)}, false, {0, 1, 2});
+    check({Fr(1)}, false, {0, 1, 2});
+    check({Fr(0), Fr(1)}, true, {0, 1, 2, 3, 4});
+
+    const auto make_point = [](std::size_t bits) {
+        std::vector<Fr> point;
+        point.reserve(bits);
+        for (std::size_t bit = 0; bit < bits; ++bit)
+            point.emplace_back(static_cast<long>(bit % 7 + 1));
+        return point;
+    };
+    for (std::size_t bits : {35U, 36U}) {
+        const std::vector<Fr> point = make_point(bits);
+        check(point, true,
+              {0, 1, u64(1) << (bits - 1),
+               (u64(1) << bits) - 1, u64(1) << bits});
+    }
+    check(make_point(37), false, {0, 1, u64(1) << 36, u64(1) << 37});
+    check(make_point(64), false, {0, 1, std::numeric_limits<u64>::max()});
+}
+
+std::vector<Fr> scalar_masked_gkr_coefficients(
+    const layer &current, const std::vector<Fr> &r0,
+    const std::vector<Fr> &r1, const std::vector<Fr> &ru,
+    const Fr &alpha, const Fr &beta, const Fr &relu_rou,
+    const std::vector<Fr> *rv) {
+    using zkgpt::verifier_detail::masked_eq_at;
+    Fr uni[2] = {Fr(0), Fr(0)};
+    Fr bin[3] = {Fr(0), Fr(0), Fr(0)};
+    const auto gate_weight = [&](u64 gate, u64 input, u64 right) {
+        Fr weight = (alpha * masked_eq_at(r0, gate) +
+                     beta * masked_eq_at(r1, gate)) *
+                    masked_eq_at(ru, input);
+        if (current.zero_start_id < current.size && gate >= current.zero_start_id)
+            weight *= relu_rou;
+        if (rv != nullptr) weight *= masked_eq_at(*rv, right);
+        return weight;
+    };
+    for (const uniGate &gate : current.uni_gates)
+        uni[gate.lu] += gate_weight(gate.g, gate.u, 0) * current.coefficient(gate);
+    for (const binGate &gate : current.bin_gates)
+        bin[gate.l] += gate_weight(gate.g, gate.u, gate.v) * current.coefficient(gate);
+    return {bin[0], bin[1], bin[2], uni[0], uni[1]};
+}
+
+void test_masked_gkr_coefficients_scalar_and_parallel() {
+    using zkgpt::verifier_detail::masked_gkr_coefficients;
+    layer empty;
+    const std::vector<Fr> empty_expected(5, Fr(0));
+    assert(masked_gkr_coefficients(empty, {}, {}, {}, Fr(2), Fr(3), Fr(5)) ==
+           empty_expected);
+
+    constexpr std::size_t unary_count = 32768;
+    constexpr std::size_t binary_count = 3;
+    layer current;
+    current.size = unary_count;
+    current.zero_start_id = unary_count / 2;
+    current.reserve_gate_arrays(unary_count, binary_count);
+    current.reserve_coefficients(6);
+    for (std::size_t index = 0; index < unary_count; ++index) {
+        const ll coefficient = index % 3 == 0 ? 2 : (index % 3 == 1 ? -1 : 3);
+        current.add_unary(index, (index * 17) % (u64(1) << 20),
+                          static_cast<u8>(index & 1), coefficient);
+    }
+    current.add_binary(7, 19, 23, 1, 0);
+    current.add_binary(unary_count / 2, 31, 47, -2, 1);
+    current.add_binary(unary_count - 1, 63, 95, 4, 2);
+
+    const auto make_point = [](std::size_t bits, long seed) {
+        std::vector<Fr> point;
+        point.reserve(bits);
+        for (std::size_t bit = 0; bit < bits; ++bit)
+            point.emplace_back(seed + static_cast<long>(bit % 5));
+        return point;
+    };
+    const std::vector<Fr> r0 = make_point(36, 2);
+    const std::vector<Fr> r1 = make_point(35, 3);
+    const std::vector<Fr> ru = make_point(36, 4);
+    const std::vector<Fr> rv = make_point(35, 5);
+    const Fr alpha(7), beta(11), relu_rou(13);
+
+    const auto check = [&](const std::vector<Fr> *right_point) {
+        const std::vector<Fr> expected = scalar_masked_gkr_coefficients(
+            current, r0, r1, ru, alpha, beta, relu_rou, right_point);
+        const std::vector<Fr> actual = masked_gkr_coefficients(
+            current, r0, r1, ru, alpha, beta, relu_rou, right_point);
+        assert(actual.size() == 5);
+        for (std::size_t index = 0; index < actual.size(); ++index)
+            assert(actual[index] == expected[index]);
+    };
+    check(nullptr);
+    check(&rv);
+}
+
 }
 
 int main() {
     test_bitmap_subset_matches_raw_sort_unique();
     initPairing(BN254);
+    test_masked_eq_lookup_matches_scalar();
+    test_masked_gkr_coefficients_scalar_and_parallel();
     const layeredCircuit circuit = make_circuit();
     NativeLayeredGkrWitness witness = make_witness();
     const std::vector<Fr> output{Fr(11), Fr(27)};

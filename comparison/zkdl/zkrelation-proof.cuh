@@ -2050,6 +2050,21 @@ struct AuthenticatedSortedLookupProviderSet {
 
     bool valid(const zkdl::AuthenticatedSortedLookupDescriptor& descriptor,
                std::string* error = nullptr) const {
+        return valid_impl(descriptor, error, true);
+    }
+
+    // Use only after valid() has checked the unchanged base providers and this
+    // prover has appended derived providers.  Recheck all shapes and derived
+    // merge-bit contents without rescanning the unchanged base tensors.
+    bool valid_after_derived_providers(
+        const zkdl::AuthenticatedSortedLookupDescriptor& descriptor,
+        std::string* error = nullptr) const {
+        return valid_impl(descriptor, error, false);
+    }
+
+private:
+    bool valid_impl(const zkdl::AuthenticatedSortedLookupDescriptor& descriptor,
+                    std::string* error, bool validate_base_contents) const {
         if (!descriptor.valid(error) ||
             !sorted_lookup_provider_shape(table_keys, descriptor.table_domain,
                                           descriptor.segment_size, descriptor.table_segment_count, error) ||
@@ -2192,57 +2207,60 @@ struct AuthenticatedSortedLookupProviderSet {
             return observed == active_length;
         };
 
-        if (!validate_mask(table_keys, table_active, "table",
-                           descriptor.table_active_length, true, true) ||
-            !validate_mask(query_keys, query_active, "query",
-                           descriptor.query_active_length, false, false) ||
-            !validate_mask(merge_keys, merge_active, "merge",
-                           descriptor.merge_active_length, true, false))
+        if (validate_base_contents &&
+            (!validate_mask(table_keys, table_active, "table",
+                            descriptor.table_active_length, true, true) ||
+             !validate_mask(query_keys, query_active, "query",
+                            descriptor.query_active_length, false, false) ||
+             !validate_mask(merge_keys, merge_active, "merge",
+                            descriptor.merge_active_length, true, false)))
             return false;
 
-        for (std::uint32_t segment = 0U; segment < merge_keys.segment_count(); ++segment) {
-            std::vector<FrWire> keys, active, delta, marker, inverse;
-            if (!merge_keys.read_segment(segment, keys, error) ||
-                !merge_active.read_segment(segment, active, error) ||
-                !merge_delta.read_segment(segment, delta, error) ||
-                !merge_marker.read_segment(segment, marker, error) ||
-                !merge_inverse.read_segment(segment, inverse, error)) return false;
-            const std::uint64_t base = static_cast<std::uint64_t>(segment) * merge_keys.segment_size();
-            for (std::uint32_t inside = 0U; inside < merge_keys.segment_size(); ++inside) {
-                const std::uint64_t index = base + inside;
-                if (index >= merge_keys.logical_domain()) break;
-                if (!sorted_lookup_boolean(marker[inside])) {
-                    if (error) *error = "sorted-lookup group marker is not boolean";
-                    return false;
-                }
-                if (!sorted_lookup_boolean(active[inside])) return false;
-                unsigned __int128 key = 0U, d = 0U;
-                if (!sorted_lookup_u128_from_field(keys[inside], descriptor.x_bits + descriptor.y_bits,
-                                                   key, error) ||
-                    !sorted_lookup_u128_from_field(delta[inside], descriptor.x_bits + descriptor.y_bits,
-                                                   d, error)) return false;
-                if (index < descriptor.merge_active_length &&
-                    (marker[inside] == zkdl::fr_from_u32(1U)) !=
-                    (index == 0U || (inside != 0U ? keys[inside] != keys[inside - 1U]
-                                                   : true))) {
-                    // Cross-segment equality is checked by the derived
-                    // marker provider; the wire validator only enforces the
-                    // local boolean/range shape here.
-                }
-                if (index >= descriptor.merge_active_length &&
-                    (delta[inside] != FrWire{} || marker[inside] != FrWire{} ||
-                     inverse[inside] != FrWire{})) {
-                    if (error) *error = "sorted-lookup padded auxiliary row is nonzero";
-                    return false;
-                }
-                if (d == 0U) {
-                    if (inverse[inside] != FrWire{}) {
-                        if (error) *error = "sorted-lookup zero delta has a nonzero inverse";
+        if (validate_base_contents) {
+            for (std::uint32_t segment = 0U; segment < merge_keys.segment_count(); ++segment) {
+                std::vector<FrWire> keys, active, delta, marker, inverse;
+                if (!merge_keys.read_segment(segment, keys, error) ||
+                    !merge_active.read_segment(segment, active, error) ||
+                    !merge_delta.read_segment(segment, delta, error) ||
+                    !merge_marker.read_segment(segment, marker, error) ||
+                    !merge_inverse.read_segment(segment, inverse, error)) return false;
+                const std::uint64_t base = static_cast<std::uint64_t>(segment) * merge_keys.segment_size();
+                for (std::uint32_t inside = 0U; inside < merge_keys.segment_size(); ++inside) {
+                    const std::uint64_t index = base + inside;
+                    if (index >= merge_keys.logical_domain()) break;
+                    if (!sorted_lookup_boolean(marker[inside])) {
+                        if (error) *error = "sorted-lookup group marker is not boolean";
                         return false;
                     }
-                } else if (zkdl::fr_mul(delta[inside], inverse[inside]) != zkdl::fr_from_u32(1U)) {
-                    if (error) *error = "sorted-lookup delta/inverse relation is false";
-                    return false;
+                    if (!sorted_lookup_boolean(active[inside])) return false;
+                    unsigned __int128 key = 0U, d = 0U;
+                    if (!sorted_lookup_u128_from_field(keys[inside], descriptor.x_bits + descriptor.y_bits,
+                                                       key, error) ||
+                        !sorted_lookup_u128_from_field(delta[inside], descriptor.x_bits + descriptor.y_bits,
+                                                       d, error)) return false;
+                    if (index < descriptor.merge_active_length &&
+                        (marker[inside] == zkdl::fr_from_u32(1U)) !=
+                        (index == 0U || (inside != 0U ? keys[inside] != keys[inside - 1U]
+                                                       : true))) {
+                        // Cross-segment equality is checked by the derived
+                        // marker provider; the wire validator only enforces the
+                        // local boolean/range shape here.
+                    }
+                    if (index >= descriptor.merge_active_length &&
+                        (delta[inside] != FrWire{} || marker[inside] != FrWire{} ||
+                         inverse[inside] != FrWire{})) {
+                        if (error) *error = "sorted-lookup padded auxiliary row is nonzero";
+                        return false;
+                    }
+                    if (d == 0U) {
+                        if (inverse[inside] != FrWire{}) {
+                            if (error) *error = "sorted-lookup zero delta has a nonzero inverse";
+                            return false;
+                        }
+                    } else if (zkdl::fr_mul(delta[inside], inverse[inside]) != zkdl::fr_from_u32(1U)) {
+                        if (error) *error = "sorted-lookup delta/inverse relation is false";
+                        return false;
+                    }
                 }
             }
         }
@@ -7202,10 +7220,8 @@ inline bool zktr_validate_common_inputs(
             if (error) *error = "invalid canonical terminal tensor input or shared segment layout";
             return false;
         }
-        for (std::uint32_t segment = 0U; segment < layout.segment_count; ++segment) {
-            std::vector<FrWire> values;
-            if (!tensor_providers[index].read_segment(segment, values, error)) return false;
-        }
+        // Segment payloads are validated when the terminal-opening loop consumes
+        // each segment below; do not decode and discard them here.
     }
     for (const auto& coordinate : evaluation_point)
         if (!zkdl::fr_canonical(coordinate)) {
@@ -11077,7 +11093,7 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         std::map<std::string, const TensorWitness*> tensor_map;
         progress.set_phase("tensor_validation");
         for (const auto& tensor : context.tensors) {
-            if (!tensor.valid(error) || !tensor_map.emplace(tensor.id, &tensor).second) {
+            if (!tensor.metadata_valid(error) || !tensor_map.emplace(tensor.id, &tensor).second) {
                 if (error && error->empty()) *error = "duplicate relation tensor id";
                 return false;
             }
@@ -12064,7 +12080,7 @@ inline bool prove_authenticated_sorted_lookup(
             providers.merge_bits.push_back(std::move(key_bit));
             providers.merge_delta_bits.push_back(std::move(delta_bit));
         }
-        if (!providers.valid(descriptor, error)) return false;
+        if (!providers.valid_after_derived_providers(descriptor, error)) return false;
         FrWire table_product{};
         if (!authenticated_sorted_lookup_public_table_product(
                 providers.table_keys, providers.table_active, descriptor.table_active_length,

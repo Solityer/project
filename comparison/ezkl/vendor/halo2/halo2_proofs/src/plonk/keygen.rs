@@ -147,6 +147,14 @@ pub struct NativeKeygenCensus {
     pub selector_activation_counts: Vec<u64>,
     /// Fixed assignment callback counts for each fixed column.
     pub fixed_assignment_callback_counts: Vec<u64>,
+    /// Upper bounds on populated fixed rows for each fixed column. A
+    /// `fill_from_row` callback contributes every row it fills.
+    pub fixed_value_assignment_counts: Vec<u64>,
+    /// Whether synthesis explicitly assigned a canonical zero in each fixed
+    /// column.
+    pub fixed_value_explicit_zero_seen: Vec<bool>,
+    /// Advice assignment callback counts for each advice column.
+    pub advice_assignment_counts: Vec<u64>,
     /// Number of copy calls recorded by the permutation argument.
     pub permutation_copy_calls: u64,
     /// Number of non-identity successor edges in the permutation argument.
@@ -405,6 +413,9 @@ struct Assembly<F: Field> {
     selector_activation_budget_bytes: usize,
     selector_activation_counts: Vec<u64>,
     fixed_assignment_callback_counts: Vec<u64>,
+    fixed_value_assignment_counts: Vec<u64>,
+    fixed_value_explicit_zero_seen: Vec<bool>,
+    advice_assignment_counts: Vec<u64>,
     // A range of available rows for assignment and copies.
     usable_rows: Range<usize>,
     _marker: std::marker::PhantomData<F>,
@@ -478,7 +489,7 @@ impl<F: Field> Assignment<F> for Assembly<F> {
     fn assign_advice<V, VR, A, AR>(
         &mut self,
         _: A,
-        _: Column<Advice>,
+        column: Column<Advice>,
         _: usize,
         _: V,
     ) -> Result<(), Error>
@@ -488,7 +499,11 @@ impl<F: Field> Assignment<F> for Assembly<F> {
         A: FnOnce() -> AR,
         AR: Into<String>,
     {
-        // We only care about fixed columns here
+        let count = self
+            .advice_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
         Ok(())
     }
 
@@ -509,16 +524,30 @@ impl<F: Field> Assignment<F> for Assembly<F> {
             return Err(Error::not_enough_rows_available(self.k));
         }
 
+        let assigned = to().into_field().assign()?;
         *self
             .fixed
             .get_mut(column.index())
             .and_then(|v| v.get_mut(row))
-            .ok_or(Error::BoundsFailure)? = to().into_field().assign()?;
+            .ok_or(Error::BoundsFailure)? = assigned;
         let count = self
             .fixed_assignment_callback_counts
             .get_mut(column.index())
             .ok_or(Error::BoundsFailure)?;
         *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        let assigned_rows = self
+            .fixed_value_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *assigned_rows = assigned_rows
+            .saturating_add(1)
+            .min(self.usable_rows.end as u64);
+        if assigned_value_is_explicit_zero(assigned) {
+            *self
+                .fixed_value_explicit_zero_seen
+                .get_mut(column.index())
+                .ok_or(Error::BoundsFailure)? = true;
+        }
 
         Ok(())
     }
@@ -554,6 +583,7 @@ impl<F: Field> Assignment<F> for Assembly<F> {
             .ok_or(Error::BoundsFailure)?;
 
         let filler = to.assign()?;
+        let filled_rows = self.usable_rows.end.saturating_sub(from_row);
         for row in self.usable_rows.clone().skip(from_row) {
             col[row] = filler;
         }
@@ -562,6 +592,19 @@ impl<F: Field> Assignment<F> for Assembly<F> {
             .get_mut(column.index())
             .ok_or(Error::BoundsFailure)?;
         *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        let assigned_rows = self
+            .fixed_value_assignment_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *assigned_rows = assigned_rows
+            .saturating_add(filled_rows as u64)
+            .min(self.usable_rows.end as u64);
+        if assigned_value_is_explicit_zero(filler) {
+            *self
+                .fixed_value_explicit_zero_seen
+                .get_mut(column.index())
+                .ok_or(Error::BoundsFailure)? = true;
+        }
 
         Ok(())
     }
@@ -611,7 +654,11 @@ pub struct NativeShapeCensus {
     pub permutation_copy_call_count: u64,
     /// Exact enabled-row count for every virtual selector, in selector-index order.
     pub selector_activation_counts: Vec<u64>,
-    /// Upper bounds on distinct fixed values assigned or filled per fixed column.
+    /// Upper bounds on distinct fixed values per fixed column, based on the
+    /// number of assign/fill callbacks (one `fill_from_row` repeats one value).
+    pub fixed_assignment_callback_counts: Vec<u64>,
+    /// Upper bounds on populated fixed rows per fixed column. A fill callback
+    /// contributes each row in its filled suffix.
     pub fixed_value_assignment_counts: Vec<u64>,
     /// Whether synthesis explicitly assigned a canonical zero representation
     /// (Zero or Trivial(0)) in each fixed column. Other encodings do not prove
@@ -667,6 +714,7 @@ where
         selector_activation_storage_current_bytes: selector_activation_initial_bytes,
         selector_activation_storage_peak_bytes: selector_activation_initial_bytes,
         selector_activation_counts: vec![0; cs.num_selectors],
+        fixed_assignment_callback_counts: vec![0; cs.num_fixed_columns],
         fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
         fixed_value_explicit_zero_seen: vec![false; cs.num_fixed_columns],
         advice_assignment_counts: vec![0; cs.num_advice_columns],
@@ -697,6 +745,7 @@ where
         .map_err(|_| Error::BoundsFailure)?,
         permutation_copy_call_count: assembly.permutation_copy_call_count,
         selector_activation_counts: assembly.selector_activation_counts,
+        fixed_assignment_callback_counts: assembly.fixed_assignment_callback_counts,
         fixed_value_assignment_counts: assembly.fixed_value_assignment_counts,
         fixed_value_explicit_zero_seen: assembly.fixed_value_explicit_zero_seen,
         advice_assignment_counts: assembly.advice_assignment_counts,
@@ -728,6 +777,7 @@ struct SelectorOnlyAssembly<F: Field> {
     selector_activation_storage_current_bytes: usize,
     selector_activation_storage_peak_bytes: usize,
     selector_activation_counts: Vec<u64>,
+    fixed_assignment_callback_counts: Vec<u64>,
     fixed_value_assignment_counts: Vec<u64>,
     fixed_value_explicit_zero_seen: Vec<bool>,
     advice_assignment_counts: Vec<u64>,
@@ -842,6 +892,11 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
             return Err(Error::BoundsFailure);
         }
         let value = to().into_field().assign()?;
+        let callback_count = self
+            .fixed_assignment_callback_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *callback_count = callback_count.checked_add(1).ok_or(Error::BoundsFailure)?;
         let count = self
             .fixed_value_assignment_counts
             .get_mut(column.index())
@@ -892,11 +947,19 @@ impl<F: Field> Assignment<F> for SelectorOnlyAssembly<F> {
             return Err(Error::BoundsFailure);
         }
         let value = to.assign()?;
+        let callback_count = self
+            .fixed_assignment_callback_counts
+            .get_mut(column.index())
+            .ok_or(Error::BoundsFailure)?;
+        *callback_count = callback_count.checked_add(1).ok_or(Error::BoundsFailure)?;
         let count = self
             .fixed_value_assignment_counts
             .get_mut(column.index())
             .ok_or(Error::BoundsFailure)?;
-        *count = count.checked_add(1).ok_or(Error::BoundsFailure)?;
+        let filled_rows = self.usable_rows.end.saturating_sub(from_row);
+        *count = count
+            .saturating_add(filled_rows as u64)
+            .min(self.usable_rows.end as u64);
         if assigned_value_is_explicit_zero(value) {
             *self
                 .fixed_value_explicit_zero_seen
@@ -1003,8 +1066,39 @@ fn native_keygen_census(
     selector_activation_storage_peak_bytes: usize,
     selector_activation_counts: Vec<u64>,
     fixed_assignment_callback_counts: Vec<u64>,
+    fixed_value_assignment_counts: Vec<u64>,
+    fixed_value_explicit_zero_seen: Vec<bool>,
+    advice_assignment_counts: Vec<u64>,
     permutation: crate::poly::NativePermutationStats,
 ) -> Result<NativeKeygenCensus, Error> {
+    let domain_size = preflight.domain_size;
+    let permutation_cell_bound = u64::try_from(preflight.permutation_columns)
+        .ok()
+        .and_then(|columns| columns.checked_mul(domain_size))
+        .ok_or(Error::BoundsFailure)?;
+    if selector_activation_counts.len() != preflight.selector_count
+        || selector_activation_counts
+            .iter()
+            .any(|count| *count > domain_size)
+        || fixed_assignment_callback_counts.len() != preflight.fixed_columns
+        || fixed_assignment_callback_counts
+            .iter()
+            .any(|count| *count > domain_size)
+        || fixed_value_assignment_counts.len() != preflight.fixed_columns
+        || fixed_value_assignment_counts
+            .iter()
+            .any(|count| *count > domain_size)
+        || fixed_value_explicit_zero_seen.len() != preflight.fixed_columns
+        || advice_assignment_counts.len() != preflight.advice_columns
+        || advice_assignment_counts
+            .iter()
+            .any(|count| *count > domain_size)
+        || permutation.copy_calls > permutation_cell_bound
+    {
+        return Err(native_storage_error(
+            "native keygen synthesis census exceeds configured per-column or permutation bounds",
+        ));
+    }
     Ok(NativeKeygenCensus {
         preflight: preflight.clone(),
         compressed_selector_columns,
@@ -1018,6 +1112,9 @@ fn native_keygen_census(
         .map_err(|_| Error::BoundsFailure)?,
         selector_activation_counts,
         fixed_assignment_callback_counts,
+        fixed_value_assignment_counts,
+        fixed_value_explicit_zero_seen,
+        advice_assignment_counts,
         permutation_copy_calls: permutation.copy_calls,
         permutation_successor_edges: permutation.successor_edges,
         permutation_nondefault_records: permutation.nondefault_records,
@@ -1130,6 +1227,9 @@ where
         selector_activation_budget_bytes,
         selector_activation_counts: vec![0; cs.num_selectors],
         fixed_assignment_callback_counts: vec![0; cs.num_fixed_columns],
+        fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
+        fixed_value_explicit_zero_seen: vec![false; cs.num_fixed_columns],
+        advice_assignment_counts: vec![0; cs.num_advice_columns],
         usable_rows: 0..usable_end,
         _marker: std::marker::PhantomData,
     };
@@ -1155,6 +1255,9 @@ where
         assembly.selector_activation_storage_peak_bytes,
         assembly.selector_activation_counts.clone(),
         assembly.fixed_assignment_callback_counts.clone(),
+        assembly.fixed_value_assignment_counts.clone(),
+        assembly.fixed_value_explicit_zero_seen.clone(),
+        assembly.advice_assignment_counts.clone(),
         permutation_stats,
     )?;
     after_synthesis(&native_census).map_err(Error::NativeStorage)?;
@@ -1313,6 +1416,9 @@ where
         selector_activation_budget_bytes,
         selector_activation_counts: vec![0; cs.num_selectors],
         fixed_assignment_callback_counts: vec![0; cs.num_fixed_columns],
+        fixed_value_assignment_counts: vec![0; cs.num_fixed_columns],
+        fixed_value_explicit_zero_seen: vec![false; cs.num_fixed_columns],
+        advice_assignment_counts: vec![0; cs.num_advice_columns],
         usable_rows: 0..usable_end,
         _marker: std::marker::PhantomData,
     };
@@ -1339,6 +1445,9 @@ where
         assembly.selector_activation_storage_peak_bytes,
         assembly.selector_activation_counts.clone(),
         assembly.fixed_assignment_callback_counts.clone(),
+        assembly.fixed_value_assignment_counts.clone(),
+        assembly.fixed_value_explicit_zero_seen.clone(),
+        assembly.advice_assignment_counts.clone(),
         permutation_stats,
     )?;
     after_synthesis(&native_census).map_err(Error::NativeStorage)?;

@@ -1074,12 +1074,23 @@ impl GraphSettings {
 
     /// Calc the number of rows required for the range checks
     pub fn range_check_log_rows_with_blinding(&self) -> u32 {
+        let generic_decomposition_range = self
+            .run_args
+            .decomp_base
+            .checked_sub(1)
+            .and_then(|upper| IntegerRep::try_from(upper).ok())
+            .map(|upper| (0, upper));
         let max_range = self
             .required_range_checks
             .iter()
             .filter_map(|range| {
                 let span = range.1.checked_sub(range.0)?;
-                if self.gat_range_gadget_version.is_some() && span > 1023 {
+                let native_generic_decomposition = !self.run_args.ignore_range_check_inputs_outputs
+                    && generic_decomposition_range.as_ref() == Some(range);
+                if self.gat_range_gadget_version.is_some()
+                    && span > 1023
+                    && !native_generic_decomposition
+                {
                     None
                 } else {
                     Some(span)

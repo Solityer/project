@@ -14,6 +14,7 @@ import secrets
 import signal
 import stat
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence
@@ -51,6 +52,7 @@ from common import (
 
 from collect_results import _validate_preflight
 from gat_zkgpt_experiment import run_cell
+from validate_final_results import _validate_final_results
 
 LOCAL_CAPACITY_PROFILE_SCHEMA = "zkgpt-local-capacity-profile-v2"
 LOCAL_OWNER_SCHEMA = "zkgpt-local-formal-owner-v1"
@@ -59,6 +61,8 @@ FINALIZATION_INTERNAL_DISK_RESERVE_BYTES = 64 * 1024 * 1024
 HOST_ACCOUNTING_OVERHEAD_BYTES = 64 * 1024 * 1024
 SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 OWNER_ENV_PREFIX = "ZKGPT_LOCAL_OWNER_"
+OWNER_APPROVED_CELLS_SCHEMA = "zkgpt-owner-approved-cells-v1"
+OWNER_APPROVED_CELLS_LIMIT_BYTES = 1024 * 1024
 _OWNER_LOCK_FD_ENV = OWNER_ENV_PREFIX + "LOCK_FD"
 _OWNER_TOKEN_ENV = OWNER_ENV_PREFIX + "TOKEN"
 _OWNER_PID_ENV = OWNER_ENV_PREFIX + "PID"
@@ -405,6 +409,57 @@ def _validate_owner_lease(root: Path, phase: str, session_id: str, dataset: str 
     except (OSError, ValueError) as exc:
         raise ChainError("private phase cannot validate the inherited baseline-local lock") from exc
     return record
+
+
+def _read_owner_approved_cells_fd(root: Path, fd: int, session_id: str) -> Dict[str, Dict[str, str]]:
+    if fd < 3:
+        raise ChainError("owner approval input FD is invalid")
+    try:
+        info = os.fstat(fd)
+        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 0 or info.st_size < 1 or
+                info.st_size > OWNER_APPROVED_CELLS_LIMIT_BYTES or (flags & os.O_ACCMODE) != os.O_RDONLY):
+            raise ChainError("owner approval input must be a bounded anonymous read-only regular file")
+        os.lseek(fd, 0, os.SEEK_SET)
+        raw = bytearray()
+        while len(raw) <= OWNER_APPROVED_CELLS_LIMIT_BYTES:
+            chunk = os.read(fd, min(65536, OWNER_APPROVED_CELLS_LIMIT_BYTES + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+    except OSError as exc:
+        raise ChainError("cannot read inherited owner approval input") from exc
+    if len(raw) != info.st_size:
+        raise ChainError("owner approval input length changed during read")
+    try:
+        payload = json.loads(bytes(raw).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ChainError("owner approval input is malformed") from exc
+    if (not isinstance(payload, dict) or payload.get("schema") != OWNER_APPROVED_CELLS_SCHEMA or
+            payload.get("session_id") != session_id):
+        raise ChainError("owner approval input has a stale schema or session")
+    cells = payload.get("cells")
+    if not isinstance(cells, dict) or set(cells) != set(DATASETS):
+        raise ChainError("owner approval input must contain exactly the five canonical datasets")
+    required = {"dataset", "receipt_path", "receipt_sha256", "result_path", "result_sha256",
+                "execution_path", "execution_sha256", "proof_path", "proof_sha256",
+                "verification_report_path", "verification_report_sha256"}
+    for dataset in DATASETS:
+        entry = cells[dataset]
+        if not isinstance(entry, dict) or set(entry) != required or entry.get("dataset") != dataset:
+            raise ChainError(f"owner approval entry is malformed: {dataset}")
+        if entry["receipt_path"] != f"results/formal/{session_id}/receipts/{dataset}.json":
+            raise ChainError(f"owner approval receipt path is noncanonical: {dataset}")
+        for key in required - {"dataset"}:
+            value = entry[key]
+            if not isinstance(value, str) or not value:
+                raise ChainError(f"owner approval entry is missing {key}: {dataset}")
+        for path_key in ("receipt_path", "result_path", "execution_path", "proof_path", "verification_report_path"):
+            local_path(root, entry[path_key], "owner-approved cell artifact")
+        for digest_key in ("receipt_sha256", "result_sha256", "execution_sha256", "proof_sha256", "verification_report_sha256"):
+            if not re.fullmatch(r"[0-9a-f]{64}", entry[digest_key]):
+                raise ChainError(f"owner approval entry has an invalid {digest_key}: {dataset}")
+    return cells
 
 
 def _install_parent_death_watch(root: Path, session_id: str) -> None:
@@ -865,37 +920,45 @@ def _cell_phase(root: Path, session_id: str, session_dir: Path, dataset: str) ->
     }
 
 
-def _finalize_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, Any]:
+def _finalize_phase(root: Path, session_id: str, session_dir: Path, owner_approved_cells: Mapping[str, Mapping[str, Any]]) -> Dict[str, Any]:
     session, preflight, resource_digest, context, preflight_path, session_manifest_sha256 = _load_prepared(root, session_id, session_dir)
+    if not isinstance(owner_approved_cells, dict) or set(owner_approved_cells) != set(DATASETS):
+        raise ChainError("finalize requires exactly five owner-approved cell receipts")
     receipts = session_dir / "receipts"
+    timed_reports: Dict[str, str] = {}
     for dataset in DATASETS:
         receipt_path = receipts / f"{dataset}.json"
         receipt = load_json(receipt_path, f"zkGPT {dataset} cell receipt")
+        approved = owner_approved_cells[dataset]
+        expected_receipt_path = relative_path(root, receipt_path, "zkGPT cell receipt")
         if (
             not isinstance(receipt, dict)
             or receipt.get("status") != "VERIFY_OK"
             or receipt.get("session_id") != session_id
             or receipt.get("dataset") != dataset
+            or approved.get("receipt_path") != expected_receipt_path
+            or approved.get("receipt_sha256") != sha256_file(receipt_path)
         ):
             raise ChainError(f"zkGPT verified cell receipt is missing or stale: {dataset}")
-        if receipt.get("proof_sha256") != sha256_file(root / receipt["proof_path"]):
+        for key in ("result_path", "result_sha256", "execution_path", "execution_sha256", "proof_path", "proof_sha256",
+                    "verification_report_path", "verification_report_sha256"):
+            if receipt.get(key) != approved.get(key):
+                raise ChainError(f"zkGPT owner-approved receipt binding changed for {dataset}: {key}")
+        if approved["proof_sha256"] != sha256_file(local_path(root, approved["proof_path"], "zkGPT proof artifact")):
             raise ChainError(f"zkGPT proof artifact changed after cell receipt: {dataset}")
-        if receipt.get("verification_report_sha256") != sha256_file(root / receipt["verification_report_path"]):
+        if approved["verification_report_sha256"] != sha256_file(local_path(root, approved["verification_report_path"], "zkGPT timed independent-verifier report")):
             raise ChainError(f"zkGPT timed independent-verifier report changed after receipt: {dataset}")
-    timed_reports = {dataset: sha256_file(root / load_json(receipts / f"{dataset}.json", "cell receipt")["verification_report_path"]) for dataset in DATASETS}
+        timed_reports[dataset] = approved["verification_report_sha256"]
     _set_status(root, session_id, "RUNNING", "collection")
     logs = session_dir / "logs"
     _run_logged_stage(root, [sys.executable, str(root / "scripts" / "collect_results.py")], logs, "collection")
     _set_status(root, session_id, "RUNNING", "final-validation")
-    _run_logged_stage(root, [sys.executable, str(root / "scripts" / "validate_final_results.py")], logs, "final-validation")
+    if _validate_final_results(root, owner_approved_cells=owner_approved_cells) != 0:
+        raise ChainError("zkGPT owner final validation rejected the approved cell reports")
     for dataset, digest in timed_reports.items():
-        receipt = load_json(receipts / f"{dataset}.json", "cell receipt")
-        report_path = root / receipt["verification_report_path"]
+        report_path = local_path(root, owner_approved_cells[dataset]["verification_report_path"], "zkGPT timed independent-verifier report")
         if sha256_file(report_path) != digest:
             raise ChainError(f"final independent verifier overwrote the timed cell report: {dataset}")
-        final_report_path = report_path.with_name("final_verifier_report.json")
-        if not final_report_path.is_file():
-            raise ChainError(f"final independent verifier report is missing: {dataset}")
     final_path = formal_final_path(root, session_id)
     final = load_json(final_path, "final validation result")
     if (
@@ -905,6 +968,23 @@ def _finalize_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str,
         or final.get("session_id") != session_id
     ):
         raise ChainError("zkGPT final native validator did not validate exactly five current-session cells")
+    accounting = final.get("verification_accounting")
+    if (not isinstance(accounting, dict) or accounting.get("cell_stage_independent_verifier_invocations") != len(DATASETS) or
+            accounting.get("final_stage_native_verifier_invocations") != 0 or
+            accounting.get("independent_crypto_verifier_invocations_total") != len(DATASETS) or
+            accounting.get("cell_reports_reused") is not True):
+        raise ChainError("zkGPT final validation has inaccurate verifier reuse accounting")
+    verification = final.get("final_native_verification")
+    if not isinstance(verification, list) or len(verification) != len(DATASETS):
+        raise ChainError("zkGPT final validation omitted approved cell verifier reports")
+    for dataset, entry in zip(DATASETS, verification):
+        approved = owner_approved_cells[dataset]
+        if (not isinstance(entry, dict) or entry.get("dataset") != dataset or
+                entry.get("verification_source") != "cell_stage_independent_report" or
+                entry.get("reused_cell_report") is not True or entry.get("final_native_verifier_invocations") != 0 or
+                entry.get("report_path") != approved["verification_report_path"] or
+                entry.get("report_sha256") != approved["verification_report_sha256"]):
+            raise ChainError(f"zkGPT final validation report is not bound to the approved cell report: {dataset}")
     _set_status(root, session_id, "COMPLETE", "")
     return {
         "phase": "finalize",
@@ -914,6 +994,8 @@ def _finalize_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str,
         "final_validation_sha256": sha256_file(final_path),
         "validated_cells": list(DATASETS),
         "independent_verification": True,
+        "reused_cell_reports": len(DATASETS),
+        "final_native_verifier_invocations": 0,
         "paper_timing_semantics": final.get("paper_timing_semantics"),
     }
 
@@ -985,12 +1067,12 @@ def _parse_stage_marker(stdout_path: Path, phase: str, session_id: str, dataset:
     return payload
 
 
-def _launch_owner_child(root: Path, lock_stream: Any, command: Sequence[str], env: Mapping[str, str], stdout_path: Path, stderr_path: Path, label: str) -> int:
-    return run_logged(command, root, stdout_path, stderr_path, label, extra_env=env, isolate_process_group=True, pass_fds=(lock_stream.fileno(),))
+def _launch_owner_child(root: Path, lock_stream: Any, command: Sequence[str], env: Mapping[str, str], stdout_path: Path, stderr_path: Path, label: str, extra_fds: Sequence[int] = ()) -> int:
+    return run_logged(command, root, stdout_path, stderr_path, label, extra_env=env, isolate_process_group=True, pass_fds=(lock_stream.fileno(), *extra_fds))
 
 
 def _run_owner_phase(
-    root: Path, lock_stream: Any, session_id: str, session_dir: Path, phase: str, dataset: str | None, owner_token: str, owner_start_ticks: int, logs: Path
+    root: Path, lock_stream: Any, session_id: str, session_dir: Path, phase: str, dataset: str | None, owner_token: str, owner_start_ticks: int, logs: Path, owner_approved_cells: Mapping[str, Mapping[str, Any]] | None = None
 ) -> Dict[str, Any]:
     nonce = secrets.token_hex(16)
     _update_owner_record(root, active_stage=phase, active_dataset=dataset, stage_nonce=nonce, status="RUNNING")
@@ -1009,10 +1091,38 @@ def _run_owner_phase(
     command = [sys.executable, str(Path(__file__).resolve()), "--internal-phase", phase, "--session-dir", str(session_dir)]
     if dataset is not None:
         command.extend(["--dataset", dataset])
+    if (phase == "finalize") != (owner_approved_cells is not None):
+        raise ChainError("owner-approved cells are required only for finalize")
+    approval_file = None
+    approval_fd: int | None = None
     suffix = f"-{dataset}" if dataset else ""
     stdout_path = logs / f"{phase}{suffix}.stdout.log"
     stderr_path = logs / f"{phase}{suffix}.stderr.log"
-    returncode = _launch_owner_child(root, lock_stream, command, env, stdout_path, stderr_path, f"local-{phase}{suffix}")
+    try:
+        if owner_approved_cells is not None:
+            if set(owner_approved_cells) != set(DATASETS):
+                raise ChainError("owner cannot finalize without five approved cell receipts")
+            approval_payload = json.dumps({"schema": OWNER_APPROVED_CELLS_SCHEMA, "session_id": session_id,
+                                           "cells": owner_approved_cells}, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            if len(approval_payload) > OWNER_APPROVED_CELLS_LIMIT_BYTES:
+                raise ChainError("owner-approved cell map exceeds its fixed handoff limit")
+            approval_file = tempfile.TemporaryFile(mode="w+b")
+            approval_file.write(approval_payload)
+            approval_file.flush()
+            approval_info = os.fstat(approval_file.fileno())
+            if not stat.S_ISREG(approval_info.st_mode) or approval_info.st_nlink != 0:
+                raise ChainError("owner approval handoff is not an anonymous regular file")
+            approval_fd = os.open(f"/proc/self/fd/{approval_file.fileno()}", os.O_RDONLY)
+            if fcntl.fcntl(approval_fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+                raise ChainError("owner approval handoff is not read-only")
+            os.lseek(approval_fd, 0, os.SEEK_SET)
+            command.extend(["--owner-approved-cells-fd", str(approval_fd)])
+        returncode = _launch_owner_child(root, lock_stream, command, env, stdout_path, stderr_path, f"local-{phase}{suffix}", () if approval_fd is None else (approval_fd,))
+    finally:
+        if approval_fd is not None:
+            os.close(approval_fd)
+        if approval_file is not None:
+            approval_file.close()
     if returncode != 0:
         raise ChainError(f"zkGPT local {phase} phase exited with code {returncode}; see {stderr_path}")
     marker = _parse_stage_marker(stdout_path, phase, session_id, dataset)
@@ -1071,6 +1181,7 @@ def _run_official(root: Path) -> int:
             ):
                 raise ChainError("zkGPT prepare phase marker does not match the source-bound local context")
             failed_datasets: Dict[str, str] = {}
+            owner_approved_cells: Dict[str, Dict[str, str]] = {}
             for dataset in DATASETS:
                 try:
                     _set_owner_control_stage(root, session_id, f"capacity-admission:before-cell:{dataset}", dataset)
@@ -1101,6 +1212,19 @@ def _run_official(root: Path) -> int:
                     retained_bound = profile["datasets"][dataset]["cell_retained_artifact_bytes_upper_bound"]
                     if actual_retained > retained_bound:
                         raise ChainError(f"zkGPT retained output exceeds its source-derived bound for {dataset}: {actual_retained} > {retained_bound}")
+                    owner_approved_cells[dataset] = {
+                        "dataset": dataset,
+                        "receipt_path": expected_receipt_path,
+                        "receipt_sha256": cell_marker["receipt_sha256"],
+                        "result_path": receipt["result_path"],
+                        "result_sha256": receipt["result_sha256"],
+                        "execution_path": receipt["execution_path"],
+                        "execution_sha256": receipt["execution_sha256"],
+                        "proof_path": receipt["proof_path"],
+                        "proof_sha256": receipt["proof_sha256"],
+                        "verification_report_path": receipt["verification_report_path"],
+                        "verification_report_sha256": receipt["verification_report_sha256"],
+                    }
                 except Exception as exc:
                     reason = f"{type(exc).__name__}: {exc}"
                     failed_datasets[dataset] = reason
@@ -1129,12 +1253,27 @@ def _run_official(root: Path) -> int:
                 )
             _set_owner_control_stage(root, session_id, "capacity-admission:before-finalization")
             _capacity_gate(root, session_id, session_dir, profile, [], "before-finalization")
-            final_marker = _run_owner_phase(root, lock_stream, session_id, session_dir, "finalize", None, owner_token, owner_start_ticks, logs)
+            final_marker = _run_owner_phase(root, lock_stream, session_id, session_dir, "finalize", None, owner_token, owner_start_ticks, logs, owner_approved_cells=owner_approved_cells)
             final_path = formal_final_path(root, session_id)
             if final_marker.get("final_validation_path") != relative_path(root, final_path, "zkGPT final validation") or final_marker.get(
                 "final_validation_sha256"
             ) != sha256_file(final_path):
                 raise ChainError("zkGPT local finalization marker does not match the validated receipt")
+            if final_marker.get("final_native_verifier_invocations") != 0 or final_marker.get("reused_cell_reports") != len(DATASETS):
+                raise ChainError("zkGPT finalization did not reuse the five approved cell reports")
+            final = load_json(final_path, "final validation result")
+            final_verification = final.get("final_native_verification") if isinstance(final, dict) else None
+            if not isinstance(final_verification, list) or len(final_verification) != len(DATASETS):
+                raise ChainError("zkGPT final validation report has no per-cell verification accounting")
+            for dataset, verified in zip(DATASETS, final_verification):
+                approved = owner_approved_cells[dataset]
+                if (not isinstance(verified, dict) or verified.get("dataset") != dataset or
+                        verified.get("verification_source") != "cell_stage_independent_report" or
+                        verified.get("reused_cell_report") is not True or
+                        verified.get("final_native_verifier_invocations") != 0 or
+                        verified.get("report_path") != approved["verification_report_path"] or
+                        verified.get("report_sha256") != approved["verification_report_sha256"]):
+                    raise ChainError(f"zkGPT final report is not bound to the owner-approved cell report: {dataset}")
             _update_owner_record(root, status="COMPLETE", active_stage="complete", active_dataset=None, stage_nonce="", failure="")
             print(f"ZKGPT_FORMAL_COMPLETE session_id={session_id} " f"final_validation=results/formal/{session_id}/final_validation.json", flush=True)
             return 0
@@ -1166,7 +1305,7 @@ def _run_official(root: Path) -> int:
             raise
 
 
-def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: str | None, owner_lease: Mapping[str, Any]) -> int:
+def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: str | None, owner_lease: Mapping[str, Any], owner_approved_cells: Mapping[str, Mapping[str, Any]] | None = None) -> int:
     session_id, session_dir = _session_dir(root, session_dir_arg, allow_empty=(phase == "prepare"))
     if phase == "cell" and dataset not in DATASETS:
         raise ChainError("cell phase requires one canonical --dataset")
@@ -1174,6 +1313,8 @@ def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: s
         raise ChainError("--dataset is only valid for a cell phase")
     if owner_lease.get("session_id") != session_id:
         raise ChainError("private phase owner lease is bound to another session")
+    if (phase == "finalize") != (owner_approved_cells is not None):
+        raise ChainError("owner-approved cells are required only for finalize")
     install_process_signal_cleanup()
     _install_parent_death_watch(root, session_id)
     if phase == "prepare":
@@ -1181,7 +1322,7 @@ def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: s
     elif phase == "cell":
         payload = _cell_phase(root, session_id, session_dir, dataset or "")
     elif phase == "finalize":
-        payload = _finalize_phase(root, session_id, session_dir)
+        payload = _finalize_phase(root, session_id, session_dir, owner_approved_cells or {})
     else:
         raise ChainError(f"unsupported internal phase: {phase}")
     _phase_marker(payload)
@@ -1193,10 +1334,11 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--internal-phase", choices=("prepare", "cell", "finalize"), help=argparse.SUPPRESS)
     parser.add_argument("--session-dir", help=argparse.SUPPRESS)
     parser.add_argument("--dataset", choices=DATASETS, help=argparse.SUPPRESS)
+    parser.add_argument("--owner-approved-cells-fd", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(list(argv))
     root = baseline_root()
     if args.internal_phase is None:
-        if args.session_dir or args.dataset:
+        if args.session_dir or args.dataset or args.owner_approved_cells_fd is not None:
             print("private zkGPT phase arguments require --internal-phase", file=sys.stderr)
             return 2
         try:
@@ -1217,8 +1359,11 @@ def main(argv: Sequence[str]) -> int:
             raise ChainError("cell phase requires one canonical --dataset")
         if args.internal_phase != "cell" and args.dataset is not None:
             raise ChainError("--dataset is only valid for a cell phase")
+        if (args.internal_phase == "finalize") != (args.owner_approved_cells_fd is not None):
+            raise ChainError("only the private finalize phase accepts its inherited owner approval FD")
         owner_lease = _validate_owner_lease(root, args.internal_phase, session_id, args.dataset)
-        return _run_internal_phase(root, args.internal_phase, args.session_dir, args.dataset, owner_lease)
+        owner_approved_cells = None if args.owner_approved_cells_fd is None else _read_owner_approved_cells_fd(root, args.owner_approved_cells_fd, session_id)
+        return _run_internal_phase(root, args.internal_phase, args.session_dir, args.dataset, owner_lease, owner_approved_cells)
     except KeyboardInterrupt:
         if owner_lease is not None:
             _mark_session_terminal(root, session_id, "INTERRUPTED", args.internal_phase or "", "private zkGPT phase was interrupted")
@@ -1229,6 +1374,12 @@ def main(argv: Sequence[str]) -> int:
             _mark_session_terminal(root, session_id, "FAILED", args.internal_phase or "", str(exc))
         print(f"ZKGPT_INTERNAL_PHASE_FAILED phase={args.internal_phase}: {exc}", file=sys.stderr, flush=True)
         return 2
+    finally:
+        if args.owner_approved_cells_fd is not None:
+            try:
+                os.close(args.owner_approved_cells_fd)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

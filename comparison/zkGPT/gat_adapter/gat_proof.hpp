@@ -815,7 +815,7 @@ struct GatProofArtifact {
     ProofSection Pi_combine{"Pi_combine", {}};
     ProofSection Pi_open{"Pi_open", {}};
 
-    std::string native_domain = "zkgpt-native-gat-fs-v6";
+    std::string native_domain = "zkgpt-native-gat-fs-v7";
     NativeProofStatement native_statement;
     std::vector<NativeProofMessage> native_messages;
     std::string transcript_digest;
@@ -826,8 +826,8 @@ struct GatProofArtifact {
     bool native_session(NativeProofSession& out, std::string* reason = nullptr) const;
     bool serialize(std::string& bytes, std::uint64_t max_wire_bytes,
                    std::string* reason = nullptr) const;
-    // Caller must first run valid_wire() on this immutable artifact. This
-    // separates the internal transcript self-check from measured wire encoding.
+    // This only encodes; normally call valid_wire() first. Deferred formal
+    // output remains pending until its independent verifier accepts the wire.
     bool serialize_after_wire_validation(std::string& bytes,
                                          std::uint64_t max_wire_bytes,
                                          std::string* reason = nullptr) const;

@@ -201,10 +201,6 @@ bool external_shape(const NativeMaskedTerminalSpec& spec, const PedersenBasis& b
             set_reason(reason, "masked fixed-side unmasked value arity mismatch");
             return false;
         }
-        for (const ScalarOpening& opening : spec.unmasked_terminal_openings)
-            if (!opening.valid(basis, reason)) return false;
-        for (const ScalarOpening& opening : spec.unmasked_fixed_openings)
-            if (!opening.valid(basis, reason)) return false;
         if ((!spec.terminal_openings.empty() && spec.terminal_openings.size() != terminal_arity) ||
             (!spec.fixed_openings.empty() && spec.fixed_openings.size() != fixed_arity) ||
             (!spec.terminal_commitments.empty() && spec.terminal_commitments.size() != terminal_arity) ||

@@ -344,6 +344,7 @@ def main(
     formal_session_id: str | None = None,
     stage_receipt_hooks: dict[str, object] | None = None,
     producer_wall_ms: float | None = None,
+    authenticated_gpu_identity: dict[str, object] | None = None,
 ) -> int:
     reject_reduced_srs(sys.argv[1:])
     config = ensure_relative_arg(args.config, "config", default_config(args.dataset))
@@ -355,6 +356,11 @@ def main(
     if not args.execute_formal:
         print_plan(args, config, output)
         return 0
+
+    if authenticated_gpu_identity is not None and (
+        authenticated_context is None or formal_session_id is None or args.backend != "gpu"
+    ):
+        abort("reused GPU identity requires the authenticated formal session context and GPU backend")
 
     if formal_session_id is not None and (
         stage_receipt_hooks is None
@@ -414,8 +420,8 @@ def main(
         public_output_sha256=sha256(public_output),
     )
     contract = load_cli_contract()
-    values = validate_config(config, args.dataset)
     if authenticated_context is None:
+        values = validate_config(config, args.dataset)
         validate_resources()
     else:
         if formal_session_id is None:
@@ -426,8 +432,9 @@ def main(
             dataset=args.dataset,
             config=config,
         )
+        values = authenticated_context.config_values_for(args.dataset)
     if args.backend == "gpu":
-        gpu_probe = validate_gpu_environment()
+        gpu_probe = validate_gpu_environment(authenticated_identity=authenticated_gpu_identity)
     else:
         gpu_probe = None
 
@@ -457,9 +464,11 @@ def main(
         abort("build receipt binary path does not match requested binary")
     if receipt.get("binary_sha256") != sha256(binary):
         abort("build receipt binary SHA-256 does not match current binary")
-    if receipt.get("source_tree_sha256") != source_tree_hash():
+    expected_source_identity = source_tree_hash() if authenticated_context is None else authenticated_context.source_tree_sha256
+    expected_resource_identity = resource_manifest_hash() if authenticated_context is None else authenticated_context.resource_manifest_sha256
+    if receipt.get("source_tree_sha256") != expected_source_identity:
         abort("build receipt source tree identity is stale")
-    if receipt.get("resource_manifest_sha256") != resource_manifest_hash():
+    if receipt.get("resource_manifest_sha256") != expected_resource_identity:
         abort("build receipt resource identity is stale")
     if receipt.get("adapter_contract_id") != contract["contract_id"]:
         abort("build receipt adapter contract identity is stale")
@@ -468,8 +477,14 @@ def main(
     features = receipt.get("features", [])
     if formal_session_id is not None and args.backend == "gpu" and features != list(FORMAL_GPU_FEATURES):
         abort("formal GPU build receipt does not identify the exact formal feature set")
-    if args.backend == "gpu" and any(receipt.get(key) != value for key, value in native_backend_identity().items()):
-        abort("GPU build receipt native CUDA library/manifest identity is stale")
+    if args.backend == "gpu":
+        if not isinstance(gpu_probe, dict):
+            abort("GPU execution has no current native backend identity")
+        current_native_identity = {
+            key: value for key, value in gpu_probe.items() if key not in {"install_dir", "native_backend_identity"}
+        }
+        if any(receipt.get(key) != value for key, value in current_native_identity.items()):
+            abort("GPU build receipt native CUDA library/manifest identity is stale")
     if args.backend == "gpu" and "gpu-accelerated" not in features:
         abort("GPU build receipt lacks the gpu-accelerated feature")
     selected_cuda_device = None

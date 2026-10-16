@@ -751,7 +751,11 @@ def main(
     if context["dataset"] != args.dataset:
         fail("setup producer context dataset mismatch")
     model_hash_field, model_digest_sha256_expected, model_hash_domain = authenticated_model_binding(context)
-    secure = parse_cfg(config)
+    secure = (
+        parse_cfg(config)
+        if authenticated_context is None
+        else authenticated_context.config_values_for(args.dataset)
+    )
     data_root = local_path(secure["data_root"], "authenticated data_root")
     data_dir = data_root / args.dataset
     checkpoint_root = local_path(secure["checkpoint_bundle"], "authenticated checkpoint_bundle")

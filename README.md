@@ -338,6 +338,19 @@ python3 scripts/run_mechanism_ablation.py audit /home/pzh/project/results/mechan
 python3 /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/report_initial_only.py
 ~~~
 
+### 后续完整 session 的统一运行与合并表
+
+新版 runner 在一个 session 的 11 组配置全部完成、初次独立验证全部为 `VERIFY_OK`、源码/构建身份稳定且导出时工件 SHA-256 检查通过后，自动在同一 session 目录生成 `combined_summary.csv`、`combined_summary.md` 和 `combined_summary.json`。CSV 与 JSON 各含 11 个配置行；每行列出机制、数据集、实际 N/E/D/G、PPI 组件及重复次数，并对四项指标逐项记录 Original、Control、逐对差值、Saving 和 Improvement Factor。重复数至少为 2 时每项统计保留 mean 和 sample SD；重复数为 1 时只保留实测 value 和 n，不生成 SD。配对 Saving 和倍数先逐对计算，再从这些配对值汇总。
+
+下面是之后启动一个全新三次重复正式 session 的统一入口。该命令本身会开始 CUDA 正式证明；**本轮代码验收没有执行此命令，也没有启动任何机制证明**。成功完成后合并表由运行器自动写入新 session，无需再运行合并脚本；未完成或验证失败的 session 不会产生完整合并表。导出仅依据初次独立验证收据并检查工件哈希，不运行或声称全量独立重验；strict `summarize` 和出版完整性门禁保持原样。此新行为不会追补或改写上方历史 session。
+
+~~~bash
+cd /home/pzh/project
+python3 scripts/run_mechanism_ablation.py launch --binary /home/pzh/project/build_cuda/gatzk_mechanism --output-root /home/pzh/project/results/mechanism_ablation_final --device 0 --repetitions 3 --timeout-seconds 0 --prepare-timeout-seconds 0 --allow-shared-gpu
+~~~
+
+合并 CSV 的列名格式为 `{metric}_{statistic}_{field}`，其中 metric 是 `commitment_time_ms`、`prove_time_ms`、`verify_time_ms` 或 `proof_size_bytes`，statistic 是 `original`、`control`、`paired_original_minus_control`、`saving_percent` 或 `improvement_factor`，field 是 `value`、`mean`、`sample_sd` 或 `n`。`results_manifest.json` 会登记三个合并文件的 session 内路径和 SHA-256。
+
 正式 CUDA 运行从 2026-10-10 06:38:25 UTC 到 08:48:32 UTC，墙钟 2 小时 10 分 07 秒。设备为 NVIDIA GB10，UUID `GPU-3cde57ba-ae43-4452-bd59-7b156b36db71`，driver 580.142、CUDA 13.0；构建工具为 CMake 3.28.3、G++ 13.3.0、nvcc 13.0 V13.0.88。实际构建日志为 `results/mechanism_ablation_final/preflight_configure_20261010T0635Z.log` 和 `results/mechanism_ablation_final/preflight_build_release_20261010T0635Z.log`；launcher 日志为 `results/mechanism_ablation_final/launchers/cuda_20261010T063825Z_289d2209cd/runner.log`。
 
 指标和完整审计边界见 [docs/mechanism_ablation.md](docs/mechanism_ablation.md)。这些机制级结果不表示完整 GAT 计算关系已被本轮证明，也不构成完整 GAT 端到端加速结论。

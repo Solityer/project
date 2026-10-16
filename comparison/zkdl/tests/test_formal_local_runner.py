@@ -25,10 +25,164 @@ TESTS = ROOT / "tests"
 sys.path.insert(0, str(SCRIPTS))
 import formal_runner
 import formal_provenance
+import formal_phase
 import session_lifecycle
 
 
 class FormalLocalRunnerTests(unittest.TestCase):
+    def test_staged_build_precedes_session_and_prepare_only_checks_published_build(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
+            project = Path(temporary)
+            runs = project / "runs"
+            configs = project / "configs"
+            third_party = project / "third_party"
+            (project / "scripts").mkdir()
+            runs.mkdir()
+            configs.mkdir()
+            third_party.mkdir()
+            (project / "Makefile").write_text("fixture makefile\n")
+            (configs / "quantization_scale_chain.cfg").write_text("fixture quantization\n")
+            (third_party / "BLST_PROVENANCE.txt").write_text("fixture provenance\n")
+
+            session_id = "a" * 32
+            session = runs / f"formal_{session_id}"
+            stale_session = runs / ("formal_" + "b" * 32)
+            stale_session.mkdir()
+            (stale_session / "fixture").write_text("only a temporary fixture\n")
+
+            old_roots = (formal_runner.ROOT, formal_runner.formal_phase.ROOT, formal_provenance.ROOT)
+            old_identity = formal_runner.ACTIVE_SESSION_IDENTITY
+            environment_names = (*formal_runner.FORMAL_SESSION_IDENTITY_ENV,
+                                 formal_runner.DETACHED_LAUNCH_ENV)
+            old_environment = {name: os.environ.get(name) for name in environment_names}
+            identity = None
+            build_commands: list[list[str]] = []
+            snapshots: list[str] = []
+            admissions: list[str] = []
+            prepare_outcome: dict[str, object] = {}
+
+            def fake_subprocess_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+                if command and command[0] == "make":
+                    build_commands.append(list(command))
+                    self.assertFalse(session.exists(), "formal session must not exist while make is active")
+                    for path in runs.glob("formal_*"):
+                        if path.is_dir() and not path.is_symlink():
+                            shutil.rmtree(path)
+                    (project / "gat_runner").write_bytes(b"fixture runner binary")
+                    (project / "gat_resource_setup").write_bytes(b"fixture resource binary")
+                    return subprocess.CompletedProcess(command, 0)
+                self.assertGreaterEqual(len(command), 3)
+                self.assertEqual(Path(command[1]).name, "formal_provenance.py")
+                build_commands.append(list(command))
+                with mock.patch.dict(os.environ, dict(kwargs["env"]), clear=True):
+                    with mock.patch.object(sys, "argv", command[1:]):
+                        self.assertEqual(formal_provenance.main(), 0)
+                return subprocess.CompletedProcess(command, 0)
+
+            try:
+                formal_runner.ROOT = project
+                formal_runner.formal_phase.ROOT = project
+                formal_provenance.ROOT = project
+                for name in formal_runner.FORMAL_SESSION_IDENTITY_ENV:
+                    os.environ.pop(name, None)
+                with mock.patch.object(formal_runner.subprocess, "run", side_effect=fake_subprocess_run):
+                    published = formal_runner._build_and_publish_session(runs, session_id)
+                self.assertEqual(published, session)
+                provenance_commands = [command for command in build_commands
+                                       if len(command) > 1 and Path(command[1]).name == "formal_provenance.py"]
+                self.assertEqual(len(provenance_commands), 1)
+                self.assertIn("--output", provenance_commands[0])
+                self.assertNotIn("--check", provenance_commands[0])
+                self.assertFalse(stale_session.exists(), "the simulated make cleanup should only see prior temporary roots")
+                self.assertEqual(sum(command[:1] == ["make"] for command in build_commands), 1)
+                manifest_path = session / "build_manifest.json"
+                build_manifest = formal_provenance.validate_manifest(project, manifest_path)
+                self.assertEqual(
+                    {item["path"] for item in build_manifest["binaries"]},
+                    {f"runs/{session.name}/build/gat_runner", f"runs/{session.name}/build/gat_resource_setup"},
+                )
+                self.assertTrue((session / "logs/build.log").is_file())
+
+                identity = session_lifecycle.capture_session_root(session)
+                formal_runner.ACTIVE_SESSION_IDENTITY = identity
+                os.environ.update(identity.child_environment())
+                state = {"schema": "zkdl_formal_runner_state_v1", "baseline": "zkdl",
+                         "session_id": session_id, "status": "RUNNING", "stage": "prepare"}
+                formal_runner._write_json(session / "state.json", state)
+                launch_dir = runs / "launch_fixture"
+                launch_dir.mkdir()
+                os.environ[formal_runner.DETACHED_LAUNCH_ENV] = str(launch_dir)
+                formal_runner._write_detached_session_link(session, session_id)
+                link = json.loads((launch_dir / "formal_session.json").read_text())
+                self.assertEqual(link["runner_pid"], os.getpid())
+                self.assertEqual(link["session_dir"], str(session))
+
+                def fake_phase_run(command: list[str], *, env: dict[str, str] | None = None,
+                                   capture_output: bool = False, **_kwargs: object) -> str:
+                    if Path(command[1]).name == "formal_preflight.py":
+                        report = {"schema": "zkDL_formal_input_preflight_v1",
+                                  "datasets": {dataset: {"status": "PASS"}
+                                               for dataset in formal_phase.DATASETS}}
+                        Path(env["ZKDL_PREFLIGHT_REPORT"]).write_text(json.dumps(report))
+                        return ""
+                    if Path(command[1]).name == "formal_session.py":
+                        dataset = command[command.index("--dataset") + 1]
+                        snapshots.append(dataset)
+                        (session / dataset).mkdir()
+                        return ""
+                    if Path(command[1]).name == "formal_provenance.py":
+                        self.assertIn("--check", command)
+                        self.assertNotIn("--output", command)
+                        with mock.patch.dict(os.environ, dict(env or {}), clear=True):
+                            with mock.patch.object(sys, "argv", command[1:]):
+                                self.assertEqual(formal_provenance.main(), 0)
+                        return ""
+                    if "admit" in command:
+                        config = Path(command[command.index("--config") + 1])
+                        dataset = next(item for item in formal_phase.DATASETS
+                                       if config.stem.endswith("_" + item))
+                        admissions.append(dataset)
+                        if dataset == "citeseer":
+                            raise formal_phase.PhaseError("fixture ordinary admission failure")
+                        return json.dumps({"schema": "zkdl_native_relation_admission_v2",
+                                           "status": "PASS", "dataset": dataset})
+                    return ""
+
+                def fake_admission_profile(_session: Path, _session_id: str,
+                                           _report: dict[str, object], native: dict[str, dict[str, object]]) -> tuple[dict[str, object], dict[str, object]]:
+                    dataset = next(iter(native))
+                    return ({"datasets": {dataset: {}},
+                             "finalization_manifest_capacity": {"datasets": {dataset: {}}},
+                             "finalization_disk_bytes_upper_bound": 1,
+                             "finalization_host_peak_bytes_upper_bound": 1}, {dataset: {}})
+
+                def save_prepare_outcome(_session: Path, _session_id: str, outcomes: dict[str, object],
+                                         *_args: object, **_kwargs: object) -> None:
+                    prepare_outcome.update(outcomes)
+
+                with mock.patch.object(formal_phase, "_run", side_effect=fake_phase_run), \
+                     mock.patch.object(formal_phase, "_admission_profile", side_effect=fake_admission_profile), \
+                     mock.patch.object(formal_phase, "_write_prepare_outcome", side_effect=save_prepare_outcome):
+                    formal_phase.prepare(session, session_id)
+
+                self.assertEqual(snapshots, list(formal_phase.DATASETS))
+                self.assertEqual(admissions, list(formal_phase.DATASETS))
+                self.assertEqual(prepare_outcome["citeseer"]["status"], "FAILED")
+                self.assertTrue(all(prepare_outcome[dataset]["status"] == "PASS"
+                                    for dataset in formal_phase.DATASETS if dataset != "citeseer"))
+                self.assertEqual(sum(command[:1] == ["make"] for command in build_commands), 1,
+                                 "prepare must not compile after snapshots")
+            finally:
+                formal_runner.ROOT, formal_runner.formal_phase.ROOT, formal_provenance.ROOT = old_roots
+                formal_runner.ACTIVE_SESSION_IDENTITY = old_identity
+                for name, value in old_environment.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+                if identity is not None and identity.root_fd is not None:
+                    os.close(identity.root_fd)
+
     def test_session_root_lifecycle_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
             project = Path(temporary)

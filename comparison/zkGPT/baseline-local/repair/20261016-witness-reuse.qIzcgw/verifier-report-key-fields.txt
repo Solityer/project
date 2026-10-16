@@ -1,0 +1,6 @@
+3:  "status": "VERIFY_OK",
+10:  "statement_digest": "13c1b3b5f4f5b5822a53d84eea81f64fd395a03fa11ec971fafead33f1d84e5f",
+25:  "artifact_sha256": "684e007d6563056de855d77a3913ef5f574d28916f92040a136811ddf127dc71",
+27:  "decode_crypto_ms": 7.7094899999999997,
+28:  "verify_crypto_ms": 3309.6865419999999,
+29:  "crypto_verify_ms": 3317.3960320000001,

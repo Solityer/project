@@ -1,0 +1,1024 @@
+ZKGPT_FORMAL_CHILD_STARTED launch_id=71b38e1516ac4512841affb13779495e child_pid=89509
+[local-prepare] [resource-authentication] AUTHENTICATED baseline-local resources for cora,citeseer,pubmed,ppi,ogbn_arxiv
+[local-prepare] [native-build] bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
+[local-prepare] [native-build] base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
+[local-prepare] [native-build] -- Configuring done (0.0s)
+[local-prepare] [native-build] -- Generating done (0.0s)
+[local-prepare] [native-build] -- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[local-prepare] [native-build] [  3%] Built target gen_bint.o
+[local-prepare] [native-build] [  6%] Built target gen_base.o
+[local-prepare] [native-build] [ 12%] Built target mcl
+[local-prepare] [native-build] [ 15%] Building CXX object src/CMakeFiles/gpt_lib.dir/circuit.cpp.o
+[local-prepare] [native-build] [ 18%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax.cpp.o
+[local-prepare] [native-build] /home/pzh/project/comparison/zkGPT/src/hyrax.cpp: In function ‘std::pair<double, double> hyrax::open(mcl::Fr*, mcl::Fr*, mcl::Fr, mcl::G1&, mcl::G1*, mcl::Fr*, mcl::Fr*, mcl::G1*, int)’:
+[local-prepare] [native-build] /home/pzh/project/comparison/zkGPT/src/hyrax.cpp:562:91: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+[local-prepare] [native-build]   562 | pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
+[local-prepare] [native-build]       |                                                                                           ^
+[local-prepare] [native-build] [ 21%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax_rp.cpp.o
+[local-prepare] [native-build] [ 25%] Building CXX object src/CMakeFiles/gpt_lib.dir/models.cpp.o
+[local-prepare] [native-build] [ 28%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_lasso.cpp.o
+[local-prepare] [native-build] [ 31%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_masked_sumcheck.cpp.o
+[local-prepare] [native-build] [ 34%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_pedersen_relation.cpp.o
+[local-prepare] [native-build] [ 37%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_protocol.cpp.o
+[local-prepare] [native-build] [ 40%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_range.cpp.o
+[local-prepare] [native-build] [ 43%] Building CXX object src/CMakeFiles/gpt_lib.dir/neuralNetwork.cpp.o
+[local-prepare] [native-build] [ 46%] Building CXX object src/CMakeFiles/gpt_lib.dir/proof_session.cpp.o
+[local-prepare] [native-build] [ 50%] Building CXX object src/CMakeFiles/gpt_lib.dir/prover.cpp.o
+[local-prepare] [native-build] [ 53%] Building CXX object src/CMakeFiles/gpt_lib.dir/range_prover.cpp.o
+[local-prepare] [native-build] [ 56%] Building CXX object src/CMakeFiles/gpt_lib.dir/utils.cpp.o
+[local-prepare] [native-build] [ 59%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+[local-prepare] [native-build] /home/pzh/project/comparison/zkGPT/src/verifier.cpp: In member function ‘bool verifier::openCommit()’:
+[local-prepare] [native-build] /home/pzh/project/comparison/zkGPT/src/verifier.cpp:1610:39: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+[local-prepare] [native-build]  1610 |         tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+[local-prepare] [native-build]       |               ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[local-prepare] [native-build]  1611 |                                        comm.G, comm.g, Lp.get(), Rp.get(), comm.comm,
+[local-prepare] [native-build]       |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[local-prepare] [native-build]  1612 |                                        comm.l, *session_, "hyrax/opening");
+[local-prepare] [native-build]       |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[local-prepare] [native-build] [ 62%] Linking CXX static library libgpt_lib.a
+[local-prepare] [native-build] [ 68%] Built target gpt_lib
+[local-prepare] [native-build] [ 71%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_parser.cpp.o
+[local-prepare] [native-build] [ 75%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_forward.cpp.o
+[local-prepare] [native-build] [ 78%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_native.cpp.o
+[local-prepare] [native-build] [ 81%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_input_oracle.cpp.o
+[local-prepare] [native-build] [ 84%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_sparse_gkr.cpp.o
+[local-prepare] [native-build] [ 87%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[local-prepare] [native-build] [ 90%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_cuda_stub.cpp.o
+[local-prepare] [native-build] [ 93%] Linking CXX static library libgat_adapter.a
+[local-prepare] [native-build] [ 93%] Built target gat_adapter
+[local-prepare] [native-build] [ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[local-prepare] [native-build] [100%] Linking CXX executable zkgpt_gat_prover
+[local-prepare] [native-build] [100%] Built target zkgpt_gat_prover
+[local-prepare] [native-build] [  3%] Built target gen_bint.o
+[local-prepare] [native-build] [  6%] Built target gen_base.o
+[local-prepare] [native-build] [ 12%] Built target mcl
+[local-prepare] [native-build] [ 68%] Built target gpt_lib
+[local-prepare] [native-build] [ 93%] Built target gat_adapter
+[local-prepare] [native-build] [ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_verifier.dir/gat_verifier_cli.cpp.o
+[local-prepare] [native-build] [100%] Linking CXX executable zkgpt_gat_verifier
+[local-prepare] [native-build] [100%] Built target zkgpt_gat_verifier
+[local-prepare] [native-build] built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=cora backend=cpu
+[local-prepare] [five-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=cora stdout=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/cora-cpu.stdout.log stderr=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/cora-cpu.stderr.log
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=resource_snapshot
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=resource_snapshot host_headroom_bytes=123347283968 shared_disk_available_bytes=1657107554304 same_filesystem=true
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=canonical_graph_load
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=canonical_graph_load nodes=2708 edges=13264 features=1433 graphs=1
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=shape_estimate
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=shape_estimate host_peak_upper_bytes=9919754666 disk_peak_upper_bytes=0 artifact_bytes_upper=361271566
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=gkr_point_shape
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=71186992 touched_index_bytes_upper=71186992
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=canonical_forward_inputs
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=canonical_forward_inputs feature_rows=2708 feature_cols=1433 model_layers=3 hidden_heads=8 output_heads=2
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=cora stage=canonical_all_value_forward
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=cora stage=canonical_all_value_forward status=PASS
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_END dataset=cora status=READY point_shape=True all_value=True host_peak_bytes=9919754666 disk_peak_bytes=11730493264 artifact_bytes=361271566
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=citeseer backend=cpu
+[local-prepare] [five-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=citeseer stdout=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/citeseer-cpu.stdout.log stderr=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/citeseer-cpu.stderr.log
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=resource_snapshot
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=resource_snapshot host_headroom_bytes=123725590528 shared_disk_available_bytes=1657107369984 same_filesystem=true
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=canonical_graph_load
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=canonical_graph_load nodes=3327 edges=12431 features=3703 graphs=1
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=shape_estimate
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=shape_estimate host_peak_upper_bytes=10642670958 disk_peak_upper_bytes=0 artifact_bytes_upper=497819870
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=gkr_point_shape
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=75767648 touched_index_bytes_upper=75767648
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=canonical_forward_inputs
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=canonical_forward_inputs feature_rows=3327 feature_cols=3703 model_layers=3 hidden_heads=8 output_heads=2
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=citeseer stage=canonical_all_value_forward
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=citeseer stage=canonical_all_value_forward status=PASS
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_END dataset=citeseer status=READY point_shape=True all_value=True host_peak_bytes=10642670958 disk_peak_bytes=13676703559 artifact_bytes=497819870
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=pubmed backend=cpu
+[local-prepare] [five-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=pubmed stdout=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/pubmed-cpu.stdout.log stderr=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/pubmed-cpu.stderr.log
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=resource_snapshot
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=resource_snapshot host_headroom_bytes=124329496576 shared_disk_available_bytes=1657106984960 same_filesystem=true
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=canonical_graph_load
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=canonical_graph_load nodes=19717 edges=108365 features=500 graphs=1
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=shape_estimate
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=shape_estimate host_peak_upper_bytes=12304511977 disk_peak_upper_bytes=0 artifact_bytes_upper=540284274
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=gkr_point_shape
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=556235152 touched_index_bytes_upper=556235152
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=canonical_forward_inputs
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=canonical_forward_inputs feature_rows=19717 feature_cols=500 model_layers=3 hidden_heads=8 output_heads=2
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=pubmed stage=canonical_all_value_forward
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=pubmed stage=canonical_all_value_forward status=PASS
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_END dataset=pubmed status=READY point_shape=True all_value=True host_peak_bytes=12304511977 disk_peak_bytes=83727560702 artifact_bytes=540284274
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=ppi backend=cpu
+[local-prepare] [five-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=ppi stdout=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/ppi-cpu.stdout.log stderr=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/ppi-cpu.stderr.log
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=124446896128 shared_disk_available_bytes=1657106280448 same_filesystem=true
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9058648064 layer_unary=6014301392 layer_binary=2983929088 current_layer=112 elapsed_ms=15009
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24223154176 layer_unary=16038828177 layer_binary=8123908415 current_layer=112 elapsed_ms=30021
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=shape_estimate host_peak_upper_bytes=24064542409 disk_peak_upper_bytes=0 artifact_bytes_upper=732794034
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=gkr_point_shape
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=4461765168 touched_index_bytes_upper=4461765168
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_forward_inputs
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_forward_inputs feature_rows=56944 feature_cols=50 model_layers=3 hidden_heads=8 output_heads=2
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_all_value_forward
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_all_value_forward status=PASS
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_END dataset=ppi status=READY point_shape=True all_value=True host_peak_bytes=24064542409 disk_peak_bytes=774599918124 artifact_bytes=732794034
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=ogbn_arxiv backend=cpu
+[local-prepare] [five-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=ogbn_arxiv stdout=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/ogbn_arxiv-cpu.stdout.log stderr=results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/capacity_logs/ogbn_arxiv-cpu.stderr.log
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=resource_snapshot
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=resource_snapshot host_headroom_bytes=124428259328 shared_disk_available_bytes=1657104941056 same_filesystem=true
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_graph_load
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_graph_load nodes=169343 edges=1335586 features=128 graphs=1
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=shape_estimate
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=7908360192 layer_unary=5227156513 layer_binary=2570114671 current_layer=112 elapsed_ms=15008
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=19139657746 layer_unary=12752351971 layer_binary=6276216767 current_layer=112 elapsed_ms=30008
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=36325818368 layer_unary=24208810223 layer_binary=12005919137 current_layer=112 elapsed_ms=45023
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=40071331840 layer_unary=26858144826 layer_binary=13102098006 current_layer=112 elapsed_ms=60035
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=41124102144 layer_unary=27910915130 layer_binary=13102098006 current_layer=112 elapsed_ms=75045
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=42175823872 layer_unary=28962636858 layer_binary=13102098006 current_layer=112 elapsed_ms=90053
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=43227545600 layer_unary=30014358586 layer_binary=13102098006 current_layer=112 elapsed_ms=105065
+[local-prepare] [five-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=44277170176 layer_unary=31063983162 layer_binary=13102098006 current_layer=112 elapsed_ms=120074
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=shape_estimate host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=0 artifact_bytes_upper=1123976246
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=gkr_point_shape
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=8837424656 touched_index_bytes_upper=8837424656
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_forward_inputs
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_forward_inputs feature_rows=169343 feature_cols=128 model_layers=3 hidden_heads=8 output_heads=2
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_all_value_forward
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[local-prepare] [five-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[local-prepare] [five-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_all_value_forward status=PASS
+[local-prepare] [five-dataset-preflight] CAPACITY_ADMISSION_END dataset=ogbn_arxiv status=READY point_shape=True all_value=True host_peak_bytes=37690001048 disk_peak_bytes=1362129934524 artifact_bytes=1123976246
+[local-prepare] [five-dataset-preflight] FORMAL_PREFLIGHT_READY
+[local-prepare] ZKGPT_LOCAL_FORMAL_STATE={"build_log_path":"results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/logs/build.log","build_log_sha256":"1116ee8b93e8d0d4960d96b7ca97e268d1cb494f2ca699a9d3ccb027510c7005","canonical_graph_identity":{"datasets":{"citeseer":{"identity":{"batching_rule":"whole_graph_single","digest":"94cfbb45e591ad243d9a63dcd13a96897f339af83cf4f5c3771f207338e69cb4","edge_ptr":[0,12431],"edges":12431,"graphs":1,"input_preprocess_id":"row_normalize","node_ptr":[0,3327],"nodes":3327},"status":"READY"},"cora":{"identity":{"batching_rule":"whole_graph_single","digest":"b54c7c0aba5caa98cb261f62b0c8e1f2fc47188166825c34e1667aadd42af30f","edge_ptr":[0,13264],"edges":13264,"graphs":1,"input_preprocess_id":"row_normalize","node_ptr":[0,2708],"nodes":2708},"status":"READY"},"ogbn_arxiv":{"identity":{"batching_rule":"whole_graph_single","digest":"1af6b2bf0ab3655ea695a2bae214d9baa157cc904bee07554f50053e4d0a79db","edge_ptr":[0,1335586],"edges":1335586,"graphs":1,"input_preprocess_id":"ogbn_arxiv_raw_float32","node_ptr":[0,169343],"nodes":169343},"status":"READY"},"ppi":{"identity":{"batching_rule":"multi_graph_batch","digest":"82371f21601ebae0f9b24790c0f7777ad10aaf83a07f824d6b597e768b23b129","edge_ptr":[0,17699,17700,17701,17702,17703,17704,17705,17706,17707,33936,33937,33938,33941,33942,33943,33944,33945,33946,33947,33948,66033,66034,66035,66036,66037,66038,66039,66040,66041,66042,66043,101097,101098,101099,101100,101101,101102,101103,101104,101105,101106,101107,120766,120767,120768,120769,120770,120771,120772,120773,120774,120775,130904,130905,130906,130907,130908,130909,130910,130911,130912,154900,154901,154902,154903,154904,154905,154906,154907,154908,154909,154910,154911,154912,192595,192596,192597,192598,192599,192600,192601,192602,192603,192604,192605,192606,192607,197052,197053,197054,197055,197056,197057,197058,197059,197060,197061,197062,197063,253474,253475,253476,253477,253480,253481,253484,253485,253486,253487,253488,253489,253490,288000,288001,288002,288003,288004,288005,288006,313018,313019,313020,313021,313022,313023,313024,337727,337728,337729,337730,337731,337732,337733,394590,394591,394592,394593,394594,394595,394596,394597,394600,394601,394602,394603,394604,394605,394606,394607,394608,440061,440062,440063,440064,440065,440066,440067,440068,440069,440070,440071,440072,440073,440074,472331,472332,472333,472334,472335,472336,472337,472338,513520,513521,513522,513523,513524,513525,513526,513527,513528,513529,513530,513531,513532,513533,513534,559109,559110,559111,559112,559113,559114,559115,559116,559117,559118,559119,559120,559121,559122,559123,609365,609366,609367,609368,609369,609370,609373,609374,609375,609376,609377,609380,609381,609382,609383,609384,658074,658075,658076,658077,658078,658079,658080,658081,658082,658083,658084,658085,658086,658087,658088,658089,658090,710001,710002,710003,710004,710007,710010,710011,710012,710013,710016,710017,710018,710019,764040,764041,764042,764043,764044,764045,764046,764049,764050,764053,764056,764057,764060,764061,764062,764063,764064,817580,817581,817582,817583,817584,817585,817586,817587,817590,817591,817592,817593,817594,817595,817596,817599,817600,817601,817602,850566,850567,850568,850569,850570,850571,850572,850573,850574,850575,850576],"edges":850576,"graphs":295,"input_preprocess_id":"row_normalize","node_ptr":[0,1546,1547,1548,1549,1550,1551,1552,1553,1554,2931,2932,2933,2935,2936,2937,2938,2939,2940,2941,2942,5205,5206,5207,5208,5209,5210,5211,5212,5213,5214,5215,7554,7555,7556,7557,7558,7559,7560,7561,7562,7563,7564,9142,9143,9144,9145,9146,9147,9148,9149,9150,9151,10172,10173,10174,10175,10176,10177,10178,10179,10180,12003,12004,12005,12006,12007,12008,12009,12010,12011,12012,12013,12014,12015,14503,14504,14505,14506,14507,14508,14509,14510,14511,14512,14513,14514,14515,15106,15107,15108,15109,15110,15111,15112,15113,15114,15115,15116,15117,18429,18430,18431,18432,18434,18435,18437,18438,18439,18440,18441,18442,18443,20844,20845,20846,20847,20848,20849,20850,22728,22729,22730,22731,22732,22733,22734,24553,24554,24555,24556,24557,24558,24559,28039,28040,28041,28042,28043,28044,28045,28046,28048,28049,28050,28051,28052,28053,28054,28055,28056,30850,30851,30852,30853,30854,30855,30856,30857,30858,30859,30860,30861,30862,30863,33189,33190,33191,33192,33193,33194,33195,33196,35846,35847,35848,35849,35850,35851,35852,35853,35854,35855,35856,35857,35858,35859,35860,38675,38676,38677,38678,38679,38680,38681,38682,38683,38684,38685,38686,38687,38688,38689,41852,41853,41854,41855,41856,41857,41859,41860,41861,41862,41863,41865,41866,41867,41868,41869,44890,44891,44892,44893,44894,44895,44896,44897,44898,44899,44900,44901,44902,44903,44904,44905,44906,48101,48102,48103,48104,48106,48108,48109,48110,48111,48113,48114,48115,48116,51400,51401,51402,51403,51404,51405,51406,51408,51409,51411,51413,51414,51416,51417,51418,51419,51420,54614,54615,54616,54617,54618,54619,54620,54621,54623,54624,54625,54626,54627,54628,54629,54631,54632,54633,54634,56934,56935,56936,56937,56938,56939,56940,56941,56942,56943,56944],"nodes":56944},"status":"READY"},"pubmed":{"identity":{"batching_rule":"whole_graph_single","digest":"24819f83490093c95b2f229738b34db6dab0ef8367d9b9739b56b66941e5111c","edge_ptr":[0,108365],"edges":108365,"graphs":1,"input_preprocess_id":"row_normalize","node_ptr":[0,19717],"nodes":19717},"status":"READY"}},"schema":"zkgpt-local-canonical-graph-set-v2"},"local_capacity_profile_sha256":"e8cbb3cf6dc427f40c881120773bcca701f8b8222118b93532c70545356e03c7","phase":"prepare","session_dir":"/home/pzh/project/comparison/zkGPT/results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd","session_id":"a4ab97b1fb98c1fcaaf4aae9082f09cd","status":"PASS"}
+[local-cell-cora] [cora/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=10163.9
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: begin
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: lasso-build
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: witness
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: generators
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: lasso-prove
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: restore-native-plan
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: gkr-prove
+[local-cell-cora] [cora/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 begin ty=4 size=153465368 bits=28 u=28 v=27 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=1/28 elapsed_s=217.345
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 complete rounds=28/28 elapsed_s=220.603
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 phase2 begin rounds=27
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase2 progress rounds=1/27 elapsed_s=313.928
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/112 phase2 complete rounds=27/27 elapsed_s=316.2
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 phase2 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=112 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=111 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=111 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/111 phase1 complete rounds=15/15 elapsed_s=0.0431888
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=111 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=111 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=110 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=110 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/110 phase1 complete rounds=12/12 elapsed_s=0.0312315
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=110 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=110 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=109 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=109 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00126894
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=7.36e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/109/matmul complete rounds=3/3 elapsed_s=0.00758937
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=109 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=108 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=108 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/108 phase1 complete rounds=12/12 elapsed_s=0.0313217
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=108 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=108 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=107 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=107 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00127179
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=4.8e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/107/matmul complete rounds=3/3 elapsed_s=0.00761739
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=107 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=106 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=106 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/106 phase1 complete rounds=15/15 elapsed_s=0.0479284
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=106 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=106 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=105 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=105 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00654915
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=7 inner=64 complete rounds=7/7 elapsed_s=1.6144e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/105/matmul complete rounds=6/6 elapsed_s=0.0152333
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=105 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=104 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=104 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/104 phase1 complete rounds=12/12 elapsed_s=0.0314275
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=104 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=104 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=103 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=103 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00128323
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=4.96e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/103/matmul complete rounds=3/3 elapsed_s=0.00762336
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=103 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=102 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=102 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/102 phase1 complete rounds=12/12 elapsed_s=0.0314195
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=102 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=102 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=101 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=101 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.0013152
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/101/matmul complete rounds=3/3 elapsed_s=0.00761449
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=101 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=100 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=100 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/100 phase1 complete rounds=15/15 elapsed_s=0.0478162
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=100 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=100 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=99 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=99 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00663548
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=7 inner=64 complete rounds=7/7 elapsed_s=1.6544e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/99/matmul complete rounds=6/6 elapsed_s=0.0155485
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=99 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=98 begin ty=3 size=173312 bits=18 u=18 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=98 phase1 begin rounds=18
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/98 phase1 complete rounds=18/18 elapsed_s=0.101576
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=98 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=98 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=97 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=97 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/97 phase1 complete rounds=12/12 elapsed_s=0.0319097
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=97 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=97 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=96 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=96 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137742
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.024e-06
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/96/matmul complete rounds=3/3 elapsed_s=0.00772579
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=96 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=95 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=95 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/95 phase1 complete rounds=12/12 elapsed_s=0.0318864
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=95 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=95 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=94 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=94 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00143653
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.52e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/94/matmul complete rounds=3/3 elapsed_s=0.00829321
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=94 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=93 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=93 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/93 phase1 complete rounds=15/15 elapsed_s=0.0495956
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=93 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=93 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=92 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=92 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00666963
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9008e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/92/matmul complete rounds=6/6 elapsed_s=0.0154719
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=92 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=91 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=91 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/91 phase1 complete rounds=12/12 elapsed_s=0.03184
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=91 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=91 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=90 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=90 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137582
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/90/matmul complete rounds=3/3 elapsed_s=0.00771563
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=90 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=89 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=89 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/89 phase1 complete rounds=12/12 elapsed_s=0.0319175
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=89 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=89 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=88 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=88 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137493
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.36e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/88/matmul complete rounds=3/3 elapsed_s=0.00771648
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=88 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=87 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=87 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/87 phase1 complete rounds=15/15 elapsed_s=0.0496987
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=87 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=87 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=86 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=86 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00665158
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0544e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/86/matmul complete rounds=6/6 elapsed_s=0.0154598
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=86 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=85 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=85 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/85 phase1 complete rounds=12/12 elapsed_s=0.0318371
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=85 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=85 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=84 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=84 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137122
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/84/matmul complete rounds=3/3 elapsed_s=0.00775467
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=84 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=83 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=83 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/83 phase1 complete rounds=12/12 elapsed_s=0.0318658
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=83 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=83 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=82 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=82 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137786
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/82/matmul complete rounds=3/3 elapsed_s=0.0077378
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=82 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=81 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=81 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/81 phase1 complete rounds=15/15 elapsed_s=0.0496134
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=81 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=81 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=80 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=80 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00665057
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9184e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/80/matmul complete rounds=6/6 elapsed_s=0.0155055
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=80 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=79 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=79 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/79 phase1 complete rounds=12/12 elapsed_s=0.0320523
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=79 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=79 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=78 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=78 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137651
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.32e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/78/matmul complete rounds=3/3 elapsed_s=0.016061
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=78 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=77 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=77 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/77 phase1 complete rounds=12/12 elapsed_s=0.0317831
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=77 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=77 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=76 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=76 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137504
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.64e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/76/matmul complete rounds=3/3 elapsed_s=0.00770699
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=76 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=75 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=75 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/75 phase1 complete rounds=15/15 elapsed_s=0.0495196
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=75 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=75 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=74 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=74 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00667312
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.96e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/74/matmul complete rounds=6/6 elapsed_s=0.0153252
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=74 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=73 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=73 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/73 phase1 complete rounds=12/12 elapsed_s=0.0315125
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=73 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=73 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=72 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=72 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136424
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.24e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/72/matmul complete rounds=3/3 elapsed_s=0.00762278
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=72 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=71 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=71 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/71 phase1 complete rounds=12/12 elapsed_s=0.0314266
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=71 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=71 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=70 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=70 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136768
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=5.44e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/70/matmul complete rounds=3/3 elapsed_s=0.00763422
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=70 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=69 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=69 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/69 phase1 complete rounds=15/15 elapsed_s=0.0489245
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=69 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=69 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=68 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=68 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00665673
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7472e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/68/matmul complete rounds=6/6 elapsed_s=0.0152646
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=68 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=67 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=67 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/67 phase1 complete rounds=12/12 elapsed_s=0.0313654
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=67 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=67 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=66 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=66 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137206
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.56e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/66/matmul complete rounds=3/3 elapsed_s=0.00761952
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=66 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=65 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=65 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/65 phase1 complete rounds=12/12 elapsed_s=0.0313749
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=65 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=65 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=64 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=64 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136408
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.56e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/64/matmul complete rounds=3/3 elapsed_s=0.00760483
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=64 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=63 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=63 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/63 phase1 complete rounds=15/15 elapsed_s=0.0489997
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=63 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=63 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=62 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=62 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00666443
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9456e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/62/matmul complete rounds=6/6 elapsed_s=0.0154588
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=62 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=61 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=61 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/61 phase1 complete rounds=12/12 elapsed_s=0.0315493
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=61 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=61 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=60 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=60 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013675
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/60/matmul complete rounds=3/3 elapsed_s=0.00762523
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=60 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=59 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=59 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/59 phase1 complete rounds=12/12 elapsed_s=0.0316048
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=59 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=59 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=58 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=58 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136579
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/58/matmul complete rounds=3/3 elapsed_s=0.00760996
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=58 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=57 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=57 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/57 phase1 complete rounds=15/15 elapsed_s=0.049104
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=57 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=57 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=56 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=56 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00667752
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9648e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/56/matmul complete rounds=6/6 elapsed_s=0.0156045
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=56 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=55 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=55 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/55 phase1 complete rounds=12/12 elapsed_s=0.0319228
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=55 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=55 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=54 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=54 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137261
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.56e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/54/matmul complete rounds=3/3 elapsed_s=0.00772239
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=54 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=53 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=53 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/53 phase1 complete rounds=12/12 elapsed_s=0.0319304
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=53 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=53 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=52 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=52 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137574
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.56e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/52/matmul complete rounds=3/3 elapsed_s=0.00773655
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=52 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=51 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=51 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/51 phase1 complete rounds=15/15 elapsed_s=0.0495614
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=51 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=51 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=50 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=50 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00664673
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7872e-05
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/50/matmul complete rounds=6/6 elapsed_s=0.0154853
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=50 fconn end rounds=6
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=49 begin ty=3 size=173312 bits=18 u=18 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=49 phase1 begin rounds=18
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/49 phase1 complete rounds=18/18 elapsed_s=0.102244
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=49 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=49 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=48 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=48 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/48 phase1 complete rounds=12/12 elapsed_s=0.031013
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=48 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=48 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=47 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=47 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137361
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.104e-06
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/47/matmul complete rounds=3/3 elapsed_s=0.00754022
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=47 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=46 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=46 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/46 phase1 complete rounds=12/12 elapsed_s=0.0313518
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=46 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=46 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=45 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=45 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00135249
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.36e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/45/matmul complete rounds=3/3 elapsed_s=0.00753828
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=45 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=44 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=44 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/44 phase1 complete rounds=15/15 elapsed_s=0.0483128
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=44 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=44 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=43 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=43 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125561
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000374464
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/43/matmul complete rounds=11/11 elapsed_s=0.0287195
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=43 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=42 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=42 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/42 phase1 complete rounds=12/12 elapsed_s=0.0319107
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=42 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=42 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=41 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=41 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137293
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.088e-06
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/41/matmul complete rounds=3/3 elapsed_s=0.00770335
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=41 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=40 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=40 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/40 phase1 complete rounds=12/12 elapsed_s=0.0319034
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=40 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=40 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=39 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=39 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137286
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/39/matmul complete rounds=3/3 elapsed_s=0.00770164
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=39 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=38 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=38 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/38 phase1 complete rounds=15/15 elapsed_s=0.0497504
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=38 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=38 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=37 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=37 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125079
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000380192
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/37/matmul complete rounds=11/11 elapsed_s=0.0286089
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=37 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=36 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=36 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/36 phase1 complete rounds=12/12 elapsed_s=0.031837
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=36 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=36 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=35 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=35 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137669
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/35/matmul complete rounds=3/3 elapsed_s=0.00773246
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=35 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=34 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=34 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/34 phase1 complete rounds=12/12 elapsed_s=0.0319038
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=34 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=34 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=33 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=33 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013743
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/33/matmul complete rounds=3/3 elapsed_s=0.00768483
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=33 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=32 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=32 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/32 phase1 complete rounds=15/15 elapsed_s=0.0496302
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=32 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=32 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=31 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=31 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125448
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.0003784
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/31/matmul complete rounds=11/11 elapsed_s=0.0286876
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=31 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=30 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=30 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/30 phase1 complete rounds=12/12 elapsed_s=0.031916
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=30 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=30 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=29 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=29 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137176
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.184e-06
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/29/matmul complete rounds=3/3 elapsed_s=0.00773801
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=29 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=28 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=28 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/28 phase1 complete rounds=12/12 elapsed_s=0.0319904
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=28 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=28 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=27 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=27 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137048
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/27/matmul complete rounds=3/3 elapsed_s=0.00772993
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=27 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=26 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=26 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/26 phase1 complete rounds=15/15 elapsed_s=0.0496646
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=26 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=26 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=25 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=25 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.124335
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000375983
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/25/matmul complete rounds=11/11 elapsed_s=0.0283501
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=25 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=24 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=24 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/24 phase1 complete rounds=12/12 elapsed_s=0.0315458
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=24 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=24 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=23 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=23 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00138312
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.52e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/23/matmul complete rounds=3/3 elapsed_s=0.00765204
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=23 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=22 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=22 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/22 phase1 complete rounds=12/12 elapsed_s=0.0314936
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=22 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=22 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=21 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=21 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137202
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.72e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/21/matmul complete rounds=3/3 elapsed_s=0.00771867
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=21 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=20 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=20 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/20 phase1 complete rounds=15/15 elapsed_s=0.0498261
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=20 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=20 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=19 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=19 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.124321
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000377295
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/19/matmul complete rounds=11/11 elapsed_s=0.0284855
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=19 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=18 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=18 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/18 phase1 complete rounds=12/12 elapsed_s=0.031545
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=18 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=18 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=17 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=17 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137321
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/17/matmul complete rounds=3/3 elapsed_s=0.00761774
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=17 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=16 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=16 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/16 phase1 complete rounds=12/12 elapsed_s=0.0314942
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=16 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=16 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=15 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=15 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136528
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=5.92e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/15/matmul complete rounds=3/3 elapsed_s=0.00761209
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=15 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=14 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=14 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/14 phase1 complete rounds=15/15 elapsed_s=0.0499567
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=14 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=14 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=13 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=13 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.124234
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000388159
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/13/matmul complete rounds=11/11 elapsed_s=0.028484
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=13 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=12 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=12 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/12 phase1 complete rounds=12/12 elapsed_s=0.0317495
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=12 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=12 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=11 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=11 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137355
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/11/matmul complete rounds=3/3 elapsed_s=0.00762529
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=11 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=10 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=10 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/10 phase1 complete rounds=12/12 elapsed_s=0.0314362
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=10 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=10 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=9 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=9 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136977
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/9/matmul complete rounds=3/3 elapsed_s=0.00765996
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=9 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=8 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=8 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/8 phase1 complete rounds=15/15 elapsed_s=0.0685655
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=8 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=8 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=7 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=7 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.124113
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.00037896
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/7/matmul complete rounds=11/11 elapsed_s=0.028087
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=7 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=6 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=6 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/6 phase1 complete rounds=12/12 elapsed_s=0.0315298
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=6 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=6 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=5 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=5 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00136681
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.96e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/5/matmul complete rounds=3/3 elapsed_s=0.0075822
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=5 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=4 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=4 phase1 begin rounds=12
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/4 phase1 complete rounds=12/12 elapsed_s=0.0315522
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=4 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=4 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=3 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=3 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00137579
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/3/matmul complete rounds=3/3 elapsed_s=0.00760129
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=3 fconn end rounds=3
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=2 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=2 phase1 begin rounds=15
+[local-cell-cora] [cora/prover] [zkGPT][gkr] gkr/layer/2 phase1 complete rounds=15/15 elapsed_s=0.0501259
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=2 phase1 terminal end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=2 end
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=1 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=1 fconn begin
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.124426
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000377664
+[local-cell-cora] [cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=11/11 elapsed_s=0.0282387
+[local-cell-cora] [cora/prover] [zkGPT][gkr] layer=1 fconn end rounds=11
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input aggregate begin sources=169
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=1/30 elapsed_s=37.7644
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=2/30 elapsed_s=72.7616
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=3/30 elapsed_s=107.693
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=4/30 elapsed_s=143.177
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=5/30 elapsed_s=179.357
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=6/30 elapsed_s=215.896
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=7/30 elapsed_s=252.627
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=8/30 elapsed_s=289.49
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=9/30 elapsed_s=326.455
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=10/30 elapsed_s=363.623
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=11/30 elapsed_s=400.737
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=12/30 elapsed_s=437.868
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=13/30 elapsed_s=474.98
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=14/30 elapsed_s=512.133
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=15/30 elapsed_s=549.31
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=16/30 elapsed_s=586.525
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=17/30 elapsed_s=623.837
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=18/30 elapsed_s=661.07
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=19/30 elapsed_s=698.265
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=20/30 elapsed_s=735.447
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=21/30 elapsed_s=772.705
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=22/30 elapsed_s=810.076
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=23/30 elapsed_s=847.948
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=24/30 elapsed_s=886.668
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=25/30 elapsed_s=927.541
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=26/30 elapsed_s=972.688
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=27/30 elapsed_s=1026.47
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=28/30 elapsed_s=1093.03
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=29/30 elapsed_s=1393.94
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=30/30 elapsed_s=1393.94
+[local-cell-cora] [cora/prover] [zkGPT][gkr] input aggregate end rounds=30
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: input-openings
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: artifact
+[local-cell-cora] [cora/prover] gat_adapter_prover_stage: selfverify-deferred-to-independent-verifier
+[local-cell-cora] [cora/prover] [zkGPT][artifact] serialize_begin wire_limit_bytes=1195196416
+[local-cell-cora] [cora/prover] [zkGPT][artifact] serialize_complete bytes=122281011 elapsed_ms=126.724
+[local-cell-cora] [cora/prover] [zkGPT][artifact] readback_begin
+[local-cell-cora] [cora/prover] [zkGPT][artifact] readback_complete elapsed_ms=557.966 ok=true
+[local-cell-cora] [cora/prover] PROOF_GENERATED_PENDING_VERIFY dataset=cora backend=cpu result=baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/cora/result.json
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_begin
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=39404.5 ok=true
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] artifact_read_parse_begin
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] artifact_read_parse_complete elapsed_ms=226.237 ok=true
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] crypto_verify_begin
+[local-cell-cora] [cora/cpu/verifier] [zkGPT][verifier] crypto_verify_complete elapsed_ms=839148 ok=true
+[local-cell-cora] [cora/cpu/verifier] VERIFY_OK
+[local-cell-cora] VERIFY_OK dataset=cora backend=cpu result=baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/cora/result.json
+[local-cell-cora] ZKGPT_LOCAL_FORMAL_STATE={"commitment_ms":88153.27962462704,"dataset":"cora","independent_verification":true,"phase":"cell","proof_path":"baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/cora/proof.artifact","proof_sha256":"89be2bab0948af76b21c38e8141db2abc9bc9a83e4a3b0eeb34224a2e47373f8","proof_size_bytes":122281011,"prove_ms":2848544.032098373,"receipt_path":"results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/receipts/cora.json","receipt_sha256":"1faf667c8291ca49f95fe6a7674a63d9e01520bf4f9c3fe95f5ae6a24727ea8b","session_id":"a4ab97b1fb98c1fcaaf4aae9082f09cd","status":"PASS","verification_report_path":"baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/cora/verifier_report.json","verification_report_sha256":"94b7e289bea9ab554a0578bc3f54db1ec1bc1ecf4bc4ccf901346811f5713957","verification_status":"VERIFY_OK","verify_ms":839328.3646379999}
+[local-cell-citeseer] [citeseer/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=29457.9
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: begin
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: lasso-build
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: witness
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: generators
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: lasso-prove
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: restore-native-plan
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: gkr-prove
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 begin ty=4 size=163804737 bits=28 u=28 v=27 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28

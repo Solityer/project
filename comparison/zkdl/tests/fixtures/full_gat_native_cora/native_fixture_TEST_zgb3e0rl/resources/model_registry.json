@@ -1,0 +1,1697 @@
+{
+  "config_digest": "b96378b19fb3a2ac8a02e638f357d8f326deb7eded578a27f946903c2736d4b9",
+  "dataset": "cora",
+  "generator_digest": "394afe54b38e8f0565cd11b75b7f106871b20f837c0245ff6424177d87382ffe",
+  "integer_bound_ledger_digest": "b23ca4f5dd6dc7788bc3ec7c0f85e08f4cfc62824679284e2242ce3d8e1c8c1c",
+  "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c7_TEST_FIXTURE_zgb3e0rl",
+  "model_manifest_digest": "97f59d8faa8e1dfebe212c2d5a62d9ab7c60055f9aac885b81b959a3de67e17b",
+  "model_param_id": "cora_planetoid_seed11_TEST_FIXTURE_zgb3e0rl",
+  "model_tensors": [
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "91d174425874d3bbfd2f4535f2f01d6012ec31f86b61a6979f55571aab32fc9f8c3378dc2a3d005583e0a32275fb1678",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "72c59bd3ba96d2b70dbdeb2378bcab50fe77f3c213e27043c71eb97304f88d84",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "91d174425874d3bbfd2f4535f2f01d6012ec31f86b61a6979f55571aab32fc9f8c3378dc2a3d005583e0a32275fb1678",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head0/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b884ce614a5191393d6b02fe203d9e34cf87c23aab4cde84a56bbc197e899ad3e17f42cc7f5a6a2324c83da19ed53971",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "a14942f01da071a8217e30c3ec9df80e1bbcd37bde11ac1cdf93be346a6dbb68",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b884ce614a5191393d6b02fe203d9e34cf87c23aab4cde84a56bbc197e899ad3e17f42cc7f5a6a2324c83da19ed53971",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head0/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b9533336d6277f4a86596e8f6665427cfb1d88c725ed07e23794559eefbd3bb59aea8df96c951d099371a629dc3c1363",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "d5a7e3a6097bc5598f1ad92f60576f8651cdaac61fad663ae034ecc82eb4f4e7",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "b9533336d6277f4a86596e8f6665427cfb1d88c725ed07e23794559eefbd3bb59aea8df96c951d099371a629dc3c1363",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head0/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "84baa12e188de8b53f61a2f86944b71a50a314905739df9cd85ca14403d7be0737a041d88036b03e050bbd79822a9831",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "74e2a3bf15bd693bc87741562846ea9c5854ad2a590d34407cb28c278216d9cc",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "84baa12e188de8b53f61a2f86944b71a50a314905739df9cd85ca14403d7be0737a041d88036b03e050bbd79822a9831",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head1/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8adeae47bb003dabd85647144a10b53e63db9f5d8282f3b44df6d868461f5a1b3ab6102739f6915f1122ae5f74795166",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "2aa145de95225a823b6ac3497d3c232776c53093d6f216e865a620254ce68f2c",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8adeae47bb003dabd85647144a10b53e63db9f5d8282f3b44df6d868461f5a1b3ab6102739f6915f1122ae5f74795166",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head1/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b60d697419ba4d5111b9b9889a620dbb699e8a9eeaf43350d7bc2f9213acc76a31f139483b3cec371e6514c45ddf558a",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "170678ce1077b83ce58d11908bbe1679d3a55681f06a515a8ac19e7ec1f6fdf1",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "b60d697419ba4d5111b9b9889a620dbb699e8a9eeaf43350d7bc2f9213acc76a31f139483b3cec371e6514c45ddf558a",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head1/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a50f4b6b057986446a8dddd31806922f4c1af902096e78bc55c599752b3cba6313775f74bcf522cd2c50bf33cbbaecd5",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "bee1828b612a2c960b3803637df2fee8819b5cd2aad2c18c3a85c62d963afa2e",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "a50f4b6b057986446a8dddd31806922f4c1af902096e78bc55c599752b3cba6313775f74bcf522cd2c50bf33cbbaecd5",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head2/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8ec2fcb9f39eaac29ecba383bc73d5a6dee08124f14998062a36a2f5e0472bd50e1085bbedf7d202f902603458a7cc59",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "e7f7fc91debe5478eeedba2ac7fc60098df689624129e5c55b94038eccb1ae39",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8ec2fcb9f39eaac29ecba383bc73d5a6dee08124f14998062a36a2f5e0472bd50e1085bbedf7d202f902603458a7cc59",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head2/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b5305b9968d3bde31a62af4b6d56f2f4a5adfcfa6066e561491a96d3168bbe80ee12454b232ace0629bc3c3cde774e08",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "fd543534507a542623f4aed493d6d4f17da4ddc2c435f8e761ef0b7c544f073c",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "b5305b9968d3bde31a62af4b6d56f2f4a5adfcfa6066e561491a96d3168bbe80ee12454b232ace0629bc3c3cde774e08",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head2/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b4a8917499b5cd85123f0023b252a63583d3044ec849a862d47b3e5fd929c737a341e26ae100be25e9b318a2f10ebf65",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "fd97835054d76ca3974e73d6521e55f725591260d945650d955cc2842790fc2e",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b4a8917499b5cd85123f0023b252a63583d3044ec849a862d47b3e5fd929c737a341e26ae100be25e9b318a2f10ebf65",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head3/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b603bd5e714db98c24d509ef3ad1809976058cce92b7464b8f104bea3dbbc3ab8f7b9459a2d166e4ec5540d4a2c62dba",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "66a8ccdbeecd97b8190f516a901c3a7e15b04bd2b211ddbf0efcb6b737f38880",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b603bd5e714db98c24d509ef3ad1809976058cce92b7464b8f104bea3dbbc3ab8f7b9459a2d166e4ec5540d4a2c62dba",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head3/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a5e8276f8fa620859bdce935b9f66102a04c0475c7494bc8af316e80019507fd35c2018b1439cd095f524e66209d5be5",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "fff67722a1cb272b6390f352657b27df5815c2c80de4524591f6e07e32f76686",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "a5e8276f8fa620859bdce935b9f66102a04c0475c7494bc8af316e80019507fd35c2018b1439cd095f524e66209d5be5",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head3/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "959a84e7eb21f0edc852138352faa7c77b8661b7c417db207326b5b7da432239d5dd386992422f2ee1fba0e5e6598778",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "aefb78ff7ec9b9f4e807bd4ec6014cb9c3c8e609baab9aee0cf5c64400ffa45a",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "959a84e7eb21f0edc852138352faa7c77b8661b7c417db207326b5b7da432239d5dd386992422f2ee1fba0e5e6598778",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head4/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b54458e8bc2d5dd63ceef2ca3f226ef611e19d156c4b872f433903ba7e7c70895b437591fab094e186fc907d027fc150",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "3ad61408b2a73f4b961728457e6c01cfc8208cb1c9d74f306d03af35e460baa7",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b54458e8bc2d5dd63ceef2ca3f226ef611e19d156c4b872f433903ba7e7c70895b437591fab094e186fc907d027fc150",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head4/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b84cd61d26a87fcdeda2d9616be37c30e12132b1c4766b1b29da02449554890bf5ddfa9a54b362548ab33ddaf41a916a",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "3714336f56bb5c0d290a0ab25c99215284ed5b0badbf8909ea3be307ee4d7edf",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "b84cd61d26a87fcdeda2d9616be37c30e12132b1c4766b1b29da02449554890bf5ddfa9a54b362548ab33ddaf41a916a",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head4/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "975c229ca3fa6c139aa405e0800ae9d99e27673110126cb9d594cff5fd13d50c3c3cd81891a668ef7157cb6e2ede15b2",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "b25c5f050f94afb34f3a5157679f1668232f054d3e3c14dd7ab93827bba1f705",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "975c229ca3fa6c139aa405e0800ae9d99e27673110126cb9d594cff5fd13d50c3c3cd81891a668ef7157cb6e2ede15b2",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head5/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a06a1fd28833a9d172079568b721930c4ce9c82ae251d0df872fa3b55dbd203c088daf36b4ce3ac203247fcedb7cb579",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "853a9a1e8c4aaacd372d36eae728008e0396287d3dd939b0c977aeae9387cec4",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "a06a1fd28833a9d172079568b721930c4ce9c82ae251d0df872fa3b55dbd203c088daf36b4ce3ac203247fcedb7cb579",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head5/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a6f62afee171ae2d24cd06e314250650edded0d87818499143d58c42ebaafbc59604d50563049a2286aead2b3aa68e9b",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "86d0b026962b1c51ab6aafad8db08735da497de4eebbcdf8a6f8d541f3045d8c",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "a6f62afee171ae2d24cd06e314250650edded0d87818499143d58c42ebaafbc59604d50563049a2286aead2b3aa68e9b",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head5/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a3ddcecfe178c704ac2d727892d462c86a24ce6dc34738824b92871bd16539d706f4d49deee64403cdfda34c2a9a1d11",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "9324fb0804aabf5413ce97f2f38cacd22b5ff301bbde42e2cf4712a54e44422a",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "a3ddcecfe178c704ac2d727892d462c86a24ce6dc34738824b92871bd16539d706f4d49deee64403cdfda34c2a9a1d11",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head6/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b0ec9ebd275d59cfc010fac27754acf7648277eab3784881f50ce92a40e02c0fdea1b5f189b2422252910d80baa57006",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "9aa21f12b704d44de75a1c3bad15bd625517d1444f5c6bf528fee597653b0d14",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b0ec9ebd275d59cfc010fac27754acf7648277eab3784881f50ce92a40e02c0fdea1b5f189b2422252910d80baa57006",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head6/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "ad71081baccc1bb28f76310675a8dc20792b939b87482126a3010925d7572ba2c07936ae79ddce06aae991e7a6f48bd7",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "e83beb35a36e146632c89bde3914453941e31c175181311a5ad2029d4fb6ea09",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "ad71081baccc1bb28f76310675a8dc20792b939b87482126a3010925d7572ba2c07936ae79ddce06aae991e7a6f48bd7",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head6/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b9cd5812793edf83b5c2f42ddac2a88e4c19fd247bbde358718b115fbbb61bc97da9ecbe5503689d1f858f33cf9243a3",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "5b9aa86d7d9b2263c1ed3bd5284ed5a6bcc4736395ac3b96f8aeb922de3708c0",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b9cd5812793edf83b5c2f42ddac2a88e4c19fd247bbde358718b115fbbb61bc97da9ecbe5503689d1f858f33cf9243a3",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head7/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "ae1c97d4c39a8daeab52a2409cd5f1c246588b371cc9d8ebe8d486bb6464e1186fae56d8f707301572ffd0091da35add",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "a4c328678fd633c66f76f8b9844ca764c271c267b706815f967bfcbb0520a550",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "ae1c97d4c39a8daeab52a2409cd5f1c246588b371cc9d8ebe8d486bb6464e1186fae56d8f707301572ffd0091da35add",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head7/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a48f098824c423a1285733f7e1907efa08a023cb68106c4c96b3ffc9cc830a74aaa56a7c4aa632d0a649d9d6094dd909",
+      "domain_size": 16384,
+      "logical_shape": [
+        1433,
+        8
+      ],
+      "padded_shape": [
+        2048,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "098ecf2e08d22c9bfed0f09f6be03469c4f28c75cce835c317107b0e3c30a900",
+      "segment_commitments": [
+        {
+          "actual_length": 16384,
+          "commitment": "a48f098824c423a1285733f7e1907efa08a023cb68106c4c96b3ffc9cc830a74aaa56a7c4aa632d0a649d9d6094dd909",
+          "frame_digest": "6ee3004ee9fbb7db7e4cc24e70091e33306ead83fc3c07e93e4285aef5c33bea",
+          "logical_offset": 0,
+          "padded_length": 16384,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 16384,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer0/head7/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b6ffb7a611f408213daa33fecc537759bb2f2ee7ce065fab985ec853c2238d87641eab8a9a6bdbac140fb8d01417ec78",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "7058b6863a4844b51c6bfc483d16bb340c247bda63fb8838aeaccda7450b5c1e",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b6ffb7a611f408213daa33fecc537759bb2f2ee7ce065fab985ec853c2238d87641eab8a9a6bdbac140fb8d01417ec78",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head0/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "ad90ef98121d2280bac31c35b52d4c7567dff45f5d41bdb9a46ff3bc7cacc890b6079b445295f7cef465a1a3edffe206",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "65cff45307e6485e0766cd3d696cb4846e0929db02dfb4cdda3566e4c4778243",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "ad90ef98121d2280bac31c35b52d4c7567dff45f5d41bdb9a46ff3bc7cacc890b6079b445295f7cef465a1a3edffe206",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head0/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "800ec5580ef47442006fe0586e8fea97bd78b8c6c64f26c4b5c6eb9d6d0920321027a0fce578e6d104a7f146e9ab6255",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "155238edec9a5414cf7ce7bb5dbc3dadd62998be887994ba7d13e3191f8c6684",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "800ec5580ef47442006fe0586e8fea97bd78b8c6c64f26c4b5c6eb9d6d0920321027a0fce578e6d104a7f146e9ab6255",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head0/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8cf604c2c8ef17240367637e0b10ceec8f35a24e7319c6846ae881d7838b6e1640a25abf10a5093ec93fbbc9321d459a",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "d00a5f37e8172c3fd19c1a6dfc363a12e6543ea2389b2e807ff02a351e7a888a",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8cf604c2c8ef17240367637e0b10ceec8f35a24e7319c6846ae881d7838b6e1640a25abf10a5093ec93fbbc9321d459a",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head1/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a908f256a94b85162d3fb771789b1660f2be83380f9b0846f5dcb7a3774fae6169356dc279c0a7ce981d51af8d41fea1",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "1856867b025fe6b87d60e9cdb90810d705741c117638e9641d3fa285392e01a4",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "a908f256a94b85162d3fb771789b1660f2be83380f9b0846f5dcb7a3774fae6169356dc279c0a7ce981d51af8d41fea1",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head1/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a99ca3c63197ff87acae171d5e6914405e4a2546524c53d1f15e178f87e77ff757bebb978ff8d2e632ce3e06467a9783",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "6933bdd69491bb834918c04b15c86a3d4071cb07d837e1e0a6a2783ca8aa4fb9",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "a99ca3c63197ff87acae171d5e6914405e4a2546524c53d1f15e178f87e77ff757bebb978ff8d2e632ce3e06467a9783",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head1/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b2bfa2fdaf1dec745bfeb2a2feeb2f4d17196606698998759684a87e667f3a13635976a7b78be593eb25e227ce6b74c8",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "c9097e41e4aebed44cfaea64f5ac6d2b51b4b680433edeaec1df24a13a63347c",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b2bfa2fdaf1dec745bfeb2a2feeb2f4d17196606698998759684a87e667f3a13635976a7b78be593eb25e227ce6b74c8",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head2/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "81fc223f9339fe93d7cf0e4053246d6aa493c8604d0d5024b53a968c847b0210eafa3807ae41e2c2d88d870a3587bed6",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "81e7a6af40a33658b1dbc82d41217c27aebaf991f2d510fae805d92f9f7f7296",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "81fc223f9339fe93d7cf0e4053246d6aa493c8604d0d5024b53a968c847b0210eafa3807ae41e2c2d88d870a3587bed6",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head2/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b425feba1e9e1eb93a03361360f6d76473d01a12c17fab77ea061b1f72516863f35da170ed00a5fc2bca981899d56795",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "46a66e48d76f86130e07001b6a488095320ae749bea4802a86824a56dfaec0af",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "b425feba1e9e1eb93a03361360f6d76473d01a12c17fab77ea061b1f72516863f35da170ed00a5fc2bca981899d56795",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head2/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "82cfe4a300054a8f7dbbe2e87cfc7699cbc8f8652b707913215839dd4a54aaf8152f0c0296fff5f3f5eb9789b049db2e",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "5dd4b2f82fab4f98c7b047dc5a6e6248a3a31e7e5bcaef6f064075b0b61e4bf3",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "82cfe4a300054a8f7dbbe2e87cfc7699cbc8f8652b707913215839dd4a54aaf8152f0c0296fff5f3f5eb9789b049db2e",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head3/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a4e65afaec3dce930003921c143e4537ba795c424f76f979e9a6485386843f5efd6ad3b77b59577b736006c9a29684ad",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "2bc11a8620c0a02799f1dcf394a6f9359cb2ea14bcca9b00f07075bd66f457e8",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "a4e65afaec3dce930003921c143e4537ba795c424f76f979e9a6485386843f5efd6ad3b77b59577b736006c9a29684ad",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head3/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8c411b879e6202ccc25137ad68adfc6af897fcb93d755746a0ce642da034b4661f77f25cffe7a95c891d2eb7d9ca1b79",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "eceb00bdd8e6625facf426ff86afd965a6fc534deb83f6959c5bc7b19a256b20",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "8c411b879e6202ccc25137ad68adfc6af897fcb93d755746a0ce642da034b4661f77f25cffe7a95c891d2eb7d9ca1b79",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head3/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "898b0f3f376e4822d1cacdf4051b174e7ac85ca64c5091829ae5bd719f9ff21ed99b6524bf7a9ce439ae659b89d43603",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "8f58d9f058f04654f6bd282580bf7f201506aa82730ef30d48d04502c49b1e91",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "898b0f3f376e4822d1cacdf4051b174e7ac85ca64c5091829ae5bd719f9ff21ed99b6524bf7a9ce439ae659b89d43603",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head4/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "850fd6fbad487886067ffd9d55cbe2fb30dde9d2264824cfad7c365d204908cae7131d9d8fcb04bb1ed05cbdd08ab259",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "831a4079080c7f0a06b52772af72d44550c13695355623c7402ee00caa4703e1",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "850fd6fbad487886067ffd9d55cbe2fb30dde9d2264824cfad7c365d204908cae7131d9d8fcb04bb1ed05cbdd08ab259",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head4/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "afccce704141e23f8c97f08ce4785af5bbe27951f337381522d5df719e7f439c6881e0ea9de01733e9385bb309bbccfc",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "f7674ed7d51a840911cdf271b0d74a0bd6de53b6f7a682ab6e1cf9282afb0f5c",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "afccce704141e23f8c97f08ce4785af5bbe27951f337381522d5df719e7f439c6881e0ea9de01733e9385bb309bbccfc",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head4/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8489b613d691f65a994b456fa45cf9db0bb8d0a2cf1cdc4ce21b7c3f3637069f1d1fca2d3aab0bd22c88e34e3948a0a0",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "ac33184cd646fec568f6f2631465ab049367473f991390d97b5805d4871aefda",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8489b613d691f65a994b456fa45cf9db0bb8d0a2cf1cdc4ce21b7c3f3637069f1d1fca2d3aab0bd22c88e34e3948a0a0",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head5/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8ee034c9f49b31b0cdc71d9e541bf714e214c8eeb9c3bb9e5bd62928aa9f86531c396cbae45520fedcae6778c50de9d5",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "b8c55a0f456c2ad3f19671e0b7beb1175bab68bff48ad7791f7ffd3a5e0e5e67",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8ee034c9f49b31b0cdc71d9e541bf714e214c8eeb9c3bb9e5bd62928aa9f86531c396cbae45520fedcae6778c50de9d5",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head5/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "87f6d03fd8f227ed7907c5f22037d005f807ecc12e7281ca68af5de4d4387c4b3be0ed7842db8eac096789e04a1434ff",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "db5844da7abed759847c10968790a16ebaf3af17bbc4310418afef259f130efd",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "87f6d03fd8f227ed7907c5f22037d005f807ecc12e7281ca68af5de4d4387c4b3be0ed7842db8eac096789e04a1434ff",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head5/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b8c4999b55f1448c46b00462b56477e4d35def616c6cd4dc2f2b547694c291dad3de651486966f84c47bd7e65f4e9caa",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "44977dad104b1066ce4cfe8cbac3238a7670dfc279d0123c7a655ba95783d966",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b8c4999b55f1448c46b00462b56477e4d35def616c6cd4dc2f2b547694c291dad3de651486966f84c47bd7e65f4e9caa",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head6/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8e54be1d744c35b18883e2e302e21e5def8fcefed3c50eb3d2c949de635b94f29d9928bc13575af503539cec823ff9bf",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "3578a9971fa2c8c3adb5b428be8b37e796d57005ed357adcb07354f41ecbddc1",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8e54be1d744c35b18883e2e302e21e5def8fcefed3c50eb3d2c949de635b94f29d9928bc13575af503539cec823ff9bf",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head6/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "a385892ef84a60e3f89422ece507503e1347a71ccdad2acd783bf1db7f553614ca91fc537024a81708ac2b98fc9ea972",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "979f52764fbecb7608a8757f0d3746bc102d378ea168e422142cb199b58f995b",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "a385892ef84a60e3f89422ece507503e1347a71ccdad2acd783bf1db7f553614ca91fc537024a81708ac2b98fc9ea972",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head6/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8016bdfa1869296b925eea582f26c2d3f68176c0786c5e24c3f9ffdf8359b38aa9c55f988ab25c37eec79ee3fdddf06f",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "44864718e50763d9cea0849d13096733b1be5704efb918554f2c9702158fe05f",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8016bdfa1869296b925eea582f26c2d3f68176c0786c5e24c3f9ffdf8359b38aa9c55f988ab25c37eec79ee3fdddf06f",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head7/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "933f8cd34c9c10543d6afb4f3e999b5e3c06dd3956c4fe5aee86c0bf6e77ec22404a2527884e40a3154d2cb3378b80fe",
+      "domain_size": 8,
+      "logical_shape": [
+        8,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "a53d4a4bece365093b46adf836d9b465f008e3958dbdf6da38c7c314b11879df",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "933f8cd34c9c10543d6afb4f3e999b5e3c06dd3956c4fe5aee86c0bf6e77ec22404a2527884e40a3154d2cb3378b80fe",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head7/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b7f03554eb8945795a2bdd15f3b3ebf8365203b9fe7e9f011924e842d6afd129316e686ba1e2b6b2fb0028e126a512f3",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        8
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "83a23a4975509485a2a249e49c7de0806b0491a2c6c7777d3af7d5a1184c1cd2",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "b7f03554eb8945795a2bdd15f3b3ebf8365203b9fe7e9f011924e842d6afd129316e686ba1e2b6b2fb0028e126a512f3",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "hidden/layer1/head7/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8d17aeb6ae696990b4f100357954f16f64dce102c0139a3ecccac0c2c36eb505ef8aec0eb3b401817124e1c7c842abb0",
+      "domain_size": 8,
+      "logical_shape": [
+        7,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "06ae44c376e6bf159e1fffd1f8a5da269bb56245bc3b410d151a1cfb1b444458",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8d17aeb6ae696990b4f100357954f16f64dce102c0139a3ecccac0c2c36eb505ef8aec0eb3b401817124e1c7c842abb0",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head0/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "aac58a66e7d8347a28eaf7994d051e58468c1703cca2bb2ee2d1dfa085e48422a73176d6b95dae77874f699392946494",
+      "domain_size": 8,
+      "logical_shape": [
+        7,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "8cfb98449c68c4cb0a849d6d3e1255dca35b0165651fd3cffff8dd9eae741f95",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "aac58a66e7d8347a28eaf7994d051e58468c1703cca2bb2ee2d1dfa085e48422a73176d6b95dae77874f699392946494",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head0/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b9aaeb088fcf8dedacf60c406bd9172080b1b5156587e7db8185321bee5c24c381851bc8d4b47d62c854f6243833ad05",
+      "domain_size": 8,
+      "logical_shape": [
+        7
+      ],
+      "padded_shape": [
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "09b412d42b76aaea812dabc5cf7e8270ebc71f6ea3813ac81683c8a4be1f0b51",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b9aaeb088fcf8dedacf60c406bd9172080b1b5156587e7db8185321bee5c24c381851bc8d4b47d62c854f6243833ad05",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head0/model/output_bias"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b2710e13bc0d273befcac1914530ae8f5aa5031ab77f571b5ea5d3a249ef38df41b72d971f80ef010b54dcf32801bace",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        7
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "2e9876f2f7be8d1ead9a6669acc8ffb5fdbb5ce776c5b6c889a23a7555e5d198",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "b2710e13bc0d273befcac1914530ae8f5aa5031ab77f571b5ea5d3a249ef38df41b72d971f80ef010b54dcf32801bace",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head0/model/seq_kernel"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "8524d4ec0551400b92e0e93ea38d8e0a1fd9e03e1efa8f2a679179575e7f8d8587a60281214d928bde83cb54752e822f",
+      "domain_size": 8,
+      "logical_shape": [
+        7,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "95d9a67971564c8f3c80b9c7894cf74be7f09e70be9aa4902ea854fe80bc5a9e",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "8524d4ec0551400b92e0e93ea38d8e0a1fd9e03e1efa8f2a679179575e7f8d8587a60281214d928bde83cb54752e822f",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head1/model/attn_dst"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "860a3c1f8f685593d74a177ca25a9bf47fcdacdb13399c82125978d52b02a64e67b6c42063a54a4caabedaae894be71a",
+      "domain_size": 8,
+      "logical_shape": [
+        7,
+        1
+      ],
+      "padded_shape": [
+        8,
+        1
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "a1d4edf4a8f570c919d640e702fcfd6a4da6d8a379d214025e5a040a3f15eb3c",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "860a3c1f8f685593d74a177ca25a9bf47fcdacdb13399c82125978d52b02a64e67b6c42063a54a4caabedaae894be71a",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head1/model/attn_src"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "b4b569b06c72cb282bd92933db28f7f010eaeb823dd8259fd590039e2d409b6ed7fb0239c8da298fe7ef8b4b49df333f",
+      "domain_size": 8,
+      "logical_shape": [
+        7
+      ],
+      "padded_shape": [
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "2718f13cfc07058fa53e9d0aaaaede510b50b27ef435dcec2f2bf99811292e31",
+      "segment_commitments": [
+        {
+          "actual_length": 8,
+          "commitment": "b4b569b06c72cb282bd92933db28f7f010eaeb823dd8259fd590039e2d409b6ed7fb0239c8da298fe7ef8b4b49df333f",
+          "frame_digest": "0bed4da6175a20c842aef238e7cd0821e60313fe2d289d92dfcc55001e244e92",
+          "logical_offset": 0,
+          "padded_length": 8,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 8,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head1/model/output_bias"
+    },
+    {
+      "basis_digest": "7f0c4ac89516f04311cafc81ed2b58d885647363412ed23a169d87b6286cec42",
+      "commitment": "abde28e5766952c1a4dd21a5907ad22421f2c77e553b3042325ef718aa37662d1e9c88c7ed523d045b1cb9b88e603fda",
+      "domain_size": 512,
+      "logical_shape": [
+        64,
+        7
+      ],
+      "padded_shape": [
+        64,
+        8
+      ],
+      "segment_binding_version": 1,
+      "segment_commitment_digest": "6deaec9fa0939fbffecc329ed511844d8b9d2410182493e103ea2344c9c90e31",
+      "segment_commitments": [
+        {
+          "actual_length": 512,
+          "commitment": "abde28e5766952c1a4dd21a5907ad22421f2c77e553b3042325ef718aa37662d1e9c88c7ed523d045b1cb9b88e603fda",
+          "frame_digest": "2d31d5c07e2d75daf9f63264d538cf496ccf4c96f510a1bc56ed6e22f6ea93e6",
+          "logical_offset": 0,
+          "padded_length": 512,
+          "padding_length": 0,
+          "segment_index": 0
+        }
+      ],
+      "segment_count": 1,
+      "segment_size": 512,
+      "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+      "tensor_id": "output/head1/model/seq_kernel"
+    }
+  ],
+  "quant_cfg_id": "gat_l3_scale_chain",
+  "registry_identity_digest": "b6ea0f76e146e2943bbe46ed8cf1de12091c832beadeea16c692f1df82edd5c0",
+  "scale_chain_digest": "7846f59a43b9490603457ce73ad52ce4b6df684de9ec69280ffb47d76cd911da",
+  "schema": "zkDL_gat_model_registry_v3",
+  "source_root": "baseline-local",
+  "srs_id": "cora_native_TEST_FIXTURE_zgb3e0rl",
+  "srs_manifest_digest": "665856ad4c65790f58247630a57922c52b77e4aea22924d36106f00f5890f489",
+  "static_table_digest": "c8cdaf8650cbb77148da2eba58fb0c26b9ebae263ff010cc3d6ad4e3907a80ad",
+  "static_table_id": "cora_native_tables_TEST_FIXTURE_zgb3e0rl",
+  "verifier_registry_digest": "b6ea0f76e146e2943bbe46ed8cf1de12091c832beadeea16c692f1df82edd5c0"
+}

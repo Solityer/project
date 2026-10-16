@@ -1,0 +1,42 @@
+{
+  "baseline": "zkdl",
+  "datasets": [
+    {
+      "dataset": "cora",
+      "failure": "formal phase interrupted by signal 15",
+      "stage": "interrupted",
+      "status": "INTERRUPTED"
+    },
+    {
+      "dataset": "citeseer",
+      "failure": "not started because the formal run was interrupted",
+      "stage": "interrupted",
+      "status": "BLOCKED"
+    },
+    {
+      "dataset": "pubmed",
+      "failure": "not started because the formal run was interrupted",
+      "stage": "interrupted",
+      "status": "BLOCKED"
+    },
+    {
+      "dataset": "ppi",
+      "failure": "not started because the formal run was interrupted",
+      "stage": "interrupted",
+      "status": "BLOCKED"
+    },
+    {
+      "dataset": "ogbn_arxiv",
+      "failure": "not started because the formal run was interrupted",
+      "stage": "interrupted",
+      "status": "BLOCKED"
+    }
+  ],
+  "failure": "formal phase interrupted by signal 15",
+  "mode": "formal_interrupted",
+  "overall_status": "INTERRUPTED",
+  "runs_path": "runs/formal_82a1eac4da8deaf1c05ed3809fdecde9",
+  "schema": "zkDL_gat_formal_partial_result_summary_v1",
+  "session_id": "82a1eac4da8deaf1c05ed3809fdecde9",
+  "strict_pass": false
+}

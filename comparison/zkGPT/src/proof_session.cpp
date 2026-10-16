@@ -12,7 +12,7 @@
 
 namespace {
 
-const char kMagic[] = "ZKGPTNS4";
+const char kMagic[] = "ZKGPTNS5";
 const std::size_t kMaxString = 1ULL << 26;
 const std::size_t kMaxMessages = 1ULL << 20;
 const std::uint64_t kMaxWireBytes = 1ULL << 30;
@@ -153,32 +153,53 @@ void append_transcript_prefix(std::string& out, const std::string& domain, const
     append_u64(out, static_cast<std::uint64_t>(message_count));
 }
 
-F derive_challenge_streamed_sha256(const std::string& domain, const NativeProofStatement& statement,
-                                  std::size_t message_count, const std::string& message_body,
-                                  const std::string& challenge_label) {
-    std::string prefix;
-    append_transcript_prefix(prefix, domain, statement, message_count);
-    std::string suffix;
-    append_string(suffix, challenge_label);
-
+std::string initial_message_body_chain_digest() {
+    std::string encoded;
+    append_string(encoded, "zkgpt-native-fs-v5/body-init");
     cybozu::Sha256 hash;
-    hash.update(prefix.data(), prefix.size());
-    hash.update(message_body.data(), message_body.size());
-    std::uint8_t digest[32];
-    hash.digest(digest, sizeof(digest), suffix.data(), suffix.size());
-
-    // BN254 Fr::setHashOf uses MCL's SHA-256 op and then this exact field mapping.
-    F result;
-    result.setArrayMask(digest, sizeof(digest));
-    return result;
+    hash.update(encoded.data(), encoded.size());
+    std::string digest(32, '\0');
+    hash.digest(&digest[0], digest.size(), "", 0);
+    return digest;
 }
 
-bool configured_fr_hash_matches_sha256() {
-    // Compare the actual MCL operation selected for this field. A finite set
-    // of calibration messages cannot establish equivalence for an arbitrary
-    // custom hash function.
-    return MCL_FR_BIT == 256 && mcl::bn::getCurveType() == MCL_BN254 &&
-           F::getOp().hash == mcl::fp::sha256;
+std::string advance_message_body_chain_digest(const std::string& previous_digest, const NativeProofMessage& message) {
+    std::string message_prefix;
+    append_u8(message_prefix, static_cast<std::uint8_t>(message.kind));
+    append_u64(message_prefix, message.sequence);
+    append_string(message_prefix, message.label);
+    append_u64(message_prefix, static_cast<std::uint64_t>(message.payload.size()));
+    const std::uint64_t encoded_size = static_cast<std::uint64_t>(message_prefix.size()) +
+                                       static_cast<std::uint64_t>(message.payload.size());
+
+    std::string step_prefix;
+    append_string(step_prefix, "zkgpt-native-fs-v5/body-step");
+    append_u64(step_prefix, message.sequence);
+    append_u64(step_prefix, encoded_size);
+
+    cybozu::Sha256 hash;
+    hash.update(step_prefix.data(), step_prefix.size());
+    hash.update(previous_digest.data(), previous_digest.size());
+    hash.update(message_prefix.data(), message_prefix.size());
+    hash.update(message.payload.data(), message.payload.size());
+    std::string digest(32, '\0');
+    hash.digest(&digest[0], digest.size(), "", 0);
+    return digest;
+}
+
+F derive_challenge_v5(const std::string& domain, const NativeProofStatement& statement,
+                      std::size_t message_count, const std::string& message_body_chain_digest,
+                      const std::string& challenge_label) {
+    std::string encoded;
+    append_string(encoded, "zkgpt-native-fs-v5/challenge");
+    append_string(encoded, domain);
+    append_statement_encoding(encoded, statement);
+    append_u64(encoded, static_cast<std::uint64_t>(message_count));
+    append_string(encoded, challenge_label);
+    append_string(encoded, message_body_chain_digest);
+    F result;
+    result.setHashOf(encoded.data(), encoded.size());
+    return result;
 }
 
 void append_transcript_encoding(std::string& out, const std::string& domain, const NativeProofStatement& statement,
@@ -286,7 +307,12 @@ bool NativeProofStatement::valid(std::string* reason) const {
     return true;
 }
 
-NativeProofSession::NativeProofSession(const std::string& domain, const NativeProofStatement& statement) : domain_(domain), statement_(statement) {
+NativeProofSession::NativeProofSession()
+    : message_body_chain_digest_(initial_message_body_chain_digest()), replayed_body_chain_digest_(initial_message_body_chain_digest()) {}
+
+NativeProofSession::NativeProofSession(const std::string& domain, const NativeProofStatement& statement)
+    : domain_(domain), statement_(statement), message_body_chain_digest_(initial_message_body_chain_digest()),
+      replayed_body_chain_digest_(initial_message_body_chain_digest()) {
     if (domain_.empty() || !statement_.valid()) throw std::invalid_argument("native proof session identity is incomplete");
 }
 
@@ -331,7 +357,7 @@ void NativeProofSession::absorb(const std::string& label, const std::string& pay
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Data, label, payload, static_cast<std::uint64_t>(messages_.size())});
     invalidate_validation_cache();
     label_positions_[messages_.back().label].push_back(messages_.size() - 1);
-    append_message_encoding(message_body_cache_, messages_.back());
+    append_message_body_chain(messages_.back());
 }
 
 void NativeProofSession::absorb_field(const std::string& label, const F& value) {
@@ -339,7 +365,7 @@ void NativeProofSession::absorb_field(const std::string& label, const F& value) 
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::Field, label, field_encoding(value), static_cast<std::uint64_t>(messages_.size())});
     invalidate_validation_cache();
     label_positions_[messages_.back().label].push_back(messages_.size() - 1);
-    append_message_encoding(message_body_cache_, messages_.back());
+    append_message_body_chain(messages_.back());
 }
 
 void NativeProofSession::absorb_fields(const std::string& label, const std::vector<F>& values) {
@@ -351,18 +377,12 @@ void NativeProofSession::absorb_fields(const std::string& label, const std::vect
     messages_.push_back(NativeProofMessage{NativeProofMessageKind::FieldVector, label, std::move(payload), static_cast<std::uint64_t>(messages_.size())});
     invalidate_validation_cache();
     label_positions_[messages_.back().label].push_back(messages_.size() - 1);
-    append_message_encoding(message_body_cache_, messages_.back());
+    append_message_body_chain(messages_.back());
 }
 
 F NativeProofSession::derive(const std::string& label) const {
     if (label.empty()) throw std::invalid_argument("native proof challenge label is empty");
-    std::string encoded;
-    append_transcript_prefix(encoded, domain_, statement_, messages_.size());
-    encoded.append(message_body_cache_);
-    append_string(encoded, label);
-    F result;
-    result.setHashOf(encoded.data(), encoded.size());
-    return result;
+    return derive_challenge_v5(domain_, statement_, messages_.size(), message_body_chain_digest_, label);
 }
 
 F NativeProofSession::challenge(const std::string& label) {
@@ -380,7 +400,7 @@ F NativeProofSession::challenge(const std::string& label) {
     if (is_round) challenge_round_last_[round_stream] = round;
     invalidate_validation_cache();
     label_positions_[messages_.back().label].push_back(messages_.size() - 1);
-    append_message_encoding(message_body_cache_, messages_.back());
+    append_message_body_chain(messages_.back());
     return result;
 }
 
@@ -390,19 +410,23 @@ bool NativeProofSession::rollback(std::size_t checkpoint, std::string* reason) {
         return false;
     }
     messages_.resize(checkpoint);
-    rebuild_message_body_cache();
+    rebuild_message_body_chain();
     return true;
 }
 
-void NativeProofSession::rebuild_message_body_cache() {
+void NativeProofSession::append_message_body_chain(const NativeProofMessage& message) {
+    message_body_chain_digest_ = advance_message_body_chain_digest(message_body_chain_digest_, message);
+}
+
+void NativeProofSession::rebuild_message_body_chain() {
     invalidate_validation_cache();
     validated_prefix_size_ = 0;
     validated_challenge_labels_.clear();
     validated_challenge_round_last_.clear();
     challenge_round_last_.clear();
     replayed_prefix_size_ = 0;
-    replayed_message_body_.clear();
-    message_body_cache_.clear();
+    message_body_chain_digest_ = initial_message_body_chain_digest();
+    replayed_body_chain_digest_ = initial_message_body_chain_digest();
     label_positions_.clear();
     label_positions_.reserve(messages_.size());
     for (std::size_t index = 0; index < messages_.size(); ++index) {
@@ -414,7 +438,7 @@ void NativeProofSession::rebuild_message_body_cache() {
             bool is_round = false;
             if (decode_challenge_round(message.label, stream, round, is_round) && is_round) challenge_round_last_[stream] = round;
         }
-        append_message_encoding(message_body_cache_, message);
+        append_message_body_chain(message);
     }
 }
 
@@ -445,32 +469,17 @@ bool NativeProofSession::replay(std::string* reason) const {
 bool NativeProofSession::replay_uncached(std::string* reason) const {
     try {
         if (!valid(reason)) return false;
-        bool hash_mode_checked = false;
-        bool stream_sha256 = false;
         for (std::size_t index = replayed_prefix_size_; index < messages_.size(); ++index) {
             const NativeProofMessage& message = messages_[index];
             if (message.kind == NativeProofMessageKind::Challenge) {
                 F expected;
                 if (!decode_field(message.payload, expected)) { set_reason(reason, "native proof challenge payload is not a field element"); return false; }
-                if (!hash_mode_checked) {
-                    stream_sha256 = configured_fr_hash_matches_sha256();
-                    hash_mode_checked = true;
-                }
-                F derived;
                 const std::string challenge_label = message.label.substr(sizeof("challenge/") - 1);
-                if (stream_sha256) {
-                    derived = derive_challenge_streamed_sha256(
-                        domain_, statement_, index, replayed_message_body_, challenge_label);
-                } else {
-                    std::string encoded;
-                    append_transcript_prefix(encoded, domain_, statement_, index);
-                    encoded.append(replayed_message_body_);
-                    append_string(encoded, challenge_label);
-                    derived.setHashOf(encoded.data(), encoded.size());
-                }
+                const F derived = derive_challenge_v5(
+                    domain_, statement_, index, replayed_body_chain_digest_, challenge_label);
                 if (derived != expected) { set_reason(reason, "native proof Fiat-Shamir challenge mismatch"); return false; }
             }
-            append_message_encoding(replayed_message_body_, message);
+            replayed_body_chain_digest_ = advance_message_body_chain_digest(replayed_body_chain_digest_, message);
             replayed_prefix_size_ = index + 1;
         }
         return true;
@@ -709,7 +718,7 @@ bool NativeProofSession::read(const std::string& path, NativeProofSession& out, 
         message.kind = static_cast<NativeProofMessageKind>(static_cast<std::uint8_t>(kind));
         parsed.messages_.push_back(std::move(message));
     }
-    parsed.rebuild_message_body_cache();
+    parsed.rebuild_message_body_chain();
     std::string wire_digest;
     if (!read_string(in, wire_digest)) {
         set_reason(reason, "truncated native proof session digest");
@@ -737,7 +746,7 @@ bool NativeProofSession::from_messages(const std::string& domain, const NativePr
             return false;
         }
         parsed.messages_ = messages;
-        parsed.rebuild_message_body_cache();
+        parsed.rebuild_message_body_chain();
         if (!parsed.valid(reason) || !parsed.replay(reason)) return false;
         out = std::move(parsed);
         return true;

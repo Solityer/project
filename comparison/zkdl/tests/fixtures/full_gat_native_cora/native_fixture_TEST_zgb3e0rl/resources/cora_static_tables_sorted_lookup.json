@@ -1,0 +1,498 @@
+{
+  "active_mask_rule": "prefix_one_then_zero_v1",
+  "descriptor_digest": "f70d902989505724cc53c09581b326d16dd9e666299a0b4e919511eeb7704cd1",
+  "inverse_rule": "delta_inverse_or_zero_v1",
+  "key_encoding": "packed_pair_u128",
+  "marker_rule": "group_first_v1",
+  "query_families": [
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head0/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head0/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head0/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head1/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head1/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head1/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head2/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head2/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head2/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head3/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head3/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head3/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head4/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head4/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head4/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head5/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head5/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head5/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head6/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head6/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head6/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer0/head7/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer0/head7/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer0/head7/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head0/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head0/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head0/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head1/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head1/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head1/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head2/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head2/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head2/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head3/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head3/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head3/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head4/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head4/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head4/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head5/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head5/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head5/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head6/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head6/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head6/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "hidden/layer1/head7/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "hidden/layer1/head7/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "elu",
+      "operation_id": "hidden/layer1/head7/elu",
+      "query_rows": 16,
+      "query_shape": [
+        2,
+        8
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "output/head0/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "output/head0/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "leaky_relu",
+      "operation_id": "output/head1/leaky_relu",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    },
+    {
+      "operation": "exp_map",
+      "operation_id": "output/head1/exp_map",
+      "query_rows": 4,
+      "query_shape": [
+        4
+      ]
+    }
+  ],
+  "schema": "zkDL_gat_sorted_lookup_descriptor_v1",
+  "segment_size": 262144,
+  "sorted_delta_rule": "nonnegative_bounded_delta_v1",
+  "source_root": "baseline-local",
+  "static_table_digest": "c8cdaf8650cbb77148da2eba58fb0c26b9ebae263ff010cc3d6ad4e3907a80ad",
+  "static_table_id": "cora_native_tables_TEST_FIXTURE_zgb3e0rl",
+  "table_families": [
+    {
+      "input_max": 4096,
+      "input_min": -4096,
+      "key_encoding": "packed_pair_u128",
+      "key_max_u128": "67113779",
+      "logical_rows": 8193,
+      "operation": "leaky_relu",
+      "output_max": 4096,
+      "output_min": -819,
+      "padded_domain": 16384,
+      "padding_rule": "zero_after_logical_rows_v1",
+      "sorted_unique": true,
+      "table_ref": "static_lrelu",
+      "x_bits": 14,
+      "y_bits": 13
+    },
+    {
+      "input_max": 4096,
+      "input_min": -4096,
+      "key_encoding": "packed_pair_u128",
+      "key_max_u128": "67112976",
+      "logical_rows": 8193,
+      "operation": "elu",
+      "output_max": 4096,
+      "output_min": -16,
+      "padded_domain": 16384,
+      "padding_rule": "zero_after_logical_rows_v1",
+      "sorted_unique": true,
+      "table_ref": "static_elu",
+      "x_bits": 14,
+      "y_bits": 13
+    },
+    {
+      "input_max": 4915,
+      "input_min": 0,
+      "key_encoding": "packed_pair_u128",
+      "key_max_u128": "78655",
+      "logical_rows": 4916,
+      "operation": "exp_map",
+      "output_max": 16,
+      "output_min": 1,
+      "padded_domain": 8192,
+      "padding_rule": "zero_after_logical_rows_v1",
+      "sorted_unique": true,
+      "table_ref": "static_exp",
+      "x_bits": 13,
+      "y_bits": 4
+    }
+  ],
+  "version": 1
+}

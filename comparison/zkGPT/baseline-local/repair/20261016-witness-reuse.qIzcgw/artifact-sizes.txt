@@ -1,0 +1,2 @@
+/home/pzh/project/comparison/zkGPT/baseline-local/repair/20261016-witness-reuse.qIzcgw/tiny/proof.artifact 8244231 bytes
+/home/pzh/project/comparison/zkGPT/baseline-local/repair/20261016-witness-reuse.qIzcgw/verifier_report.json 1861 bytes

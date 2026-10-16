@@ -1,0 +1,54 @@
+{
+  "active_stage": "owner-interrupted",
+  "completed_stages": [
+    "prepare"
+  ],
+  "dataset_failures": {
+    "cora": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/94bf9d73bba6f34c3f9503ec208992ee/cell-cora.stderr.log"
+  },
+  "failure": "official zkGPT owner received an interrupt",
+  "local_capacity_rechecks": [
+    {
+      "checked_unix_ns": 1792079571669583683,
+      "disk_available_bytes": 1658462969856,
+      "disk_required_bytes": 11814379344,
+      "fs_device_id": "66306",
+      "host_available_bytes": 125220184064,
+      "host_required_bytes": 10342892216,
+      "pending_datasets": [
+        "cora"
+      ],
+      "stage": "before-cell:cora"
+    },
+    {
+      "checked_unix_ns": 1792100640440662456,
+      "disk_available_bytes": 1658315862016,
+      "disk_required_bytes": 13760589639,
+      "fs_device_id": "66306",
+      "host_available_bytes": 125106966528,
+      "host_required_bytes": 11202356812,
+      "pending_datasets": [
+        "citeseer"
+      ],
+      "stage": "before-cell:citeseer"
+    }
+  ],
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906071,
+    "owner_pid": 67114,
+    "owner_start_ticks": 5450603,
+    "owner_token_sha256": "07da0be8a3002aeca7e6d7cce7cddc25cb3e9b52c26cccb88df74c824a82d586",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "94bf9d73bba6f34c3f9503ec208992ee"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "94bf9d73bba6f34c3f9503ec208992ee",
+  "stage_status": {
+    "cell:cora": "FAILED",
+    "prepare": "PASS"
+  },
+  "started_unix_ns": 1792079039072986112,
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792129693118920061
+}

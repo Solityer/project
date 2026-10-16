@@ -1,0 +1,10 @@
+Isolated repair bundle: /tmp/zkgpt-maskedeqlookup-build.EHoP0d
+Build mode: Release; MCL_TEST_WITH_GMP=OFF; ZKGPT_BUILD_TESTS=ON; ZKGPT_ENABLE_CUDA=OFF; CMAKE_HOME_DIRECTORY=/home/pzh/project/comparison/zkGPT
+Targets: zkgpt_gat_prover, zkgpt_gat_verifier, native_proof_session_smoke, gat_adapter_smoke
+Incremental build: PASS, 3 seconds, exit 0 (proof_session.cpp.o rebuilt and four targets linked)
+Native session smoke: PASS, under 1 second, exit 0. Output challenge digests: 62525b5b6f953354c7d9195910a543613d5c259a5e6083a05f0e46eb76dade4 and 7a25a5f5d42147f7f691b725aba3e17179bee9079ed40ffc85faea29bd083f7
+Tiny formal fixture: PASS, 2 seconds, exit 0, 1-node/1-edge/3-layer fixture. Files: tiny/verifier_context.bin, tiny/public_logits.txt, tiny/proof.artifact, tiny/fixture.json
+Independent isolated verifier: PASS, 3 seconds, exit 0, report status VERIFY_OK. Context load 2.57848 ms; artifact read/parse 9.767 ms; decode_crypto_ms 7.339973; verify_crypto_ms 3288.010248; crypto_verify_ms 3295.350221. Proof artifact size 8244430 bytes.
+Python selector ProductionContractTests.test_native_result_timing_semantics_matches_consumer_and_rejects_v3: PASS, 1 test, under 1 second, exit 0.
+Protocol identities: session wire magic ZKGPTNS5; challenge derivation v5 uses the message-body digest chain; native GAT domain zkgpt-native-gat-fs-v7; SparseGkrProofWire version 8.
+The first verifier CLI invocation used an absolute context path and was rejected before reading any fixture input; corrected invocation used baseline-relative paths and performed the sole successful independent verification. The proof fixture was generated once only.

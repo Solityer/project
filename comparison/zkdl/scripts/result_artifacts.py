@@ -271,7 +271,7 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
     segment_size = setup.get("segment_size")
     segment_count = setup.get("segment_count")
     if (basis_domain != NATIVE_BASIS_DOMAIN or not isinstance(logical_domain, int) or
-            logical_domain < basis_domain or logical_domain > MAX_NATIVE_DOMAIN or
+            logical_domain < 1 or logical_domain > MAX_NATIVE_DOMAIN or
             logical_domain & (logical_domain - 1) or setup.get("domain") != basis_domain or
             segment_size != basis_domain or
             not isinstance(segment_count, int) or segment_count < 1 or

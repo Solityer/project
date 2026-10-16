@@ -251,6 +251,7 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
         "--formal-session-id", session_id, "--run-nonce", run_nonce,
         "--session-manifest-sha256", session_manifest_sha256,
         "--formal-run-directory", run_relative,
+        "--defer-self-verify",
     ], root, run_path / "prover.stdout.log", run_path / "prover.stderr.log",
        f"{dataset}/prover", process_telemetry["prover"])
     prover_wall_ms = (time.perf_counter() - prover_start) * 1000.0
@@ -258,14 +259,16 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     if completed_returncode != 0:
         raise ChainError(f"native prover failed with {completed_returncode}; see {run_relative}/prover.stderr.log")
     result = require_result_shape(load_json(result_path, "native result"), result_path)
-    if result.get("dataset") != dataset or result.get("backend") != backend or result.get("status") != "VERIFY_OK" or result.get("verification_status") != "VERIFY_OK":
-        raise ChainError(f"native result is not a matching VERIFY_OK cell: {result_path}")
+    if (result.get("dataset") != dataset or result.get("backend") != backend or
+            result.get("status") != "PROOF_GENERATED_PENDING_VERIFY" or
+            result.get("verification_status") != "PROOF_GENERATED_PENDING_VERIFY"):
+        raise ChainError(f"native result is not a matching pending-verification cell: {result_path}")
     if (result.get("session_id") != session_id or result.get("run_nonce") != run_nonce or
             result.get("session_manifest_sha256") != session_manifest_sha256):
         raise ChainError(f"native result does not belong to the current session: {result_path}")
     require_bool(result, "proof_generated", True, result_path)
-    require_bool(result, "verifier_called", True, result_path)
-    require_bool(result, "verifier_ok", True, result_path)
+    require_bool(result, "verifier_called", False, result_path)
+    require_bool(result, "verifier_ok", False, result_path)
     require_bool(result, "verifier_reads_witness", False, result_path)
     require_bool(result, "cpu_fallback", False, result_path)
     identity = _result_identity(result, result_path)
@@ -296,6 +299,10 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     assert_fresh_files((report_path, run_path / "prover.stdout.log",
                         run_path / "prover.stderr.log", run_path / "verifier.stdout.log",
                         run_path / "verifier.stderr.log"), run_started_ns)
+    result["status"] = "VERIFY_OK"
+    result["verification_status"] = "VERIFY_OK"
+    result["verifier_called"] = True
+    result["verifier_ok"] = True
     result = _enrich_result(root, result, result_path, resource, registration,
                             artifact, run_nonce, run_started_ns, resource_manifest_digest,
                             session_id, session_manifest_sha256)

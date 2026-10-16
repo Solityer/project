@@ -1,0 +1,119 @@
+{
+  "build_log_path": "results/formal/94bf9d73bba6f34c3f9503ec208992ee/logs/build.log",
+  "build_log_sha256": "e01142a934f8ff8496eb4480e7223f5c7bb649cacd1c3ccecff95d2e5ea4100a",
+  "created_unix_ns": 1792079571481197523,
+  "datasets": [
+    "cora",
+    "citeseer",
+    "pubmed",
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "local_capacity_profile": {
+    "baseline": "zkgpt",
+    "bound_methods": {
+      "additional_disk_peak": "source_derived_upper_bound",
+      "host_peak": "source_derived_upper_bound"
+    },
+    "datasets": {
+      "citeseer": {
+        "additional_disk_peak_bytes": 13693480775,
+        "cell_retained_artifact_bytes_upper_bound": 514597086,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 11202356812,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "cora": {
+        "additional_disk_peak_bytes": 11747270480,
+        "cell_retained_artifact_bytes_upper_bound": 378048782,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 10342892216,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "ogbn_arxiv": {
+        "additional_disk_peak_bytes": 1362146711740,
+        "cell_retained_artifact_bytes_upper_bound": 1140753462,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 38875843278,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "ppi": {
+        "additional_disk_peak_bytes": 774616695340,
+        "cell_retained_artifact_bytes_upper_bound": 749571250,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 24859202427,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "pubmed": {
+        "additional_disk_peak_bytes": 83744337918,
+        "cell_retained_artifact_bytes_upper_bound": 557061490,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 12906662235,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      }
+    },
+    "device": null,
+    "finalization_disk_bytes_upper_bound": 67108864,
+    "finalization_host_bytes_upper_bound": 38875843278,
+    "fs_device_id": "66306",
+    "memory_accounting_kind": "host-only",
+    "preexisting_baseline_artifact_bytes": 0,
+    "schema": "zkgpt-local-capacity-profile-v2",
+    "session_id": "94bf9d73bba6f34c3f9503ec208992ee"
+  },
+  "local_capacity_profile_sha256": "dbd47658b5d235063fc857e46d653895deba5c31b73bd1c05ee7743d2625dbdd",
+  "native_source_sha256": "ecdb6534b61997f89a3ec298728390a35be11ef4da5e70540a156ddfcf964404",
+  "preflight_sha256": "ae85393a10dda70320f3078a646f6b45f77b5b99c10c731c5bf81abe608b7f3f",
+  "prover_fingerprint": {
+    "mtime_ns": 1792079043890990248,
+    "sha256": "bac1d6874484f23568fa83579ab08020f19fb84c979ee321f1bb5b65cb9c08df",
+    "size_bytes": 3599728
+  },
+  "resource_manifest_sha256": "459e538bb5cb6bf1f2fa7c9adb3645678319f36612bfaa32e7589408a5a4c773",
+  "root_session_id": "94bf9d73bba6f34c3f9503ec208992ee",
+  "runtime_source_sha256": "949f60073eab4ce4a2d2d159b668218141c3897fa4753b5318181258a7a432e2",
+  "schema": "zkgpt-gat-local-formal-context-v1",
+  "session_manifest_sha256": "e1f88ec7ec2acf883556f74bc87a1881575ebc02c351af79671148253a39aad1",
+  "source_tree_sha256": "ecdb6534b61997f89a3ec298728390a35be11ef4da5e70540a156ddfcf964404",
+  "status": "PREPARED",
+  "verifier_fingerprint": {
+    "mtime_ns": 1792079044101955087,
+    "sha256": "326e9f9a0748c1c56844ee5917419aa5a5f70cd5788b8bf16c3e330e0f9fce93",
+    "size_bytes": 3528288
+  }
+}

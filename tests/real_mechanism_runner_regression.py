@@ -57,6 +57,136 @@ def make_cells(repetitions: int):
     return cells
 
 
+def make_complete_combined_document(session: pathlib.Path, repetitions: int = 3):
+    document = runner.empty_summary("combined-summary-regression", session, repetitions)
+    document.update({"session_status": "complete", "provenance_stable": True})
+    document["provenance"] = {
+        "source": {
+            "source_tree_hash": "1" * 64,
+            "git_diff_sha256": "2" * 64,
+            "git_status_sha256": "3" * 64,
+        },
+        "build": {
+            "binary_sha256": "4" * 64,
+            "cmake_cache_sha256": "5" * 64,
+            "source_manifest_sha256": "6" * 64,
+        },
+    }
+    cells = []
+    for config_index, spec in enumerate(runner.FORMAL_CONFIGS):
+        cfgid = runner.matrix_config_id(spec)
+        if spec["dataset"] == "ppi":
+            n, e = (2923, 33928) if spec["graphs"] == 2 else (1546, 17699)
+        else:
+            n, e = runner.DATASETS[spec["dataset"]]["N"], runner.DATASETS[spec["dataset"]]["E"]
+        for repetition in range(1, repetitions + 1):
+            for variant in runner.VARIANTS:
+                cell_root = session / "synthetic_fixture" / cfgid / f"rep_{repetition}" / variant
+                cell_root.mkdir(parents=True)
+                original = variant == "original"
+                width_factor = 1.0 if original else 1.7 + 0.2 * repetition
+                cell = {
+                    "mechanism": spec["mechanism"], "dataset": spec["dataset"], "config_id": cfgid,
+                    "N": n, "E": e, "D": spec["width"], "G": spec["graphs"],
+                    "component_ids": list(spec["components"] or (0,)),
+                    "repetition": repetition, "variant": variant,
+                    "pair_status": "paired", "cell_status": "complete", "verification_status": "VERIFY_OK",
+                    "backend": "cuda", "cuda_actual": True, "cuda_kernel_invocations_delta": 2,
+                }
+                for metric_index, metric in enumerate(runner.METRIC_FIELDS):
+                    measured = float(100 + config_index * 7 + repetition * (metric_index + 1))
+                    if metric == "proof_size_bytes":
+                        measured = float(1000 + config_index * 7 + repetition * 2)
+                        if not original:
+                            measured += 500
+                    else:
+                        measured = measured * width_factor
+                    cell[metric] = measured
+                artifact_pairs = (
+                    ("proof_path", "proof_sha256", "proof.bin", b"proof"),
+                    ("statement_path", "statement_file_sha256", "statement.json", b"statement"),
+                    ("prover_result_path", "prover_result_sha256", "prover.json", b"prover receipt"),
+                    ("verifier_result_path", "verifier_result_sha256", "verifier.json", b"VERIFY_OK"),
+                    ("prover_log", "prover_log_sha256", "prover.log", b"prove log"),
+                    ("verifier_log", "verifier_log_sha256", "verifier.log", b"verify log"),
+                )
+                for path_field, digest_field, name, content in artifact_pairs:
+                    artifact = cell_root / name
+                    artifact.write_bytes(content)
+                    cell[path_field] = str(artifact)
+                    cell[digest_field] = runner.sha256_file(artifact)
+                cell["cell_json_path"] = str(cell_root / "cell.json")
+                runner.atomic_write_json(pathlib.Path(cell["cell_json_path"]), cell)
+                cells.append(cell)
+    runner.update_summary_counts(document, cells)
+    return document
+
+
+def test_combined_summary_export_and_raw_manifest_copy() -> None:
+    with tempfile.TemporaryDirectory(prefix="mechanism_combined_summary_regression_") as temporary:
+        root = pathlib.Path(temporary)
+        session = root / "complete"
+        session.mkdir()
+        document = make_complete_combined_document(session, repetitions=3)
+        rows = runner.combined_summary_rows(document, session)
+        assert len(rows) == len(runner.FORMAL_CONFIGS) == 11
+        first = rows[0]
+        source_group = document["groups"][0]
+        assert first["metrics"] == source_group["metrics"]
+        commitment = first["metrics"]["commitment_time_ms"]
+        assert commitment["improvement_factor"]["mean"] == source_group["metrics"]["commitment_time_ms"]["improvement_factor"]["mean"]
+        assert not math.isclose(
+            commitment["improvement_factor"]["mean"],
+            commitment["control"]["mean"] / commitment["original"]["mean"],
+        )
+        paths = runner.generate_reports(session, document)
+        assert set(("combined_summary_csv", "combined_summary_markdown", "combined_summary_json")) <= set(paths)
+        with (session / "combined_summary.csv").open(newline="", encoding="utf-8") as stream:
+            csv_rows = list(csv.DictReader(stream))
+        assert len(csv_rows) == 11
+        assert len(csv_rows[0]) == len(runner.combined_summary_csv_fields())
+        report = json.loads((session / "combined_summary.json").read_text(encoding="utf-8"))
+        assert report["verification_scope"]["artifact_sha256_bindings_checked"] is True
+        assert report["verification_scope"]["full_reverification_performed_by_exporter"] is False
+        manifest = json.loads((session / "results_manifest.json").read_text(encoding="utf-8"))
+        assert set(paths) == set(manifest["files"])
+        assert all(item["sha256"] == runner.sha256_file(pathlib.Path(item["path"]))
+                   for item in manifest["files"].values())
+
+        failed_session = root / "failed"
+        failed_session.mkdir()
+        failed = make_complete_combined_document(failed_session, repetitions=3)
+        bad_proof = pathlib.Path(failed["cells"][0]["proof_path"])
+        bad_proof.write_bytes(b"tampered proof")
+        runner.generate_reports(failed_session, failed)
+        assert failed["session_status"] == "incomplete"
+        assert failed["combined_summary_status"] == "not_generated_validation_failed"
+        assert "combined_summary_csv" not in failed["result_files"]
+        assert not (failed_session / "combined_summary.csv").exists()
+        failed_manifest = json.loads((failed_session / "results_manifest.json").read_text(encoding="utf-8"))
+        assert failed_manifest["session_status"] == "incomplete"
+
+        incomplete_session = root / "partial"
+        incomplete_session.mkdir()
+        incomplete = runner.empty_summary("partial-regression", incomplete_session, 3)
+        runner.generate_reports(incomplete_session, incomplete)
+        assert incomplete["combined_summary_status"] == "not_generated_incomplete_session"
+        assert not (incomplete_session / "combined_summary.csv").exists()
+
+        producer = root / "producer_source_manifest.json"
+        copied = root / "copied_source_manifest.json"
+        producer_bytes = b'{\n  "source_tree_hash": "abc",\n  "files": []\n}\n'
+        producer.write_bytes(producer_bytes)
+        runner.copy_build_source_manifest(producer, copied, runner.sha256_bytes(producer_bytes))
+        assert copied.read_bytes() == producer_bytes
+        try:
+            runner.copy_build_source_manifest(producer, copied, "0" * 64)
+            raise AssertionError("a build source manifest with a mismatched raw digest was copied")
+        except ValueError:
+            pass
+        assert copied.read_bytes() == producer_bytes
+
+
 def test_reverify_archive_validation() -> None:
     with tempfile.TemporaryDirectory(prefix="mechanism_reverify_archive_regression_") as temporary:
         session = pathlib.Path(temporary)
@@ -207,6 +337,7 @@ def test_shared_gpu_authorization_and_activity_sampling() -> None:
 
 def main() -> None:
     test_shared_gpu_authorization_and_activity_sampling()
+    test_combined_summary_export_and_raw_manifest_copy()
     one_schedule = runner.formal_schedule(1)
     three_schedule = runner.formal_schedule(3)
     assert len(one_schedule) == 11 and {rep for _, rep in one_schedule} == {1}
