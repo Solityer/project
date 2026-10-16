@@ -1,0 +1,6 @@
+[pubmed/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=45489.7
+[pubmed/prover] gat_adapter_prover_stage: begin
+[pubmed/prover] gat_adapter_prover_stage: lasso-build
+[pubmed/prover] gat_adapter_prover_stage: witness
+[pubmed/prover] gat_adapter_prover_stage: generators
+[pubmed/prover] gat_adapter_prover_stage: lasso-prove

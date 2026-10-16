@@ -1022,3 +1022,674 @@ ZKGPT_FORMAL_CHILD_STARTED launch_id=71b38e1516ac4512841affb13779495e child_pid=
 [local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] begin layers=113 fconn=54
 [local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 begin ty=4 size=163804737 bits=28 u=28 v=27 phase2=1
 [local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=1/28 elapsed_s=242.352
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/112 phase1 complete rounds=28/28 elapsed_s=246.016
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 phase2 begin rounds=27
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/112 phase2 progress rounds=1/27 elapsed_s=340.376
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/112 phase2 complete rounds=27/27 elapsed_s=342.963
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 phase2 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=112 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=111 begin ty=3 size=19962 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=111 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/111 phase1 complete rounds=15/15 elapsed_s=0.0572407
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=111 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=111 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=110 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=110 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/110 phase1 complete rounds=12/12 elapsed_s=0.031896
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=110 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=110 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=109 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=109 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=6 complete rounds=3327/3327 elapsed_s=0.00142855
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=6 complete rounds=1/1 elapsed_s=8.32e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/109/matmul complete rounds=3/3 elapsed_s=0.00770918
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=109 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=108 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=108 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/108 phase1 complete rounds=12/12 elapsed_s=0.0320125
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=108 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=108 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=107 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=107 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=6 complete rounds=3327/3327 elapsed_s=0.00143464
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=6 complete rounds=1/1 elapsed_s=6.87e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/107/matmul complete rounds=3/3 elapsed_s=0.00769667
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=107 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=106 begin ty=3 size=19962 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=106 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/106 phase1 complete rounds=15/15 elapsed_s=0.0489488
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=106 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=106 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=105 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=105 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00797457
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=6 inner=64 complete rounds=6/6 elapsed_s=1.3951e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/105/matmul complete rounds=6/6 elapsed_s=0.0154128
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=105 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=104 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=104 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/104 phase1 complete rounds=12/12 elapsed_s=0.0319799
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=104 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=104 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=103 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=103 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=6 complete rounds=3327/3327 elapsed_s=0.00142256
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=6 complete rounds=1/1 elapsed_s=4.64e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/103/matmul complete rounds=3/3 elapsed_s=0.00770737
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=103 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=102 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=102 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/102 phase1 complete rounds=12/12 elapsed_s=0.0319882
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=102 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=102 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=101 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=101 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=6 complete rounds=3327/3327 elapsed_s=0.00142773
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=6 complete rounds=1/1 elapsed_s=5.12e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/101/matmul complete rounds=3/3 elapsed_s=0.00771907
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=101 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=100 begin ty=3 size=19962 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=100 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/100 phase1 complete rounds=15/15 elapsed_s=0.048973
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=100 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=100 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=99 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=99 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00802545
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=6 inner=64 complete rounds=6/6 elapsed_s=1.3615e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/99/matmul complete rounds=6/6 elapsed_s=0.0154322
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=99 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=98 begin ty=3 size=212928 bits=18 u=18 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=98 phase1 begin rounds=18
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/98 phase1 complete rounds=18/18 elapsed_s=0.112543
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=98 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=98 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=97 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=97 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/97 phase1 complete rounds=12/12 elapsed_s=0.0320261
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=97 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=97 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=96 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=96 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00166837
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.279e-06
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/96/matmul complete rounds=3/3 elapsed_s=0.00772518
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=96 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=95 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=95 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/95 phase1 complete rounds=12/12 elapsed_s=0.0321064
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=95 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=95 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=94 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=94 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165495
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.52e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/94/matmul complete rounds=3/3 elapsed_s=0.00771169
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=94 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=93 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=93 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/93 phase1 complete rounds=15/15 elapsed_s=0.0516038
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=93 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=93 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=92 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=92 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00803695
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8158e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/92/matmul complete rounds=6/6 elapsed_s=0.0154513
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=92 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=91 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=91 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/91 phase1 complete rounds=12/12 elapsed_s=0.0320682
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=91 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=91 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=90 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=90 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165426
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.32e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/90/matmul complete rounds=3/3 elapsed_s=0.00773187
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=90 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=89 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=89 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/89 phase1 complete rounds=12/12 elapsed_s=0.0320514
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=89 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=89 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=88 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=88 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165442
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.52e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/88/matmul complete rounds=3/3 elapsed_s=0.00773201
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=88 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=87 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=87 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/87 phase1 complete rounds=15/15 elapsed_s=0.051542
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=87 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=87 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=86 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=86 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00802418
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8191e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/86/matmul complete rounds=6/6 elapsed_s=0.0154394
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=86 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=85 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=85 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/85 phase1 complete rounds=12/12 elapsed_s=0.0320381
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=85 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=85 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=84 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=84 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165509
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.72e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/84/matmul complete rounds=3/3 elapsed_s=0.00774006
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=84 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=83 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=83 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/83 phase1 complete rounds=12/12 elapsed_s=0.0320471
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=83 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=83 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=82 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=82 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165706
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/82/matmul complete rounds=3/3 elapsed_s=0.00772742
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=82 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=81 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=81 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/81 phase1 complete rounds=15/15 elapsed_s=0.0515894
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=81 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=81 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=80 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=80 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00805551
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7999e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/80/matmul complete rounds=6/6 elapsed_s=0.0155111
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=80 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=79 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=79 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/79 phase1 complete rounds=12/12 elapsed_s=0.0320464
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=79 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=79 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=78 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=78 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165456
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/78/matmul complete rounds=3/3 elapsed_s=0.0159324
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=78 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=77 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=77 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/77 phase1 complete rounds=12/12 elapsed_s=0.0318997
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=77 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=77 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=76 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=76 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165736
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.12e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/76/matmul complete rounds=3/3 elapsed_s=0.00769173
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=76 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=75 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=75 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/75 phase1 complete rounds=15/15 elapsed_s=0.0516826
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=75 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=75 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=74 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=74 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00802882
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7854e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/74/matmul complete rounds=6/6 elapsed_s=0.015467
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=74 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=73 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=73 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/73 phase1 complete rounds=12/12 elapsed_s=0.0319862
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=73 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=73 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=72 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=72 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165725
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.96e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/72/matmul complete rounds=3/3 elapsed_s=0.00772709
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=72 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=71 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=71 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/71 phase1 complete rounds=12/12 elapsed_s=0.0319727
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=71 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=71 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=70 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=70 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165732
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/70/matmul complete rounds=3/3 elapsed_s=0.00771456
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=70 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=69 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=69 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/69 phase1 complete rounds=15/15 elapsed_s=0.0516602
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=69 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=69 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=68 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=68 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00797516
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8238e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/68/matmul complete rounds=6/6 elapsed_s=0.0154365
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=68 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=67 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=67 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/67 phase1 complete rounds=12/12 elapsed_s=0.0320661
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=67 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=67 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=66 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=66 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165405
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.32e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/66/matmul complete rounds=3/3 elapsed_s=0.00770762
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=66 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=65 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=65 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/65 phase1 complete rounds=12/12 elapsed_s=0.0320605
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=65 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=65 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=64 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=64 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165184
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.56e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/64/matmul complete rounds=3/3 elapsed_s=0.00771463
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=64 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=63 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=63 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/63 phase1 complete rounds=15/15 elapsed_s=0.0515502
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=63 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=63 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=62 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=62 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00797238
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7902e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/62/matmul complete rounds=6/6 elapsed_s=0.0154353
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=62 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=61 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=61 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/61 phase1 complete rounds=12/12 elapsed_s=0.0319701
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=61 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=61 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=60 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=60 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165597
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/60/matmul complete rounds=3/3 elapsed_s=0.00771011
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=60 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=59 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=59 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/59 phase1 complete rounds=12/12 elapsed_s=0.0319871
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=59 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=59 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=58 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=58 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165024
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.84e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/58/matmul complete rounds=3/3 elapsed_s=0.0077077
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=58 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=57 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=57 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/57 phase1 complete rounds=15/15 elapsed_s=0.0517343
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=57 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=57 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=56 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=56 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.0080083
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8334e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/56/matmul complete rounds=6/6 elapsed_s=0.0154543
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=56 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=55 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=55 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/55 phase1 complete rounds=12/12 elapsed_s=0.0320078
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=55 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=55 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=54 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=54 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165221
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/54/matmul complete rounds=3/3 elapsed_s=0.00769144
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=54 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=53 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=53 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/53 phase1 complete rounds=12/12 elapsed_s=0.0320193
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=53 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=53 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=52 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=52 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165239
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.84e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/52/matmul complete rounds=3/3 elapsed_s=0.00773092
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=52 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=51 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=51 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/51 phase1 complete rounds=15/15 elapsed_s=0.0515877
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=51 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=51 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=50 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=50 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=64 complete rounds=3327/3327 elapsed_s=0.00798293
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.7966e-05
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/50/matmul complete rounds=6/6 elapsed_s=0.0154048
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=50 fconn end rounds=6
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=49 begin ty=3 size=212928 bits=18 u=18 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=49 phase1 begin rounds=18
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/49 phase1 complete rounds=18/18 elapsed_s=0.117298
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=49 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=49 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=48 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=48 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/48 phase1 complete rounds=12/12 elapsed_s=0.0320819
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=48 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=48 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=47 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=47 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165362
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.232e-06
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/47/matmul complete rounds=3/3 elapsed_s=0.00772196
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=47 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=46 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=46 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/46 phase1 complete rounds=12/12 elapsed_s=0.032173
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=46 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=46 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=45 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=45 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165837
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/45/matmul complete rounds=3/3 elapsed_s=0.00772369
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=45 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=44 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=44 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/44 phase1 complete rounds=15/15 elapsed_s=0.0517434
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=44 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=44 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=43 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=43 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.390437
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000963724
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/43/matmul complete rounds=12/12 elapsed_s=0.0316033
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=43 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=42 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=42 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/42 phase1 complete rounds=12/12 elapsed_s=0.0343979
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=42 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=42 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=41 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=41 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165201
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.504e-06
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/41/matmul complete rounds=3/3 elapsed_s=0.00772191
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=41 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=40 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=40 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/40 phase1 complete rounds=12/12 elapsed_s=0.0320898
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=40 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=40 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=39 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=39 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165786
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.83e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/39/matmul complete rounds=3/3 elapsed_s=0.0077142
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=39 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=38 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=38 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/38 phase1 complete rounds=15/15 elapsed_s=0.0516367
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=38 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=38 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=37 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=37 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.392682
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.0009619
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/37/matmul complete rounds=12/12 elapsed_s=0.0315693
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=37 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=36 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=36 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/36 phase1 complete rounds=12/12 elapsed_s=0.0320554
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=36 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=36 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=35 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=35 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165727
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.36e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/35/matmul complete rounds=3/3 elapsed_s=0.00771272
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=35 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=34 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=34 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/34 phase1 complete rounds=12/12 elapsed_s=0.0320073
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=34 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=34 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=33 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=33 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165525
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.36e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/33/matmul complete rounds=3/3 elapsed_s=0.00770943
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=33 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=32 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=32 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/32 phase1 complete rounds=15/15 elapsed_s=0.0517416
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=32 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=32 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=31 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=31 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.392801
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000973363
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/31/matmul complete rounds=12/12 elapsed_s=0.0315548
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=31 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=30 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=30 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/30 phase1 complete rounds=12/12 elapsed_s=0.0320901
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=30 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=30 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=29 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=29 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165068
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/29/matmul complete rounds=3/3 elapsed_s=0.00771474
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=29 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=28 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=28 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/28 phase1 complete rounds=12/12 elapsed_s=0.032079
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=28 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=28 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=27 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=27 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165573
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/27/matmul complete rounds=3/3 elapsed_s=0.00773779
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=27 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=26 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=26 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/26 phase1 complete rounds=15/15 elapsed_s=0.0516612
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=26 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=26 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=25 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=25 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.393022
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000970811
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/25/matmul complete rounds=12/12 elapsed_s=0.0315927
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=25 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=24 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=24 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/24 phase1 complete rounds=12/12 elapsed_s=0.0321151
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=24 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=24 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=23 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=23 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165228
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.68e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/23/matmul complete rounds=3/3 elapsed_s=0.00771542
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=23 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=22 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=22 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/22 phase1 complete rounds=12/12 elapsed_s=0.0320805
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=22 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=22 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=21 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=21 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165249
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.83e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/21/matmul complete rounds=3/3 elapsed_s=0.00771249
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=21 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=20 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=20 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/20 phase1 complete rounds=15/15 elapsed_s=0.0516485
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=20 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=20 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=19 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=19 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.392575
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000966828
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/19/matmul complete rounds=12/12 elapsed_s=0.0315369
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=19 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=18 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=18 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/18 phase1 complete rounds=12/12 elapsed_s=0.0320942
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=18 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=18 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=17 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=17 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165138
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.28e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/17/matmul complete rounds=3/3 elapsed_s=0.00772312
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=17 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=16 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=16 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/16 phase1 complete rounds=12/12 elapsed_s=0.0320789
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=16 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=16 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=15 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=15 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165561
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/15/matmul complete rounds=3/3 elapsed_s=0.0077123
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=15 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=14 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=14 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/14 phase1 complete rounds=15/15 elapsed_s=0.0530965
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=14 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=14 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=13 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=13 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.39195
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000964788
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/13/matmul complete rounds=12/12 elapsed_s=0.0316041
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=13 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=12 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=12 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/12 phase1 complete rounds=12/12 elapsed_s=0.0321089
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=12 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=12 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=11 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=11 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165361
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.32e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/11/matmul complete rounds=3/3 elapsed_s=0.00771955
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=11 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=10 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=10 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/10 phase1 complete rounds=12/12 elapsed_s=0.0517895
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=10 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=10 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=9 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=9 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00165263
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.168e-06
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/9/matmul complete rounds=3/3 elapsed_s=0.00769086
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=9 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=8 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=8 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/8 phase1 complete rounds=15/15 elapsed_s=0.0527514
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=8 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=8 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=7 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=7 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.389388
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000968108
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/7/matmul complete rounds=12/12 elapsed_s=0.0315274
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=7 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=6 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=6 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/6 phase1 complete rounds=12/12 elapsed_s=0.0319852
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=6 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=6 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=5 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=5 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.00164806
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.4e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/5/matmul complete rounds=3/3 elapsed_s=0.00769536
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=5 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=4 begin ty=3 size=3327 bits=12 u=12 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=4 phase1 begin rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/4 phase1 complete rounds=12/12 elapsed_s=0.0320204
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=4 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=4 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=3 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=3 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=8 complete rounds=3327/3327 elapsed_s=0.0016503
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.08e-07
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/3/matmul complete rounds=3/3 elapsed_s=0.00771712
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=3 fconn end rounds=3
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=2 begin ty=3 size=26616 bits=15 u=15 v=0 phase2=0
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=2 phase1 begin rounds=15
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] gkr/layer/2 phase1 complete rounds=15/15 elapsed_s=0.0523146
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=2 phase1 terminal end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=2 end
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=1 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=1 fconn begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN row fold rows=3327 inner=3703 complete rounds=3327/3327 elapsed_s=0.392337
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=3703 complete rounds=8/8 elapsed_s=0.000957917
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=12/12 elapsed_s=0.0314689
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] layer=1 fconn end rounds=12
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input aggregate begin sources=169
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=1/30 elapsed_s=48.8995
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=2/30 elapsed_s=94.7984
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=3/30 elapsed_s=140.658
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=4/30 elapsed_s=187.118
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=5/30 elapsed_s=234.294
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=6/30 elapsed_s=281.882
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=7/30 elapsed_s=329.761
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=8/30 elapsed_s=377.831
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=9/30 elapsed_s=426.025
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=10/30 elapsed_s=474.329
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=11/30 elapsed_s=522.695
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=12/30 elapsed_s=571.029
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=13/30 elapsed_s=619.372
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=14/30 elapsed_s=667.716
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=15/30 elapsed_s=716.11
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=16/30 elapsed_s=764.462
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=17/30 elapsed_s=812.814
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=18/30 elapsed_s=861.166
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=19/30 elapsed_s=909.542
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=20/30 elapsed_s=957.954
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=21/30 elapsed_s=1006.45
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=22/30 elapsed_s=1055.14
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=23/30 elapsed_s=1104.26
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=24/30 elapsed_s=1154.25
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=25/30 elapsed_s=1205.86
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=26/30 elapsed_s=1261.88
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=27/30 elapsed_s=1326.75
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=28/30 elapsed_s=1404.91
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=29/30 elapsed_s=1797.31
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=30/30 elapsed_s=1797.31
+[local-cell-citeseer] [citeseer/prover] [zkGPT][gkr] input aggregate end rounds=30
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: input-openings
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: artifact
+[local-cell-citeseer] [citeseer/prover] gat_adapter_prover_stage: selfverify-deferred-to-independent-verifier
+[local-cell-citeseer] [citeseer/prover] [zkGPT][artifact] serialize_begin wire_limit_bytes=1195196416
+[local-cell-citeseer] [citeseer/prover] [zkGPT][artifact] serialize_complete bytes=123669501 elapsed_ms=138.849
+[local-cell-citeseer] [citeseer/prover] [zkGPT][artifact] readback_begin
+[local-cell-citeseer] [citeseer/prover] [zkGPT][artifact] readback_complete elapsed_ms=590.93 ok=true
+[local-cell-citeseer] [citeseer/prover] PROOF_GENERATED_PENDING_VERIFY dataset=citeseer backend=cpu result=baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/citeseer/result.json
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_begin
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=43221.3 ok=true
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] artifact_read_parse_begin
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] artifact_read_parse_complete elapsed_ms=239.604 ok=true
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] crypto_verify_begin
+[local-cell-citeseer] [citeseer/cpu/verifier] [zkGPT][verifier] crypto_verify_complete elapsed_ms=1.02456e+06 ok=true
+[local-cell-citeseer] [citeseer/cpu/verifier] VERIFY_OK
+[local-cell-citeseer] VERIFY_OK dataset=citeseer backend=cpu result=baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/citeseer/result.json
+[local-cell-citeseer] ZKGPT_LOCAL_FORMAL_STATE={"commitment_ms":93671.47376081739,"dataset":"citeseer","independent_verification":true,"phase":"cell","proof_path":"baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/citeseer/proof.artifact","proof_sha256":"2ee8e877ffe6004e08c0a3e71f284350f056d8af8982a8e9920dfc3a8a046b40","proof_size_bytes":123669501,"prove_ms":3386149.0380751826,"receipt_path":"results/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/receipts/citeseer.json","receipt_sha256":"46c89745e9fc145cb26cc35933492776718c4f38928cdb2e36fd255825e12ca4","session_id":"a4ab97b1fb98c1fcaaf4aae9082f09cd","status":"PASS","verification_report_path":"baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/citeseer/verifier_report.json","verification_report_sha256":"61c43fa0ca3601c06ecd75541571e1cb03f794d60d49c024e433d3a5de1e8ebb","verification_status":"VERIFY_OK","verify_ms":1024761.579964}
+[local-cell-pubmed] [pubmed/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=45489.7
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: begin
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: lasso-build
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: witness
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: generators
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: lasso-prove

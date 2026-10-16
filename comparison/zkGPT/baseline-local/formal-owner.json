@@ -1,10 +1,11 @@
 {
-  "active_dataset": "citeseer",
+  "active_dataset": "pubmed",
   "active_stage": "cell",
   "baseline": "zkgpt",
   "completed_stages": [
     "prepare",
-    "cell:cora"
+    "cell:cora",
+    "cell:citeseer"
   ],
   "lock_device": 66306,
   "lock_inode": 24906071,
@@ -14,8 +15,8 @@
   "recovered_previous_session_id": "94bf9d73bba6f34c3f9503ec208992ee",
   "schema": "zkgpt-local-formal-owner-v1",
   "session_id": "a4ab97b1fb98c1fcaaf4aae9082f09cd",
-  "stage_nonce": "cd38dad6196e31ac8ca25620b4e98ff2",
+  "stage_nonce": "0d48d09672087bc1dee95cdeff7bd440",
   "started_unix_ns": 1792129693124633921,
   "status": "RUNNING",
-  "updated_unix_ns": 1792134166358150577
+  "updated_unix_ns": 1792138833608321146
 }
