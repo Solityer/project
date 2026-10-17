@@ -5520,6 +5520,7 @@ namespace gatzk::protocol
             bool should_use_cuda_t_edge_engine()
             {
                 cuda_t_edge_selected_cache_slots_ = 0;
+                cuda_t_edge_admitted_program_.reset();
                 if (label_ != "t_edge" || !util::route2_options().cuda_field_hotspots)
                     return false;
 
@@ -5539,7 +5540,7 @@ namespace gatzk::protocol
                     return false;
                 }
 
-                const auto program = build_t_edge_bound_program(context_, challenges_, trace_.external_evaluations, *edge_evaluation_plan_);
+                auto program = build_t_edge_bound_program(context_, challenges_, trace_.external_evaluations, *edge_evaluation_plan_);
                 const auto cache_bounds = cuda_t_edge_leaf_cache_bounds(program);
                 const auto admission_shape = cuda_t_edge_executor_admission_shape(program);
                 if (!cuda_t_edge_executor_can_admit(target_size_, cache_bounds.minimum, leaf_exact_ntt_supported, admission_shape))
@@ -5576,6 +5577,7 @@ namespace gatzk::protocol
                               ":desired_slots=" + std::to_string(cache_bounds.desired) + ":budget_cap_slots=" + std::to_string(cache_slot_upper) +
                               ":selected_slots=" + std::to_string(cuda_t_edge_selected_cache_slots_) +
                               ":full_resident=" + std::to_string(cuda_t_edge_selected_cache_slots_ == cache_bounds.desired ? 1 : 0));
+                cuda_t_edge_admitted_program_ = std::move(program);
                 return true;
             }
 
@@ -5611,8 +5613,13 @@ namespace gatzk::protocol
                                              "is missing evaluation "
                                              "plan");
                 }
+                if (!cuda_t_edge_admitted_program_.has_value())
+                {
+                    throw std::runtime_error("CUDA t_edge route is missing the admitted bound program");
+                }
 
-                auto program = build_t_edge_bound_program(context_, challenges_, trace_.external_evaluations, *edge_evaluation_plan_);
+                auto program = std::move(*cuda_t_edge_admitted_program_);
+                cuda_t_edge_admitted_program_.reset();
 
                 const auto leaf_cache_slots = cuda_t_edge_selected_cache_slots_;
 
@@ -9491,6 +9498,7 @@ namespace gatzk::protocol
 
             std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> cuda_t_edge_resident_coefficients_;
             std::shared_ptr<const algebra::CudaResidentCoefficientBuffer> cuda_t_fh_resident_coefficients_;
+            std::optional<TEdgeBoundProgram> cuda_t_edge_admitted_program_;
 
             std::size_t cuda_t_edge_selected_cache_slots_ = 0;
             std::size_t target_size_ = 0;

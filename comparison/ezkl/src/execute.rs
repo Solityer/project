@@ -3015,6 +3015,7 @@ fn gat_prepare_admission(
     let (
         size_of_shplonk_commitment_extension_bytes,
         size_of_shplonk_rotation_set_extension_bytes,
+        size_of_shplonk_fixed_aggregate_cache_group_bytes,
     ) = halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>();
     let size_of_coeff_polynomial_header_bytes = std::mem::size_of::<
         halo2_proofs::poly::Polynomial<Fr, halo2_proofs::poly::Coeff>,
@@ -3031,7 +3032,7 @@ fn gat_prepare_admission(
     )
     .map_err(|_| "native permutation grand-product mapped bank exceeds u64".to_string())?;
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-static-envelope-v17",
+        "schema": "ezkl-halo2-static-envelope-v18",
         "evidence_kind": "source_derived_upper_bounds_and_configured_geometry",
         "coverage": "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt",
         "native_target_arch": std::env::consts::ARCH,
@@ -3080,6 +3081,7 @@ fn gat_prepare_admission(
         "size_of_mv_lookup_source_bytes": size_of_mv_lookup_source_bytes,
         "size_of_shplonk_commitment_extension_bytes": size_of_shplonk_commitment_extension_bytes,
         "size_of_shplonk_rotation_set_extension_bytes": size_of_shplonk_rotation_set_extension_bytes,
+        "size_of_shplonk_fixed_aggregate_cache_group_bytes": size_of_shplonk_fixed_aggregate_cache_group_bytes,
         "size_of_coeff_polynomial_header_bytes": size_of_coeff_polynomial_header_bytes,
         "lookup_table_cardinality_upper_bounds": lookup_shape.table_cardinality_upper_bounds,
         "fixed_value_explicit_zero_seen": fixed_value_explicit_zero_seen_upper,
@@ -3412,7 +3414,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-static-envelope-v17")
+        != Some("ezkl-halo2-static-envelope-v18")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
         || memory_model.get("evidence_kind").and_then(JsonValue::as_str)
@@ -3763,6 +3765,10 @@ fn load_native_admission_circuit(
         (
             "size_of_shplonk_rotation_set_extension_bytes",
             halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().1 as u128,
+        ),
+        (
+            "size_of_shplonk_fixed_aggregate_cache_group_bytes",
+            halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().2 as u128,
         ),
         (
             "size_of_coeff_polynomial_header_bytes",

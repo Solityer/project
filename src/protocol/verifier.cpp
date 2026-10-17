@@ -841,8 +841,13 @@ namespace gatzk::protocol
                 if (dataset_rows > std::numeric_limits<std::size_t>::max() / feature_count)
                     throw std::runtime_error("verifier feature table size overflows size_t");
                 const std::size_t dataset_valid = dataset_rows * feature_count;
-                const bool full_feature_identity = full_graph_feature_identity_enabled(context_);
-                const auto &feature_matrix = public_feature_source(context_);
+                if (cached_fh_feature_source_ == nullptr)
+                {
+                    cached_fh_feature_source_ = &public_feature_source(context_);
+                    cached_fh_full_identity_ = full_graph_feature_identity_enabled(context_);
+                }
+                const bool full_feature_identity = cached_fh_full_identity_;
+                const auto &feature_matrix = *cached_fh_feature_source_;
 
                 if (const auto shift = domain->rotation_shift(FieldElement::one(), point); shift.has_value())
                 {
@@ -1086,6 +1091,8 @@ namespace gatzk::protocol
             std::unordered_map<std::string, FieldElement> value_cache_;
             std::unordered_set<std::string> precomputed_domain_points_;
             std::unordered_set<std::string> lazy_fh_batch_done_;
+            const std::vector<std::vector<FieldElement>> *cached_fh_feature_source_ = nullptr;
+            bool cached_fh_full_identity_ = false;
             internal::AggregationMultiplicityCache aggregation_multiplicity_;
             RunMetrics *metrics_ = nullptr;
             bool cpu_large_fh_route_noted_ = false;

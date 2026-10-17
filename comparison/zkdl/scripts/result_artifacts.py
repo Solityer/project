@@ -395,7 +395,7 @@ def _resource_manifest(root: Path, manifest: dict[str, Any], manifest_path: Path
         raise ArtifactError("sorted-lookup descriptor self-digest mismatch")
 
 
-def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple[dict[str, Any], str]:
+def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple[dict[str, Any], str, dict[str, Any]]:
     manifest_path = _regular(run_dir / "asset_manifest.json", "asset manifest")
     manifest = _json(manifest_path, "asset manifest")
     if manifest.get("schema") != "zkDL_gat_asset_manifest_v1":
@@ -462,7 +462,67 @@ def _audit_assets(root: Path, run_dir: Path, statement: dict[str, str]) -> tuple
         raise ArtifactError("statement proof scope is not full_gat_forward")
     if statement.get("verifier_reads_witness") != "0":
         raise ArtifactError("statement verifier reads witness")
-    return manifest, asset_digest
+    return manifest, asset_digest, build
+
+def _gpu_offload_evidence(record: dict[str, str], envelope: dict[str, str], verification: dict[str, str],
+                          backend: str, expected_stage: str | None) -> dict[str, str]:
+    stage = envelope.get("gpu_offload_stage", "none")
+    if record.get("gpu_offload_stage", "none") != stage:
+        raise ArtifactError("record/envelope mismatch for gpu_offload_stage")
+    if expected_stage is not None and stage != expected_stage:
+        raise ArtifactError(f"proof offload stage mismatch: expected {expected_stage}, got {stage}")
+    if stage == "none":
+        if backend == "gpu":
+            if envelope.get("gpu_kernel_executed") != "1":
+                raise ArtifactError("GPU result has no native kernel execution evidence")
+        elif envelope.get("gpu_kernel_executed") != "0":
+            raise ArtifactError("CPU result claims GPU kernel execution")
+        if record.get("gpu_kernel_executed") != envelope.get("gpu_kernel_executed"):
+            raise ArtifactError("record/envelope mismatch for gpu_kernel_executed")
+        if backend == "cpu":
+            for field in ("gpu_forward_kernel_executed", "gpu_proof_kernel_executed"):
+                if field in envelope and envelope[field] != "0":
+                    raise ArtifactError(f"CPU result claims GPU execution in {field}")
+                if field in record and record[field] != envelope.get(field):
+                    raise ArtifactError(f"record/envelope mismatch for {field}")
+            for field in ("gpu_proof_kernel_count", "gpu_proof_peak_allocated_bytes"):
+                if field in envelope and envelope[field] != "0":
+                    raise ArtifactError(f"CPU result claims GPU allocation in {field}")
+                if field in record and record[field] != envelope.get(field):
+                    raise ArtifactError(f"record/envelope mismatch for {field}")
+        return {}
+    if stage != "hyrax_ipa_fold" or backend != "cpu":
+        raise ArtifactError("unsupported CPU/GPU proof offload combination")
+    fields = ("gpu_forward_kernel_executed", "gpu_proof_kernel_executed", "gpu_kernel_executed",
+              "gpu_proof_kernel_count", "gpu_proof_peak_allocated_bytes", "gpu_device_name",
+              "gpu_device_ordinal", "gpu_device_uuid")
+    for field in fields:
+        if not envelope.get(field) or record.get(field) != envelope.get(field):
+            raise ArtifactError(f"record/envelope mismatch or missing {field}")
+    for field in ("verifier_backend", "verify_gpu_kernel_executed"):
+        if not envelope.get(field) or record.get(field) != envelope.get(field):
+            raise ArtifactError(f"record/envelope mismatch or missing {field}")
+    if (envelope["gpu_forward_kernel_executed"] != "0" or
+            envelope["gpu_proof_kernel_executed"] != "1" or envelope["gpu_kernel_executed"] != "1"):
+        raise ArtifactError("Hyrax IPA offload lacks consistent native GPU execution flags")
+    for field in ("gpu_proof_kernel_count", "gpu_proof_peak_allocated_bytes"):
+        if (not envelope[field].isascii() or not envelope[field].isdecimal() or int(envelope[field]) <= 0 or
+                int(envelope[field]) > (1 << 64) - 1):
+            raise ArtifactError(f"Hyrax IPA offload has invalid {field}")
+    if (not envelope["gpu_device_name"].strip() or not envelope["gpu_device_uuid"].strip() or
+            not envelope["gpu_device_ordinal"].isascii() or not envelope["gpu_device_ordinal"].isdecimal() or
+            int(envelope["gpu_device_ordinal"]) > (1 << 31) - 1):
+        raise ArtifactError("Hyrax IPA offload lacks a valid native CUDA device identity")
+    if (verification.get("verifier_backend") != "cpu" or
+            verification.get("verify_gpu_kernel_executed") != "0"):
+        raise ArtifactError("independent verifier did not record CPU-only verification")
+    if record["verifier_backend"] != verification["verifier_backend"]:
+        raise ArtifactError("run record/verification result mismatch for verifier_backend")
+    if record["verify_gpu_kernel_executed"] != verification["verify_gpu_kernel_executed"]:
+        raise ArtifactError("run record/verification result mismatch for verify_gpu_kernel_executed")
+    return {"gpu_offload_stage": stage, **{field: envelope[field] for field in fields},
+            "verifier_backend": verification["verifier_backend"],
+            "verify_gpu_kernel_executed": verification["verify_gpu_kernel_executed"]}
 
 
 def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
@@ -586,7 +646,8 @@ def _audit_fixture_run(root: Path, run_dir: Path, *, expected_dataset: str | Non
 
 
 def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
-              expected_backend: str | None = None, fixture_mode: bool = False) -> dict[str, str]:
+              expected_backend: str | None = None, expected_gpu_offload_stage: str | None = None,
+              fixture_mode: bool = False) -> dict[str, str]:
     """Audit one runner output directory and return collector-ready fields."""
     if fixture_mode:
         return _audit_fixture_run(root, run_dir, expected_dataset=expected_dataset,
@@ -702,15 +763,12 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
         raise ArtifactError("proof envelope violates output_bound")
     if record.get("output_bound") != envelope.get("output_bound"):
         raise ArtifactError("record/envelope mismatch for output_bound")
-    if backend == "gpu":
-        if envelope.get("gpu_kernel_executed") != "1":
-            raise ArtifactError("GPU result has no native kernel execution evidence")
-    elif envelope.get("gpu_kernel_executed") != "0":
-        raise ArtifactError("CPU result claims GPU kernel execution")
-    if record.get("gpu_kernel_executed") != envelope.get("gpu_kernel_executed"):
-        raise ArtifactError("record/envelope mismatch for gpu_kernel_executed")
+    offload = _gpu_offload_evidence(record, envelope, verification, backend, expected_gpu_offload_stage)
 
-    manifest, asset_digest = _audit_assets(root, run_dir, statement)
+    manifest, asset_digest, build = _audit_assets(root, run_dir, statement)
+    if offload and (build.get("schema") != "zkDL_gat_build_manifest_v2" or
+                    build.get("gpu_offload_capabilities") != ["hyrax_ipa_fold"]):
+        raise ArtifactError("Hyrax IPA GPU offload is not bound to a capable formal build")
     for field in (
         "static_table_descriptor_digest", "scale_chain_digest",
         "integer_bound_ledger_id", "integer_bound_ledger_digest",
@@ -742,6 +800,7 @@ def audit_run(root: Path, run_dir: Path, *, expected_dataset: str | None = None,
         "source_digest": str(manifest.get("source_digest")),
         "native_core_api": envelope["native_core_api"],
         "independent_verification": "1",
+        **offload,
     }
 
 

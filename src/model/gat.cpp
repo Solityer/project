@@ -919,13 +919,16 @@ namespace gatzk::model
                                         {
                                             for (std::size_t i = begin; i < end; ++i)
                                             {
+                                                auto &output_row = out[i];
+                                                const auto &input_row = left[i];
                                                 for (std::size_t k = 0; k < shared; ++k)
                                                 {
-                                                    const auto lhs = left[i][k];
+                                                    const auto lhs = input_row[k];
+                                                    const auto &weight_row = right[k];
 
                                                     for (std::size_t j = 0; j < cols; ++j)
                                                     {
-                                                        out[i][j] += lhs * right[k][j];
+                                                        output_row[j] += lhs * weight_row[j];
                                                     }
                                                 }
                                             }

@@ -15,6 +15,7 @@ SRCS := $(wildcard *.cu)
 TARGETS := $(SRCS:.cu=)
 GAT_TARGET := gat_runner
 GAT_SRC := gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu
+GAT_GPU_FOLD_OBJ := gat_adapter/hyrax_gpu_fold.o
 GAT_RESOURCE_TARGET := gat_resource_setup
 BLST_LIBRARY := third_party/blst/libblst.a
 BLST_SOURCES := $(shell find third_party/blst/src third_party/blst/build third_party/blst/bindings -type f)
@@ -116,8 +117,11 @@ tests/sparse_route_hidden_smoke: tests/sparse_route_hidden_smoke.cu zkrelation-p
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
-$(GAT_TARGET): $(GAT_SRC) gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh gat_adapter/output_stream.hpp gat_adapter/checkpoint_manifest_json.hpp gat_adapter/integer_bound_ledger.hpp gat_adapter/lookup_table_index_bits.hpp gat_adapter/signed_round_bounds.hpp gat_adapter/static_table_bounds.hpp cpu-backend.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh $(BLST_LIBRARY)
-	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) $(BLST_LIBRARY) -o $@
+$(GAT_GPU_FOLD_OBJ): gat_adapter/hyrax_gpu_fold.cu gat_adapter/hyrax_gpu_fold_api.hpp cpu-backend.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) -I. -Igat_adapter --entries=hyrax_lr_products_kernel,hyrax_g_fold_kernel,hyrax_safe_reduce_kernel -c $< -o $@
+
+$(GAT_TARGET): $(GAT_SRC) $(GAT_GPU_FOLD_OBJ) gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh gat_adapter/output_stream.hpp gat_adapter/checkpoint_manifest_json.hpp gat_adapter/integer_bound_ledger.hpp gat_adapter/lookup_table_index_bits.hpp gat_adapter/signed_round_bounds.hpp gat_adapter/static_table_bounds.hpp gat_adapter/hyrax_gpu_fold.cu gat_adapter/hyrax_gpu_fold_api.hpp cpu-backend.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $(GAT_SRC) $(GAT_GPU_FOLD_OBJ) $(BLST_LIBRARY) -o $@
 
 .PHONY: sumcheck-round-oracle-check
 sumcheck-round-oracle-check: tests/sumcheck_round_oracle_check
@@ -127,7 +131,7 @@ tests/sumcheck_round_oracle_check: tests/sumcheck_round_oracle_check.cu zkrelati
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 clean:
-	rm -f $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET) tests/core_smoke
+	rm -f $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET) $(GAT_GPU_FOLD_OBJ) tests/core_smoke
 
 .PHONY: witness-numerics-check
 witness-numerics-check: tests/gat_witness_numerics_check

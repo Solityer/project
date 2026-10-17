@@ -1,9 +1,10 @@
 {
-  "active_stage": "cell:pubmed",
+  "active_stage": "cell:ppi",
   "completed_stages": [
     "prepare",
     "cell:cora",
-    "cell:citeseer"
+    "cell:citeseer",
+    "cell:pubmed"
   ],
   "failure": "",
   "local_capacity_rechecks": [
@@ -42,6 +43,18 @@
         "pubmed"
       ],
       "stage": "before-cell:pubmed"
+    },
+    {
+      "checked_unix_ns": 1792217434122440382,
+      "disk_available_bytes": 1645935140864,
+      "disk_required_bytes": 774683804204,
+      "fs_device_id": "66306",
+      "host_available_bytes": 126991433728,
+      "host_required_bytes": 24859221355,
+      "pending_datasets": [
+        "ppi"
+      ],
+      "stage": "before-cell:ppi"
     }
   ],
   "local_owner": {
@@ -58,9 +71,10 @@
   "stage_status": {
     "cell:citeseer": "PASS",
     "cell:cora": "PASS",
+    "cell:pubmed": "PASS",
     "prepare": "PASS"
   },
   "started_unix_ns": 1792196446189971326,
   "status": "RUNNING",
-  "updated_unix_ns": 1792201594565212936
+  "updated_unix_ns": 1792217434404366215
 }

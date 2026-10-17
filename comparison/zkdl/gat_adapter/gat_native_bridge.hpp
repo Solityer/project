@@ -21,6 +21,10 @@ struct NativeProveRequest {
     const GatTrace *trace = nullptr;
     const PublicStatement *statement = nullptr;
     Backend backend = Backend::Cpu;
+    bool gpu_forward_kernel_executed = false;
+    // Only "hyrax_ipa_fold" is currently supported.  This is an explicit
+    // compute offload under the CPU relation backend, not Backend::Gpu.
+    std::string gpu_offload_stage = "none";
 
     const NativeRelationWitnessInput *witness = nullptr;
 };

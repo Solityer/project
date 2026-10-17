@@ -917,7 +917,7 @@ namespace gatzk::crypto
 
             auto &scalar_staging = reusable_scalar_staging();
             const bool native_montgomery_upload = integrated && !resident_montgomery_scalars && !bounded_integrated_scalar_staging &&
-                                                  batch_size == 1 && count >= kIntegratedNativeMontgomeryUploadThreshold;
+                                                  count >= kIntegratedNativeMontgomeryUploadThreshold;
 
             const auto incremental_host_scalar_bytes = resident_montgomery_scalars || native_montgomery_upload
                                                            ? std::size_t{0}
@@ -1141,8 +1141,10 @@ namespace gatzk::crypto
             bls12_381::scalar_t *batched_scalars = nullptr;
 
             bls12_381::scalar_t *device_batched_scalars = nullptr;
+            const bool native_montgomery_batch = !resident_scalar_batch && cuda_msm_device_is_integrated() &&
+                                                 max_count >= kIntegratedNativeMontgomeryUploadThreshold;
 
-            if (resident_scalar_batch)
+            if (resident_scalar_batch || native_montgomery_batch)
             {
                 device_batched_scalars = scalar_staging.device(total_scalar_count);
             }
@@ -1189,12 +1191,44 @@ namespace gatzk::crypto
                     }
                 }
             }
+            else if (native_montgomery_batch)
+            {
+                for (std::size_t batch = 0; batch < batch_size; ++batch)
+                {
+                    if (counts[batch] > max_count || (counts[batch] != 0 && scalar_vectors[batch] == nullptr))
+                    {
+                        throw std::runtime_error("CUDA native Montgomery batch scalar input is invalid");
+                    }
+
+                    auto *batch_scalars = device_batched_scalars + batch * max_count;
+                    if (counts[batch] != 0)
+                    {
+                        status = cudaMemcpy(batch_scalars, algebra::FieldElement::native_array_data(scalar_vectors[batch]),
+                                            checked_byte_count(counts[batch], sizeof(bls12_381::scalar_t), "native Montgomery batch scalar upload"),
+                                            cudaMemcpyHostToDevice);
+                        if (status != cudaSuccess)
+                        {
+                            throw_cuda_error("native Montgomery batch scalar upload", status);
+                        }
+                    }
+                    if (counts[batch] < max_count)
+                    {
+                        status = cudaMemset(batch_scalars + counts[batch], 0,
+                                            checked_byte_count(max_count - counts[batch], sizeof(bls12_381::scalar_t),
+                                                               "native Montgomery batch scalar padding"));
+                        if (status != cudaSuccess)
+                        {
+                            throw_cuda_error("native Montgomery batch scalar padding", status);
+                        }
+                    }
+                }
+            }
             else
             {
                 copy_mcl_canonical_scalar_batch_to_icicle(batched_scalars, scalar_vectors, counts, max_count, batch_size);
             }
 
-            if (resident_scalar_batch)
+            if (resident_scalar_batch || native_montgomery_batch)
             {
                 config.are_scalars_on_device = true;
 

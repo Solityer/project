@@ -96,14 +96,41 @@ namespace gatzk::protocol
             void block(const std::string &tag, Writer payload)
             {
                 string(tag);
-                u64(payload.bytes_.size());
-                raw(payload.bytes_.data(), payload.bytes_.size());
+                u64(payload.total_size());
+                segments_.push_back(std::move(bytes_));
+                bytes_.clear();
+                for (auto &segment : payload.segments_)
+                    segments_.push_back(std::move(segment));
+                segments_.push_back(std::move(payload.bytes_));
             }
 
-            std::vector<std::uint8_t> take() { return std::move(bytes_); }
+            std::vector<std::uint8_t> take()
+            {
+                if (segments_.empty())
+                    return std::move(bytes_);
+                std::vector<std::uint8_t> flattened;
+                flattened.reserve(total_size());
+                for (const auto &segment : segments_)
+                    flattened.insert(flattened.end(), segment.begin(), segment.end());
+                flattened.insert(flattened.end(), bytes_.begin(), bytes_.end());
+                return flattened;
+            }
 
         private:
+            std::size_t total_size() const
+            {
+                auto count = bytes_.size();
+                for (const auto &segment : segments_)
+                {
+                    if (segment.size() > std::numeric_limits<std::size_t>::max() - count)
+                        throw std::length_error("proof writer accumulated size overflow");
+                    count += segment.size();
+                }
+                return count;
+            }
+
             std::vector<std::uint8_t> bytes_;
+            std::vector<std::vector<std::uint8_t>> segments_;
         };
 
         class Reader

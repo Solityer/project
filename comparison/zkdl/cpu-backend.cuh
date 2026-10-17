@@ -10,6 +10,7 @@
  */
 
 #include "proof.cuh"
+#include "gat_adapter/hyrax_gpu_fold_api.hpp"
 
 #if defined(__linux__)
 #include <cerrno>
@@ -1354,6 +1355,37 @@ private:
 #endif
 };
 
+struct CpuHyraxGpuFoldStats {
+    std::uint64_t kernel_count = 0U;
+    std::uint64_t peak_allocated_bytes = 0U;
+    int device_ordinal = -1;
+    std::string device_name;
+    std::string device_uuid;
+};
+
+/* CUDA is an explicit, proof-local offload for the Hyrax generator fold only.
+ * Scalar folding, transcript control, relation evaluation, and verification
+ * remain on the CPU. */
+class CpuHyraxGpuFoldSession {
+public:
+    virtual ~CpuHyraxGpuFoldSession() = default;
+    virtual bool owns_exact_generators(
+        const CpuIpaBasisContext& basis,
+        const std::vector<CpuG1Point>& generators,
+        const CpuG1Point& h, const CpuG1Point& u) const noexcept = 0;
+    virtual void reset(std::size_t generator_count) = 0;
+    virtual std::pair<CpuG1Point, CpuG1Point> compute_lr(
+        const std::vector<FrWire>& current_a, std::size_t current_size) = 0;
+    virtual void fold(const FrWire& challenge, const FrWire& inverse,
+                      std::size_t half) = 0;
+    virtual CpuG1Point final_generator() = 0;
+    virtual CpuHyraxGpuFoldStats stats() const = 0;
+};
+
+std::unique_ptr<CpuHyraxGpuFoldSession> make_cpu_hyrax_gpu_fold_session(
+    const CpuIpaBasisContext& basis, const CpuG1Point& h,
+    const CpuG1Point& u);
+
 class CpuG1MsmSession {
 public:
     explicit CpuG1MsmSession(const CpuIpaBasisContext& authenticated_basis)
@@ -1564,10 +1596,27 @@ public:
         return workspaces_.size();
     }
 
+    void set_hyrax_gpu_fold_session(
+        CpuHyraxGpuFoldSession* session) noexcept {
+        hyrax_gpu_fold_session_ = session;
+    }
+
+    bool owns_exact_generators(const CpuIpaBasisContext& basis,
+                               const std::vector<CpuG1Point>& generators,
+                               const CpuG1Point& h,
+                               const CpuG1Point& u) const noexcept {
+        return prepared_basis_.owns_exact_generators(basis, generators, h, u);
+    }
+
+    CpuHyraxGpuFoldSession* hyrax_gpu_fold_session() const noexcept {
+        return hyrax_gpu_fold_session_;
+    }
+
 private:
     CpuG1PreparedMsmBasis prepared_basis_;
     mutable std::mutex workspace_mutex_;
     std::vector<CpuG1MsmWorkspace> workspaces_;
+    CpuHyraxGpuFoldSession* hyrax_gpu_fold_session_ = nullptr;
 };
 
 inline bool cpu_pedersen_basis_valid(const CpuIpaBasisContext& basis,
@@ -2597,11 +2646,29 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
 
     const bool indexed_generator_fold =
         authenticated_basis != nullptr && msm_session != nullptr;
+    CpuHyraxGpuFoldSession* gpu_fold_session = indexed_generator_fold
+        ? msm_session->hyrax_gpu_fold_session() : nullptr;
+#if defined(ZKDL_TEST_FORCE_GPU_HYRAX_FOLD)
+    constexpr std::size_t kGpuHyraxFoldMinimumGenerators = 1U;
+#else
+    constexpr std::size_t kGpuHyraxFoldMinimumGenerators = 4096U;
+#endif
+    const bool gpu_generator_fold = gpu_fold_session != nullptr &&
+        generator_count >= kGpuHyraxFoldMinimumGenerators;
+    if (gpu_generator_fold &&
+        (!gpu_fold_session->owns_exact_generators(
+             *authenticated_basis, generators, blinding_generator, u_generator) ||
+         !msm_session->owns_exact_generators(
+             *authenticated_basis, generators, blinding_generator, u_generator)))
+        throw std::invalid_argument(
+            "Hyrax CUDA fold session does not own the authenticated G/H/U basis");
     std::vector<CpuG1Point> current_generators;
     std::vector<FrWire> current_weights;
     std::vector<std::uint32_t> indexed_indices;
     std::vector<FrWire> indexed_scalars;
-    if (indexed_generator_fold) {
+    if (gpu_generator_fold) {
+        gpu_fold_session->reset(generator_count);
+    } else if (indexed_generator_fold) {
         current_weights.push_back(fr_from_u32(1U));
         indexed_indices.reserve(generator_count);
         indexed_scalars.reserve(generator_count);
@@ -2624,7 +2691,15 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         const std::size_t half = current_size / 2U;
         CpuG1Point left = CpuG1Point::zero();
         CpuG1Point right = CpuG1Point::zero();
-        if (indexed_generator_fold) {
+        if (gpu_generator_fold) {
+            for (const FrWire& value : current_a)
+                if (!fr_canonical(value))
+                    throw std::invalid_argument(
+                        "non-canonical Hyrax GPU fold scalar");
+            const auto lr = gpu_fold_session->compute_lr(current_a, current_size);
+            left = lr.first;
+            right = lr.second;
+        } else if (indexed_generator_fold) {
             cpu_ipa_fold_generator_lrs_indexed(
                 *msm_session, *authenticated_basis, generators, generator_count,
                 blinding_generator, u_generator, current_weights, current_a,
@@ -2660,7 +2735,11 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
                                  fr_add(fr_mul(challenge_sq, r_left),
                                         fr_mul(inverse_sq, r_right)));
         std::vector<FrWire> next_a(half), next_b(half);
-        if (indexed_generator_fold) {
+        if (gpu_generator_fold) {
+            gpu_fold_session->fold(challenge, inverse, half);
+            cpu_ipa_fold_scalar_vectors_parallel(
+                current_a, current_b, challenge, inverse, next_a, next_b);
+        } else if (indexed_generator_fold) {
             cpu_ipa_fold_scalar_vectors_parallel(
                 current_a, current_b, challenge, inverse, next_a, next_b);
             current_weights = cpu_ipa_next_generator_weights_fast(
@@ -2684,7 +2763,9 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     const FrWire b_hat = current_b[0];
     if (fr_compare(b_hat, FrWire{}) == 0)
         throw std::runtime_error("BLOCKED: Hyrax v3 terminal weight is zero");
-    const CpuG1Point g_hat = indexed_generator_fold
+    const CpuG1Point g_hat = gpu_generator_fold
+        ? gpu_fold_session->final_generator()
+        : indexed_generator_fold
         ? msm_session->sum(*authenticated_basis, generators,
                            blinding_generator, u_generator,
                            current_weights.data(), generator_count)

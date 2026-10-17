@@ -27,6 +27,7 @@ from session_lifecycle import (
 
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
+GPU_OFFLOAD_STAGE = "hyrax_ipa_fold"
 SESSION_RE = re.compile(r"formal_([0-9a-f]{32})\Z")
 ACTIVE_PGID: int | None = None
 INTERRUPTED: int | None = None
@@ -668,13 +669,15 @@ def _native_public_payload_bounds(admission: dict[str, Any], nodes: int, classes
 
 
 def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any],
-                       native: dict[str, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
+                       native: dict[str, dict[str, Any]], gpu_plan: dict[str, dict[str, Any]] | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     # Sizes and typed source payloads come from the production native
     # RelationPlan/OperationDescriptor model.  The native producer has already
     # checked every nested body against the exact consumer's parser limit.
     datasets: dict[str, dict[str, Any]] = {}
     native_capacity_diagnostics: dict[str, Any] = {}
     finalization_manifest_capacity: dict[str, dict[str, int]] = {}
+    hybrid = gpu_plan is not None
+    gpu_device: dict[str, Any] | None = None
     mib = 1 << 20
     cell_log_reserve = 16 * mib
     finalization_bytes = 0
@@ -684,6 +687,11 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         input_report = preflight["datasets"][dataset]
         audit = input_report["resource_prerequisites"]
         admission = native[dataset]
+        gpu = gpu_plan.get(dataset) if gpu_plan is not None else None
+        if hybrid and (not isinstance(gpu, dict) or gpu.get("schema") != "zkdl_analysis_only_resource_plan_v1" or
+                       gpu.get("status") != "PASS" or gpu.get("dataset") != dataset or
+                       gpu.get("gpu_offload_stage") != GPU_OFFLOAD_STAGE):
+            raise PhaseError(f"native GPU offload plan identity/schema mismatch for {dataset}")
         srs_bytes = int(audit["srs_plan"]["estimated_materialized_bytes"])
         srs_plan = audit["srs_plan"]
         basis_domain = srs_plan.get("basis_domain")
@@ -692,6 +700,32 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
                 type(frame_bytes) is not int or frame_bytes != 40 + basis_domain * 48 or
                 srs_bytes < frame_bytes + 2 * (40 + 48)):
             raise PhaseError(f"resource audit has an invalid source-bound SRS setup plan for {dataset}")
+        if hybrid:
+            gpu_basis = gpu.get("gpu_authenticated_basis_size")
+            gpu_padded = gpu.get("gpu_max_opening_padded_generator_size")
+            gpu_workspace = gpu.get("gpu_workspace_required_bytes")
+            histogram = admission.get("native_hyrax_opening_segment_domain_histogram")
+            if (type(gpu_basis) is not int or gpu_basis != basis_domain or type(gpu_padded) is not int or
+                    gpu_padded < 1 or gpu_padded > basis_domain or gpu_padded & (gpu_padded - 1) or
+                    not isinstance(histogram, list) or not histogram or
+                    any(not isinstance(bucket, dict) or type(bucket.get("padded_generator_size")) is not int
+                        for bucket in histogram) or
+                    gpu_padded != max(bucket["padded_generator_size"] for bucket in histogram) or
+                    type(gpu_workspace) is not int or gpu_workspace != 144 * gpu_basis + 608 * gpu_padded or
+                    gpu_workspace > (1 << 64) - 1):
+                raise PhaseError(f"native GPU workspace is not bound to the authenticated maximum opening for {dataset}")
+            gpu_device_name = gpu.get("gpu_device_name")
+            gpu_device_ordinal = gpu.get("gpu_device_ordinal")
+            gpu_device_uuid = gpu.get("gpu_device_uuid")
+            gpu_free = gpu.get("gpu_cuda_free_bytes")
+            gpu_total = gpu.get("gpu_cuda_total_bytes")
+            if (not isinstance(gpu_device_name, str) or not gpu_device_name.strip() or
+                    type(gpu_device_ordinal) is not int or gpu_device_ordinal < 0 or
+                    not isinstance(gpu_device_uuid, str) or not gpu_device_uuid.strip() or
+                    type(gpu_free) is not int or type(gpu_total) is not int or
+                    gpu_free < gpu_workspace or gpu_total < gpu_free or gpu_total <= 0):
+                raise PhaseError(f"native GPU capacity/device identity is invalid for {dataset}")
+            gpu_device = {"name": gpu_device_name, "ordinal": gpu_device_ordinal, "uuid": gpu_device_uuid}
         srs_families = srs_plan.get("families")
         family_domains = audit.get("family_domains")
         declared_family_count = audit.get("family_domain_count")
@@ -940,7 +974,10 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "sumcheck_spill_storage_io_bytes_upper_bound": spill_io_bytes,
             "cell_retained_artifact_bytes_upper_bound": retained,
             "host_peak_bytes": host_peak,
-            "device_peak_bytes": 0,
+            "device_peak_bytes": gpu_workspace if hybrid else 0,
+            **({"gpu_authenticated_basis_size": gpu_basis, "gpu_max_opening_padded_generator_size": gpu_padded,
+                "gpu_workspace_required_bytes": gpu_workspace, "gpu_cuda_free_bytes_at_prepare": gpu_free,
+                "gpu_cuda_total_bytes_at_prepare": gpu_total} if hybrid else {}),
             "native_route_source_domain": route_source_domain,
             "native_route_selector_factor_elements": route_factor_elements,
             "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
@@ -972,7 +1009,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
     device = os.stat(session, follow_symlinks=False).st_dev
     finalization_host_peak = max(item["host_peak_bytes_upper_bound"] for item in finalization_manifest_capacity.values())
     profile = {
-        "schema": "zkdl_formal_capacity_profile_v3",
+        "schema": "zkdl_formal_capacity_profile_v4" if hybrid else "zkdl_formal_capacity_profile_v3",
         "baseline": "zkdl",
         "session_id": session_id,
         "fs_device_id": int(device),
@@ -982,11 +1019,14 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         "finalization_manifest_capacity": {"schema": "zkdl_srs_manifest_finalization_heap_v1",
                                             "datasets": finalization_manifest_capacity},
         "backend": "cpu",
-        "memory_accounting_kind": "host-only",
-        "device": None,
+        **({"gpu_offload_stage": GPU_OFFLOAD_STAGE} if hybrid else {}),
+        "memory_accounting_kind": "shared_host_cuda" if hybrid else "host-only",
+        "device": gpu_device,
         "bound_methods": {
             "additional_disk_peak": "source_derived_upper_bound",
             "host_peak": "source_derived_upper_bound",
+            **({"gpu_workspace": "authenticated_basis_144B_plus_max_opening_608P",
+                "shared_host_cuda": "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace"} if hybrid else {}),
             "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
         },
         "datasets": datasets,
@@ -1216,9 +1256,15 @@ def prepare(session: Path, session_id: str) -> None:
             continue
         try:
             require_session_root(identity, session)
+            config = _config(session, dataset)
+            gpu_output = _run([str(session / "build" / "gat_runner"), "resource-plan", "--config", str(config),
+                               "--gpu-offload-stage", GPU_OFFLOAD_STAGE],
+                              log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env,
+                              capture_output=True, capture_mode="last_line")
+            gpu_plan = json.loads(gpu_output.strip())
             one_report = {**report, "datasets": {dataset: report["datasets"][dataset]}}
             one_profile, one_diagnostics = _admission_profile(session, session_id, one_report,
-                                                               {dataset: native[dataset]})
+                                                               {dataset: native[dataset]}, {dataset: gpu_plan})
             profiles[dataset] = one_profile
             diagnostics[dataset] = one_diagnostics[dataset]
         except SessionRootError:
@@ -1230,9 +1276,21 @@ def prepare(session: Path, session_id: str) -> None:
             _append_log(dataset_logs[dataset], json.dumps({"stage": "capacity_profile", "status": "FAILED",
                                                            "error": outcomes[dataset]["failure"]}, separators=(",", ":")))
 
+    graph_native = {dataset: native[dataset] for dataset in DATASETS if dataset in native}
     if profiles:
         keys = [dataset for dataset in DATASETS if dataset in profiles]
         capacity_profile = dict(profiles[keys[0]])
+        if any(profiles[dataset].get("gpu_offload_stage") != capacity_profile.get("gpu_offload_stage") or
+               profiles[dataset].get("device") != capacity_profile.get("device") for dataset in keys[1:]):
+            for dataset in keys:
+                outcomes[dataset] = _dataset_status(dataset, "BLOCKED", "capacity_profile",
+                                                    "GPU offload device identity changed during prepare")
+            capacity_profile = None
+            profiles.clear()
+        if capacity_profile is None:
+            _write_prepare_outcome(session, session_id, outcomes, report, "GPU offload device identity changed during prepare",
+                                   build_manifest, graph_native, diagnostics, None)
+            return
         capacity_profile["datasets"] = {dataset: profiles[dataset]["datasets"][dataset] for dataset in keys}
         capacity_profile["finalization_manifest_capacity"] = {
             "schema": "zkdl_srs_manifest_finalization_heap_v1",
@@ -1245,7 +1303,6 @@ def prepare(session: Path, session_id: str) -> None:
         capacity_profile["preexisting_baseline_artifact_bytes"] = _session_artifact_bytes(session)
     else:
         capacity_profile = None
-    graph_native = {dataset: native[dataset] for dataset in DATASETS if dataset in native}
     _write_prepare_outcome(session, session_id, outcomes, report, "", build_manifest, graph_native,
                            diagnostics, capacity_profile)
 
@@ -1300,6 +1357,11 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             not isinstance(native_admissions, dict) or dataset not in native_admissions or
             not isinstance(capacity_profile, dict) or dataset not in capacity_profile.get("datasets", {})):
         raise PhaseError("cell phase prepare receipt identity/status mismatch")
+    if (capacity_profile.get("schema") != "zkdl_formal_capacity_profile_v4" or
+            capacity_profile.get("gpu_offload_stage") != GPU_OFFLOAD_STAGE or
+            capacity_profile.get("memory_accounting_kind") != "shared_host_cuda" or
+            not isinstance(capacity_profile.get("device"), dict)):
+        raise PhaseError("cell phase prepare receipt lacks the authenticated GPU offload plan")
     build_manifest = _build_manifest(session)
     env = dict(os.environ)
     env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
@@ -1309,7 +1371,8 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     log_path = session / "logs" / f"{dataset}.log"
     runner = str(session / "build" / "gat_runner")
     def setup() -> None:
-        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],
+        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest),
+              "--require-gpu-offload"],
              log_path=log_path, env=env)
         _run([str(ROOT / "scripts/setup_register.sh"), str(config)], log_path=log_path, env=env)
     def cleanup() -> None:
@@ -1329,7 +1392,8 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         _cell_stage("setup", dataset, setup, log_path)
         _cell_stage("prepare", dataset, lambda: _run(["/bin/bash", str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)],
                                                        log_path=log_path, env=env), log_path)
-        _cell_stage("prove", dataset, lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu", "--run-dir", str(run_dir)],
+        _cell_stage("prove", dataset, lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu",
+                                                     "--gpu-offload-stage", GPU_OFFLOAD_STAGE, "--run-dir", str(run_dir)],
                                                      log_path=log_path, env=env), log_path)
         _cell_stage("cleanup", dataset, cleanup, log_path)
         _cell_stage("verify", dataset, lambda: _run([str(ROOT / "scripts/verify_single.sh"), str(config), str(run_dir)],
@@ -1346,7 +1410,15 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     require_session_root(identity, session)
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import audit_run
-    audited = audit_run(ROOT, run_dir, expected_dataset=dataset, expected_backend="cpu")
+    audited = audit_run(ROOT, run_dir, expected_dataset=dataset, expected_backend="cpu",
+                         expected_gpu_offload_stage=GPU_OFFLOAD_STAGE)
+    planned_gpu = capacity_profile["datasets"][dataset]
+    device = capacity_profile["device"]
+    if (audited.get("gpu_device_name") != device.get("name") or
+            audited.get("gpu_device_ordinal") != str(device.get("ordinal")) or
+            audited.get("gpu_device_uuid") != device.get("uuid") or
+            int(audited.get("gpu_proof_peak_allocated_bytes", "0")) > planned_gpu.get("gpu_workspace_required_bytes", 0)):
+        raise PhaseError(f"proof GPU execution identity or tracked peak differs from the admitted capacity for {dataset}")
     proof_path = run_dir / "proof.bin"
     verification_path = run_dir / "verification.result"
     if (not proof_path.is_file() or not verification_path.is_file() or
@@ -1382,6 +1454,17 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         "run_record_sha256": sha256_file(run_dir / "run.record"),
         "run_log_path": log_path.relative_to(ROOT).as_posix(),
         "run_log_sha256": sha256_file(log_path),
+        "gpu_offload_stage": audited["gpu_offload_stage"],
+        "gpu_device_name": audited["gpu_device_name"],
+        "gpu_device_ordinal": audited["gpu_device_ordinal"],
+        "gpu_device_uuid": audited["gpu_device_uuid"],
+        "gpu_forward_kernel_executed": audited["gpu_forward_kernel_executed"],
+        "gpu_proof_kernel_executed": audited["gpu_proof_kernel_executed"],
+        "gpu_kernel_executed": audited["gpu_kernel_executed"],
+        "gpu_proof_kernel_count": audited["gpu_proof_kernel_count"],
+        "gpu_proof_peak_allocated_bytes": audited["gpu_proof_peak_allocated_bytes"],
+        "verifier_backend": audited["verifier_backend"],
+        "verify_gpu_kernel_executed": audited["verify_gpu_kernel_executed"],
     }
     cell_receipt_path = session / "phase" / f"{dataset}.json"
     require_session_root(identity, session)
@@ -1404,6 +1487,17 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         "verify_time_seconds": cell_receipt["verify_time_seconds"],
         "run_log_path": cell_receipt["run_log_path"],
         "run_log_sha256": cell_receipt["run_log_sha256"],
+        "gpu_offload_stage": cell_receipt["gpu_offload_stage"],
+        "gpu_device_name": cell_receipt["gpu_device_name"],
+        "gpu_device_ordinal": cell_receipt["gpu_device_ordinal"],
+        "gpu_device_uuid": cell_receipt["gpu_device_uuid"],
+        "gpu_forward_kernel_executed": cell_receipt["gpu_forward_kernel_executed"],
+        "gpu_proof_kernel_executed": cell_receipt["gpu_proof_kernel_executed"],
+        "gpu_kernel_executed": cell_receipt["gpu_kernel_executed"],
+        "gpu_proof_kernel_count": cell_receipt["gpu_proof_kernel_count"],
+        "gpu_proof_peak_allocated_bytes": cell_receipt["gpu_proof_peak_allocated_bytes"],
+        "verifier_backend": cell_receipt["verifier_backend"],
+        "verify_gpu_kernel_executed": cell_receipt["verify_gpu_kernel_executed"],
     }
     print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
 
@@ -1425,9 +1519,15 @@ def _partial_result_summary(session: Path, session_id: str, state: dict[str, Any
                         cell_receipt.get("session_id") != session_id or cell_receipt.get("dataset") != dataset or
                         cell_receipt.get("status") != "PASS" or cell_receipt.get("independent_verification") is not True):
                     raise PhaseError(f"cell receipt identity/status mismatch for {dataset}")
-                audited = audit_run(ROOT, session / dataset, expected_dataset=dataset, expected_backend="cpu")
+                audited = audit_run(ROOT, session / dataset, expected_dataset=dataset, expected_backend="cpu",
+                                    expected_gpu_offload_stage=GPU_OFFLOAD_STAGE)
                 if (audited.get("proof_digest") != cell_receipt.get("proof_sha256") or
                         audited.get("independent_verification") != "1" or
+                        any(audited.get(field) != cell_receipt.get(field) for field in (
+                            "gpu_offload_stage", "gpu_device_name", "gpu_device_ordinal", "gpu_device_uuid",
+                            "gpu_forward_kernel_executed", "gpu_proof_kernel_executed", "gpu_kernel_executed",
+                            "gpu_proof_kernel_count", "gpu_proof_peak_allocated_bytes", "verifier_backend",
+                            "verify_gpu_kernel_executed")) or
                         sha256_file(session / dataset / "verification.result") != cell_receipt.get("verification_sha256")):
                     raise PhaseError(f"cell receipt does not match the audited proof/verification for {dataset}")
                 dataset_rows.append({"dataset": dataset, "status": "PASS", "stage": "independently_verified",

@@ -32,6 +32,8 @@ from run_hybrid_formal import (  # noqa: E402
     _pending_srs_copy_disk_budget,
     _recheck_local_phase_capacity,
     _remaining_setup_disk_bytes,
+    _run_five_admission_preflight,
+    _run_five_native_capacity_preflight,
     _run_dataset_cells,
     _set_stage,
     _validate_cub_workspace_query,
@@ -368,6 +370,205 @@ class LocalFormalEntryTest(unittest.TestCase):
             self.assertEqual(profile["pending_finalize_datasets"], list(DATASETS[2:]))
             self.assertTrue(all(call.kwargs["remaining_known_disk_bytes"] == 61 for call in gate.call_args_list))
             self.assertTrue(all(call.kwargs["disk_budget_components"]["pending_output_srs_copy_count"] == 3 for call in gate.call_args_list))
+
+    def test_five_dataset_capacity_preflight_precedes_cells_and_preserves_resume_scope(self) -> None:
+        session_id = "a" * 32
+        native_sizes = {"scalar_bytes": 32, "affine_bytes": 64}
+        admissions = {dataset: {"dataset": dataset} for dataset in DATASETS}
+        workspace_receipt = {
+            "session_id": session_id,
+            "query": {"native_type_sizes": native_sizes},
+        }
+        base_capacity = {
+            "setup_key_artifact_upper_bytes": 10,
+            "setup_mapped_peak_bytes": 7,
+            "proof_spill_known_bytes": 4,
+            "proof_host_peak_bytes": 20,
+            "gat_transient_witness_bytes_upper": 9,
+        }
+
+        def run_preflight(
+            root: Path,
+            *,
+            completed: set[str] | None = None,
+            reused: set[str] | None = None,
+            final_reused: set[str] | None = None,
+            failing_dataset: str | None = None,
+        ) -> tuple[list[tuple[object, ...]], dict[str, object], dict[str, dict[str, int]], set[str], set[str]]:
+            completed = set() if completed is None else completed
+            reused = set() if reused is None else reused
+            final_reused = set() if final_reused is None else final_reused
+            output_root = root / "runs/formal"
+            session_dir = output_root / ".sessions" / session_id
+            session_dir.mkdir(parents=True)
+            session_file = output_root / ".sessions" / f"{session_id}.json"
+            session_file.write_text(json.dumps({"capacity_checks": []}) + "\n", encoding="utf-8")
+            for dataset in completed | reused:
+                (output_root / dataset).mkdir(parents=True, exist_ok=True)
+
+            events: list[tuple[object, ...]] = []
+
+            def preflight_admissions(**kwargs: object) -> dict[str, dict[str, object]]:
+                events.append(("admissions", kwargs.get("capacity_only"), tuple(admissions)))
+                return admissions
+
+            def admit_capacity(selected_admissions: dict[str, dict[str, object]], **kwargs: object):
+                events.append(("requirements", tuple(selected_admissions)))
+                self.assertEqual(set(selected_admissions), set(DATASETS))
+                return workspace_receipt, {dataset: dict(base_capacity) for dataset in DATASETS}
+
+            def phase_gate(dataset: str, requirements: dict[str, int], **kwargs: object):
+                components = kwargs["disk_budget_components"]
+                events.append(("gate", dataset, kwargs["phase"], components))
+                if dataset == failing_dataset and kwargs["phase"] == "setup":
+                    raise formal_common.ContractError(f"injected {dataset} capacity failure")
+                return {"dataset": dataset, "phase": kwargs["phase"], "host_known_bytes": requirements.get("host_known_bytes", 0)}
+
+            def keygen_receipt(output: Path, dataset: str, *_args: object):
+                events.append(("reuse_keygen", dataset))
+                return (
+                    {"gat_transient_witness_bytes_upper": 9},
+                    {"native_census": {"authenticated": dataset}},
+                    "b" * 64,
+                )
+
+            def actual_capacity(admission: dict[str, object], _sizes: dict[str, int], *, native_census: dict[str, object]):
+                events.append(("actual_capacity", admission["dataset"], native_census["authenticated"]))
+                return dict(base_capacity)
+
+            with mock.patch("run_hybrid_formal._run_five_admission_preflight", side_effect=preflight_admissions), \
+                 mock.patch("run_hybrid_formal._build_native_cub_workspace_query", return_value=workspace_receipt), \
+                 mock.patch("run_hybrid_formal._admit_local_capacity", side_effect=admit_capacity), \
+                 mock.patch("run_hybrid_formal._recheck_local_phase_capacity", side_effect=phase_gate), \
+                 mock.patch("run_hybrid_formal.validate_setup_reuse_receipt", side_effect=lambda _output, dataset, *_args: dataset in reused), \
+                 mock.patch("run_hybrid_formal._reusable_final_stage_srs", side_effect=lambda **kwargs: kwargs["dataset"] in final_reused), \
+                 mock.patch("run_hybrid_formal._load_native_keygen_receipt", side_effect=keygen_receipt), \
+                 mock.patch("run_hybrid_formal._native_capacity_requirements", side_effect=actual_capacity):
+                result = _run_five_native_capacity_preflight(
+                    binary=root / "ezkl",
+                    srs=root / "srs.kzg",
+                    output_root=output_root,
+                    session_id=session_id,
+                    session_file=session_file,
+                    session_dir=session_dir,
+                    authenticated_context=object(),
+                    selected_device={"uuid": "GPU-test"},
+                    saved_admissions={},
+                    runtime_identity={},
+                    build_environment={},
+                    gpu_identity={},
+                    resume_identity={},
+                    saved_setup_anchors={dataset: "c" * 64 for dataset in DATASETS},
+                    archived_outputs=bool(completed or reused),
+                    is_resume=bool(completed or reused),
+                    completed_datasets=completed,
+                    workspace_receipt=None,
+                    srs_copy_size_bytes=5,
+                )
+            events.append(("cell", DATASETS[0]))
+            return events, {"admissions": result[0], "workspace_receipt": result[1]}, result[2], result[3], result[4]
+
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-preflight-") as temporary:
+            events, state, _requirements, _reused, _pending_finalize = run_preflight(Path(temporary))
+            self.assertEqual(events[0], ("admissions", False, tuple(DATASETS)))
+            self.assertEqual(events[1], ("requirements", tuple(DATASETS)))
+            setup_gates = [event for event in events if event[0] == "gate"]
+            self.assertEqual([(event[1], event[2]) for event in setup_gates], [(dataset, "setup") for dataset in DATASETS])
+            self.assertEqual(events[-1], ("cell", DATASETS[0]))
+            self.assertEqual(set(state["admissions"]), set(DATASETS))
+            for event in setup_gates:
+                components = event[3]
+                self.assertEqual(components["future_setup_key_artifact_upper_bytes"], 50)
+                self.assertEqual(components["pending_output_srs_copy_count"], 5)
+
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-ppi-failure-") as temporary:
+            root = Path(temporary)
+            output_root = root / "runs/formal"
+            session_dir = output_root / ".sessions" / session_id
+            session_dir.mkdir(parents=True)
+            session_file = output_root / ".sessions" / f"{session_id}.json"
+            session_file.write_text(json.dumps({"capacity_checks": []}) + "\n", encoding="utf-8")
+            events: list[tuple[object, ...]] = []
+
+            def preflight_admissions(**kwargs: object) -> dict[str, dict[str, object]]:
+                events.append(("admissions", kwargs.get("capacity_only")))
+                return admissions
+
+            def fail_on_ppi(dataset: str, _requirements: dict[str, int], **kwargs: object):
+                events.append(("gate", dataset, kwargs["phase"]))
+                if dataset == "ppi" and kwargs["phase"] == "setup":
+                    raise formal_common.ContractError("injected ppi capacity failure")
+                return {"dataset": dataset, "phase": kwargs["phase"]}
+
+            with mock.patch("run_hybrid_formal._run_five_admission_preflight", side_effect=preflight_admissions), \
+                 mock.patch("run_hybrid_formal._build_native_cub_workspace_query", return_value=workspace_receipt), \
+                 mock.patch("run_hybrid_formal._admit_local_capacity", return_value=(workspace_receipt, {dataset: dict(base_capacity) for dataset in DATASETS})), \
+                 mock.patch("run_hybrid_formal._recheck_local_phase_capacity", side_effect=fail_on_ppi):
+                with self.assertRaisesRegex(formal_common.ContractError, "injected ppi capacity failure"):
+                    _run_five_native_capacity_preflight(
+                        binary=root / "ezkl", srs=root / "srs.kzg", output_root=output_root,
+                        session_id=session_id, session_file=session_file, session_dir=session_dir,
+                        authenticated_context=object(), selected_device={"uuid": "GPU-test"}, saved_admissions={},
+                        runtime_identity={}, build_environment={}, gpu_identity={}, resume_identity={},
+                        saved_setup_anchors={}, archived_outputs=False, is_resume=False, completed_datasets=set(),
+                        workspace_receipt=None, srs_copy_size_bytes=5,
+                    )
+            self.assertEqual(events[0], ("admissions", False))
+            self.assertIn(("gate", "ppi", "setup"), events)
+            self.assertNotIn(("cell", DATASETS[0]), events)
+
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-resume-") as temporary:
+            completed = {DATASETS[0]}
+            reused = {DATASETS[1]}
+            events, _state, _requirements, reused_result, pending_finalize = run_preflight(
+                Path(temporary), completed=completed, reused=reused, final_reused=reused
+            )
+            setup_gates = [event for event in events if event[0] == "gate" and event[2] == "setup"]
+            prove_gates = [event for event in events if event[0] == "gate" and event[2] == "witness_prove_verify"]
+            self.assertEqual([event[1] for event in setup_gates], list(DATASETS[2:]))
+            self.assertEqual([event[1] for event in prove_gates], [DATASETS[1]])
+            self.assertEqual(reused_result, reused)
+            setup_components = setup_gates[0][3]
+            self.assertEqual(setup_components["future_setup_key_artifact_upper_bytes"], 30)
+            self.assertEqual(setup_components["pending_output_srs_copy_count"], 3)
+            proof_components = prove_gates[0][3]
+            self.assertEqual(proof_components["future_setup_key_artifact_upper_bytes"], 0)
+            self.assertEqual(proof_components["pending_output_srs_copy_count"], 3)
+            self.assertEqual(pending_finalize, set(DATASETS[2:]))
+            self.assertNotIn(("gate", DATASETS[0], "setup"), events)
+            self.assertNotIn(("gate", DATASETS[0], "witness_prove_verify"), events)
+
+        class FailingCapacityApi:
+            @staticmethod
+            def audit_fresh_admission(_session_file: Path, dataset: str, *_args: object, **_kwargs: object):
+                return {"dataset": dataset}
+
+            @staticmethod
+            def write_and_require_fresh_report(_session_file: Path, _records: list[dict[str, object]], report_path: Path, **_kwargs: object):
+                report_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path.write_text("{}\n", encoding="utf-8")
+                return {"gate_status": "current_disk_floor_fail", "readiness": "NOT_ESTABLISHED"}
+
+        for capacity_only in (True, False):
+            with self.subTest(capacity_only=capacity_only), tempfile.TemporaryDirectory(prefix="ezkl-capacity-only-arg-") as temporary:
+                root = Path(temporary)
+                output_root = root / "runs/formal"
+                session_id = "d" * 32
+                session_dir = output_root / ".sessions" / session_id
+                session_dir.mkdir(parents=True)
+                session_file = output_root / ".sessions" / f"{session_id}.json"
+                session_file.write_text(json.dumps({"status": "RUNNING"}) + "\n", encoding="utf-8")
+                with mock.patch("run_hybrid_formal.ROOT", root), \
+                     mock.patch("run_hybrid_formal._capacity_precheck_api", return_value=FailingCapacityApi), \
+                     mock.patch("run_hybrid_formal.native_admit_all_datasets", side_effect=formal_common.ContractError("injected admission failure")):
+                    with self.assertRaises(formal_common.ContractError) as failure:
+                        _run_five_admission_preflight(
+                            binary=root / "ezkl", srs=root / "srs.kzg", output_root=output_root,
+                            session_id=session_id, session_file=session_file, authenticated_context=object(),
+                            selected_device={"uuid": "GPU-test"}, saved_admissions={}, capacity_only=capacity_only,
+                        )
+                self.assertNotIsInstance(failure.exception, NameError)
+                self.assertIn("five-dataset admission/capacity preflight", str(failure.exception))
 
     def test_native_prepare_budget_charges_baseline_and_table_cache_once(self) -> None:
         requirements = _native_capacity_requirements(

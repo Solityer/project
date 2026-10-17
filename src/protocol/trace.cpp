@@ -2531,17 +2531,9 @@ namespace gatzk::protocol
                             domain_size > vector_length ? static_cast<double>(domain_size - vector_length) / static_cast<double>(domain_size) : 0.0;
 
                         const auto fingerprint = sha256_hex(item.commitment.point.to_string());
-
-                        std::string duplicate_of;
-
-                        for (const auto &previous : metrics->dynamic_commitment_profiles)
-                        {
-                            if (previous.commitment_fingerprint == fingerprint)
-                            {
-                                duplicate_of = previous.label;
-                                break;
-                            }
-                        }
+                        const auto [previous, first_occurrence] =
+                            metrics->dynamic_commitment_first_label_by_fingerprint.try_emplace(fingerprint, item.name);
+                        const std::string duplicate_of = first_occurrence ? std::string{} : previous->second;
 
                         DynamicCommitmentObjectProfile dynamic_profile;
 

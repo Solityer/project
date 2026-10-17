@@ -382,16 +382,31 @@ def _checked_capacity_int(value: Any, label: str, *, allow_zero: bool = False) -
 
 def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[str, ...],
                                     pending: tuple[str, ...] | None = None) -> dict[str, int]:
-    if profile.get("schema") != "zkdl_formal_capacity_profile_v3" or profile.get("baseline") != "zkdl":
+    legacy_cpu = profile.get("schema") == "zkdl_formal_capacity_profile_v3"
+    if profile.get("schema") not in ("zkdl_formal_capacity_profile_v3", "zkdl_formal_capacity_profile_v4") or profile.get("baseline") != "zkdl":
         raise RunnerError("zkDL local capacity profile schema/baseline mismatch")
-    if profile.get("backend") != "cpu" or profile.get("memory_accounting_kind") != "host-only" or profile.get("device") is not None:
-        raise RunnerError("zkDL capacity profile does not match the source-bound CPU-only formal path")
+    device = profile.get("device")
+    if legacy_cpu:
+        if profile.get("backend") != "cpu" or profile.get("memory_accounting_kind") != "host-only" or device is not None:
+            raise RunnerError("legacy zkDL analysis capacity profile is not CPU-only")
+    elif (profile.get("backend") != "cpu" or profile.get("gpu_offload_stage") != "hyrax_ipa_fold" or
+          profile.get("memory_accounting_kind") != "shared_host_cuda" or not isinstance(device, dict) or
+          not isinstance(device.get("name"), str) or not device["name"].strip() or
+          type(device.get("ordinal")) is not int or device["ordinal"] < 0 or
+          not isinstance(device.get("uuid"), str) or not device["uuid"].strip()):
+        raise RunnerError("zkDL capacity profile does not match the source-bound CPU plus Hyrax GPU offload path")
     methods = profile.get("bound_methods")
     if (not isinstance(methods, dict) or
             methods.get("additional_disk_peak") != "source_derived_upper_bound" or
             methods.get("host_peak") != "source_derived_upper_bound" or
             methods.get("finalization_host_peak") != "srs_manifest_schema_python_heap_upper_bound"):
         raise RunnerError("zkDL capacity profile lacks source-derived host/disk bounds")
+    if legacy_cpu:
+        if "gpu_workspace" in methods or "shared_host_cuda" in methods:
+            raise RunnerError("legacy CPU-only capacity profile contains GPU accounting fields")
+    elif (methods.get("gpu_workspace") != "authenticated_basis_144B_plus_max_opening_608P" or
+          methods.get("shared_host_cuda") != "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace"):
+        raise RunnerError("zkDL capacity profile lacks source-derived shared host/CUDA bounds")
     datasets = profile.get("datasets")
     if not isinstance(datasets, dict) or not datasets or not set(datasets).issubset(DATASETS):
         raise RunnerError("zkDL capacity profile does not contain a canonical admitted subset")
@@ -421,12 +436,32 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
             item.get("native_route_selector_factor_elements"), f"{dataset} route selector factor elements")
         if route_source_domain > (1 << 30) or route_factor_elements > route_source_domain + 1:
             raise RunnerError(f"zkDL route selector factor bound is invalid for {dataset}")
-        host_required = max(host_required, _checked_capacity_int(item.get("host_peak_bytes"),
-                                                                   f"{dataset} host peak"))
-        device_peak = _checked_capacity_int(item.get("device_peak_bytes"),
-                                            f"{dataset} CPU device peak", allow_zero=True)
-        if device_peak != 0:
-            raise RunnerError(f"zkDL CPU formal cell unexpectedly requires device capacity for {dataset}")
+        host_peak = _checked_capacity_int(item.get("host_peak_bytes"), f"{dataset} host peak")
+        if legacy_cpu:
+            device_peak = _checked_capacity_int(item.get("device_peak_bytes"), f"{dataset} legacy CPU device peak", allow_zero=True)
+            if device_peak != 0:
+                raise RunnerError(f"legacy CPU-only capacity profile unexpectedly requires device memory for {dataset}")
+            host_required = max(host_required, host_peak)
+        else:
+            basis = _checked_capacity_int(item.get("gpu_authenticated_basis_size"), f"{dataset} authenticated GPU basis")
+            padded = _checked_capacity_int(item.get("gpu_max_opening_padded_generator_size"), f"{dataset} maximum GPU opening")
+            workspace = _checked_capacity_int(item.get("gpu_workspace_required_bytes"), f"{dataset} GPU workspace")
+            expected_workspace = 144 * basis + 608 * padded
+            if (basis != (1 << 18) or padded > basis or padded & (padded - 1) or
+                    expected_workspace > (1 << 64) - 1 or workspace != expected_workspace or
+                    item.get("device_peak_bytes") != workspace):
+                raise RunnerError(f"zkDL GPU workspace bound is not source-derived for {dataset}")
+            prepared_free = _checked_capacity_int(item.get("gpu_cuda_free_bytes_at_prepare"),
+                                                  f"{dataset} prepare CUDA free bytes", allow_zero=True)
+            prepared_total = _checked_capacity_int(item.get("gpu_cuda_total_bytes_at_prepare"),
+                                                   f"{dataset} prepare CUDA total bytes")
+            if prepared_free < workspace or prepared_total < prepared_free:
+                raise RunnerError(f"zkDL GPU workspace exceeds prepared CUDA capacity for {dataset}")
+            host_with_gpu = host_peak + workspace
+            if host_with_gpu > (1 << 64) - 1:
+                raise RunnerError(f"zkDL shared host/CUDA memory bound overflows for {dataset}")
+            host_required = max(host_required, host_with_gpu)
+            device_peak = workspace
         device_required = max(device_required, device_peak)
         retained = _checked_capacity_int(item.get("cell_retained_artifact_bytes_upper_bound"),
                                          f"{dataset} retained artifact upper bound")
@@ -530,11 +565,17 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     if (not isinstance(profile, dict) or marker.get("capacity_profile") != profile or
             profile.get("session_id") != session_id or profile.get("baseline") != "zkdl"):
         raise RunnerError("zkDL prepare marker/receipt capacity profile identity mismatch")
-    if profile.get("schema") != "zkdl_formal_capacity_profile_v3":
+    if profile.get("schema") != "zkdl_formal_capacity_profile_v4":
         raise RunnerError("zkDL prepare capacity profile is not baseline-local")
+    if (build.get("schema") != "zkDL_gat_build_manifest_v2" or
+            build.get("gpu_offload_capabilities") != ["hyrax_ipa_fold"] or
+            profile.get("gpu_offload_stage") != "hyrax_ipa_fold"):
+        raise RunnerError("zkDL build/profile does not authenticate Hyrax IPA GPU offload support")
     native_admissions = receipt.get("native_admissions")
+    preflight_datasets = preflight.get("datasets") if isinstance(preflight, dict) else None
     profile_datasets = profile.get("datasets")
     if (not isinstance(native_admissions, dict) or set(native_admissions) != set(passing) or
+            not isinstance(preflight_datasets, dict) or set(preflight_datasets) != set(DATASETS) or
             not isinstance(profile_datasets, dict) or set(profile_datasets) != set(passing)):
         raise RunnerError("zkDL prepare receipt/profile does not match its successful dataset subset")
     for dataset in passing:
@@ -551,6 +592,16 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
                 row.get("native_route_source_domain") != source_domain or
                 row.get("native_route_selector_factor_elements") != factor_elements):
             raise RunnerError(f"zkDL native route selector factor profile mismatch for {dataset}")
+        resource_audit = preflight_datasets[dataset].get("resource_prerequisites", {})
+        srs_plan = resource_audit.get("srs_plan", {}) if isinstance(resource_audit, dict) else {}
+        histogram = admission.get("native_hyrax_opening_segment_domain_histogram")
+        if (not isinstance(histogram, list) or not histogram or
+                any(not isinstance(bucket, dict) or type(bucket.get("padded_generator_size")) is not int
+                    for bucket in histogram) or
+                row.get("gpu_authenticated_basis_size") != srs_plan.get("basis_domain") or
+                row.get("gpu_max_opening_padded_generator_size") !=
+                max(bucket["padded_generator_size"] for bucket in histogram)):
+            raise RunnerError(f"zkDL GPU capacity profile is not bound to the admitted SRS/opening plan for {dataset}")
     if type(profile.get("fs_device_id")) is not int or profile["fs_device_id"] != session.stat(follow_symlinks=False).st_dev:
         raise RunnerError("zkDL prepare capacity profile filesystem identity changed")
     if _session_file_bytes(session) < _checked_capacity_int(profile.get("preexisting_baseline_artifact_bytes"),
@@ -558,6 +609,28 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
         raise RunnerError("zkDL prepare session is smaller than its recorded preexisting artifact size")
     _remaining_capacity_requirements(profile, (), ())
     return profile
+
+def _gpu_offload_device_info(session: Path, dataset: str, expected_device: dict[str, Any]) -> dict[str, int | str]:
+    config = formal_phase.ROOT / "configs" / f"{session.name}_{dataset}.cfg"
+    binary = session / "build" / "gat_runner"
+    try:
+        result = subprocess.run([str(binary), "gpu-offload-device-info", "--config", str(config)], cwd=ROOT,
+                                capture_output=True, text=True, timeout=15, check=True)
+        candidate = next((json.loads(line) for line in reversed(result.stdout.splitlines())
+                          if line.lstrip().startswith("{")), None)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise RunnerError(f"cannot refresh live zkDL CUDA device capacity: {exc}") from exc
+    if (not isinstance(candidate, dict) or candidate.get("schema") != "zkdl_gpu_offload_device_info_v1" or
+            candidate.get("status") != "PASS" or candidate.get("gpu_device_name") != expected_device["name"] or
+            candidate.get("gpu_device_ordinal") != expected_device["ordinal"] or
+            candidate.get("gpu_device_uuid") != expected_device["uuid"]):
+        raise RunnerError("live zkDL CUDA device identity differs from the admitted device")
+    free = _checked_capacity_int(candidate.get("gpu_cuda_free_bytes"), "live CUDA free bytes", allow_zero=True)
+    total = _checked_capacity_int(candidate.get("gpu_cuda_total_bytes"), "live CUDA total bytes")
+    if free > total:
+        raise RunnerError("live zkDL CUDA free memory exceeds total device capacity")
+    return {"name": candidate["gpu_device_name"], "ordinal": candidate["gpu_device_ordinal"],
+            "uuid": candidate["gpu_device_uuid"], "free_bytes": free, "total_bytes": total}
 
 def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session: Path, session_id: str,
                    prepare_receipt_sha256: str, build_manifest_sha256: str,
@@ -598,8 +671,18 @@ def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session:
         raise RunnerError(f"zkDL host capacity blocked before stage: need={required_host} available={host_available} method={host_method}")
     if disk_available < requirements["disk_bytes"]:
         raise RunnerError(f"zkDL disk capacity blocked before stage: need={requirements['disk_bytes']} available={disk_available}")
-    if profile.get("backend") != "cpu" or profile.get("device") is not None or requirements["device_bytes"] != 0:
-        raise RunnerError("zkDL live device admission disagrees with the source-bound CPU-only formal path")
+    live_device = None
+    active = tuple(pending) if pending is not None else tuple(dataset for dataset in DATASETS
+                                                             if dataset in profile["datasets"] and dataset not in completed)
+    if active:
+        live_device = _gpu_offload_device_info(session, active[0], profile["device"])
+        shared_available = min(host_available, live_device["free_bytes"])
+        shared_required = max(required_host, requirements["finalization_host_bytes"])
+        if shared_available < shared_required:
+            raise RunnerError(f"zkDL shared host/CUDA memory blocked before stage: need={shared_required} "
+                              f"available={shared_available}")
+    if profile.get("backend") != "cpu" or profile.get("gpu_offload_stage") != "hyrax_ipa_fold" or not isinstance(profile.get("device"), dict):
+        raise RunnerError("zkDL live device admission disagrees with the source-bound CPU plus Hyrax GPU path")
     return {
         "completed_datasets": list(completed),
         "pending_datasets": list(pending) if pending is not None else None,
@@ -610,6 +693,11 @@ def _capacity_gate(profile: dict[str, Any], completed: tuple[str, ...], session:
         "required_disk_bytes": requirements["disk_bytes"],
         "available_disk_bytes": disk_available,
         "required_device_bytes": requirements["device_bytes"],
+        "available_device_bytes": live_device["free_bytes"] if live_device else 0,
+        "available_shared_memory_bytes": min(host_available, live_device["free_bytes"]) if live_device else host_available,
+        "gpu_offload_stage": profile["gpu_offload_stage"],
+        "gpu_device": profile["device"],
+        "memory_accounting_kind": profile["memory_accounting_kind"],
         "backend": "cpu",
         "checked_at_utc": _now(),
     }
@@ -832,6 +920,7 @@ def run() -> int:
                     state["capacity"] = {
                         "profile_sha256": hashlib.sha256(json.dumps(profile, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
                         "profile_schema": profile["schema"], "backend": profile["backend"],
+                        "gpu_offload_stage": profile["gpu_offload_stage"], "gpu_device": profile["device"],
                         "prepare_receipt_sha256": prepare_marker["prepare_receipt_sha256"],
                         "build_manifest_sha256": prepare_marker["build_manifest_sha256"],
                         "source_digest": prepare_marker["source_digest"],

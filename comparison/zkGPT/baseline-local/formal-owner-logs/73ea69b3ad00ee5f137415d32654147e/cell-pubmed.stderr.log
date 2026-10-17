@@ -5,3 +5,675 @@
 [pubmed/prover] gat_adapter_prover_stage: generators
 [pubmed/prover] gat_adapter_prover_stage: lasso-prove
 [pubmed/prover] gat_adapter_prover_stage: restore-native-plan
+[pubmed/prover] gat_adapter_prover_stage: gkr-prove
+[pubmed/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[pubmed/prover] [zkGPT][gkr] layer=112 begin ty=4 size=1191617455 bits=31 u=31 v=30 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=31
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=1/31 elapsed_s=1976.71
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=2/31 elapsed_s=2001.32
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=4/31 elapsed_s=2016.43
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase1 complete rounds=31/31 elapsed_s=2020.67
+[pubmed/prover] [zkGPT][gkr] layer=112 phase2 begin rounds=30
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase2 progress rounds=1/30 elapsed_s=2653.61
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase2 progress rounds=3/30 elapsed_s=2668.67
+[pubmed/prover] [zkGPT][gkr] gkr/layer/112 phase2 complete rounds=30/30 elapsed_s=2673.11
+[pubmed/prover] [zkGPT][gkr] layer=112 phase2 end
+[pubmed/prover] [zkGPT][gkr] layer=112 end
+[pubmed/prover] [zkGPT][gkr] layer=111 begin ty=3 size=59151 bits=16 u=16 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=111 phase1 begin rounds=16
+[pubmed/prover] [zkGPT][gkr] gkr/layer/111 phase1 complete rounds=16/16 elapsed_s=0.0733986
+[pubmed/prover] [zkGPT][gkr] layer=111 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=111 end
+[pubmed/prover] [zkGPT][gkr] layer=110 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=110 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/110 phase1 complete rounds=15/15 elapsed_s=0.0485677
+[pubmed/prover] [zkGPT][gkr] layer=110 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=110 end
+[pubmed/prover] [zkGPT][gkr] layer=109 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=109 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=3 complete rounds=19717/19717 elapsed_s=0.00764395
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=3 complete rounds=1/1 elapsed_s=7.37e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/109/matmul complete rounds=2/2 elapsed_s=0.00518776
+[pubmed/prover] [zkGPT][gkr] layer=109 fconn end rounds=2
+[pubmed/prover] [zkGPT][gkr] layer=108 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=108 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/108 phase1 complete rounds=15/15 elapsed_s=0.0488712
+[pubmed/prover] [zkGPT][gkr] layer=108 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=108 end
+[pubmed/prover] [zkGPT][gkr] layer=107 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=107 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=3 complete rounds=19717/19717 elapsed_s=0.00767047
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=3 complete rounds=1/1 elapsed_s=6.09e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/107/matmul complete rounds=2/2 elapsed_s=0.00516075
+[pubmed/prover] [zkGPT][gkr] layer=107 fconn end rounds=2
+[pubmed/prover] [zkGPT][gkr] layer=106 begin ty=3 size=59151 bits=16 u=17 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=106 phase1 begin rounds=17
+[pubmed/prover] [zkGPT][gkr] gkr/layer/106 phase1 complete rounds=17/17 elapsed_s=0.0802237
+[pubmed/prover] [zkGPT][gkr] layer=106 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=106 end
+[pubmed/prover] [zkGPT][gkr] layer=105 begin ty=11 size=131072 bits=17 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=105 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509545
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=3 inner=64 complete rounds=3/3 elapsed_s=7.888e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/105/matmul complete rounds=6/6 elapsed_s=0.0155519
+[pubmed/prover] [zkGPT][gkr] layer=105 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=104 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=104 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/104 phase1 complete rounds=15/15 elapsed_s=0.0490446
+[pubmed/prover] [zkGPT][gkr] layer=104 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=104 end
+[pubmed/prover] [zkGPT][gkr] layer=103 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=103 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=3 complete rounds=19717/19717 elapsed_s=0.00768086
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=3 complete rounds=1/1 elapsed_s=6.24e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/103/matmul complete rounds=2/2 elapsed_s=0.00516259
+[pubmed/prover] [zkGPT][gkr] layer=103 fconn end rounds=2
+[pubmed/prover] [zkGPT][gkr] layer=102 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=102 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/102 phase1 complete rounds=15/15 elapsed_s=0.0488778
+[pubmed/prover] [zkGPT][gkr] layer=102 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=102 end
+[pubmed/prover] [zkGPT][gkr] layer=101 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=101 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=3 complete rounds=19717/19717 elapsed_s=0.00767494
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=3 complete rounds=1/1 elapsed_s=5.6e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/101/matmul complete rounds=2/2 elapsed_s=0.005148
+[pubmed/prover] [zkGPT][gkr] layer=101 fconn end rounds=2
+[pubmed/prover] [zkGPT][gkr] layer=100 begin ty=3 size=59151 bits=16 u=17 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=100 phase1 begin rounds=17
+[pubmed/prover] [zkGPT][gkr] gkr/layer/100 phase1 complete rounds=17/17 elapsed_s=0.0791434
+[pubmed/prover] [zkGPT][gkr] layer=100 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=100 end
+[pubmed/prover] [zkGPT][gkr] layer=99 begin ty=11 size=131072 bits=17 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=99 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509135
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=3 inner=64 complete rounds=3/3 elapsed_s=9.024e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/99/matmul complete rounds=6/6 elapsed_s=0.015554
+[pubmed/prover] [zkGPT][gkr] layer=99 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=98 begin ty=3 size=1261888 bits=21 u=21 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=98 phase1 begin rounds=21
+[pubmed/prover] [zkGPT][gkr] gkr/layer/98 phase1 complete rounds=21/21 elapsed_s=0.575007
+[pubmed/prover] [zkGPT][gkr] layer=98 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=98 end
+[pubmed/prover] [zkGPT][gkr] layer=97 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=97 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/97 phase1 complete rounds=15/15 elapsed_s=0.0485942
+[pubmed/prover] [zkGPT][gkr] layer=97 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=97 end
+[pubmed/prover] [zkGPT][gkr] layer=96 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=96 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112261
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.04e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/96/matmul complete rounds=3/3 elapsed_s=0.00774347
+[pubmed/prover] [zkGPT][gkr] layer=96 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=95 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=95 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/95 phase1 complete rounds=15/15 elapsed_s=0.0488939
+[pubmed/prover] [zkGPT][gkr] layer=95 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=95 end
+[pubmed/prover] [zkGPT][gkr] layer=94 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=94 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112087
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.024e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/94/matmul complete rounds=3/3 elapsed_s=0.00777571
+[pubmed/prover] [zkGPT][gkr] layer=94 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=93 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=93 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/93 phase1 complete rounds=18/18 elapsed_s=0.146355
+[pubmed/prover] [zkGPT][gkr] layer=93 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=93 end
+[pubmed/prover] [zkGPT][gkr] layer=92 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=92 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0507817
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0865e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/92/matmul complete rounds=6/6 elapsed_s=0.0154126
+[pubmed/prover] [zkGPT][gkr] layer=92 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=91 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=91 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/91 phase1 complete rounds=15/15 elapsed_s=0.0483634
+[pubmed/prover] [zkGPT][gkr] layer=91 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=91 end
+[pubmed/prover] [zkGPT][gkr] layer=90 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=90 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112355
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.169e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/90/matmul complete rounds=3/3 elapsed_s=0.00769811
+[pubmed/prover] [zkGPT][gkr] layer=90 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=89 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=89 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/89 phase1 complete rounds=15/15 elapsed_s=0.0485839
+[pubmed/prover] [zkGPT][gkr] layer=89 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=89 end
+[pubmed/prover] [zkGPT][gkr] layer=88 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=88 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111759
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.12e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/88/matmul complete rounds=3/3 elapsed_s=0.00766627
+[pubmed/prover] [zkGPT][gkr] layer=88 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=87 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=87 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/87 phase1 complete rounds=18/18 elapsed_s=0.14486
+[pubmed/prover] [zkGPT][gkr] layer=87 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=87 end
+[pubmed/prover] [zkGPT][gkr] layer=86 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=86 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.050191
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9025e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/86/matmul complete rounds=6/6 elapsed_s=0.0153387
+[pubmed/prover] [zkGPT][gkr] layer=86 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=85 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=85 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/85 phase1 complete rounds=15/15 elapsed_s=0.0567768
+[pubmed/prover] [zkGPT][gkr] layer=85 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=85 end
+[pubmed/prover] [zkGPT][gkr] layer=84 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=84 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112439
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.8e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/84/matmul complete rounds=3/3 elapsed_s=0.007707
+[pubmed/prover] [zkGPT][gkr] layer=84 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=83 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=83 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/83 phase1 complete rounds=15/15 elapsed_s=0.0485316
+[pubmed/prover] [zkGPT][gkr] layer=83 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=83 end
+[pubmed/prover] [zkGPT][gkr] layer=82 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=82 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112379
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.056e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/82/matmul complete rounds=3/3 elapsed_s=0.00780006
+[pubmed/prover] [zkGPT][gkr] layer=82 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=81 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=81 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/81 phase1 complete rounds=18/18 elapsed_s=0.1502
+[pubmed/prover] [zkGPT][gkr] layer=81 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=81 end
+[pubmed/prover] [zkGPT][gkr] layer=80 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=80 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0506728
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9681e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/80/matmul complete rounds=6/6 elapsed_s=0.0152861
+[pubmed/prover] [zkGPT][gkr] layer=80 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=79 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=79 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/79 phase1 complete rounds=15/15 elapsed_s=0.048275
+[pubmed/prover] [zkGPT][gkr] layer=79 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=79 end
+[pubmed/prover] [zkGPT][gkr] layer=78 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=78 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111732
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.77e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/78/matmul complete rounds=3/3 elapsed_s=0.0077562
+[pubmed/prover] [zkGPT][gkr] layer=78 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=77 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=77 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/77 phase1 complete rounds=15/15 elapsed_s=0.048709
+[pubmed/prover] [zkGPT][gkr] layer=77 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=77 end
+[pubmed/prover] [zkGPT][gkr] layer=76 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=76 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112044
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.104e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/76/matmul complete rounds=3/3 elapsed_s=0.00778811
+[pubmed/prover] [zkGPT][gkr] layer=76 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=75 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=75 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/75 phase1 complete rounds=18/18 elapsed_s=0.147572
+[pubmed/prover] [zkGPT][gkr] layer=75 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=75 end
+[pubmed/prover] [zkGPT][gkr] layer=74 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=74 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509143
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0289e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/74/matmul complete rounds=6/6 elapsed_s=0.0155868
+[pubmed/prover] [zkGPT][gkr] layer=74 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=73 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=73 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/73 phase1 complete rounds=15/15 elapsed_s=0.0489979
+[pubmed/prover] [zkGPT][gkr] layer=73 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=73 end
+[pubmed/prover] [zkGPT][gkr] layer=72 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=72 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112796
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.76e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/72/matmul complete rounds=3/3 elapsed_s=0.00785112
+[pubmed/prover] [zkGPT][gkr] layer=72 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=71 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=71 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/71 phase1 complete rounds=15/15 elapsed_s=0.0483638
+[pubmed/prover] [zkGPT][gkr] layer=71 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=71 end
+[pubmed/prover] [zkGPT][gkr] layer=70 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=70 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112685
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.92e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/70/matmul complete rounds=3/3 elapsed_s=0.00777542
+[pubmed/prover] [zkGPT][gkr] layer=70 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=69 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=69 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/69 phase1 complete rounds=18/18 elapsed_s=0.147738
+[pubmed/prover] [zkGPT][gkr] layer=69 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=69 end
+[pubmed/prover] [zkGPT][gkr] layer=68 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=68 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509133
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9745e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/68/matmul complete rounds=6/6 elapsed_s=0.0155574
+[pubmed/prover] [zkGPT][gkr] layer=68 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=67 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=67 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/67 phase1 complete rounds=15/15 elapsed_s=0.04897
+[pubmed/prover] [zkGPT][gkr] layer=67 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=67 end
+[pubmed/prover] [zkGPT][gkr] layer=66 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=66 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112068
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.152e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/66/matmul complete rounds=3/3 elapsed_s=0.00774848
+[pubmed/prover] [zkGPT][gkr] layer=66 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=65 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=65 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/65 phase1 complete rounds=15/15 elapsed_s=0.0489581
+[pubmed/prover] [zkGPT][gkr] layer=65 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=65 end
+[pubmed/prover] [zkGPT][gkr] layer=64 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=64 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111379
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.6e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/64/matmul complete rounds=3/3 elapsed_s=0.00776014
+[pubmed/prover] [zkGPT][gkr] layer=64 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=63 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=63 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/63 phase1 complete rounds=18/18 elapsed_s=0.147384
+[pubmed/prover] [zkGPT][gkr] layer=63 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=63 end
+[pubmed/prover] [zkGPT][gkr] layer=62 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=62 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509343
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9008e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/62/matmul complete rounds=6/6 elapsed_s=0.0155611
+[pubmed/prover] [zkGPT][gkr] layer=62 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=61 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=61 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/61 phase1 complete rounds=15/15 elapsed_s=0.0491098
+[pubmed/prover] [zkGPT][gkr] layer=61 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=61 end
+[pubmed/prover] [zkGPT][gkr] layer=60 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=60 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112124
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.76e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/60/matmul complete rounds=3/3 elapsed_s=0.00774315
+[pubmed/prover] [zkGPT][gkr] layer=60 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=59 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=59 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/59 phase1 complete rounds=15/15 elapsed_s=0.0489907
+[pubmed/prover] [zkGPT][gkr] layer=59 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=59 end
+[pubmed/prover] [zkGPT][gkr] layer=58 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=58 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112029
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.28e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/58/matmul complete rounds=3/3 elapsed_s=0.0077447
+[pubmed/prover] [zkGPT][gkr] layer=58 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=57 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=57 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/57 phase1 complete rounds=18/18 elapsed_s=0.146169
+[pubmed/prover] [zkGPT][gkr] layer=57 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=57 end
+[pubmed/prover] [zkGPT][gkr] layer=56 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=56 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0510153
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8929e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/56/matmul complete rounds=6/6 elapsed_s=0.0155487
+[pubmed/prover] [zkGPT][gkr] layer=56 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=55 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=55 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/55 phase1 complete rounds=15/15 elapsed_s=0.0489828
+[pubmed/prover] [zkGPT][gkr] layer=55 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=55 end
+[pubmed/prover] [zkGPT][gkr] layer=54 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=54 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112101
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.12e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/54/matmul complete rounds=3/3 elapsed_s=0.00774868
+[pubmed/prover] [zkGPT][gkr] layer=54 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=53 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=53 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/53 phase1 complete rounds=15/15 elapsed_s=0.0488808
+[pubmed/prover] [zkGPT][gkr] layer=53 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=53 end
+[pubmed/prover] [zkGPT][gkr] layer=52 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=52 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112832
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.28e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/52/matmul complete rounds=3/3 elapsed_s=0.00773143
+[pubmed/prover] [zkGPT][gkr] layer=52 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=51 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=51 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/51 phase1 complete rounds=18/18 elapsed_s=0.147557
+[pubmed/prover] [zkGPT][gkr] layer=51 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=51 end
+[pubmed/prover] [zkGPT][gkr] layer=50 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=50 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=64 complete rounds=19717/19717 elapsed_s=0.0509725
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.2017e-05
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/50/matmul complete rounds=6/6 elapsed_s=0.0155288
+[pubmed/prover] [zkGPT][gkr] layer=50 fconn end rounds=6
+[pubmed/prover] [zkGPT][gkr] layer=49 begin ty=3 size=1261888 bits=21 u=21 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=49 phase1 begin rounds=21
+[pubmed/prover] [zkGPT][gkr] gkr/layer/49 phase1 complete rounds=21/21 elapsed_s=0.574904
+[pubmed/prover] [zkGPT][gkr] layer=49 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=49 end
+[pubmed/prover] [zkGPT][gkr] layer=48 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=48 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/48 phase1 complete rounds=15/15 elapsed_s=0.0486307
+[pubmed/prover] [zkGPT][gkr] layer=48 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=48 end
+[pubmed/prover] [zkGPT][gkr] layer=47 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=47 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112161
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.408e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/47/matmul complete rounds=3/3 elapsed_s=0.00774255
+[pubmed/prover] [zkGPT][gkr] layer=47 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=46 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=46 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/46 phase1 complete rounds=15/15 elapsed_s=0.0489252
+[pubmed/prover] [zkGPT][gkr] layer=46 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=46 end
+[pubmed/prover] [zkGPT][gkr] layer=45 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=45 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112271
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.072e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/45/matmul complete rounds=3/3 elapsed_s=0.00771654
+[pubmed/prover] [zkGPT][gkr] layer=45 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=44 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=44 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/44 phase1 complete rounds=18/18 elapsed_s=0.147239
+[pubmed/prover] [zkGPT][gkr] layer=44 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=44 end
+[pubmed/prover] [zkGPT][gkr] layer=43 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=43 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.335915
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.000140038
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/43/matmul complete rounds=9/9 elapsed_s=0.0230447
+[pubmed/prover] [zkGPT][gkr] layer=43 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=42 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=42 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/42 phase1 complete rounds=15/15 elapsed_s=0.0486734
+[pubmed/prover] [zkGPT][gkr] layer=42 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=42 end
+[pubmed/prover] [zkGPT][gkr] layer=41 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=41 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0110898
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.52e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/41/matmul complete rounds=3/3 elapsed_s=0.007621
+[pubmed/prover] [zkGPT][gkr] layer=41 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=40 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=40 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/40 phase1 complete rounds=15/15 elapsed_s=0.0483442
+[pubmed/prover] [zkGPT][gkr] layer=40 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=40 end
+[pubmed/prover] [zkGPT][gkr] layer=39 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=39 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.011241
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/39/matmul complete rounds=3/3 elapsed_s=0.00767786
+[pubmed/prover] [zkGPT][gkr] layer=39 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=38 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=38 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/38 phase1 complete rounds=18/18 elapsed_s=0.147693
+[pubmed/prover] [zkGPT][gkr] layer=38 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=38 end
+[pubmed/prover] [zkGPT][gkr] layer=37 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=37 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.335295
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.000137638
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/37/matmul complete rounds=9/9 elapsed_s=0.0230133
+[pubmed/prover] [zkGPT][gkr] layer=37 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=36 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=36 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/36 phase1 complete rounds=15/15 elapsed_s=0.0487683
+[pubmed/prover] [zkGPT][gkr] layer=36 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=36 end
+[pubmed/prover] [zkGPT][gkr] layer=35 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=35 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111595
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.136e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/35/matmul complete rounds=3/3 elapsed_s=0.00768001
+[pubmed/prover] [zkGPT][gkr] layer=35 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=34 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=34 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/34 phase1 complete rounds=15/15 elapsed_s=0.0482356
+[pubmed/prover] [zkGPT][gkr] layer=34 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=34 end
+[pubmed/prover] [zkGPT][gkr] layer=33 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=33 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112563
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.68e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/33/matmul complete rounds=3/3 elapsed_s=0.00762487
+[pubmed/prover] [zkGPT][gkr] layer=33 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=32 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=32 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/32 phase1 complete rounds=18/18 elapsed_s=0.147817
+[pubmed/prover] [zkGPT][gkr] layer=32 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=32 end
+[pubmed/prover] [zkGPT][gkr] layer=31 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=31 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.340078
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.000144758
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/31/matmul complete rounds=9/9 elapsed_s=0.0234216
+[pubmed/prover] [zkGPT][gkr] layer=31 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=30 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=30 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/30 phase1 complete rounds=15/15 elapsed_s=0.0490155
+[pubmed/prover] [zkGPT][gkr] layer=30 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=30 end
+[pubmed/prover] [zkGPT][gkr] layer=29 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=29 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111999
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.12e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/29/matmul complete rounds=3/3 elapsed_s=0.00773092
+[pubmed/prover] [zkGPT][gkr] layer=29 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=28 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=28 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/28 phase1 complete rounds=15/15 elapsed_s=0.0490462
+[pubmed/prover] [zkGPT][gkr] layer=28 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=28 end
+[pubmed/prover] [zkGPT][gkr] layer=27 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=27 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112064
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.216e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/27/matmul complete rounds=3/3 elapsed_s=0.00772807
+[pubmed/prover] [zkGPT][gkr] layer=27 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=26 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=26 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/26 phase1 complete rounds=18/18 elapsed_s=0.147913
+[pubmed/prover] [zkGPT][gkr] layer=26 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=26 end
+[pubmed/prover] [zkGPT][gkr] layer=25 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=25 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.33961
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.00014119
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/25/matmul complete rounds=9/9 elapsed_s=0.0234041
+[pubmed/prover] [zkGPT][gkr] layer=25 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=24 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=24 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/24 phase1 complete rounds=15/15 elapsed_s=0.0489357
+[pubmed/prover] [zkGPT][gkr] layer=24 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=24 end
+[pubmed/prover] [zkGPT][gkr] layer=23 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=23 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111937
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.056e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/23/matmul complete rounds=3/3 elapsed_s=0.0275894
+[pubmed/prover] [zkGPT][gkr] layer=23 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=22 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=22 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/22 phase1 complete rounds=15/15 elapsed_s=0.0488313
+[pubmed/prover] [zkGPT][gkr] layer=22 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=22 end
+[pubmed/prover] [zkGPT][gkr] layer=21 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=21 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0111765
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.024e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/21/matmul complete rounds=3/3 elapsed_s=0.00768977
+[pubmed/prover] [zkGPT][gkr] layer=21 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=20 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=20 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/20 phase1 complete rounds=18/18 elapsed_s=0.149753
+[pubmed/prover] [zkGPT][gkr] layer=20 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=20 end
+[pubmed/prover] [zkGPT][gkr] layer=19 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=19 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.339495
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.00013887
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/19/matmul complete rounds=9/9 elapsed_s=0.0233927
+[pubmed/prover] [zkGPT][gkr] layer=19 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=18 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=18 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/18 phase1 complete rounds=15/15 elapsed_s=0.0489114
+[pubmed/prover] [zkGPT][gkr] layer=18 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=18 end
+[pubmed/prover] [zkGPT][gkr] layer=17 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=17 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112155
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.168e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/17/matmul complete rounds=3/3 elapsed_s=0.00776262
+[pubmed/prover] [zkGPT][gkr] layer=17 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=16 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=16 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/16 phase1 complete rounds=15/15 elapsed_s=0.0488942
+[pubmed/prover] [zkGPT][gkr] layer=16 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=16 end
+[pubmed/prover] [zkGPT][gkr] layer=15 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=15 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112242
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.072e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/15/matmul complete rounds=3/3 elapsed_s=0.00771377
+[pubmed/prover] [zkGPT][gkr] layer=15 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=14 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=14 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/14 phase1 complete rounds=18/18 elapsed_s=0.146991
+[pubmed/prover] [zkGPT][gkr] layer=14 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=14 end
+[pubmed/prover] [zkGPT][gkr] layer=13 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=13 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.336651
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.000139302
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/13/matmul complete rounds=9/9 elapsed_s=0.0230366
+[pubmed/prover] [zkGPT][gkr] layer=13 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=12 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=12 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/12 phase1 complete rounds=15/15 elapsed_s=0.0487695
+[pubmed/prover] [zkGPT][gkr] layer=12 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=12 end
+[pubmed/prover] [zkGPT][gkr] layer=11 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=11 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112591
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.024e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/11/matmul complete rounds=3/3 elapsed_s=0.00765024
+[pubmed/prover] [zkGPT][gkr] layer=11 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=10 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=10 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/10 phase1 complete rounds=15/15 elapsed_s=0.048281
+[pubmed/prover] [zkGPT][gkr] layer=10 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=10 end
+[pubmed/prover] [zkGPT][gkr] layer=9 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=9 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112096
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.264e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/9/matmul complete rounds=3/3 elapsed_s=0.00780143
+[pubmed/prover] [zkGPT][gkr] layer=9 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=8 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=8 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/8 phase1 complete rounds=18/18 elapsed_s=0.149501
+[pubmed/prover] [zkGPT][gkr] layer=8 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=8 end
+[pubmed/prover] [zkGPT][gkr] layer=7 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=7 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.337293
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.000136582
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/7/matmul complete rounds=9/9 elapsed_s=0.0230102
+[pubmed/prover] [zkGPT][gkr] layer=7 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] layer=6 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=6 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/6 phase1 complete rounds=15/15 elapsed_s=0.0483868
+[pubmed/prover] [zkGPT][gkr] layer=6 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=6 end
+[pubmed/prover] [zkGPT][gkr] layer=5 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=5 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.0112167
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.312e-06
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/5/matmul complete rounds=3/3 elapsed_s=0.00775047
+[pubmed/prover] [zkGPT][gkr] layer=5 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=4 begin ty=3 size=19717 bits=15 u=15 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=4 phase1 begin rounds=15
+[pubmed/prover] [zkGPT][gkr] gkr/layer/4 phase1 complete rounds=15/15 elapsed_s=0.0489262
+[pubmed/prover] [zkGPT][gkr] layer=4 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=4 end
+[pubmed/prover] [zkGPT][gkr] layer=3 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=3 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=8 complete rounds=19717/19717 elapsed_s=0.011177
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.76e-07
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/3/matmul complete rounds=3/3 elapsed_s=0.00772522
+[pubmed/prover] [zkGPT][gkr] layer=3 fconn end rounds=3
+[pubmed/prover] [zkGPT][gkr] layer=2 begin ty=3 size=157736 bits=18 u=18 v=0 phase2=0
+[pubmed/prover] [zkGPT][gkr] layer=2 phase1 begin rounds=18
+[pubmed/prover] [zkGPT][gkr] gkr/layer/2 phase1 complete rounds=18/18 elapsed_s=0.14855
+[pubmed/prover] [zkGPT][gkr] layer=2 phase1 terminal end
+[pubmed/prover] [zkGPT][gkr] layer=2 end
+[pubmed/prover] [zkGPT][gkr] layer=1 begin ty=11 size=262144 bits=18 u=-1 v=-1 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=1 fconn begin
+[pubmed/prover] [zkGPT][gkr] FCONN row fold rows=19717 inner=500 complete rounds=19717/19717 elapsed_s=0.338929
+[pubmed/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=500 complete rounds=8/8 elapsed_s=0.00013863
+[pubmed/prover] [zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=9/9 elapsed_s=0.0233493
+[pubmed/prover] [zkGPT][gkr] layer=1 fconn end rounds=9
+[pubmed/prover] [zkGPT][gkr] input aggregate begin sources=169
+[pubmed/prover] [zkGPT][gkr] input-aggregate parallel workers=20 round=0 pair_blocks=4294967296
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=1/33 elapsed_s=91.8521
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=2/33 elapsed_s=176.856
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=3/33 elapsed_s=266.527
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=4/33 elapsed_s=352.811
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=5/33 elapsed_s=439.876
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=6/33 elapsed_s=520.489
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=7/33 elapsed_s=607.907
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=8/33 elapsed_s=691.072
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=9/33 elapsed_s=779.465
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=10/33 elapsed_s=868.04
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=11/33 elapsed_s=958.051
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=12/33 elapsed_s=1047.84
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=13/33 elapsed_s=1137.68
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=14/33 elapsed_s=1225.83
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=15/33 elapsed_s=1315.38
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=16/33 elapsed_s=1398.42
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=17/33 elapsed_s=1484.54
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=18/33 elapsed_s=1571.64
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=19/33 elapsed_s=1654.24
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=20/33 elapsed_s=1740.44
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=21/33 elapsed_s=1826.8
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=22/33 elapsed_s=1910.03
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=23/33 elapsed_s=1994.8
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=24/33 elapsed_s=2082.52
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=25/33 elapsed_s=2169.81
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=26/33 elapsed_s=2249.95
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=27/33 elapsed_s=2335.13
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=28/33 elapsed_s=2396.44
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=29/33 elapsed_s=2510.54
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=30/33 elapsed_s=2711.26
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=31/33 elapsed_s=2931.05
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=32/33 elapsed_s=4340.99
+[pubmed/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=33/33 elapsed_s=4340.99
+[pubmed/prover] [zkGPT][gkr] input aggregate end rounds=33
+[pubmed/prover] gat_adapter_prover_stage: input-openings
+[pubmed/prover] gat_adapter_prover_stage: artifact
+[pubmed/prover] gat_adapter_prover_stage: selfverify-deferred-to-independent-verifier
+[pubmed/prover] [zkGPT][artifact] serialize_begin wire_limit_bytes=1390968832
+[pubmed/prover] [zkGPT][artifact] serialize_complete bytes=195048458 elapsed_ms=308.513
+[pubmed/prover] [zkGPT][artifact] readback_begin
+[pubmed/prover] [zkGPT][artifact] readback_complete elapsed_ms=1067.35 ok=true
+[pubmed/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_begin
+[pubmed/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=310210 ok=true
+[pubmed/cpu/verifier] [zkGPT][verifier] artifact_read_parse_begin
+[pubmed/cpu/verifier] [zkGPT][verifier] artifact_read_parse_complete elapsed_ms=757.655 ok=true
+[pubmed/cpu/verifier] [zkGPT][verifier] crypto_verify_begin
+[pubmed/cpu/verifier] [zkGPT][verifier] crypto_verify_complete elapsed_ms=1.25084e+06 ok=true

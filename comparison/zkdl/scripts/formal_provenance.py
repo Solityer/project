@@ -17,6 +17,8 @@ from session_lifecycle import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
+GPU_OFFLOAD_CAPABILITIES = ["hyrax_ipa_fold"]
+GPU_OFFLOAD_SOURCE = "gat_adapter/hyrax_gpu_fold.cu"
 
 def digest(path: Path) -> str:
     result = hashlib.sha256()
@@ -49,9 +51,15 @@ def validate_manifest(root: Path, path: Path) -> dict:
     if path.is_symlink() or not path.is_file():
         raise ValueError(f'build manifest is missing or symlinked: {path}')
     value = json.loads(path.read_text())
-    if value.get('schema') != 'zkDL_gat_build_manifest_v1' or value.get('backend') != 'cpu' or value.get('build_target') != 'baseline-local-build':
+    if value.get('schema') not in ('zkDL_gat_build_manifest_v1', 'zkDL_gat_build_manifest_v2') or value.get('backend') != 'cpu' or value.get('build_target') != 'baseline-local-build':
         raise ValueError('formal build manifest schema/backend/target mismatch')
+    if value.get('schema') == 'zkDL_gat_build_manifest_v2' and value.get('gpu_offload_capabilities') != GPU_OFFLOAD_CAPABILITIES:
+        raise ValueError('formal build manifest GPU offload capabilities mismatch')
+    if value.get('schema') == 'zkDL_gat_build_manifest_v1' and 'gpu_offload_capabilities' in value:
+        raise ValueError('legacy formal build manifest has unexpected GPU offload capabilities')
     entries = source_entries(root)
+    if value.get('schema') == 'zkDL_gat_build_manifest_v2' and GPU_OFFLOAD_SOURCE not in {item.get('path') for item in entries}:
+        raise ValueError('formal build manifest lacks the baseline-local Hyrax GPU fold source')
     if value.get('sources') != entries or value.get('source_digest') != identity(entries):
         raise ValueError('formal sources differ from the recorded build')
     binaries = value.get('binaries')
@@ -80,6 +88,7 @@ def main() -> int:
     parser.add_argument('--output', type=Path)
     parser.add_argument('--check', type=Path)
     parser.add_argument('--binary', choices=('gat_runner', 'gat_resource_setup'))
+    parser.add_argument('--require-gpu-offload', action='store_true')
     args = parser.parse_args()
     if bool(args.output) == bool(args.check):
         parser.error('supply exactly one of --output or --check')
@@ -91,6 +100,9 @@ def main() -> int:
         if session_identity is not None:
             require_session_root(session_identity)
         value = validate_manifest(ROOT, path)
+        if args.require_gpu_offload and (value.get('schema') != 'zkDL_gat_build_manifest_v2' or
+                                         value.get('gpu_offload_capabilities') != GPU_OFFLOAD_CAPABILITIES):
+            raise ValueError('formal build manifest does not authenticate Hyrax IPA GPU offload support')
         if session_identity is not None:
             require_session_root(session_identity)
         if args.binary:
@@ -110,6 +122,8 @@ def main() -> int:
         after = source_entries(ROOT)
         if before != after:
             raise SystemExit('formal build sources changed during compilation')
+        if GPU_OFFLOAD_SOURCE not in {item.get('path') for item in after}:
+            raise SystemExit('formal build is missing the baseline-local Hyrax GPU fold source')
         if session_identity is not None:
             require_session_root(session_identity)
         binaries = []
@@ -128,7 +142,8 @@ def main() -> int:
             if session_identity is not None:
                 require_session_root(session_identity)
             binaries.append({'name': name, 'path': frozen.relative_to(ROOT).as_posix(), 'bytes': frozen.stat().st_size, 'sha256': digest(frozen)})
-        value = {'schema': 'zkDL_gat_build_manifest_v1', 'backend': 'cpu', 'build_target': 'baseline-local-build', 'source_digest': identity(after), 'sources': after, 'binaries': binaries}
+        value = {'schema': 'zkDL_gat_build_manifest_v2', 'backend': 'cpu', 'gpu_offload_capabilities': GPU_OFFLOAD_CAPABILITIES,
+                 'build_target': 'baseline-local-build', 'source_digest': identity(after), 'sources': after, 'binaries': binaries}
         if path.parent.is_symlink() or not path.parent.is_dir():
             raise SystemExit(f'formal session root disappeared before build manifest write: {path.parent}')
         if session_identity is not None:

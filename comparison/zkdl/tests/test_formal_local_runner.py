@@ -26,10 +26,31 @@ sys.path.insert(0, str(SCRIPTS))
 import formal_runner
 import formal_provenance
 import formal_phase
+import result_artifacts
 import session_lifecycle
 
 
 class FormalLocalRunnerTests(unittest.TestCase):
+    def test_hyrax_gpu_offload_metadata_accepts_only_cpu_prove_and_cpu_verify(self) -> None:
+        record = {"gpu_offload_stage": "hyrax_ipa_fold", "gpu_forward_kernel_executed": "0",
+                  "gpu_proof_kernel_executed": "1", "gpu_kernel_executed": "1",
+                  "gpu_proof_kernel_count": "12", "gpu_proof_peak_allocated_bytes": "4096",
+                  "gpu_device_name": "NVIDIA GB10", "gpu_device_ordinal": "0", "gpu_device_uuid": "GPU-fixture",
+                  "verifier_backend": "cpu", "verify_gpu_kernel_executed": "0"}
+        envelope = dict(record)
+        verification = {"verifier_backend": "cpu", "verify_gpu_kernel_executed": "0"}
+        self.assertEqual(result_artifacts._gpu_offload_evidence(record, envelope, verification, "cpu",
+                                                                 "hyrax_ipa_fold")["gpu_device_uuid"], "GPU-fixture")
+        for mutated, mutated_verification, backend in (
+                ({**envelope, "gpu_offload_stage": "none"}, verification, "cpu"),
+                ({**envelope, "gpu_forward_kernel_executed": "1"}, verification, "cpu"),
+                ({**envelope, "gpu_proof_kernel_executed": "0"}, verification, "cpu"),
+                (envelope, {"verifier_backend": "gpu", "verify_gpu_kernel_executed": "1"}, "cpu"),
+                (envelope, verification, "gpu")):
+            with self.assertRaises(result_artifacts.ArtifactError):
+                result_artifacts._gpu_offload_evidence(record, mutated, mutated_verification, backend,
+                                                        "hyrax_ipa_fold")
+
     def test_staged_build_precedes_session_and_prepare_only_checks_published_build(self) -> None:
         with tempfile.TemporaryDirectory(dir=TESTS) as temporary:
             project = Path(temporary)
@@ -68,6 +89,8 @@ class FormalLocalRunnerTests(unittest.TestCase):
                     for path in runs.glob("formal_*"):
                         if path.is_dir() and not path.is_symlink():
                             shutil.rmtree(path)
+                    (project / "gat_adapter").mkdir(exist_ok=True)
+                    (project / "gat_adapter/hyrax_gpu_fold.cu").write_text("fixture GPU source\n")
                     (project / "gat_runner").write_bytes(b"fixture runner binary")
                     (project / "gat_resource_setup").write_bytes(b"fixture resource binary")
                     return subprocess.CompletedProcess(command, 0)
@@ -313,21 +336,28 @@ class FormalLocalRunnerTests(unittest.TestCase):
         for index, dataset in enumerate(formal_runner.DATASETS, start=1):
             retained = index * 10
             finalization_rows[dataset] = formal_runner.formal_phase._srs_manifest_finalization_capacity(index, index)
+            gpu_workspace = 144 * (1 << 18) + 608
             rows[dataset] = {
                 "additional_disk_peak_bytes": retained + index * 3,
                 "cell_retained_artifact_bytes_upper_bound": retained,
                 "host_peak_bytes": index * 100,
-                "device_peak_bytes": 0,
+                "device_peak_bytes": gpu_workspace,
+                "gpu_authenticated_basis_size": 1 << 18,
+                "gpu_max_opening_padded_generator_size": 1,
+                "gpu_workspace_required_bytes": gpu_workspace,
+                "gpu_cuda_free_bytes_at_prepare": gpu_workspace + 1,
+                "gpu_cuda_total_bytes_at_prepare": gpu_workspace + 2,
                 "native_route_source_domain": index,
                 "native_route_selector_factor_elements": index + 1,
                 "phase_coverage": ["setup", "witness", "commitment", "prove", "verify"],
             }
         return {
-            "schema": "zkdl_formal_capacity_profile_v3",
+            "schema": "zkdl_formal_capacity_profile_v4",
             "baseline": "zkdl",
             "backend": "cpu",
-            "memory_accounting_kind": "host-only",
-            "device": None,
+            "gpu_offload_stage": "hyrax_ipa_fold",
+            "memory_accounting_kind": "shared_host_cuda",
+            "device": {"name": "fixture GPU", "ordinal": 0, "uuid": "GPU-fixture"},
             "session_id": "0" * 32,
             "fs_device_id": 1,
             "preexisting_baseline_artifact_bytes": 0,
@@ -337,6 +367,8 @@ class FormalLocalRunnerTests(unittest.TestCase):
             "bound_methods": {
                 "additional_disk_peak": "source_derived_upper_bound",
                 "host_peak": "source_derived_upper_bound",
+                "gpu_workspace": "authenticated_basis_144B_plus_max_opening_608P",
+                "shared_host_cuda": "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace",
                 "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
             },
             "datasets": rows,
@@ -345,12 +377,13 @@ class FormalLocalRunnerTests(unittest.TestCase):
     def test_remaining_capacity_accounts_for_future_retained_prefix(self) -> None:
         profile = self._profile()
         all_remaining = formal_runner._remaining_capacity_requirements(profile, ())
-        self.assertEqual(all_remaining["host_bytes"], 500)
-        self.assertEqual(all_remaining["device_bytes"], 0)
+        gpu_workspace = 144 * (1 << 18) + 608
+        self.assertEqual(all_remaining["host_bytes"], 500 + gpu_workspace)
+        self.assertEqual(all_remaining["device_bytes"], gpu_workspace)
         self.assertEqual(all_remaining["finalization_host_bytes"], profile["finalization_host_peak_bytes_upper_bound"])
         self.assertEqual(all_remaining["disk_bytes"], 172)
         after_two = formal_runner._remaining_capacity_requirements(profile, ("cora", "citeseer"))
-        self.assertEqual(after_two["host_bytes"], 500)
+        self.assertEqual(after_two["host_bytes"], 500 + gpu_workspace)
         self.assertEqual(after_two["finalization_host_bytes"], profile["finalization_host_peak_bytes_upper_bound"])
         self.assertEqual(after_two["disk_bytes"], 142)
         with self.assertRaises(formal_runner.RunnerError):

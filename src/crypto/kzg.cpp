@@ -3429,24 +3429,102 @@ namespace gatzk::crypto
             std::size_t slot = 0;
             std::size_t offset = 0;
             read_chunk(slot, std::min(kChunkSize, stored_value_count));
-            while (offset < stored_value_count)
+            if (stored_value_count <= kChunkSize)
             {
-                const auto count = std::min(kChunkSize, stored_value_count - offset);
-                const auto next_offset = offset + count;
-                std::future<void> prefetch;
-                if (next_offset < stored_value_count)
-                {
-                    const auto next_slot = slot ^ std::size_t{1};
-                    const auto next_count = std::min(kChunkSize, stored_value_count - next_offset);
-                    prefetch = std::async(std::launch::async, [&, next_slot, next_count]() { read_chunk(next_slot, next_count); });
-                }
-
                 consumer(chunks[slot], offset);
-                if (prefetch.valid())
-                    prefetch.get();
-                offset = next_offset;
-                slot ^= std::size_t{1};
+                return;
             }
+
+            std::mutex prefetch_mutex;
+            std::condition_variable prefetch_request_cv;
+            std::condition_variable prefetch_complete_cv;
+            bool stop_prefetch = false;
+            bool prefetch_requested = false;
+            bool prefetch_completed = false;
+            std::size_t requested_slot = 0;
+            std::size_t requested_count = 0;
+            std::exception_ptr prefetch_failure;
+
+            std::thread prefetch_worker([&]()
+            {
+                while (true)
+                {
+                    std::unique_lock<std::mutex> lock(prefetch_mutex);
+                    prefetch_request_cv.wait(lock, [&]() { return stop_prefetch || prefetch_requested; });
+                    if (stop_prefetch)
+                        return;
+                    const auto read_slot = requested_slot;
+                    const auto read_count = requested_count;
+                    prefetch_requested = false;
+                    lock.unlock();
+
+                    std::exception_ptr failure;
+                    try
+                    {
+                        read_chunk(read_slot, read_count);
+                    }
+                    catch (...)
+                    {
+                        failure = std::current_exception();
+                    }
+
+                    lock.lock();
+                    prefetch_failure = failure;
+                    prefetch_completed = true;
+                    lock.unlock();
+                    prefetch_complete_cv.notify_one();
+                }
+            });
+
+            const auto finish_prefetch = [&]()
+            {
+                {
+                    std::lock_guard<std::mutex> lock(prefetch_mutex);
+                    stop_prefetch = true;
+                }
+                prefetch_request_cv.notify_one();
+                if (prefetch_worker.joinable())
+                    prefetch_worker.join();
+            };
+
+            try
+            {
+                while (offset < stored_value_count)
+                {
+                    const auto count = std::min(kChunkSize, stored_value_count - offset);
+                    const auto next_offset = offset + count;
+                    const bool has_next = next_offset < stored_value_count;
+                    if (has_next)
+                    {
+                        {
+                            std::lock_guard<std::mutex> lock(prefetch_mutex);
+                            prefetch_completed = false;
+                            prefetch_failure = nullptr;
+                            requested_slot = slot ^ std::size_t{1};
+                            requested_count = std::min(kChunkSize, stored_value_count - next_offset);
+                            prefetch_requested = true;
+                        }
+                        prefetch_request_cv.notify_one();
+                    }
+
+                    consumer(chunks[slot], offset);
+                    if (has_next)
+                    {
+                        std::unique_lock<std::mutex> lock(prefetch_mutex);
+                        prefetch_complete_cv.wait(lock, [&]() { return prefetch_completed; });
+                        if (prefetch_failure != nullptr)
+                            std::rethrow_exception(prefetch_failure);
+                    }
+                    offset = next_offset;
+                    slot ^= std::size_t{1};
+                }
+            }
+            catch (...)
+            {
+                finish_prefetch();
+                throw;
+            }
+            finish_prefetch();
         }
 
         void accumulate_file_backed_semantic_source(FoldedEvaluationGroup *group, const OpeningSemanticSourceInfo &info, const FieldElement &scale,

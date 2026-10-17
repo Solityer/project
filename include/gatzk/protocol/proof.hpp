@@ -913,6 +913,7 @@ namespace gatzk::protocol
         std::string gpu_fallback_stages;
         std::string gpu_fallback_reason;
         std::vector<DynamicCommitmentObjectProfile> dynamic_commitment_profiles;
+        std::unordered_map<std::string, std::string> dynamic_commitment_first_label_by_fingerprint;
         std::string benchmark_mode = "single";
         std::string fft_backend_route = "plain";
         std::string route2_label = "baseline";

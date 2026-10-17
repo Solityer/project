@@ -4,11 +4,48 @@ mod verifier;
 use crate::{poly::query::Query, transcript::ChallengeScalar};
 use ff::Field;
 use maybe_rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
+use std::cell::Cell;
 pub use prover::ProverSHPLONK;
 
-/// Returns the heap layout sizes for one SHPLONK commitment extension and one
-/// SHPLONK rotation-set extension.
-pub fn native_shplonk_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize) {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NativeShplonkFixedAggregateCacheLimits {
+    pub max_groups: usize,
+    pub host_bytes: u64,
+    pub disk_bytes: u64,
+    pub group_host_bytes: u64,
+    pub group_disk_bytes: u64,
+    pub domain_size: u64,
+    pub scalar_bytes: u64,
+}
+
+thread_local! {
+    static NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS: Cell<Option<NativeShplonkFixedAggregateCacheLimits>> = Cell::new(None);
+}
+
+pub struct NativeShplonkFixedAggregateCacheScope {
+    previous: Option<NativeShplonkFixedAggregateCacheLimits>,
+}
+
+impl Drop for NativeShplonkFixedAggregateCacheScope {
+    fn drop(&mut self) {
+        NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS.with(|limits| limits.set(self.previous));
+    }
+}
+
+pub fn native_shplonk_fixed_aggregate_cache_scope(
+    limits: NativeShplonkFixedAggregateCacheLimits,
+) -> NativeShplonkFixedAggregateCacheScope {
+    let previous = NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS.with(|current| current.replace(Some(limits)));
+    NativeShplonkFixedAggregateCacheScope { previous }
+}
+
+pub(super) fn native_shplonk_fixed_aggregate_cache_limits() -> Option<NativeShplonkFixedAggregateCacheLimits> {
+    NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS.with(Cell::get)
+}
+
+/// Returns the heap layout sizes for one SHPLONK commitment extension, one
+/// rotation-set extension, and one optional fixed-aggregate cache group.
+pub fn native_shplonk_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize, usize) {
     prover::native_shplonk_resource_layout::<C>()
 }
 use std::collections::BTreeSet;

@@ -1,6 +1,7 @@
 
 #include "gat_native_bridge.hpp"
 #include "gat_native_resources.hpp"
+#include "hyrax_gpu_fold_api.hpp"
 #include "output_stream.hpp"
 #include "checkpoint_manifest_json.hpp"
 #include "integer_bound_ledger.hpp"
@@ -4943,7 +4944,18 @@ void write_run_record(const std::filesystem::path &path, const RunRecord &record
            << "commitment_time_seconds=" << std::setprecision(17) << record.commitment_time_seconds << "\nprove_time_seconds=" << record.prove_time_seconds
            << "\n"
            << "verify_time_seconds=" << record.verify_time_seconds << "\nverifier_reads_witness=" << (record.verifier_reads_witness ? 1 : 0) << "\n"
-           << "gpu_kernel_executed=" << (record.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (record.silent_fallback ? 1 : 0) << "\n"
+           << "gpu_kernel_executed=" << (record.gpu_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_forward_kernel_executed=" << (record.gpu_forward_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_proof_kernel_executed=" << (record.gpu_proof_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_offload_stage=" << record.gpu_offload_stage << "\n"
+           << "gpu_proof_kernel_count=" << record.gpu_proof_kernel_count << "\n"
+           << "gpu_proof_peak_allocated_bytes=" << record.gpu_proof_peak_allocated_bytes << "\n"
+           << "gpu_device_ordinal=" << record.gpu_device_ordinal << "\n"
+           << "gpu_device_name=" << record.gpu_device_name << "\n"
+           << "gpu_device_uuid=" << record.gpu_device_uuid << "\n"
+           << "verifier_backend=" << record.verifier_backend << "\n"
+           << "verify_gpu_kernel_executed=" << (record.verify_gpu_kernel_executed ? 1 : 0) << "\n"
+           << "silent_fallback=" << (record.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (record.output_bound ? 1 : 0) << "\nerror=" << record.error << "\n";
     finish_output(output, path, "run record");
 }
@@ -4960,11 +4972,13 @@ struct CliOptions {
     std::filesystem::path envelope;
     Backend backend = Backend::Cpu;
     bool has_backend = false;
+    std::string gpu_offload_stage = "none";
+    bool has_gpu_offload_stage = false;
 };
 
 void usage() {
-    std::cerr << "usage: gat_runner <inspect|admit|resource-check|resource-plan|prepare|run|prove|verify> --config FILE "
-                 "[--backend cpu|gpu] [--run-dir DIR] [--planned-shape ANALYSIS_ONLY_JSON]\n";
+    std::cerr << "usage: gat_runner <inspect|admit|resource-check|resource-plan|gpu-offload-device-info|prepare|run|prove|verify> --config FILE "
+                 "[--backend cpu|gpu] [--gpu-offload-stage hyrax_ipa_fold] [--run-dir DIR] [--planned-shape ANALYSIS_ONLY_JSON]\n";
 }
 
 CliOptions parse_cli(int argc, char **argv) {
@@ -4974,12 +4988,12 @@ CliOptions parse_cli(int argc, char **argv) {
     }
     CliOptions options;
     options.command = argv[1];
-    const std::set<std::string> commands = {"inspect", "admit", "resource-check", "resource-plan", "prepare", "run", "prove", "verify"};
+    const std::set<std::string> commands = {"inspect", "admit", "resource-check", "resource-plan", "gpu-offload-device-info", "prepare", "run", "prove", "verify"};
     if (!commands.count(options.command)) fail("unknown command: " + options.command);
     for (int i = 2; i < argc; ++i) {
         const std::string argument = argv[i];
         if (argument == "--config" || argument == "--planned-shape" || argument == "--run-dir" || argument == "--statement" || argument == "--proof" || argument == "--envelope" ||
-            argument == "--backend") {
+            argument == "--backend" || argument == "--gpu-offload-stage") {
             if (++i >= argc) fail("missing value for " + argument);
             const std::string value = argv[i];
             if (argument == "--config")
@@ -4994,6 +5008,12 @@ CliOptions parse_cli(int argc, char **argv) {
                 options.proof = value;
             else if (argument == "--envelope")
                 options.envelope = value;
+            else if (argument == "--gpu-offload-stage") {
+                if (value != "hyrax_ipa_fold")
+                    fail("gpu offload stage must be hyrax_ipa_fold");
+                options.gpu_offload_stage = value;
+                options.has_gpu_offload_stage = true;
+            }
             else {
                 options.backend = parse_backend(value);
                 options.has_backend = true;
@@ -5005,6 +5025,12 @@ CliOptions parse_cli(int argc, char **argv) {
     if (options.config.empty()) fail("--config is required");
     if (!options.planned_shape.empty() && options.command != "resource-plan")
         fail("--planned-shape is allowed only for resource-plan");
+    if (options.has_gpu_offload_stage && options.command != "prove" &&
+        options.command != "resource-plan")
+        fail("--gpu-offload-stage is allowed only for prove/resource-plan");
+    if (options.has_gpu_offload_stage && options.command == "prove" &&
+        (!options.has_backend || options.backend != Backend::Cpu))
+        fail("Hyrax CUDA offload requires prove --backend cpu");
     if ((options.command == "run" || options.command == "prove") && !options.has_backend) { fail("--backend is required for " + options.command); }
     return options;
 }
@@ -5187,7 +5213,18 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
            << "commitment_time_semantics=" << envelope.commitment_time_semantics << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\nprove_time_seconds=" << envelope.prove_time_seconds
            << "\nverify_time_seconds=" << envelope.verify_time_seconds << "\nverifier_reads_witness=" << (envelope.verifier_reads_witness ? 1 : 0) << "\n"
-           << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\nsilent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
+           << "gpu_kernel_executed=" << (envelope.gpu_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_forward_kernel_executed=" << (envelope.gpu_forward_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_proof_kernel_executed=" << (envelope.gpu_proof_kernel_executed ? 1 : 0) << "\n"
+           << "gpu_offload_stage=" << envelope.gpu_offload_stage << "\n"
+           << "gpu_proof_kernel_count=" << envelope.gpu_proof_kernel_count << "\n"
+           << "gpu_proof_peak_allocated_bytes=" << envelope.gpu_proof_peak_allocated_bytes << "\n"
+           << "gpu_device_ordinal=" << envelope.gpu_device_ordinal << "\n"
+           << "gpu_device_name=" << envelope.gpu_device_name << "\n"
+           << "gpu_device_uuid=" << envelope.gpu_device_uuid << "\n"
+           << "verifier_backend=" << envelope.verifier_backend << "\n"
+           << "verify_gpu_kernel_executed=" << (envelope.verify_gpu_kernel_executed ? 1 : 0) << "\n"
+           << "silent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
            << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
     finish_output(output, path, "proof envelope");
 }
@@ -5240,6 +5277,11 @@ ProofEnvelope read_envelope(const std::filesystem::path &path) {
         if (iterator == values.end()) fail("proof envelope field missing: " + key);
         return iterator->second;
     };
+    const auto get_optional = [&](const std::string &key,
+                                  const std::string &fallback) -> std::string {
+        const auto iterator = values.find(key);
+        return iterator == values.end() ? fallback : iterator->second;
+    };
     ProofEnvelope envelope;
     envelope.schema_id = get("schema_id");
     envelope.statement_id = get("statement_id");
@@ -5261,6 +5303,27 @@ ProofEnvelope read_envelope(const std::filesystem::path &path) {
     envelope.verify_time_seconds = parse_double(get("verify_time_seconds"), "verify_time_seconds");
     envelope.verifier_reads_witness = parse_bool(get("verifier_reads_witness"), "verifier_reads_witness");
     envelope.gpu_kernel_executed = parse_bool(get("gpu_kernel_executed"), "gpu_kernel_executed");
+    envelope.gpu_forward_kernel_executed = parse_bool(
+        get_optional("gpu_forward_kernel_executed",
+                     envelope.gpu_kernel_executed ? "1" : "0"),
+        "gpu_forward_kernel_executed");
+    envelope.gpu_proof_kernel_executed = parse_bool(
+        get_optional("gpu_proof_kernel_executed", "0"),
+        "gpu_proof_kernel_executed");
+    envelope.gpu_offload_stage = get_optional("gpu_offload_stage", "none");
+    envelope.gpu_proof_kernel_count = parse_u64(
+        get_optional("gpu_proof_kernel_count", "0"), "gpu_proof_kernel_count");
+    envelope.gpu_proof_peak_allocated_bytes = parse_u64(
+        get_optional("gpu_proof_peak_allocated_bytes", "0"),
+        "gpu_proof_peak_allocated_bytes");
+    envelope.gpu_device_ordinal = std::stoi(
+        get_optional("gpu_device_ordinal", "-1"));
+    envelope.gpu_device_name = get_optional("gpu_device_name", "");
+    envelope.gpu_device_uuid = get_optional("gpu_device_uuid", "");
+    envelope.verifier_backend = get_optional("verifier_backend", "not_run");
+    envelope.verify_gpu_kernel_executed = parse_bool(
+        get_optional("verify_gpu_kernel_executed", "0"),
+        "verify_gpu_kernel_executed");
     envelope.silent_fallback = parse_bool(get("silent_fallback"), "silent_fallback");
     envelope.output_bound = parse_bool(get("output_bound"), "output_bound");
     envelope.error = get("error");
@@ -5323,6 +5386,16 @@ RunRecord record_from_envelope(const Config &config, const PublicStatement &stat
     record.verify_time_seconds = envelope.verify_time_seconds;
     record.verifier_reads_witness = envelope.verifier_reads_witness;
     record.gpu_kernel_executed = envelope.gpu_kernel_executed;
+    record.gpu_forward_kernel_executed = envelope.gpu_forward_kernel_executed;
+    record.gpu_proof_kernel_executed = envelope.gpu_proof_kernel_executed;
+    record.gpu_offload_stage = envelope.gpu_offload_stage;
+    record.gpu_proof_kernel_count = envelope.gpu_proof_kernel_count;
+    record.gpu_proof_peak_allocated_bytes = envelope.gpu_proof_peak_allocated_bytes;
+    record.gpu_device_ordinal = envelope.gpu_device_ordinal;
+    record.gpu_device_name = envelope.gpu_device_name;
+    record.gpu_device_uuid = envelope.gpu_device_uuid;
+    record.verifier_backend = envelope.verifier_backend;
+    record.verify_gpu_kernel_executed = envelope.verify_gpu_kernel_executed;
     record.silent_fallback = envelope.silent_fallback;
     record.output_bound = envelope.output_bound;
     record.error = error.empty() ? envelope.error : error;
@@ -5387,6 +5460,8 @@ int produce(const Config &config, const CliOptions &options) {
         request.trace = &trace;
         request.statement = &statement;
         request.backend = options.backend;
+        request.gpu_forward_kernel_executed = kernel_executed;
+        request.gpu_offload_stage = options.gpu_offload_stage;
         request.witness = &witness;
         NativeProofResult result;
         std::string error;
@@ -5401,9 +5476,24 @@ int produce(const Config &config, const CliOptions &options) {
             return 4;
         }
 
+        const bool expected_combined_gpu_execution =
+            kernel_executed || result.envelope.gpu_proof_kernel_executed;
+        const bool offload_metadata_valid = options.gpu_offload_stage == "none"
+            ? result.envelope.gpu_offload_stage == "none" &&
+                  !result.envelope.gpu_proof_kernel_executed &&
+                  result.envelope.gpu_proof_kernel_count == 0U
+            : result.envelope.gpu_offload_stage == "hyrax_ipa_fold" &&
+                  options.backend == Backend::Cpu &&
+                  result.envelope.gpu_proof_kernel_executed &&
+                  result.envelope.gpu_proof_kernel_count != 0U &&
+                  result.envelope.gpu_device_ordinal >= 0 &&
+                  !result.envelope.gpu_device_name.empty() &&
+                  !result.envelope.gpu_device_uuid.empty();
         if (result.envelope.statement_id != statement.statement_id || result.envelope.backend != backend_name(options.backend) ||
             result.envelope.proof_scope != statement.proof_scope || result.envelope.proof_size_bytes != result.proof_bytes.size() ||
-            result.envelope.gpu_kernel_executed != kernel_executed) {
+            result.envelope.gpu_forward_kernel_executed != kernel_executed ||
+            result.envelope.gpu_kernel_executed != expected_combined_gpu_execution ||
+            !offload_metadata_valid) {
             const std::string message = "native proof envelope does not bind statement/backend/proof provenance";
             write_envelope(envelope_path, result.envelope);
             write_run_record(record_path, rejected_record(run_config, options.backend, &statement, message, kernel_executed));
@@ -5508,6 +5598,20 @@ int resource_check(const Config &config) {
     if (!load_authenticated_model_blinders(config, registry, &blinders, &error))
         fail(error.empty() ? "BLOCKED: authenticated model blinder sidecar check failed without a diagnostic" : error);
     std::cout << "resource_check stage=model_blinders status=PASS entries=" << blinders.entries.size() << "\n";
+    return 0;
+}
+
+int gpu_offload_device_info() {
+    zkdl::CpuHyraxGpuCapacityInfo info;
+    std::string error;
+    if (!zkdl::query_cpu_hyrax_gpu_device_info(&info, &error))
+        fail("BLOCKED: CUDA offload device refresh failed: " + error);
+    std::cout << "{\"schema\":\"zkdl_gpu_offload_device_info_v1\",\"status\":\"PASS\""
+              << ",\"gpu_device_name\":" << json_quote_config(info.device_name)
+              << ",\"gpu_device_ordinal\":" << info.device_ordinal
+              << ",\"gpu_device_uuid\":" << json_quote_config(info.device_uuid)
+              << ",\"gpu_cuda_free_bytes\":" << info.cuda_free_bytes
+              << ",\"gpu_cuda_total_bytes\":" << info.cuda_total_bytes << "}\n";
     return 0;
 }
 
@@ -5998,12 +6102,15 @@ AnalysisPlannedShape load_analysis_planned_shape(const Config &config,
 }
 
 int analysis_only_resource_plan(const Config &config,
-                                const std::filesystem::path &planned_shape_path) {
+                                const std::filesystem::path &planned_shape_path,
+                                const std::string &gpu_offload_stage) {
     u64 raw_edge_records = 0U;
     u64 csr_max_in_degree = 0U;
     const Graph graph = load_graph_shape_for_resource_plan(config, &raw_edge_records,
                                                            &csr_max_in_degree);
     const bool planned_mode = !planned_shape_path.empty();
+    if (!gpu_offload_stage.empty() && planned_mode)
+        fail("BLOCKED: CUDA Hyrax capacity planning requires a non-planned relation shape");
     AnalysisPlannedShape planned_shape;
     StaticTables tables;
     RelationPlan plan;
@@ -6229,6 +6336,23 @@ int analysis_only_resource_plan(const Config &config,
     };
 
     constexpr u64 srs_basis_domain = 1ULL << 18U;
+    zkdl::CpuHyraxGpuCapacityInfo gpu_capacity;
+    if (!gpu_offload_stage.empty()) {
+        std::uint64_t max_opening_padded_generator_size = 0U;
+        for (const auto& bucket : native_metrics.hyrax_opening_segment_domain_histogram)
+            max_opening_padded_generator_size = std::max(
+                max_opening_padded_generator_size,
+                bucket.padded_generator_size);
+        std::string gpu_capacity_error;
+        if (max_opening_padded_generator_size == 0U ||
+            !zkdl::query_cpu_hyrax_gpu_capacity(
+                srs_basis_domain, max_opening_padded_generator_size,
+                &gpu_capacity, &gpu_capacity_error))
+            fail("BLOCKED: CUDA Hyrax capacity probe failed: " +
+                 (gpu_capacity_error.empty()
+                      ? std::string("relation plan has no Hyrax openings")
+                      : gpu_capacity_error));
+    }
     u64 logical_family_elements = 0U;
     u64 private_family_storage_bytes = 0U;
     u64 maximum_padded_family_domain = 0U;
@@ -6614,6 +6738,16 @@ int analysis_only_resource_plan(const Config &config,
               << ",\"srs_family_count\":" << srs_domain_count
               << ",\"srs_segment_count\":" << srs_segment_count
               << ",\"srs_materialized_bytes_upper_bound\":" << srs_materialized_bytes
+              << (gpu_offload_stage.empty() ? std::string() :
+                  ",\"gpu_offload_stage\":\"hyrax_ipa_fold\",\"gpu_device_name\":" +
+                  json_quote_config(gpu_capacity.device_name) +
+                  ",\"gpu_device_ordinal\":" + std::to_string(gpu_capacity.device_ordinal) +
+                  ",\"gpu_device_uuid\":" + json_quote_config(gpu_capacity.device_uuid) +
+                  ",\"gpu_cuda_free_bytes\":" + std::to_string(gpu_capacity.cuda_free_bytes) +
+                  ",\"gpu_cuda_total_bytes\":" + std::to_string(gpu_capacity.cuda_total_bytes) +
+                  ",\"gpu_authenticated_basis_size\":" + std::to_string(gpu_capacity.authenticated_basis_size) +
+                  ",\"gpu_max_opening_padded_generator_size\":" + std::to_string(gpu_capacity.max_opening_padded_generator_size) +
+                  ",\"gpu_workspace_required_bytes\":" + std::to_string(gpu_capacity.workspace_required_bytes))
               << ",\"model_tensor_count\":" << model_tensor_count
               << ",\"cache_file_count\":" << cache_file_count
               << ",\"cache_file_bytes\":" << cache_file_bytes
@@ -6691,8 +6825,26 @@ int verify_only(const Config &config, const CliOptions &options) {
             canonical_public_field_digest(public_output, *public_output_family) != statement.public_output_digest) {
             fail("public output shape or digest does not match the public statement");
         }
-        if (backend == Backend::Gpu && !envelope.gpu_kernel_executed) { fail("BLOCKED: GPU proof envelope does not attest CUDA execution"); }
-        if (backend == Backend::Cpu && envelope.gpu_kernel_executed) { fail("BLOCKED: CPU proof envelope claims CUDA execution"); }
+        if (backend == Backend::Gpu && !envelope.gpu_kernel_executed)
+            fail("BLOCKED: GPU proof envelope does not attest CUDA execution");
+        if (backend == Backend::Cpu) {
+            const bool hybrid_offload =
+                envelope.gpu_offload_stage == "hyrax_ipa_fold" &&
+                !envelope.gpu_forward_kernel_executed &&
+                envelope.gpu_proof_kernel_executed &&
+                envelope.gpu_proof_kernel_count != 0U &&
+                envelope.gpu_device_ordinal >= 0 &&
+                !envelope.gpu_device_name.empty() &&
+                !envelope.gpu_device_uuid.empty() &&
+                envelope.gpu_kernel_executed;
+            const bool ordinary_cpu = envelope.gpu_offload_stage == "none" &&
+                !envelope.gpu_forward_kernel_executed &&
+                !envelope.gpu_proof_kernel_executed &&
+                envelope.gpu_proof_kernel_count == 0U &&
+                !envelope.gpu_kernel_executed;
+            if (!hybrid_offload && !ordinary_cpu)
+                fail("BLOCKED: CPU proof envelope has inconsistent GPU execution provenance");
+        }
         const auto proof = read_bytes(proof_path);
         if (proof.size() != envelope.proof_size_bytes) fail("proof byte size does not match proof envelope");
         const auto public_context = build_native_public_context(run_config, relation, public_output);
@@ -6710,7 +6862,11 @@ int verify_only(const Config &config, const CliOptions &options) {
         write_envelope(envelope_path, envelope);
         std::ofstream result(directory / "verification.result");
         if (!result) fail("cannot write verification.result");
-        result << "status=VERIFIED\nstatement_id=" << statement.statement_id << "\nproof_id=" << envelope.proof_id << "\n";
+        result << "status=VERIFIED\nstatement_id=" << statement.statement_id
+               << "\nproof_id=" << envelope.proof_id
+               << "\nverifier_backend=" << envelope.verifier_backend
+               << "\nverify_gpu_kernel_executed="
+               << (envelope.verify_gpu_kernel_executed ? 1 : 0) << "\n";
         finish_output(result, directory / "verification.result", "verification result");
         write_run_record(directory / "run.record", record_from_envelope(run_config, statement, envelope, "VERIFIED"));
         std::cout << "verification=VERIFIED statement_id=" << statement.statement_id << "\n";
@@ -6724,7 +6880,8 @@ int verify_only(const Config &config, const CliOptions &options) {
             std::ofstream result(directory / "verification.result");
             if (result) {
                 result << "status=BLOCKED\nstatement_id=" << (statement_loaded ? statement.statement_id : "UNAVAILABLE")
-                       << "\nproof_id=" << (envelope_loaded ? envelope.proof_id : "UNAVAILABLE") << "\nerror=" << message << "\n";
+                       << "\nproof_id=" << (envelope_loaded ? envelope.proof_id : "UNAVAILABLE")
+                       << "\nverifier_backend=cpu\nverify_gpu_kernel_executed=0\nerror=" << message << "\n";
                 finish_output(result, directory / "verification.result", "blocked verification result");
             }
         } catch (...) {}
@@ -6753,7 +6910,11 @@ int main(int argc, char **argv) {
         if (options.command == "admit") return zkdl_gat::admit(config);
         if (options.command == "resource-check") return zkdl_gat::resource_check(config);
         if (options.command == "resource-plan")
-            return zkdl_gat::analysis_only_resource_plan(config, options.planned_shape);
+            return zkdl_gat::analysis_only_resource_plan(
+                config, options.planned_shape,
+                options.has_gpu_offload_stage ? options.gpu_offload_stage : std::string());
+        if (options.command == "gpu-offload-device-info")
+            return zkdl_gat::gpu_offload_device_info();
         if (options.command == "prepare") return zkdl_gat::prepare(config, options);
         if (options.command == "run" || options.command == "prove") return zkdl_gat::produce(config, options);
         return zkdl_gat::verify_only(config, options);

@@ -1,0 +1,17 @@
+format=zkgat_max_instance_envelope
+max_layers=3
+max_hidden_heads_per_layer=8
+max_hidden_head_dim=8
+max_input_dim=500
+max_output_heads=2
+max_classes=3
+max_graphs=1
+max_nodes=4
+max_edges=16
+max_total_nodes=4
+max_concat_dim=64
+max_range_bits=12
+max_coefficient_object_length=8192
+max_object_family_count=100000
+max_coefficient_chunks=2
+security_target_bits=120

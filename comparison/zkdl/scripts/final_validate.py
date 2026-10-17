@@ -84,7 +84,9 @@ def main() -> int:
     failures: list[str] = []
     for record_path in records:
         try:
-            rows.append(audit_run(root, record_path.parent, fixture_mode=args.fixture_mode))
+            rows.append(audit_run(root, record_path.parent,
+                                  expected_gpu_offload_stage=None if args.fixture_mode else "hyrax_ipa_fold",
+                                  fixture_mode=args.fixture_mode))
         except ArtifactError as exc:
             failures.append(str(exc))
     if failures:

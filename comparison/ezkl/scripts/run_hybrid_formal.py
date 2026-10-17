@@ -1364,6 +1364,7 @@ def native_admit_all_datasets(
             "size_of_mv_lookup_source_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
+            "size_of_shplonk_fixed_aggregate_cache_group_bytes",
             "size_of_coeff_polynomial_header_bytes",
             "shplonk_rotation_set_commitment_counts",
             "shplonk_query_polynomial_count",
@@ -1421,7 +1422,7 @@ def native_admit_all_datasets(
             "native_successor_read_cache_bytes",
             "native_target_bitmap_fixed_cache_bytes",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v17" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v18" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
@@ -1471,6 +1472,7 @@ def native_admit_all_datasets(
             "size_of_mv_lookup_source_bytes",
             "size_of_shplonk_commitment_extension_bytes",
             "size_of_shplonk_rotation_set_extension_bytes",
+            "size_of_shplonk_fixed_aggregate_cache_group_bytes",
             "size_of_coeff_polynomial_header_bytes",
             "permutation_grand_product_bank_mapped_bytes_upper",
             "size_of_fftdata_bytes",
@@ -3694,6 +3696,78 @@ def _write_native_keygen_budget_receipt(
     return sha256(path)
 
 
+def _native_shplonk_fixed_cache_static_bounds(admission: dict[str, object]) -> dict[str, int]:
+    memory = admission.get("native_memory_model")
+    if not isinstance(memory, dict):
+        abort("native SHPLONK fixed-cache budget lacks its admitted memory model")
+    fields = {
+        "domain_size": memory.get("proof_domain_size"),
+        "scalar_bytes": memory.get("size_of_fr_bytes"),
+        "aggregate_group_bytes": memory.get("size_of_shplonk_fixed_aggregate_cache_group_bytes"),
+        "usize_bytes": memory.get("size_of_usize_bytes"),
+        "vec_header_bytes": memory.get("size_of_vec_header_bytes"),
+        "rotation_set_count": memory.get("shplonk_rotation_set_count"),
+        "max_fixed_sources_per_group": memory.get("shplonk_max_commitments_per_rotation_set"),
+        "max_points_per_group": memory.get("shplonk_max_rotation_count"),
+    }
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > sys.maxsize for value in fields.values()):
+        abort("native SHPLONK fixed-cache source bounds are malformed")
+    domain_size = int(fields["domain_size"])
+    scalar_bytes = int(fields["scalar_bytes"])
+    group_host = (
+        int(fields["aggregate_group_bytes"])
+        + domain_size * scalar_bytes
+        + int(fields["max_fixed_sources_per_group"]) * int(fields["usize_bytes"])
+        + int(fields["max_points_per_group"]) * scalar_bytes
+        + 3 * 4096
+    )
+    group_payload = domain_size * scalar_bytes
+    group_disk = ((group_payload + 4095) // 4096) * 4096 + 4096
+    bank_header = int(fields["vec_header_bytes"]) + 4096
+    values = {
+        "shplonk_fixed_cache_group_host_bound_bytes": group_host,
+        "shplonk_fixed_cache_group_disk_bound_bytes": group_disk,
+        "shplonk_fixed_cache_bank_header_bytes": bank_header,
+        "shplonk_fixed_cache_domain_size": domain_size,
+        "shplonk_fixed_cache_scalar_bytes": scalar_bytes,
+        "shplonk_fixed_cache_max_fixed_sources_per_group": int(fields["max_fixed_sources_per_group"]),
+        "shplonk_fixed_cache_max_points_per_group": int(fields["max_points_per_group"]),
+        "shplonk_fixed_cache_rotation_set_count": int(fields["rotation_set_count"]),
+    }
+    if any(value <= 0 or value > sys.maxsize for value in values.values()):
+        abort("native SHPLONK fixed-cache source-derived bound exceeds the native address range")
+    return values
+
+
+def _native_shplonk_fixed_cache_optional_limits(
+    static: dict[str, int],
+    *,
+    host_available: int,
+    host_required: int,
+    disk_available: int,
+    disk_required: int,
+) -> dict[str, int]:
+    host_slack = max(0, host_available - host_required - static["shplonk_fixed_cache_bank_header_bytes"])
+    disk_slack = max(0, disk_available - disk_required)
+    by_host = host_slack // static["shplonk_fixed_cache_group_host_bound_bytes"]
+    by_disk = disk_slack // static["shplonk_fixed_cache_group_disk_bound_bytes"]
+    groups = min(2, static["shplonk_fixed_cache_rotation_set_count"], by_host, by_disk)
+    host_limit = (
+        static["shplonk_fixed_cache_bank_header_bytes"]
+        + groups * static["shplonk_fixed_cache_group_host_bound_bytes"]
+        if groups
+        else 0
+    )
+    disk_limit = groups * static["shplonk_fixed_cache_group_disk_bound_bytes"]
+    if any(value > sys.maxsize for value in (groups, host_limit, disk_limit)):
+        abort("native SHPLONK fixed-cache optional budget exceeds the native address range")
+    return {
+        "shplonk_fixed_cache_max_groups": groups,
+        "shplonk_fixed_cache_host_limit_bytes": host_limit,
+        "shplonk_fixed_cache_disk_limit_bytes": disk_limit,
+    }
+
+
 def _write_native_prove_budget_receipt(
     output: Path,
     *,
@@ -3781,6 +3855,14 @@ def _write_native_prove_budget_receipt(
         or grand_product_bank_bytes > disk_required
     ):
         abort(f"{dataset} native PK read backing is missing from the checked proof disk peak")
+    fixed_cache_static = _native_shplonk_fixed_cache_static_bounds(admission)
+    fixed_cache_limits = _native_shplonk_fixed_cache_optional_limits(
+        fixed_cache_static,
+        host_available=int(host_available),
+        host_required=int(host_required),
+        disk_available=int(disk_available),
+        disk_required=int(disk_required),
+    )
     other_known = disk_required - native_read_required
     max_backing = min(native_read_required, disk_available - other_known) if disk_available >= other_known else 0
     if max_backing < native_read_required:
@@ -3818,6 +3900,8 @@ def _write_native_prove_budget_receipt(
         "permutation_grand_product_window_mapped_bytes": grand_product_window_bytes,
         "permutation_grand_product_commit_workspace_bytes": grand_product_commit_workspace_bytes,
         "proof_permutation_grand_product_commit_host_peak_bytes": grand_product_commit_host_peak,
+        **fixed_cache_static,
+        **fixed_cache_limits,
         "native_pk_read_backing_required_bytes": native_read_required,
         "native_pk_read_mapped_peak_upper_bytes": native_read_mapped_peak,
         "native_pk_read_mapped_extra_upper_bytes": native_read_mapped_extra,
@@ -3901,6 +3985,7 @@ def _load_reusable_native_prove_budget_receipt(
         "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": capacity.get("native_pk_read_target_bitmap_allocation_bitmap_upper_bytes"),
         "native_pk_read_validation_buffers_upper_bytes": capacity.get("native_pk_read_validation_buffers_upper_bytes"),
         "native_pk_read_stream_buffer_upper_bytes": capacity.get("native_pk_read_stream_buffer_upper_bytes"),
+        **_native_shplonk_fixed_cache_static_bounds(admission),
         "integrated_device": workspace_query.get("integrated_device"),
         "device_workspace_peak_bytes": workspace_query.get("device_workspace_peak_bytes"),
         "backing_scope": "packed_authenticated_pk_view_plus_one_cell_domain_target_bitmap",
@@ -3909,6 +3994,8 @@ def _load_reusable_native_prove_budget_receipt(
     dynamic_fields = {
         "disk_available_bytes", "disk_required_known_bytes", "max_total_backing_bytes",
         "host_available_bytes", "host_required_known_bytes",
+        "shplonk_fixed_cache_max_groups", "shplonk_fixed_cache_host_limit_bytes",
+        "shplonk_fixed_cache_disk_limit_bytes",
     }
     if set(budget) != set(expected) | dynamic_fields or any(budget.get(name) != value for name, value in expected.items()):
         return None
@@ -3926,6 +4013,8 @@ def _load_reusable_native_prove_budget_receipt(
             "native_pk_read_successor_cache_upper_bytes",
             "native_pk_read_target_bitmap_fixed_cache_upper_bytes", "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes", "native_pk_read_stream_buffer_upper_bytes", "device_workspace_peak_bytes",
+            "shplonk_fixed_cache_max_groups", "shplonk_fixed_cache_host_limit_bytes",
+            "shplonk_fixed_cache_disk_limit_bytes",
         )
     }
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in integers.values()):
@@ -3949,6 +4038,13 @@ def _load_reusable_native_prove_budget_receipt(
     grand_product_window = int(integers["permutation_grand_product_window_mapped_bytes"])
     grand_product_workspace = int(integers["permutation_grand_product_commit_workspace_bytes"])
     grand_product_commit_host_peak = int(integers["proof_permutation_grand_product_commit_host_peak_bytes"])
+    expected_fixed_cache_limits = _native_shplonk_fixed_cache_optional_limits(
+        _native_shplonk_fixed_cache_static_bounds(admission),
+        host_available=int(integers["host_available_bytes"]),
+        host_required=int(integers["host_required_known_bytes"]),
+        disk_available=disk_available,
+        disk_required=disk_required,
+    )
     other_known = disk_required - native_read_required
     expected_backing = min(native_read_required, disk_available - other_known) if other_known >= 0 and disk_available >= other_known else 0
     if (
@@ -3966,6 +4062,9 @@ def _load_reusable_native_prove_budget_receipt(
         or grand_product_window > int(integers["host_required_known_bytes"])
         or int(integers["max_total_backing_bytes"]) != expected_backing
         or int(integers["max_total_backing_bytes"]) < native_read_required
+        or int(integers["shplonk_fixed_cache_max_groups"]) != expected_fixed_cache_limits["shplonk_fixed_cache_max_groups"]
+        or int(integers["shplonk_fixed_cache_host_limit_bytes"]) != expected_fixed_cache_limits["shplonk_fixed_cache_host_limit_bytes"]
+        or int(integers["shplonk_fixed_cache_disk_limit_bytes"]) != expected_fixed_cache_limits["shplonk_fixed_cache_disk_limit_bytes"]
         or int(integers["host_required_known_bytes"]) > int(integers["host_available_bytes"])
         or int(integers["native_pk_read_host_scratch_upper_bytes"]) != scratch
         or int(integers["native_pk_read_host_scratch_upper_bytes"]) + native_materialize_scratch
@@ -4528,6 +4627,67 @@ def _stage_receipt_hooks(
         "invalidate_from": invalidate_from,
         "restore_final_manifest": restore_final_manifest,
     }
+
+
+def _reusable_final_stage_srs(
+    *,
+    session_file: Path,
+    session_dir: Path,
+    output_root: Path,
+    output: Path,
+    dataset: str,
+    session_id: str,
+    resume_identity: dict[str, object],
+    admission: dict[str, object],
+    setup_receipt_sha256: str,
+) -> bool:
+    """Return true only when authenticated producer/final receipts retain this SRS copy."""
+    hooks = _stage_receipt_hooks(
+        session_file=session_file,
+        session_dir=session_dir,
+        output_root=output_root,
+        output=output,
+        dataset=dataset,
+        session_id=session_id,
+        resume_identity=resume_identity,
+        admission_sha256=str(admission.get("sha256")),
+        setup_receipt_sha256=setup_receipt_sha256,
+        native_prove_budget_sha256="",
+    )
+    try_reuse = hooks["try_reuse"]
+    producer_inputs = {
+        "setup_context": output / "producer_context.json",
+        "settings": output / "settings.json",
+        "secure_config": ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg",
+        "resource_manifest": ROOT / "resources/resource_manifest.json",
+        "native_admission": local_path(str(admission.get("path")), f"{dataset} authenticated native admission"),
+    }
+    producer_outputs = {
+        "statement": output / "statement.json",
+        "public_output": output / "public_output.json",
+        "producer_manifest": output / "producer_manifest.json",
+    }
+    if try_reuse("producer", producer_inputs, producer_outputs) is None:
+        return False
+    final_inputs = {
+        "statement": producer_outputs["statement"],
+        "public_output": producer_outputs["public_output"],
+        "producer_manifest": producer_outputs["producer_manifest"],
+        "producer_context": producer_inputs["setup_context"],
+        "settings": producer_inputs["settings"],
+        "compiled_circuit": output / "compiled.circuit",
+        "verification_key": output / "vk.key",
+        "proving_key": output / "pk.key",
+        "secure_config": producer_inputs["secure_config"],
+        "resource_manifest": producer_inputs["resource_manifest"],
+        "native_prove_budget": output / "native_prove_budget.json",
+    }
+    final_outputs = {
+        "artifact_manifest": output / "artifact_manifest.json",
+        "srs": output / "srs.kzg",
+        "final_log": output / "logs/final.log",
+    }
+    return try_reuse("final", final_inputs, final_outputs) is not None
 
 
 _FORMAL_FINALIZATION_SCHEMA = "ezkl.formal-finalization-stage-receipt.v1"
@@ -5494,6 +5654,7 @@ def _run_five_admission_preflight(
     authenticated_context: object,
     selected_device: dict[str, object],
     saved_admissions: dict[str, dict[str, object]],
+    capacity_only: bool,
 ) -> dict[str, dict[str, object]]:
     api = _capacity_precheck_api()
     admissions: dict[str, dict[str, object]] = {}
@@ -5603,9 +5764,214 @@ def _run_five_admission_preflight(
         summary = "; ".join(failure_items) if failure_items else f"capacity gate status={gate_status}"
         if capacity_only:
             print(f"[ezkl-formal] admission/capacity preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
+        else:
+            print(f"[ezkl-formal] all-five Admission/current disk-floor preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
         abort(f"five-dataset admission/capacity preflight did not pass before any Setup: {summary}")
     print(f"[ezkl-formal] all-five current fixed-payload disk-floor preflight PASS; report={report_path.relative_to(ROOT)}", flush=True)
     return admissions
+
+
+def _run_five_native_capacity_preflight(
+    *,
+    binary: Path,
+    srs: Path,
+    output_root: Path,
+    session_id: str,
+    session_file: Path,
+    session_dir: Path,
+    authenticated_context: object,
+    selected_device: dict[str, object],
+    saved_admissions: dict[str, dict[str, object]],
+    runtime_identity: dict[str, object],
+    build_environment: dict[str, object],
+    gpu_identity: dict[str, object],
+    resume_identity: dict[str, object],
+    saved_setup_anchors: dict[str, object],
+    archived_outputs: bool,
+    is_resume: bool,
+    completed_datasets: set[str],
+    workspace_receipt: dict[str, object] | None,
+    srs_copy_size_bytes: int,
+) -> tuple[dict[str, dict[str, object]], dict[str, object] | None, dict[str, dict[str, int]], set[str], set[str]]:
+    """Authenticate all Admissions and gate every pending long phase before the first cell starts."""
+    admissions = _run_five_admission_preflight(
+        binary=binary,
+        srs=srs,
+        output_root=output_root,
+        session_id=session_id,
+        session_file=session_file,
+        authenticated_context=authenticated_context,
+        selected_device=selected_device,
+        saved_admissions=saved_admissions,
+        capacity_only=False,
+    )
+    pending_datasets = tuple(dataset for dataset in DATASETS if dataset not in completed_datasets)
+    if not pending_datasets:
+        return admissions, workspace_receipt, {}, set(), set()
+
+    if workspace_receipt is None:
+        query_session_dir = session_dir / "native_capacity_query"
+        if query_session_dir.exists() or query_session_dir.is_symlink():
+            _quarantine_session_path(query_session_dir, output_root, session_id, "native-capacity-query")
+        workspace_receipt = _build_native_cub_workspace_query(
+            query_session_dir,
+            session_id,
+            runtime_identity,
+            selected_device,
+            build_environment,
+            gpu_identity,
+        )
+    else:
+        workspace_receipt = _validate_native_cub_workspace_receipt(
+            workspace_receipt, session_dir, selected_device, gpu_identity, session_id
+        )
+
+    cub_receipt, capacity_requirements = _admit_local_capacity(
+        admissions,
+        session_dir=session_dir,
+        session_id=session_id,
+        runtime_identity=runtime_identity,
+        selected_device=selected_device,
+        build_environment=build_environment,
+        gpu_identity=gpu_identity,
+        workspace_receipt=workspace_receipt,
+    )
+    workspace_receipt = cub_receipt
+    session_document = load_json(session_file, "formal session record")
+    session_document["native_cub_workspace_receipt"] = workspace_receipt
+    _write_session_record(session_file, session_document)
+
+    setup_reused_datasets: set[str] = set()
+    for dataset in pending_datasets:
+        output = output_root / dataset
+        if archived_outputs and (output.is_symlink() or (output.exists() and not output.is_dir())):
+            abort(f"resume output directory must be a regular directory: {output}")
+        if is_resume and archived_outputs and output.exists() and validate_setup_reuse_receipt(
+            output,
+            dataset,
+            session_id,
+            resume_identity,
+            admissions[dataset],
+            saved_setup_anchors.get(dataset),
+        ):
+            setup_reused_datasets.add(dataset)
+
+    pending_finalize_datasets = set(pending_datasets)
+    for dataset in sorted(setup_reused_datasets):
+        if _reusable_final_stage_srs(
+            session_file=session_file,
+            session_dir=session_dir,
+            output_root=output_root,
+            output=output_root / dataset,
+            dataset=dataset,
+            session_id=session_id,
+            resume_identity=resume_identity,
+            admission=admissions[dataset],
+            setup_receipt_sha256=str(saved_setup_anchors[dataset]),
+        ):
+            pending_finalize_datasets.discard(dataset)
+
+    setup_required_datasets = set(pending_datasets) - setup_reused_datasets
+    if setup_required_datasets:
+        setup_key_bytes = sum(
+            capacity_requirements[dataset]["setup_key_artifact_upper_bytes"]
+            for dataset in setup_required_datasets
+        )
+        setup_mapped_peak_bytes = max(
+            capacity_requirements[dataset]["setup_mapped_peak_bytes"]
+            for dataset in setup_required_datasets
+        )
+        pending_srs = _pending_srs_copy_disk_budget(
+            srs_copy_size_bytes,
+            pending_finalize_datasets,
+        )
+        setup_disk_components = _disk_budget_components(
+            pending_srs=pending_srs,
+            setup_key_artifact_upper_bytes=setup_key_bytes,
+            setup_mapped_peak_bytes=setup_mapped_peak_bytes,
+        )
+        for dataset in DATASETS:
+            if dataset not in setup_required_datasets:
+                continue
+            setup_check = _recheck_local_phase_capacity(
+                dataset,
+                capacity_requirements[dataset],
+                output_root=output_root,
+                remaining_known_disk_bytes=int(setup_disk_components["total_required_bytes"]),
+                phase="setup",
+                receipt=workspace_receipt,
+                session_id=session_id,
+                selected_device=selected_device,
+                gpu_identity=gpu_identity,
+                build_environment=build_environment,
+                disk_budget_components=setup_disk_components,
+            )
+            session_document = load_json(session_file, "formal session record")
+            session_document.setdefault("capacity_checks", []).append(setup_check)
+            _write_session_record(session_file, session_document)
+
+    reusable_proof_capacities: dict[str, dict[str, int]] = {}
+    for dataset in DATASETS:
+        if dataset not in setup_reused_datasets:
+            continue
+        output = output_root / dataset
+        native_keygen_budget, native_keygen_receipt, _ = _load_native_keygen_receipt(
+            output,
+            dataset,
+            session_id,
+            resume_identity,
+            admissions[dataset],
+        )
+        native_census = native_keygen_receipt.get("native_census")
+        if not isinstance(native_census, dict):
+            abort(f"{dataset} authenticated setup lacks the mandatory native keygen census")
+        requirements = _native_capacity_requirements(
+            admissions[dataset],
+            workspace_receipt["query"]["native_type_sizes"],
+            native_census=native_census,
+        )
+        if requirements.get("gat_transient_witness_bytes_upper") != native_keygen_budget.get(
+            "gat_transient_witness_bytes_upper"
+        ):
+            abort(f"{dataset} authenticated keygen budget and recomputed capacity disagree on the GAT live-tensor reserve")
+        requirements["host_known_bytes"] = requirements["proof_host_peak_bytes"]
+        capacity_requirements[dataset] = requirements
+        reusable_proof_capacities[dataset] = requirements
+
+    if reusable_proof_capacities:
+        proof_spill_peak_bytes = max(
+            requirements["proof_spill_known_bytes"] for requirements in reusable_proof_capacities.values()
+        )
+        pending_srs = _pending_srs_copy_disk_budget(
+            srs_copy_size_bytes,
+            pending_finalize_datasets,
+        )
+        proof_disk_components = _disk_budget_components(
+            pending_srs=pending_srs,
+            proof_spill_known_bytes=proof_spill_peak_bytes,
+        )
+        for dataset in DATASETS:
+            requirements = reusable_proof_capacities.get(dataset)
+            if requirements is None:
+                continue
+            prove_check = _recheck_local_phase_capacity(
+                dataset,
+                requirements,
+                output_root=output_root,
+                remaining_known_disk_bytes=int(proof_disk_components["total_required_bytes"]),
+                phase="witness_prove_verify",
+                receipt=workspace_receipt,
+                session_id=session_id,
+                selected_device=selected_device,
+                gpu_identity=gpu_identity,
+                build_environment=build_environment,
+                disk_budget_components=proof_disk_components,
+            )
+            session_document = load_json(session_file, "formal session record")
+            session_document.setdefault("capacity_checks", []).append(prove_check)
+            _write_session_record(session_file, session_document)
+
+    return admissions, workspace_receipt, capacity_requirements, setup_reused_datasets, pending_finalize_datasets
 
 
 def _load_dataset_failure_state(
@@ -6128,6 +6494,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             authenticated_context=context,
             selected_device=selected_device,
             saved_admissions=saved_admissions,
+            capacity_only=True,
         )
         session_document = load_json(session_file, "formal session record")
         session_document["capacity_preflight_only"] = {
@@ -6140,7 +6507,6 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         _set_stage(session_file, "capacity_admission_preflight_complete")
         print("[ezkl-formal] capacity-only preflight complete; Setup/Keygen/Witness/Prove/Verify were not run", flush=True)
         return 0
-    admissions: dict[str, dict[str, object]] = {}
 
     session_document = load_json(session_file, "formal session record")
     workspace_receipt_value = session_document.get("native_cub_workspace_receipt")
@@ -6155,67 +6521,44 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["binary_sha256"] = sha256(binary)
     _write_session_record(session_file, session_document)
 
+    _set_stage(session_file, "five_dataset_native_capacity_preflight")
+    admissions, workspace_receipt, capacity_requirements, setup_reused_datasets, pending_finalize_datasets = _run_five_native_capacity_preflight(
+        binary=binary,
+        srs=srs,
+        output_root=output_root,
+        session_id=session_id,
+        session_file=session_file,
+        session_dir=session_dir,
+        authenticated_context=context,
+        selected_device=selected_device,
+        saved_admissions=saved_admissions,
+        runtime_identity=runtime_identity,
+        build_environment=build_environment,
+        gpu_identity=gpu_identity,
+        resume_identity=resume_identity,
+        saved_setup_anchors=saved_anchors,
+        archived_outputs=archived_value,
+        is_resume=args.resume_session is not None,
+        completed_datasets=completed_datasets,
+        workspace_receipt=workspace_receipt,
+        srs_copy_size_bytes=srs_copy_size_bytes,
+    )
+
     def execute_cell(dataset_index: int, dataset: str) -> None:
-        nonlocal workspace_receipt
         dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
         _set_stage(session_file, f"{dataset}_configured_admission", active_dataset=dataset)
         admission = admissions.get(dataset)
         if not isinstance(admission, dict):
-            selected = native_admit_all_datasets(
-                binary,
-                srs,
-                output_root,
-                session_id,
-                selected_device,
-                datasets=(dataset,),
-                reuse_receipt=saved_admissions,
-                receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
-                command_runner=lambda command, label: run(
-                    command,
-                    label,
-                    gpu=True,
-                    log_path=dataset_log_dir / "native_admission.log",
-                ),
-            )
-            admission = selected[dataset]
-            admissions[dataset] = admission
-            saved_admissions[dataset] = admission
+            abort(f"{dataset} was not present in the authenticated all-five Admission preflight")
         session_document = load_json(session_file, "formal session record")
         archived_value = session_document.get("outputs_archived_for_session", False)
         if not isinstance(archived_value, bool):
             abort("formal output archive state is malformed")
-        setup_reused = False
+        setup_reused = dataset in setup_reused_datasets
         if archived_value and (output.is_symlink() or (output.exists() and not output.is_dir())):
             abort(f"resume output directory must be a regular directory: {output}")
-        if args.resume_session is not None and archived_value and output.exists():
-            setup_reused = validate_setup_reuse_receipt(
-                output,
-                dataset,
-                session_id,
-                resume_identity,
-                admission,
-                saved_anchors.get(dataset),
-            )
         _set_stage(session_file, f"{dataset}_capacity_admission", active_dataset=dataset)
-        if workspace_receipt is None:
-            capacity_dir = session_dir / "capacity"
-            if capacity_dir.exists() or capacity_dir.is_symlink():
-                _quarantine_session_path(capacity_dir, output_root, session_id, "capacity")
-        cub_receipt, capacity_requirements = _admit_local_capacity(
-            {dataset: admission},
-            session_dir=session_dir,
-            session_id=session_id,
-            runtime_identity=runtime_identity,
-            selected_device=selected_device,
-            build_environment=build_environment,
-            gpu_identity=gpu_identity,
-            workspace_receipt=workspace_receipt,
-        )
-        workspace_receipt = cub_receipt
-        session_document = load_json(session_file, "formal session record")
-        session_document["native_cub_workspace_receipt"] = workspace_receipt
-        _write_session_record(session_file, session_document)
         session_document = load_json(session_file, "formal session record")
         archived_value = session_document.get("outputs_archived_for_session", False)
         if not archived_value:
@@ -6243,7 +6586,11 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 setup_required_datasets={dataset},
             )
             setup_disk_components = _disk_budget_components(
-                pending_srs=_remaining_srs_copy_disk_budget(srs_copy_size_bytes, dataset_index, pending_finalize_datasets={dataset}),
+                pending_srs=_remaining_srs_copy_disk_budget(
+                    srs_copy_size_bytes,
+                    dataset_index,
+                    pending_finalize_datasets={dataset} if dataset in pending_finalize_datasets else set(),
+                ),
                 setup_key_artifact_upper_bytes=setup_key_bytes,
                 setup_mapped_peak_bytes=setup_disk_required - setup_key_bytes,
             )
@@ -6316,7 +6663,11 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         }
         _write_session_record(session_file, session_document)
         proof_disk_components = _disk_budget_components(
-            pending_srs=_remaining_srs_copy_disk_budget(srs_copy_size_bytes, dataset_index, pending_finalize_datasets={dataset}),
+            pending_srs=_remaining_srs_copy_disk_budget(
+                srs_copy_size_bytes,
+                dataset_index,
+                pending_finalize_datasets={dataset} if dataset in pending_finalize_datasets else set(),
+            ),
             proof_spill_known_bytes=capacity_requirements[dataset]["proof_spill_known_bytes"],
         )
         prove_check = _recheck_local_phase_capacity(

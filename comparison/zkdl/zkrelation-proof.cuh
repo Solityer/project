@@ -3270,6 +3270,10 @@ struct ProverContext {
     // currently fails closed until the complete GAT relation (not only a
     // primitive) is implemented on native CUDA cryptographic kernels.
     bool gpu_backend = false;
+    // Borrowed proof-lifetime session for the explicitly selected Hyrax
+    // generator-fold CUDA stage.  All relation, scalar and transcript work
+    // remains on the CPU; null preserves the ordinary CPU path.
+    zkdl::CpuHyraxGpuFoldSession* hyrax_gpu_fold_session = nullptr;
 };
 
 struct VerifierContext {
@@ -11139,6 +11143,7 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         RelationSegmentProgressReporter commitment_progress("commitment");
         const auto msm_prepare_start = std::chrono::steady_clock::now();
         zkdl::CpuG1MsmSession msm_session(context.ipa_generators);
+        msm_session.set_hyrax_gpu_fold_session(context.hyrax_gpu_fold_session);
         const double msm_prepare_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - msm_prepare_start).count();
         if (context.relation_commitment_time_seconds != nullptr)

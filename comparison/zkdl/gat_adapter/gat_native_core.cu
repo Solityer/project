@@ -5769,6 +5769,14 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
         if (error) *error = "native prove result pointer is null";
         return false;
     }
+    if (request.gpu_offload_stage != "none" &&
+        request.gpu_offload_stage != "hyrax_ipa_fold")
+        return reject(result, error, "unsupported GPU proof offload stage",
+                      request.config, request.statement, request.backend);
+    if (request.gpu_offload_stage != "none" && request.backend != Backend::Cpu)
+        return reject(result, error,
+                      "Hyrax CUDA offload requires the CPU relation backend",
+                      request.config, request.statement, request.backend);
     relation::ProverContext context;
     NativeProveContextTiming context_timing;
     double commitment_open_seconds = 0.0;
@@ -5781,10 +5789,26 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     context.relation_commitment_file_io_decode_time_seconds = &relation_commitment_file_io_decode_seconds;
     if (!context_from_request(request, context, context_timing, error))
         return reject(result, error, error ? *error : "native relation context rejected", request.config, request.statement, request.backend);
+    // GPU Hyrax initialization owns and uploads the authenticated basis for
+    // this proof, so include that proof-required setup in the Prove interval.
+    const auto prove_start = std::chrono::steady_clock::now();
     context.gpu_backend = request.backend == Backend::Gpu;
+    std::unique_ptr<zkdl::CpuHyraxGpuFoldSession> hyrax_gpu_fold_session;
+    if (request.gpu_offload_stage == "hyrax_ipa_fold") {
+        try {
+            hyrax_gpu_fold_session = zkdl::make_cpu_hyrax_gpu_fold_session(
+                context.ipa_generators, context.ipa_blinding_generator,
+                context.ipa_u_generator);
+            context.hyrax_gpu_fold_session = hyrax_gpu_fold_session.get();
+        } catch (const std::exception& exception) {
+            return reject(result, error,
+                          std::string("CUDA Hyrax fold initialization failed: ") +
+                              exception.what(),
+                          request.config, request.statement, request.backend);
+        }
+    }
     const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
     const double provider_io_before_prove = provider_file_io_decode_seconds;
-    const auto prove_start = std::chrono::steady_clock::now();
     relation::Proof proof;
     if (!relation::prove_consuming(context, proof, error))
         return reject(result, error, error ? *error : "native relation prover rejected witness", request.config, request.statement, request.backend);
@@ -5803,6 +5827,14 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
         return reject(result, error, "BLOCKED: formal GPU prover completed without a native cryptographic kernel", request.config, request.statement,
                       request.backend);
+    zkdl::CpuHyraxGpuFoldStats hyrax_gpu_stats;
+    if (hyrax_gpu_fold_session) {
+        hyrax_gpu_stats = hyrax_gpu_fold_session->stats();
+        if (hyrax_gpu_stats.kernel_count == 0U)
+            return reject(result, error,
+                          "CUDA Hyrax fold was requested but no opening reached the offload threshold",
+                          request.config, request.statement, request.backend);
+    }
     const auto serialization_start = std::chrono::steady_clock::now();
     NativeProgressScope wire_progress("proof_wire_serialize");
     result->proof_bytes = proof.serialize();
@@ -5856,7 +5888,20 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
                       request.config, request.statement, request.backend);
     result->envelope.verify_time_seconds = 0.0;
     result->envelope.verifier_reads_witness = false;
-    result->envelope.gpu_kernel_executed = context.gpu_backend;
+    result->envelope.gpu_forward_kernel_executed =
+        request.gpu_forward_kernel_executed;
+    result->envelope.gpu_offload_stage = request.gpu_offload_stage;
+    result->envelope.gpu_proof_kernel_count = hyrax_gpu_stats.kernel_count;
+    result->envelope.gpu_proof_kernel_executed =
+        hyrax_gpu_stats.kernel_count != 0U;
+    result->envelope.gpu_proof_peak_allocated_bytes =
+        hyrax_gpu_stats.peak_allocated_bytes;
+    result->envelope.gpu_device_ordinal = hyrax_gpu_stats.device_ordinal;
+    result->envelope.gpu_device_name = hyrax_gpu_stats.device_name;
+    result->envelope.gpu_device_uuid = hyrax_gpu_stats.device_uuid;
+    result->envelope.gpu_kernel_executed =
+        result->envelope.gpu_forward_kernel_executed ||
+        result->envelope.gpu_proof_kernel_executed;
     result->envelope.silent_fallback = false;
     result->envelope.output_bound = true;
     result->envelope.error.clear();
@@ -5876,6 +5921,27 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
         request.envelope->integer_bound_ledger_digest != request.statement->integer_bound_ledger_digest ||
         request.envelope->integer_bound_ledger_descriptor_digest != request.statement->integer_bound_ledger_descriptor_digest) {
         return reject(nullptr, error, "proof envelope is not an accepted native relation proof", request.config, request.statement, request.backend);
+    }
+    if (request.backend == Backend::Cpu) {
+        const bool hybrid_offload =
+            request.envelope->gpu_offload_stage == "hyrax_ipa_fold" &&
+            !request.envelope->gpu_forward_kernel_executed &&
+            request.envelope->gpu_proof_kernel_executed &&
+            request.envelope->gpu_proof_kernel_count != 0U &&
+            request.envelope->gpu_device_ordinal >= 0 &&
+            !request.envelope->gpu_device_name.empty() &&
+            !request.envelope->gpu_device_uuid.empty() &&
+            request.envelope->gpu_kernel_executed;
+        const bool ordinary_cpu =
+            request.envelope->gpu_offload_stage == "none" &&
+            !request.envelope->gpu_forward_kernel_executed &&
+            !request.envelope->gpu_proof_kernel_executed &&
+            request.envelope->gpu_proof_kernel_count == 0U &&
+            !request.envelope->gpu_kernel_executed;
+        if (!hybrid_offload && !ordinary_cpu)
+            return reject(nullptr, error,
+                          "CPU verifier rejected inconsistent proof GPU execution provenance",
+                          request.config, request.statement, request.backend);
     }
     relation::VerifierContext context;
     if (!context_from_verify(request, context, error))
@@ -5941,8 +6007,17 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
     if (context.gpu_backend && gpu_kernel_after <= gpu_kernel_before)
         return reject(nullptr, error, "BLOCKED: formal GPU verifier completed without a native cryptographic kernel", request.config, request.statement,
                       request.backend);
-    if ((!context.gpu_backend && request.envelope->gpu_kernel_executed) || (context.gpu_backend && !request.envelope->gpu_kernel_executed))
+    if (request.backend == Backend::Cpu) {
+        if (gpu_kernel_after != gpu_kernel_before)
+            return reject(nullptr, error,
+                          "CPU independent verifier executed a CUDA cryptographic kernel",
+                          request.config, request.statement, request.backend);
+        request.envelope->verifier_backend = "cpu";
+        request.envelope->verify_gpu_kernel_executed = false;
+    } else if ((!context.gpu_backend && request.envelope->gpu_kernel_executed) ||
+               (context.gpu_backend && !request.envelope->gpu_kernel_executed)) {
         return reject(nullptr, error, "GPU cryptographic provenance flag is inconsistent", request.config, request.statement, request.backend);
+    }
     request.envelope->verify_time_seconds = std::chrono::duration<double>(verify_end - verify_start).count();
     return true;
 }

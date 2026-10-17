@@ -1,5 +1,6 @@
 use super::{
-    construct_intermediate_sets, ChallengeU, ChallengeV, ChallengeY, Commitment, RotationSet,
+    construct_intermediate_sets, native_shplonk_fixed_aggregate_cache_limits, ChallengeU,
+    ChallengeV, ChallengeY, Commitment, NativeShplonkFixedAggregateCacheLimits, RotationSet,
 };
 use crate::arithmetic::{
     eval_polynomial, evaluate_vanishing_polynomial, kate_division, lagrange_interpolate,
@@ -8,7 +9,7 @@ use crate::arithmetic::{
 use crate::helpers::SerdeCurveAffine;
 use crate::poly::commitment::{Blind, ParamsProver, Prover};
 use crate::poly::kzg::commitment::{KZGCommitmentScheme, ParamsKZG};
-use crate::poly::query::{PolynomialPointer, ProverQuery};
+use crate::poly::query::{PolynomialPointer, ProverPolynomial, ProverQuery};
 use crate::poly::{Basis, Coeff, Polynomial};
 use crate::transcript::{EncodedChallenge, TranscriptWrite};
 
@@ -133,11 +134,246 @@ struct RotationSetExtension<'a, C: CurveAffine> {
     points: Vec<C::Scalar>,
 }
 
-pub(super) fn native_shplonk_resource_layout<C: CurveAffine>() -> (usize, usize) {
+struct FixedAggregate<F: Field> {
+    rotation_set_index: usize,
+    fixed_commitment_indices: Vec<usize>,
+    polynomial: Polynomial<F, Coeff>,
+    low_degree_equivalent: Vec<F>,
+}
+
+pub(super) fn native_shplonk_resource_layout<C: CurveAffine>() -> (usize, usize, usize) {
     (
         std::mem::size_of::<CommitmentExtension<'static, C>>(),
         std::mem::size_of::<RotationSetExtension<'static, C>>(),
+        std::mem::size_of::<FixedAggregate<C::Scalar>>(),
     )
+}
+
+fn fixed_source_status<C: CurveAffine>(commitment: &CommitmentExtension<'_, C>) -> Option<bool> {
+    match commitment.commitment.get().poly {
+        ProverPolynomial::FixedColumn { source, .. } => Some(source.constant_value().is_some()),
+        _ => None,
+    }
+}
+
+fn fixed_aggregate_contains<F: Field>(aggregate: &FixedAggregate<F>, commitment_index: usize) -> bool {
+    aggregate.fixed_commitment_indices.binary_search(&commitment_index).is_ok()
+}
+
+fn cache_group_disk_bytes<F: Field>(domain_size: usize) -> Option<u64> {
+    let payload = (domain_size as u128).checked_mul(std::mem::size_of::<F>() as u128)?;
+    let reserved = payload.checked_add(4095)?.checked_div(4096)?.checked_mul(4096)?.checked_add(4096)?;
+    u64::try_from(reserved).ok()
+}
+
+fn cache_group_actual_host_bytes<F: Field>(aggregate: &FixedAggregate<F>) -> Option<u64> {
+    let mapped = (aggregate.polynomial.len() as u128).checked_mul(std::mem::size_of::<F>() as u128)?;
+    let indices = (aggregate.fixed_commitment_indices.capacity() as u128).checked_mul(std::mem::size_of::<usize>() as u128)?;
+    let points = (aggregate.low_degree_equivalent.capacity() as u128).checked_mul(std::mem::size_of::<F>() as u128)?;
+    let bytes = (std::mem::size_of::<FixedAggregate<F>>() as u128)
+        .checked_add(mapped)?
+        .checked_add(indices)?
+        .checked_add(points)?
+        .checked_add(3 * 4096)?;
+    u64::try_from(bytes).ok()
+}
+
+fn prepare_fixed_aggregate_cache<E: Engine>(
+    params: &ParamsKZG<E>,
+    rotation_sets: &[RotationSetExtension<E::G1Affine>],
+    y: E::Fr,
+    limits: NativeShplonkFixedAggregateCacheLimits,
+) -> io::Result<Vec<FixedAggregate<E::Fr>>>
+where
+    E::Fr: WithSmallOrderMulGroup<3>,
+{
+    let disabled = || Ok(Vec::new());
+    if limits.max_groups == 0 {
+        return disabled();
+    }
+    if limits.max_groups > 2 || limits.domain_size != u64::from(params.n) || limits.scalar_bytes != std::mem::size_of::<E::Fr>() as u64 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "native SHPLONK fixed-cache limits do not match the proof domain"));
+    }
+    let mut candidates = Vec::new();
+    if candidates.try_reserve_exact(rotation_sets.len()).is_err() {
+        return disabled();
+    }
+    for (rotation_set_index, rotation_set) in rotation_sets.iter().enumerate() {
+        let mut fixed_count = 0usize;
+        let mut nonconstant_fixed_count = 0usize;
+        let mut nonfixed_count = 0usize;
+        for commitment in &rotation_set.commitments {
+            match fixed_source_status(commitment) {
+                Some(is_constant) => {
+                    fixed_count += 1;
+                    if !is_constant {
+                        nonconstant_fixed_count += 1;
+                    }
+                }
+                None => nonfixed_count += 1,
+            }
+        }
+        if fixed_count > 0 && nonconstant_fixed_count > 0 && nonfixed_count > 0 {
+            candidates.push((rotation_set_index, fixed_count, nonconstant_fixed_count, rotation_set.commitments.len()));
+        }
+    }
+    candidates.sort_by(|left, right| right.2.cmp(&left.2).then_with(|| left.0.cmp(&right.0)));
+    candidates.truncate(limits.max_groups);
+    if candidates.is_empty() {
+        return disabled();
+    }
+    // Cache groups remain live through both SHPLONK passes. Account for the
+    // largest batch in the whole proof, including unselected rotation sets.
+    let requested_width = rotation_sets
+        .iter()
+        .map(|rotation_set| rotation_set.commitments.len())
+        .max()
+        .unwrap_or(1);
+    let (batch_width, available, per_task_bytes, fixed_workspace_bytes) = match shplonk_batch_budget(params, requested_width) {
+        Ok(budget) => budget,
+        Err(_) => return disabled(),
+    };
+    let base_workspace = u128::from(fixed_workspace_bytes)
+        .checked_add(u128::from(per_task_bytes).checked_mul(batch_width as u128).unwrap_or(u128::MAX))
+        .unwrap_or(u128::MAX);
+    let live_host_cache_headroom = u128::from(available).saturating_sub(base_workspace);
+    let n = usize::try_from(params.n).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "SHPLONK domain exceeds host size"))?;
+    let mut selected_count = candidates.len();
+    while selected_count > 0 {
+        let mut host_required = std::mem::size_of::<Vec<FixedAggregate<E::Fr>>>() as u128 + 4096;
+        let mut disk_required = 0u128;
+        let mut fits = true;
+        for (rotation_set_index, fixed_count, _, _) in candidates.iter().take(selected_count) {
+            let rotation_set = &rotation_sets[*rotation_set_index];
+            let group_host = (std::mem::size_of::<FixedAggregate<E::Fr>>() as u128)
+                .checked_add((n as u128).checked_mul(std::mem::size_of::<E::Fr>() as u128).unwrap_or(u128::MAX))
+                .and_then(|bytes| bytes.checked_add((*fixed_count as u128).checked_mul(std::mem::size_of::<usize>() as u128)?))
+                .and_then(|bytes| bytes.checked_add((rotation_set.points.len() as u128).checked_mul(std::mem::size_of::<E::Fr>() as u128)?))
+                .and_then(|bytes| bytes.checked_add(3 * 4096));
+            let Some(group_host) = group_host else {
+                fits = false;
+                break;
+            };
+            let group_disk = match cache_group_disk_bytes::<E::Fr>(n) {
+                Some(bytes) => u128::from(bytes),
+                None => {
+                    fits = false;
+                    break;
+                }
+            };
+            if group_host > u128::from(limits.group_host_bytes)
+                || group_disk > u128::from(limits.group_disk_bytes)
+            {
+                fits = false;
+                break;
+            }
+            host_required = match host_required.checked_add(group_host) {
+                Some(bytes) => bytes,
+                None => {
+                    fits = false;
+                    break;
+                }
+            };
+            disk_required = match disk_required.checked_add(group_disk) {
+                Some(bytes) => bytes,
+                None => {
+                    fits = false;
+                    break;
+                }
+            };
+        }
+        if fits
+            && host_required <= u128::from(limits.host_bytes)
+            && host_required <= live_host_cache_headroom
+            && disk_required <= u128::from(limits.disk_bytes)
+        {
+            break;
+        }
+        selected_count -= 1;
+    }
+    if selected_count == 0 {
+        return disabled();
+    }
+    let mut aggregates = Vec::new();
+    if aggregates.try_reserve_exact(selected_count).is_err() {
+        return disabled();
+    }
+    for (rotation_set_index, fixed_count, _, _) in candidates.iter().take(selected_count) {
+        let rotation_set = &rotation_sets[*rotation_set_index];
+        let polynomial = match Polynomial::<E::Fr, Coeff>::mapped_filled(n, E::Fr::ZERO) {
+            Ok(polynomial) => polynomial,
+            Err(_) => return disabled(),
+        };
+        let mut fixed_commitment_indices = Vec::new();
+        if fixed_commitment_indices.try_reserve_exact(*fixed_count).is_err() {
+            return disabled();
+        }
+        let mut low_degree_equivalent = Vec::new();
+        if low_degree_equivalent.try_reserve_exact(rotation_set.points.len()).is_err() {
+            return disabled();
+        }
+        low_degree_equivalent.resize(rotation_set.points.len(), E::Fr::ZERO);
+        aggregates.push(FixedAggregate {
+            rotation_set_index: *rotation_set_index,
+            fixed_commitment_indices,
+            polynomial,
+            low_degree_equivalent,
+        });
+    }
+    // Check actual Vec capacities and mapped lengths before decoding any
+    // fixed source. Vec may reserve slightly more than requested on some
+    // allocators, so the authenticated optional quota must fit the real bank.
+    let actual_host_total = (std::mem::size_of::<Vec<FixedAggregate<E::Fr>>()>() as u128 + 4096)
+        .checked_add(
+            aggregates
+                .iter()
+                .try_fold(0u128, |total, aggregate| {
+                    total.checked_add(u128::from(cache_group_actual_host_bytes(aggregate)?))
+                })
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "native SHPLONK fixed-cache total host bound overflow"))?,
+        )
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "native SHPLONK fixed-cache total host bound overflow"))?;
+    let actual_disk_total = aggregates
+        .iter()
+        .try_fold(0u128, |total, _| {
+            total.checked_add(u128::from(cache_group_disk_bytes::<E::Fr>(n)?))
+        })
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "native SHPLONK fixed-cache total disk bound overflow"))?;
+    let actual_groups_fit = aggregates.iter().all(|aggregate| {
+        cache_group_actual_host_bytes(aggregate)
+            .map(|bytes| bytes <= limits.group_host_bytes)
+            .unwrap_or(false)
+            && cache_group_disk_bytes::<E::Fr>(n)
+                .map(|bytes| bytes <= limits.group_disk_bytes)
+                .unwrap_or(false)
+    });
+    if !actual_groups_fit
+        || actual_host_total > u128::from(limits.host_bytes)
+        || actual_disk_total > u128::from(limits.disk_bytes)
+    {
+        return disabled();
+    }
+    for aggregate in &mut aggregates {
+        let rotation_set = &rotation_sets[aggregate.rotation_set_index];
+        let mut power_of_y = E::Fr::ONE;
+        for (commitment_index, commitment) in rotation_set.commitments.iter().enumerate() {
+            if fixed_source_status(commitment).is_some() {
+                let polynomial = commitment.commitment.get().materialize()?;
+                if polynomial.len() != n || commitment.low_degree_equivalent.len() != aggregate.low_degree_equivalent.len() {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "native SHPLONK fixed source has inconsistent dimensions"));
+                }
+                for (destination, source) in aggregate.polynomial.iter_mut().zip(polynomial.iter()) {
+                    *destination += power_of_y * *source;
+                }
+                for (destination, source) in aggregate.low_degree_equivalent.iter_mut().zip(commitment.low_degree_equivalent.iter()) {
+                    *destination += power_of_y * *source;
+                }
+                aggregate.fixed_commitment_indices.push(commitment_index);
+            }
+            power_of_y *= y;
+        }
+    }
+    Ok(aggregates)
 }
 
 impl<'a, C: CurveAffine> RotationSet<C::Scalar, PolynomialPointer<'a, C>> {
@@ -203,7 +439,8 @@ where
                                      set_index: usize,
                                      batch_width: usize,
                                      available_budget: u64,
-                                     per_task_bytes: u64|
+                                     per_task_bytes: u64,
+                                     fixed_aggregate: Option<&FixedAggregate<E::Fr>>|
          -> io::Result<Polynomial<E::Fr, Coeff>> {
             // Preserve the original commitment order and complete R_i
             // accumulator, but retain at most one budgeted indexed batch of
@@ -227,10 +464,19 @@ where
                 let numerators = rotation_set.commitments[batch_start..batch_end]
                     .as_ref()
                     .into_par_iter()
-                    .map(|commitment| commitment.quotient_contribution())
+                    .enumerate()
+                    .map(|(offset, commitment)| {
+                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, batch_start + offset)) {
+                            Ok(None)
+                        } else {
+                            commitment.quotient_contribution().map(Some)
+                        }
+                    })
                     .collect::<io::Result<Vec<_>>>()?;
                 for numerator in numerators {
-                    accumulate_scaled(&mut n_x, numerator, power_of_y);
+                    if let Some(numerator) = numerator {
+                        accumulate_scaled(&mut n_x, numerator, power_of_y);
+                    }
                     power_of_y *= *y;
                 }
                 println!(
@@ -241,12 +487,20 @@ where
                     batch_started.elapsed().as_secs_f64() * 1000.0,
                 );
             }
-            let n_x = n_x.ok_or_else(|| {
+            let mut n_x = n_x.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "native SHPLONK rotation set has no quotient contributions",
                 )
             })?;
+            if let Some(aggregate) = fixed_aggregate {
+                for (destination, source) in n_x.iter_mut().zip(aggregate.polynomial.iter()) {
+                    *destination += *source;
+                }
+                for (destination, source) in n_x.iter_mut().zip(aggregate.low_degree_equivalent.iter()) {
+                    *destination -= *source;
+                }
+            }
 
             let points = &rotation_set.points[..];
 
@@ -282,6 +536,14 @@ where
             })
             .collect();
 
+        let fixed_aggregate_cache = match native_shplonk_fixed_aggregate_cache_limits() {
+            Some(limits) => prepare_fixed_aggregate_cache(self.params, &rotation_sets, *y, limits)?,
+            None => Vec::new(),
+        };
+        if !fixed_aggregate_cache.is_empty() {
+            println!("EZKL_NATIVE_PHASE DONE stage=shplonk_fixed_aggregate_cache groups={} domain={}", fixed_aggregate_cache.len(), self.params.n);
+        }
+
         let v: ChallengeV<_> = transcript.squeeze_challenge_scalar();
 
         let quotient_started = std::time::Instant::now();
@@ -316,6 +578,7 @@ where
                 batch_width,
                 available_budget,
                 per_task_bytes,
+                fixed_aggregate_cache.iter().find(|aggregate| aggregate.rotation_set_index == set_index),
             )?;
             accumulate_scaled(&mut h_x, quotient, power_of_v);
             power_of_v *= *v;
@@ -341,7 +604,8 @@ where
                                           set_index: usize,
                                           batch_width: usize,
                                           available_budget: u64,
-                                          per_task_bytes: u64|
+                                          per_task_bytes: u64,
+                                          fixed_aggregate: Option<&FixedAggregate<E::Fr>>|
          -> io::Result<(Polynomial<E::Fr, Coeff>, E::Fr)> {
             let mut diffs = super_point_set.clone();
             for point in rotation_set.points.iter() {
@@ -380,10 +644,19 @@ where
                 let inner_contributions = rotation_set.commitments[batch_start..batch_end]
                     .as_ref()
                     .into_par_iter()
-                    .map(|commitment| commitment.linearisation_contribution(*u))
+                    .enumerate()
+                    .map(|(offset, commitment)| {
+                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, batch_start + offset)) {
+                            Ok(None)
+                        } else {
+                            commitment.linearisation_contribution(*u).map(Some)
+                        }
+                    })
                     .collect::<io::Result<Vec<_>>>()?;
                 for contribution in inner_contributions {
-                    accumulate_scaled(&mut l_x, contribution, power_of_y);
+                    if let Some(contribution) = contribution {
+                        accumulate_scaled(&mut l_x, contribution, power_of_y);
+                    }
                     power_of_y *= *y;
                 }
                 println!(
@@ -394,12 +667,18 @@ where
                     batch_started.elapsed().as_secs_f64() * 1000.0,
                 );
             }
-            let l_x = l_x.ok_or_else(|| {
+            let mut l_x = l_x.ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     "native SHPLONK rotation set has no linearisation contributions",
                 )
             })?;
+            if let Some(aggregate) = fixed_aggregate {
+                for (destination, source) in l_x.iter_mut().zip(aggregate.polynomial.iter()) {
+                    *destination += *source;
+                }
+                l_x[0] -= eval_polynomial(&aggregate.low_degree_equivalent, *u);
+            }
 
             // finally scale l_x by difference vanishing polynomial evaluation z_i
             Ok((l_x * z_i, z_i))
@@ -434,6 +713,7 @@ where
                 batch_width,
                 available_budget,
                 per_task_bytes,
+                fixed_aggregate_cache.iter().find(|aggregate| aggregate.rotation_set_index == set_index),
             )?;
             accumulate_scaled(&mut linearisation_accumulator, linearisation, power_of_v);
             z_diffs.push(z_i);
