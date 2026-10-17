@@ -335,6 +335,8 @@ namespace gatzk::algebra
             IcicleScalar *scratch_b = nullptr;
 
             unsigned long long *coefficient_shape = nullptr;
+            unsigned long long *host_coefficient_shape = nullptr;
+            cudaEvent_t coefficient_shape_ready = nullptr;
 
             std::size_t capacity_bytes = 0;
             int device = -1;
@@ -518,6 +520,34 @@ namespace gatzk::algebra
                 return coefficient_shape;
             }
 
+            unsigned long long *host_coefficient_shape_buffer()
+            {
+                if (host_coefficient_shape == nullptr)
+                {
+                    const auto status = cudaMallocHost(reinterpret_cast<void **>(&host_coefficient_shape), 2U * sizeof(unsigned long long));
+                    if (status != cudaSuccess)
+                    {
+                        host_coefficient_shape = nullptr;
+                        throw_cuda_ntt_error("pinned coefficient-shape readback allocation", status);
+                    }
+                }
+                return host_coefficient_shape;
+            }
+
+            cudaEvent_t coefficient_shape_readback_event()
+            {
+                if (coefficient_shape_ready == nullptr)
+                {
+                    const auto status = cudaEventCreateWithFlags(&coefficient_shape_ready, cudaEventDisableTiming);
+                    if (status != cudaSuccess)
+                    {
+                        coefficient_shape_ready = nullptr;
+                        throw_cuda_ntt_error("coefficient-shape readback event creation", status);
+                    }
+                }
+                return coefficient_shape_ready;
+            }
+
             bool can_reuse(std::size_t required_bytes, int current_device, bool staged) const noexcept
             {
                 return stream != nullptr && device == current_device && capacity_bytes >= required_bytes && input != nullptr && output != nullptr &&
@@ -557,12 +587,18 @@ namespace gatzk::algebra
 
                     (void)cudaStreamDestroy(stream);
                 }
+                if (coefficient_shape_ready != nullptr)
+                    (void)cudaEventDestroy(coefficient_shape_ready);
+                if (host_coefficient_shape != nullptr)
+                    (void)cudaFreeHost(host_coefficient_shape);
 
                 input = nullptr;
                 output = nullptr;
                 scratch_a = nullptr;
                 scratch_b = nullptr;
                 coefficient_shape = nullptr;
+                host_coefficient_shape = nullptr;
+                coefficient_shape_ready = nullptr;
                 capacity_bytes = 0;
                 stream = nullptr;
                 device = -1;
@@ -2427,44 +2463,23 @@ namespace gatzk::algebra
 
         if (track_coefficient_shape)
         {
-            std::array<unsigned long long, 2> host_coefficient_shape{0, 0};
+            auto *host_coefficient_shape = workspace.host_coefficient_shape_buffer();
+            const auto shape_ready = workspace.coefficient_shape_readback_event();
 
-            status = cudaMemcpyAsync(host_coefficient_shape.data(), device_coefficient_shape, sizeof(host_coefficient_shape), cudaMemcpyDeviceToHost, stream);
+            status = cudaMemcpyAsync(host_coefficient_shape, device_coefficient_shape, 2U * sizeof(unsigned long long), cudaMemcpyDeviceToHost, stream);
 
             if (status != cudaSuccess)
             {
                 throw_cuda_ntt_error("coefficient shape download", status);
             }
 
-            record_cuda_d2h(sizeof(host_coefficient_shape));
-
-            cudaEvent_t shape_ready = nullptr;
-
-            status = cudaEventCreateWithFlags(&shape_ready, cudaEventDisableTiming);
-
-            if (status != cudaSuccess)
-            {
-                throw_cuda_ntt_error("coefficient shape event creation", status);
-            }
+            record_cuda_d2h(2U * sizeof(unsigned long long));
 
             status = cudaEventRecord(shape_ready, stream);
-
             if (status == cudaSuccess)
-            {
                 status = cudaEventSynchronize(shape_ready);
-            }
-
-            const auto destroy_status = cudaEventDestroy(shape_ready);
-
             if (status != cudaSuccess)
-            {
                 throw_cuda_ntt_error("coefficient shape dependency", status);
-            }
-
-            if (destroy_status != cudaSuccess)
-            {
-                throw_cuda_ntt_error("coefficient shape event destruction", destroy_status);
-            }
 
             if (host_coefficient_shape[1] > static_cast<unsigned long long>(size))
             {

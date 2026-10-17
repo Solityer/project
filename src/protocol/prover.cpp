@@ -9591,13 +9591,6 @@ namespace gatzk::protocol
                 QuotientPolynomialMaterializer materializer(context, trace, challenges, label, working_set.plan());
                 auto polynomial = materializer.materialize(context.kzg);
 
-                if (label == "t_edge" && util::route2_options().cuda_field_hotspots && domain->size >= (1ULL << 15))
-                {
-                    if (polynomial.cuda_resident_coefficients != nullptr && polynomial.cuda_resident_coefficients->host_transfer != nullptr)
-                        polynomial.cuda_resident_coefficients->host_transfer->wait();
-                    algebra::release_cuda_ntt_execution_workspace();
-                }
-
                 progress_note("prove:quotient:" + label + ":done");
                 if (auto *metric = quotient_metric(metrics, label); metric != nullptr)
                 {
@@ -11367,6 +11360,16 @@ namespace gatzk::protocol
 
         std::vector<std::string> deferred_quotient_labels;
         deferred_quotient_labels.reserve(quotient_labels.size());
+        std::vector<std::pair<std::string, algebra::Polynomial>> pending_heavy_commitments;
+        pending_heavy_commitments.reserve(4);
+        const auto flush_heavy_commitments = [&]()
+        {
+            if (pending_heavy_commitments.empty())
+                return;
+            commit_named_polynomials(std::move(pending_heavy_commitments));
+            pending_heavy_commitments.clear();
+            pending_heavy_commitments.reserve(4);
+        };
 
         for (const auto &label : quotient_labels)
         {
@@ -11382,6 +11385,13 @@ namespace gatzk::protocol
                 continue;
             }
 
+            constexpr std::size_t kMaximumCoalescedHeavyTarget = std::size_t{1} << 20;
+            const auto snapshot = util::cached_effective_memory_snapshot();
+            const bool coalesce = target_size <= kMaximumCoalescedHeavyTarget && snapshot.effective_available_known &&
+                                  snapshot.effective_available_bytes >= (std::size_t{8} << 30);
+            if (!coalesce)
+                flush_heavy_commitments();
+
             auto materialized = materialize_quotient_polynomials(context, trace, pre_quotient_challenges, {label}, metrics);
             if (materialized.size() != 1 || materialized.front().first != label)
                 throw std::runtime_error("heavy quotient materialization returned an invalid result: " + label);
@@ -11391,13 +11401,28 @@ namespace gatzk::protocol
             pair.reserve(2);
             pair.push_back(std::move(masked[0]));
             pair.push_back(std::move(masked[1]));
-            commit_named_polynomials(std::move(pair));
 
-            release_cuda_t_edge_executor_cache();
-            release_cuda_t_fh_executor_cache();
-            algebra::release_cuda_ntt_execution_workspace();
-            crypto::release_cuda_g1_msm_execution_workspace();
+            if (coalesce)
+            {
+                release_cuda_t_edge_executor_cache();
+                release_cuda_t_fh_executor_cache();
+                algebra::release_cuda_ntt_execution_workspace();
+                crypto::release_cuda_g1_msm_execution_workspace();
+                for (auto &item : pair)
+                    pending_heavy_commitments.push_back(std::move(item));
+                if (pending_heavy_commitments.size() >= 4)
+                    flush_heavy_commitments();
+            }
+            else
+            {
+                commit_named_polynomials(std::move(pair));
+                release_cuda_t_edge_executor_cache();
+                release_cuda_t_fh_executor_cache();
+                algebra::release_cuda_ntt_execution_workspace();
+                crypto::release_cuda_g1_msm_execution_workspace();
+            }
         }
+        flush_heavy_commitments();
 
         if (!deferred_quotient_labels.empty())
         {

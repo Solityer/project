@@ -52,6 +52,7 @@ namespace gatzk::crypto
 
         constexpr std::size_t kMinimumStreamMsmChunkSize = 1ULL << 16;
         constexpr std::size_t kIcicleV28MaximumDirectResidentMsmCount = 1ULL << 23;
+        constexpr std::size_t kIntegratedNativeMontgomeryUploadThreshold = 1ULL << 18;
 
         constexpr std::size_t kDeviceBaseCacheLimitBytes = 24ULL << 30;
 
@@ -915,11 +916,16 @@ namespace gatzk::crypto
             const auto base_bytes = checked_byte_count(count, sizeof(bls12_381::affine_t), "resident bases");
 
             auto &scalar_staging = reusable_scalar_staging();
+            const bool native_montgomery_upload = integrated && !resident_montgomery_scalars && !bounded_integrated_scalar_staging &&
+                                                  batch_size == 1 && count >= kIntegratedNativeMontgomeryUploadThreshold;
 
-            const auto incremental_host_scalar_bytes = resident_montgomery_scalars ? std::size_t{0} : scalar_staging.additional_host_bytes(staged_scalar_count);
+            const auto incremental_host_scalar_bytes = resident_montgomery_scalars || native_montgomery_upload
+                                                           ? std::size_t{0}
+                                                           : scalar_staging.additional_host_bytes(staged_scalar_count);
 
             const auto incremental_device_scalar_bytes =
                 resident_montgomery_scalars ? checked_byte_count(staged_scalar_count, sizeof(bls12_381::scalar_t), "resident Montgomery conversion workspace")
+                : native_montgomery_upload   ? scalar_staging.additional_device_bytes(staged_scalar_count)
                 : integrated                ? std::size_t{0}
                                             : scalar_staging.additional_device_bytes(staged_scalar_count);
 
@@ -938,7 +944,7 @@ namespace gatzk::crypto
 
                 auto required_host = checked_add(new_base_bytes, incremental_host_scalar_bytes, "integrated resident working set");
 
-                if (resident_montgomery_scalars)
+                if (resident_montgomery_scalars || native_montgomery_upload)
                 {
                     required_host = checked_add(required_host, incremental_device_scalar_bytes, "integrated resident Montgomery conversion workspace");
                 }
@@ -1026,29 +1032,38 @@ namespace gatzk::crypto
             }
             else
             {
-                config.are_scalars_montgomery_form = false;
-
                 auto &scalar_staging = reusable_scalar_staging();
-
-                auto *converted_scalars = scalar_staging.host(count);
-
-                copy_mcl_canonical_scalars_to_icicle(converted_scalars, scalars, count);
-
-                if (cuda_msm_device_is_integrated())
+                const bool native_montgomery_upload = cuda_msm_device_is_integrated() && count >= kIntegratedNativeMontgomeryUploadThreshold;
+                if (native_montgomery_upload)
                 {
-                    config.are_scalars_on_device = false;
-
-                    status = bls12_381_msm_cuda(converted_scalars, device_points, static_cast<int>(count), config, &result);
+                    static_assert(sizeof(algebra::FieldElement) == sizeof(mcl::Fr));
+                    static_assert(sizeof(mcl::Fr) == sizeof(bls12_381::scalar_t));
+                    auto *device_scalars = scalar_staging.device(count);
+                    const auto bytes = checked_byte_count(count, sizeof(mcl::Fr), "native Montgomery scalar staging");
+                    const auto copy_status = cudaMemcpy(device_scalars, algebra::FieldElement::native_array_data(scalars), bytes, cudaMemcpyHostToDevice);
+                    if (copy_status != cudaSuccess)
+                        throw_cuda_error("native Montgomery scalar upload", copy_status);
+                    config.are_scalars_on_device = true;
+                    config.are_scalars_montgomery_form = true;
+                    status = bls12_381_msm_cuda(device_scalars, device_points, static_cast<int>(count), config, &result);
                 }
                 else
                 {
-                    auto *device_scalars = scalar_staging.device(count);
-
-                    copy_icicle_scalars_to_device(device_scalars, converted_scalars, count);
-
-                    config.are_scalars_on_device = true;
-
-                    status = bls12_381_msm_cuda(device_scalars, device_points, static_cast<int>(count), config, &result);
+                    config.are_scalars_montgomery_form = false;
+                    auto *converted_scalars = scalar_staging.host(count);
+                    copy_mcl_canonical_scalars_to_icicle(converted_scalars, scalars, count);
+                    if (cuda_msm_device_is_integrated())
+                    {
+                        config.are_scalars_on_device = false;
+                        status = bls12_381_msm_cuda(converted_scalars, device_points, static_cast<int>(count), config, &result);
+                    }
+                    else
+                    {
+                        auto *device_scalars = scalar_staging.device(count);
+                        copy_icicle_scalars_to_device(device_scalars, converted_scalars, count);
+                        config.are_scalars_on_device = true;
+                        status = bls12_381_msm_cuda(device_scalars, device_points, static_cast<int>(count), config, &result);
+                    }
                 }
             }
             if (status == cudaErrorMemoryAllocation)

@@ -327,6 +327,10 @@ namespace gatzk::protocol
                 return;
             }
 
+            const auto rotated_point = (point + rotation_step) & (target_size - 1U);
+            const auto half_size = target_size / 2U;
+            const auto split_point = point / 2U + ((point & 1U) != 0U ? half_size : 0U);
+            const auto split_rotated_point = rotated_point / 2U + ((rotated_point & 1U) != 0U ? half_size : 0U);
             auto accumulated = quotient[point];
 
             for (std::size_t term_index = term_begin; term_index < term_end; ++term_index)
@@ -344,22 +348,11 @@ namespace gatzk::protocol
                         case TEdgeProgramOpcode::LoadAccess:
                         {
                             const auto access = instruction.operand;
-
                             const auto slot = access_slots[access];
-
-                            const auto logical_index = access_rotated[access] != 0 ? (point + rotation_step) & (target_size - 1U) : point;
-
-                            std::size_t physical_index = logical_index;
-
-                            if (leaf_split_layout[slot] != 0)
-                            {
-                                const auto half_size = target_size / 2;
-
-                                physical_index = logical_index / 2 + ((logical_index & 1U) != 0U ? half_size : 0);
-                            }
-
+                            const bool rotated = access_rotated[access] != 0U;
+                            const bool split = leaf_split_layout[slot] != 0U;
+                            const auto physical_index = split ? (rotated ? split_rotated_point : split_point) : (rotated ? rotated_point : point);
                             registers.store(instruction.dst, leaf_slots[slot][physical_index]);
-
                             break;
                         }
 

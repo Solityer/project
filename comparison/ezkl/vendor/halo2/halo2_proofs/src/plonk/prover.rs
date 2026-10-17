@@ -1807,6 +1807,7 @@ where
 
     let start = Instant::now();
     // Compute and hash advice evals for each circuit instance
+    let mut advice_evals_by_circuit = Vec::with_capacity(advice.len());
     for advice in advice.iter() {
         // Evaluate polynomials at omega^i x
         let advice_evals: Vec<_> = meta
@@ -1824,6 +1825,7 @@ where
         for eval in advice_evals.iter() {
             transcript.write_scalar(*eval)?;
         }
+        advice_evals_by_circuit.push(advice_evals);
     }
     log::trace!("Advice evaluation: {:?}", start.elapsed());
 
@@ -1838,17 +1840,25 @@ where
         if queries.is_empty() {
             continue;
         }
-        let lagrange = pk.fixed_values[column_index]
-            .materialize_lagrange()
-            .map_err(Error::NativeStorage)?;
-        let coeff = domain
-            .lagrange_to_coeff(lagrange)
-            .spill()
-            .map_err(Error::NativeStorage)?;
-        for &(query_index, at) in queries {
-            fixed_evals[query_index] = eval_polynomial(&coeff, domain.rotate_omega(*x, at));
+        let source = &pk.fixed_values[column_index];
+        if let Some(value) = source.constant_value() {
+            assert_eq!(source.len(), domain.get_n() as usize);
+            for &(query_index, _) in queries {
+                fixed_evals[query_index] = value;
+            }
+        } else {
+            let lagrange = source
+                .materialize_lagrange()
+                .map_err(Error::NativeStorage)?;
+            let coeff = domain
+                .lagrange_to_coeff(lagrange)
+                .spill()
+                .map_err(Error::NativeStorage)?;
+            for &(query_index, at) in queries {
+                fixed_evals[query_index] = eval_polynomial(&coeff, domain.rotate_omega(*x, at));
+            }
+            drop(coeff);
         }
-        drop(coeff);
     }
     log::trace!("Fixed evaluation: {:?}", start.elapsed());
 
@@ -1918,20 +1928,15 @@ where
     let instances = instance
         .iter()
         .zip(advice.iter())
+        .zip(advice_evals_by_circuit.iter())
         .zip(permutations.iter())
         .zip(lookups.iter())
         .zip(shuffles.iter())
-        .flat_map(|((((instance, advice), permutation), lookups), shuffles)| {
+        .flat_map(|(((((instance, advice), advice_evals), permutation), lookups), shuffles)| {
             iter::empty()
                 .chain(
                     P::QUERY_INSTANCE
-                        .then_some(pk.vk.cs.instance_queries.iter().map(move |&(column, at)| {
-                            ProverQuery::new(
-                                domain.rotate_omega(*x, at),
-                                &instance.instance_polys[column.index()],
-                                Blind::default(),
-                            )
-                        }))
+                        .then_some(pk.vk.cs.instance_queries.iter().map(move |&(column, at)| ProverQuery::new(domain.rotate_omega(*x, at), &instance.instance_polys[column.index()], Blind::default())))
                         .into_iter()
                         .flatten(),
                 )
@@ -1940,13 +1945,8 @@ where
                         .cs
                         .advice_queries
                         .iter()
-                        .map(move |&(column, at)| {
-                            ProverQuery::new(
-                                domain.rotate_omega(*x, at),
-                                &advice.advice_polys[column.index()],
-                                advice.advice_blinds[column.index()],
-                            )
-                        }),
+                        .zip(advice_evals.iter())
+                        .map(move |(&(column, at), &eval)| ProverQuery::new_with_eval(domain.rotate_omega(*x, at), &advice.advice_polys[column.index()], eval, advice.advice_blinds[column.index()])),
                 )
                 .chain(permutation.open(pk, x))
                 .chain(lookups.iter().flat_map(move |p| p.open(pk, x)))
@@ -1993,9 +1993,10 @@ where
 #[test]
 fn test_create_proof() {
     use crate::{
-        circuit::SimpleFloorPlanner,
+        circuit::{SimpleFloorPlanner, Value},
         plonk::{
-            keygen_pk, keygen_vk, verify_proof, ConstraintSystem, Expression, Selector,
+            keygen_pk, keygen_vk, verify_proof, Advice, Column, ConstraintSystem, Fixed,
+            FixedColumnSource, PackedIdTape, PackedIdWidth, Selector,
         },
         poly::kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
@@ -2007,54 +2008,84 @@ fn test_create_proof() {
             Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
         },
     };
-    use halo2curves::bn256::{Bn256, Fr};
+    use halo2curves::bn256::{Bn256, Fr, G1Affine};
     use rand_chacha::ChaCha20Rng;
     use rand_core::SeedableRng;
 
     #[derive(Clone, Copy)]
-    struct MyCircuit;
+    struct MyCircuit([u64; 2]);
 
     impl<F: Field + From<u64>> Circuit<F> for MyCircuit {
-        type Config = Selector;
+        type Config = (Selector, Column<Advice>, Column<Fixed>);
         type FloorPlanner = SimpleFloorPlanner;
         #[cfg(feature = "circuit-params")]
         type Params = ();
 
         fn without_witnesses(&self) -> Self {
-            *self
+            MyCircuit([0, 0])
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
             let instance = meta.instance_column();
+            let advice = meta.advice_column();
+            let fixed = meta.fixed_column();
             let q_instance = meta.selector();
-            meta.create_gate("public instance equals seven", |meta| {
+            meta.create_gate("advice follows public instance at cur and next", |meta| {
                 let q_instance = meta.query_selector(q_instance);
-                let instance = meta.query_instance(instance, Rotation::cur());
-                vec![q_instance * (instance - Expression::Constant(F::from(7u64)))]
+                let instance_cur = meta.query_instance(instance, Rotation::cur());
+                let instance_next = meta.query_instance(instance, Rotation::next());
+                let advice_cur = meta.query_advice(advice, Rotation::cur());
+                let advice_next = meta.query_advice(advice, Rotation::next());
+                let fixed_cur = meta.query_fixed(fixed, Rotation::cur());
+                vec![
+                    q_instance.clone() * (advice_cur - instance_cur - fixed_cur),
+                    q_instance * (advice_next - instance_next),
+                ]
             });
-            q_instance
+            (q_instance, advice, fixed)
         }
 
         fn synthesize(
             &self,
-            q_instance: Self::Config,
+            (q_instance, advice, _fixed): Self::Config,
             mut layouter: impl crate::circuit::Layouter<F>,
         ) -> Result<(), Error> {
             layouter.assign_region(
                 || "public instance constraint",
-                |mut region| q_instance.enable(&mut region, 0),
+                |mut region| {
+                    q_instance.enable(&mut region, 0)?;
+                    region.assign_advice(|| "advice value cur", advice, 0, || Value::known(F::from(self.0[0])))?;
+                    region.assign_advice(|| "advice value next", advice, 1, || Value::known(F::from(self.0[1])))?;
+                    Ok(())
+                },
             )?;
             Ok(())
         }
     }
 
     let params: ParamsKZG<Bn256> = ParamsKZG::setup(3, ChaCha20Rng::from_seed([0x11; 32]));
-    let vk = keygen_vk(&params, &MyCircuit).expect("keygen_vk should not fail");
-    let pk = keygen_pk(&params, vk, &MyCircuit).expect("keygen_pk should not fail");
+    let keygen_circuit = MyCircuit([7, 9]);
+    let vk = keygen_vk(&params, &keygen_circuit).expect("keygen_vk should not fail");
+    let pk = keygen_pk(&params, vk, &keygen_circuit).expect("keygen_pk should not fail");
+
+    let opening_poly = Polynomial::<Fr, Coeff>::from_vec((0..params.n()).map(|index| Fr::from(index as u64 + 1)).collect());
+    let opening_points = [Fr::from(13), Fr::from(17)];
+    let opening_evals = opening_points.map(|point| eval_polynomial(&opening_poly[..], point));
+    let opening_prover = ProverSHPLONK::new(&params);
+    let mut legacy_opening = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    opening_prover
+        .create_proof(ChaCha20Rng::from_seed([0x44; 32]), &mut legacy_opening, [ProverQuery::new(opening_points[0], &opening_poly, Blind::default()), ProverQuery::new(opening_points[1], &opening_poly, Blind::default())])
+        .expect("legacy dense opening should succeed");
+    let mut cached_opening = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+    opening_prover
+        .create_proof(ChaCha20Rng::from_seed([0x44; 32]), &mut cached_opening, [ProverQuery::new_with_eval(opening_points[0], &opening_poly, opening_evals[0], Blind::default()), ProverQuery::new_with_eval(opening_points[1], &opening_poly, opening_evals[1], Blind::default())])
+        .expect("cached-evaluation opening should succeed");
+    assert_eq!(legacy_opening.finalize(), cached_opening.finalize());
 
     // Compare the prior copy-then-iFFT path with consuming the original mapped
     // Lagrange backing. The move path must retain that same allocation.
     let domain = &pk.get_vk().domain;
+    let fixed_domain = domain;
     let mut instance_values =
         Polynomial::<Fr, LagrangeCoeff>::mapped_filled(params.n() as usize, Fr::ZERO)
             .expect("create mapped instance values");
@@ -2075,12 +2106,50 @@ fn test_create_proof() {
     );
     assert_eq!(&actual_coefficients[..], &expected_coefficients[..]);
 
+    // Constant compact fixed columns use the exact coefficient representation
+    // of the old materialize-plus-iFFT path; nonconstant columns keep that path.
+    let fixed_len = params.n() as usize;
+    let fixed_cases = [
+        vec![Fr::ZERO; fixed_len],
+        vec![Fr::from(5); fixed_len],
+        (0..fixed_len).map(|row| Fr::from(row as u64)).collect(),
+    ];
+    for (case_index, values) in fixed_cases.iter().cloned().enumerate() {
+        let source = FixedColumnSource::from_polynomial(Polynomial::<Fr, LagrangeCoeff>::from_vec(values))
+            .expect("build compact fixed source");
+        assert_eq!(source.constant_value().is_some(), case_index < 2);
+        let old_coefficients = fixed_domain
+            .lagrange_to_coeff(source.materialize_lagrange().expect("materialize fixed source"));
+        let new_coefficients = ProverQuery::<G1Affine>::new_fixed_column(
+            Fr::from(3),
+            &source,
+            fixed_domain,
+            Fr::ZERO,
+        )
+        .poly
+        .materialize()
+        .expect("materialize fixed query");
+        assert_eq!(&new_coefficients[..], &old_coefficients[..]);
+    }
+
+    let invalid_id_width = PackedIdWidth::for_cardinality(3).expect("three-value ID width");
+    let mut invalid_ids = PackedIdTape::zeroed(fixed_len, invalid_id_width).expect("allocate ID tape");
+    invalid_ids.write(0, 3).expect("encode out-of-range ID");
+    assert!(FixedColumnSource::from_compact(vec![Fr::ZERO; 3], invalid_ids).is_err());
+
+    let short_ids = PackedIdTape::zeroed(fixed_len - 1, PackedIdWidth::for_cardinality(1).unwrap())
+        .expect("allocate short ID tape");
+    let short_source = FixedColumnSource::from_compact(vec![Fr::from(5)], short_ids)
+        .expect("construct short constant source");
+    let short_query = ProverQuery::<G1Affine>::new_fixed_column(Fr::from(3), &short_source, fixed_domain, Fr::from(5));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| short_query.poly.materialize())).is_err());
+
     // Create proof with wrong number of instances
     let mut invalid_transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     let proof = create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
-        &[MyCircuit, MyCircuit],
+        &[MyCircuit([7, 9]), MyCircuit([8, 10])],
         &[],
         ChaCha20Rng::from_seed([0x22; 32]),
         &mut invalid_transcript,
@@ -2088,13 +2157,14 @@ fn test_create_proof() {
     assert!(matches!(proof.unwrap_err(), Error::InvalidInstances));
 
     // Create proof with correct number of instances
-    let public = [Fr::from(7)];
+    let public_a = [Fr::from(7), Fr::from(9)];
+    let public_b = [Fr::from(8), Fr::from(10)];
     let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
-        &[MyCircuit, MyCircuit],
-        &[&[&public[..]], &[&public[..]]],
+        &[MyCircuit([7, 9]), MyCircuit([8, 10])],
+        &[&[&public_a[..]], &[&public_b[..]]],
         ChaCha20Rng::from_seed([0x33; 32]),
         &mut transcript,
     )
@@ -2106,7 +2176,7 @@ fn test_create_proof() {
         &params,
         pk.get_vk(),
         SingleStrategy::new(&params),
-        &[&[&public[..]], &[&public[..]]],
+        &[&[&public_a[..]], &[&public_b[..]]],
         &mut transcript,
         params.n(),
     )

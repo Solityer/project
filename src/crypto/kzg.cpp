@@ -2128,6 +2128,12 @@ namespace gatzk::crypto
             bool used_exact_count = false;
         };
 
+        std::size_t same_srs_commit_scalar_count(const algebra::Polynomial &polynomial)
+        {
+            const auto *resident = validated_cuda_resident_coefficients(polynomial);
+            return resident != nullptr ? resident->logical_count : polynomial.size();
+        }
+
         std::optional<SameSrsCommitWaveKey> same_srs_commit_wave_key(const algebra::Polynomial &polynomial, const KZGProverKey &pk, std::size_t estimated_work)
         {
             const auto &route = util::route2_options();
@@ -2138,8 +2144,9 @@ namespace gatzk::crypto
             }
 
             constexpr std::size_t kMinimumExplicitWaveScalarCount = std::size_t{1} << 12;
+            const auto scalar_count = same_srs_commit_scalar_count(polynomial);
 
-            if (polynomial.size() < kMinimumExplicitWaveScalarCount || polynomial.size() == 0)
+            if (scalar_count < kMinimumExplicitWaveScalarCount)
             {
                 return std::nullopt;
             }
@@ -2153,7 +2160,7 @@ namespace gatzk::crypto
                     throw std::runtime_error("missing coefficient proving SRS");
                 }
 
-                if (polynomial.size() > pk.powers_g1->size() || polynomial.size() > pk.degree_bound + 1)
+                if (scalar_count > pk.powers_g1->size() || scalar_count > pk.degree_bound + 1)
                 {
                     throw std::runtime_error("coefficient polynomial exceeds "
                                              "SRS degree bound: " +
@@ -2226,20 +2233,21 @@ namespace gatzk::crypto
                     continue;
                 }
 
+                const auto scalar_count = same_srs_commit_scalar_count(*polynomial);
                 auto found = std::find_if(waves.begin(), waves.end(), [&](const SameSrsCommitWave &wave) { return wave.key == *key; });
 
                 if (found == waves.end())
                 {
                     waves.push_back(SameSrsCommitWave{
                         .key = *key,
-                        .max_scalar_count = polynomial->size(),
+                        .max_scalar_count = scalar_count,
                         .indices = {index},
                     });
                 }
                 else
                 {
                     found->indices.push_back(index);
-                    found->max_scalar_count = std::max(found->max_scalar_count, polynomial->size());
+                    found->max_scalar_count = std::max(found->max_scalar_count, scalar_count);
                 }
             }
 
@@ -2283,8 +2291,9 @@ namespace gatzk::crypto
                     {
                         throw std::runtime_error("null polynomial in same-SRS wave accounting");
                     }
-                    total_scalar_count = checked_add(total_scalar_count, polynomial->size(), "scalar-count sum");
-                    auto &group_count = exact_group_counts[polynomial->size()];
+                    const auto scalar_count = same_srs_commit_scalar_count(*polynomial);
+                    total_scalar_count = checked_add(total_scalar_count, scalar_count, "scalar-count sum");
+                    auto &group_count = exact_group_counts[scalar_count];
                     group_count = checked_add(group_count, 1, "exact-count group size");
                 }
 
@@ -2341,14 +2350,14 @@ namespace gatzk::crypto
                 }
                 std::vector<std::size_t> exact_order = wave.indices;
                 std::stable_sort(exact_order.begin(), exact_order.end(), [&](std::size_t lhs, std::size_t rhs)
-                                 { return named_polynomials[lhs].second->size() > named_polynomials[rhs].second->size(); });
+                                 { return same_srs_commit_scalar_count(*named_polynomials[lhs].second) > same_srs_commit_scalar_count(*named_polynomials[rhs].second); });
 
                 std::size_t offset = 0;
                 while (offset < exact_order.size())
                 {
-                    const auto exact_count = named_polynomials[exact_order[offset]].second->size();
+                    const auto exact_count = same_srs_commit_scalar_count(*named_polynomials[exact_order[offset]].second);
                     std::size_t group_end = offset + 1;
-                    while (group_end < exact_order.size() && named_polynomials[exact_order[group_end]].second->size() == exact_count)
+                    while (group_end < exact_order.size() && same_srs_commit_scalar_count(*named_polynomials[exact_order[group_end]].second) == exact_count)
                     {
                         ++group_end;
                     }
@@ -3396,15 +3405,14 @@ namespace gatzk::crypto
                 throw std::runtime_error("failed to open " + std::string(operation) + ": " + info.file_path);
             }
 
-            std::vector<FieldElement> chunk;
-            chunk.reserve(std::min(kChunkSize, stored_value_count));
+            std::array<std::vector<FieldElement>, 2> chunks;
+            for (auto &chunk : chunks)
+                chunk.reserve(std::min(kChunkSize, stored_value_count));
 
-            for (std::size_t offset = 0; offset < stored_value_count;)
+            const auto read_chunk = [&](std::size_t slot, std::size_t count)
             {
-                const auto count = std::min(kChunkSize, stored_value_count - offset);
-
+                auto &chunk = chunks[slot];
                 chunk.resize(count);
-
                 try
                 {
                     algebra::read_field_elements_binary_into(*stream, std::span<FieldElement>(chunk.data(), chunk.size()));
@@ -3413,10 +3421,31 @@ namespace gatzk::crypto
                 {
                     throw std::runtime_error("failed to read " + std::string(operation) + ": " + info.file_path + ": " + error.what());
                 }
+            };
 
-                consumer(chunk, offset);
+            if (stored_value_count == 0)
+                return;
 
-                offset += count;
+            std::size_t slot = 0;
+            std::size_t offset = 0;
+            read_chunk(slot, std::min(kChunkSize, stored_value_count));
+            while (offset < stored_value_count)
+            {
+                const auto count = std::min(kChunkSize, stored_value_count - offset);
+                const auto next_offset = offset + count;
+                std::future<void> prefetch;
+                if (next_offset < stored_value_count)
+                {
+                    const auto next_slot = slot ^ std::size_t{1};
+                    const auto next_count = std::min(kChunkSize, stored_value_count - next_offset);
+                    prefetch = std::async(std::launch::async, [&, next_slot, next_count]() { read_chunk(next_slot, next_count); });
+                }
+
+                consumer(chunks[slot], offset);
+                if (prefetch.valid())
+                    prefetch.get();
+                offset = next_offset;
+                slot ^= std::size_t{1};
             }
         }
 
@@ -5669,8 +5698,7 @@ namespace gatzk::crypto
 
         for (std::size_t index = 0; index < object_count; ++index)
         {
-            wave_excluded[index] = completed[index] || semantic_alias_of[index] != object_count ||
-                                   (named_polynomials[index].second != nullptr && named_polynomials[index].second->cuda_resident_coefficients != nullptr);
+            wave_excluded[index] = completed[index] || semantic_alias_of[index] != object_count;
         }
 
         const G1MSMExecutionOptions wave_msm_options{
@@ -5939,12 +5967,7 @@ namespace gatzk::crypto
             }
         };
 
-        std::vector<bool> excluded(object_count, false);
-
-        for (std::size_t index = 0; index < object_count; ++index)
-        {
-            excluded[index] = view[index].second != nullptr && view[index].second->cuda_resident_coefficients != nullptr;
-        }
+        const std::vector<bool> excluded(object_count, false);
 
         const G1MSMExecutionOptions wave_msm_options{
             .max_worker_count = 1,

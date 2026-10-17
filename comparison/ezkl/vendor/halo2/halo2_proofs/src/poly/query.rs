@@ -7,6 +7,8 @@ use crate::{
     poly::{Coeff, EvaluationDomain, Polynomial},
 };
 use halo2curves::CurveAffine;
+use group::ff::Field;
+use std::convert::TryFrom;
 use std::io;
 
 /// A polynomial source used by the native prover. Most queries borrow an
@@ -40,6 +42,17 @@ impl<'com, C: CurveAffine> ProverPolynomial<'com, C> {
         match self {
             Self::Dense(poly) => poly.try_clone(),
             Self::FixedColumn { source, domain } => {
+                if let Some(value) = source.constant_value() {
+                    let domain_len = usize::try_from(domain.get_n())
+                        .expect("evaluation domain length exceeds host size");
+                    assert_eq!(source.len(), domain_len);
+                    let mut coeff = Polynomial::<C::Scalar, Coeff>::mapped_filled(
+                        domain_len,
+                        C::Scalar::ZERO,
+                    )?;
+                    coeff[0] = value;
+                    return Ok(coeff);
+                }
                 let lagrange = source.materialize_lagrange()?;
                 domain.lagrange_to_coeff(lagrange).spill()
             }
@@ -118,6 +131,20 @@ where
             point,
             poly: ProverPolynomial::Dense(poly),
             eval: None,
+            blind,
+        }
+    }
+
+    pub(crate) fn new_with_eval(
+        point: C::Scalar,
+        poly: &'com Polynomial<C::Scalar, Coeff>,
+        eval: C::Scalar,
+        blind: Blind<C::Scalar>,
+    ) -> Self {
+        ProverQuery {
+            point,
+            poly: ProverPolynomial::Dense(poly),
+            eval: Some(eval),
             blind,
         }
     }

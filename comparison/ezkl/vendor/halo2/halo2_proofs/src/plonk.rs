@@ -314,6 +314,19 @@ impl<F: Copy> FixedColumnSource<F> {
         }
     }
 
+    pub(crate) fn constant_value(&self) -> Option<F> {
+        match self {
+            Self::Compact { codebook, ids }
+                if codebook.len() == 1
+                    && ids.width().bits() == 0
+                    && ids.byte_len_for_tape() == 0 =>
+            {
+                Some(codebook[0])
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn value(&self, row: usize) -> F {
         match self {
             Self::Dense(values) => values[row],
@@ -600,7 +613,7 @@ fn read_fixed_values<F: SerdePrimeField, R: io::Read>(
                     .checked_mul(scalar_len)
                     .ok_or_else(|| invalid("proving-key fixed-value codebook byte length overflows host size"))?;
                 let mut codebook = Vec::with_capacity(count);
-                let mut by_fingerprint = HashMap::with_capacity(FIXED_VALUES_CODEBOOK_MAX + 1);
+                let mut by_fingerprint = HashMap::with_capacity(count);
                 for _ in 0..count {
                     let value = F::read(reader, format)?;
                     let fingerprint = fixed_value_fingerprint(&value);
