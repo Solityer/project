@@ -2409,9 +2409,97 @@ F masked_equality_weight_at(const std::vector<F> &point, std::uint64_t index,
     return weight;
 }
 
+zkgpt::NativeFieldVector masked_zero_field_cache(std::uint64_t entries) {
+    if (entries > std::numeric_limits<std::size_t>::max())
+        throw std::length_error("masked GKR fold cache exceeds native vector size");
+    zkgpt::NativeFieldVector values(static_cast<std::size_t>(entries), F_ZERO);
+    if (values.size() != entries || values.capacity() != entries)
+        throw std::length_error("masked GKR fold cache allocation is not exact");
+    return values;
+}
+
+void masked_fold_field_cache(zkgpt::NativeFieldVector &values,
+                             const F &challenge) {
+    const std::size_t next_size = values.size() / 2 + values.size() % 2;
+    for (std::size_t index = 0; index < next_size; ++index) {
+        const std::size_t even_index = index * 2;
+        const F even = values[even_index];
+        const F odd = even_index + 1 < values.size()
+                          ? values[even_index + 1]
+                          : F_ZERO;
+        values[index] = even * (F_ONE - challenge) + odd * challenge;
+    }
+    values.resize(next_size);
+}
+
+using MaskedFoldCacheRange = std::pair<std::uint64_t, std::uint64_t>;
+
+std::vector<MaskedFoldCacheRange> masked_fold_cache_ranges(
+    std::uint64_t first_coordinate, std::uint64_t last_coordinate,
+    std::uint64_t reference_count, std::uint64_t divisor) {
+    if (reference_count == 0) return {};
+    if (divisor == 0 || (divisor & (divisor - 1)) != 0 ||
+        first_coordinate > last_coordinate)
+        throw std::invalid_argument("masked GKR cache coordinate range is invalid");
+    constexpr std::uint64_t kMinimumParallelReferences = 32768;
+    constexpr unsigned int kMaximumWorkers = 20;
+    const std::uint64_t first_block = first_coordinate / divisor;
+    const std::uint64_t last_block = last_coordinate / divisor;
+    const std::uint64_t active_blocks = last_block - first_block + 1;
+    const unsigned int hardware_workers = std::max(
+        1U, std::thread::hardware_concurrency());
+    const std::size_t worker_count = reference_count < kMinimumParallelReferences
+        ? 1 : static_cast<std::size_t>(std::min<std::uint64_t>(
+              std::min(kMaximumWorkers, hardware_workers), active_blocks));
+    std::vector<MaskedFoldCacheRange> ranges;
+    ranges.reserve(worker_count);
+    const std::uint64_t blocks_per_worker = active_blocks / worker_count;
+    const std::uint64_t extra_blocks = active_blocks % worker_count;
+    std::uint64_t next_block = first_block;
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        const std::uint64_t worker_blocks = blocks_per_worker +
+            (worker < extra_blocks ? 1 : 0);
+        const std::uint64_t end_block = next_block + worker_blocks;
+        ranges.emplace_back(next_block * divisor, end_block * divisor);
+        next_block = end_block;
+    }
+    return ranges;
+}
+
+template <class Worker>
+void masked_run_fold_cache_workers(std::size_t worker_count, Worker worker) {
+    if (worker_count < 2) {
+        if (worker_count == 1) worker(0);
+        return;
+    }
+    std::vector<std::exception_ptr> errors(worker_count);
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    try {
+        for (std::size_t index = 0; index < worker_count; ++index)
+            workers.emplace_back([&, index]() {
+                try {
+                    worker(index);
+                } catch (...) {
+                    errors[index] = std::current_exception();
+                }
+            });
+    } catch (...) {
+        for (std::thread &thread : workers)
+            if (thread.joinable()) thread.join();
+        throw;
+    }
+    for (std::thread &thread : workers)
+        if (thread.joinable()) thread.join();
+    for (const std::exception_ptr &error : errors)
+        if (error != nullptr) std::rethrow_exception(error);
+}
+
 class MaskedInputWitnessFold {
   public:
-    explicit MaskedInputWitnessFold(const NativeGkrInputProvider &provider)
+    explicit MaskedInputWitnessFold(
+        const NativeGkrInputProvider &provider,
+        const NativeMaskedGkrInputFoldCachePlan *cache_plan = nullptr)
         : segment_domain_(provider.segment_domain),
           logical_lengths_(provider.logical_lengths), value_at_(provider.value_at),
           support_(&provider.segment_support), support_complete_(provider.support_complete),
@@ -2426,6 +2514,14 @@ class MaskedInputWitnessFold {
                 throw std::invalid_argument("masked GKR witness segment extent is invalid");
         if (support_complete_)
             masked_validate_input_support(*support_, logical_lengths_, segment_domain_);
+        if (cache_plan != nullptr) {
+            if (!support_complete_ || !value_at_read_only_thread_safe_ ||
+                cache_plan->scalar_bytes != sizeof(F))
+                throw std::invalid_argument(
+                    "masked GKR fold cache requires a trusted read-only provider");
+            cache_plan_ = *cache_plan;
+            cache_enabled_ = true;
+        }
         for (std::uint64_t size = segment_domain_; size > 1; size >>= 1)
             ++local_bits_;
         local_challenges_.reserve(static_cast<std::size_t>(local_bits_));
@@ -2440,6 +2536,10 @@ class MaskedInputWitnessFold {
         if (segment >= logical_lengths_.size())
             throw std::out_of_range("masked GKR witness segment is invalid");
         if (index >= (segment_domain_ >> local_rounds_)) return F_ZERO;
+        if (cache_active_)
+            return index < witness_cache_[segment].size()
+                       ? witness_cache_[segment][static_cast<std::size_t>(index)]
+                       : F_ZERO;
         const std::uint64_t block_size = std::uint64_t(1) << local_rounds_;
         const std::uint64_t begin = index * block_size;
         const std::uint64_t end = std::min(segment_domain_, begin + block_size);
@@ -2460,10 +2560,126 @@ class MaskedInputWitnessFold {
         return value_at_read_only_thread_safe_;
     }
 
+    std::size_t build_fold_cache(std::uint64_t round) {
+        if (!cache_enabled_ || cache_active_ || round != local_rounds_ ||
+            round != cache_plan_.late_fold_rounds ||
+            local_challenges_.size() != round)
+            throw std::logic_error("masked GKR witness cache activation is out of order");
+        const auto build_begin = std::chrono::steady_clock::now();
+        std::cerr << "[zkGPT][gkr] input-fold-cache build-begin late_round="
+                  << round << std::endl;
+        const std::uint64_t divisor = std::uint64_t(1) << round;
+        bool has_support = false;
+        std::uint64_t first_coordinate = 0;
+        std::uint64_t last_coordinate = 0;
+        std::uint64_t support_entries_capped = 0;
+        for (std::size_t segment = 0; segment < witness_cache_.size(); ++segment) {
+            std::uint64_t extent = 0;
+            const std::uint64_t segment_base =
+                static_cast<std::uint64_t>(segment) * segment_domain_;
+            for (const NativeGkrInputSupportInterval &interval : (*support_)[segment]) {
+                extent = std::max(extent, interval.end);
+                const std::uint64_t interval_begin = segment_base + interval.begin;
+                const std::uint64_t interval_end = segment_base + interval.end;
+                if (!has_support) {
+                    first_coordinate = interval_begin;
+                    has_support = true;
+                }
+                last_coordinate = interval_end - 1;
+                if (support_entries_capped < 32768) {
+                    const std::uint64_t remaining = 32768 - support_entries_capped;
+                    support_entries_capped += std::min(
+                        remaining, interval.end - interval.begin);
+                }
+            }
+            const std::uint64_t entries = extent / divisor +
+                                          (extent % divisor != 0);
+            witness_cache_[segment] = masked_zero_field_cache(entries);
+        }
+        const std::vector<MaskedFoldCacheRange> ranges = has_support
+            ? masked_fold_cache_ranges(first_coordinate, last_coordinate,
+                                       support_entries_capped, divisor)
+            : std::vector<MaskedFoldCacheRange>{};
+        const auto build_range = [&](std::size_t worker) {
+            MaskedEqualityWeightCursor fold_weights;
+            fold_weights.reserve_dimensions(static_cast<std::size_t>(round));
+            fold_weights.initialize(local_challenges_,
+                                    static_cast<std::size_t>(round));
+            const std::uint64_t range_begin = ranges[worker].first;
+            const std::uint64_t range_end = ranges[worker].second;
+            for (std::size_t segment = 0; segment < witness_cache_.size(); ++segment) {
+                const std::uint64_t segment_base =
+                    static_cast<std::uint64_t>(segment) * segment_domain_;
+                const std::uint64_t local_range_begin =
+                    range_begin > segment_base ? range_begin - segment_base : 0;
+                const std::uint64_t local_range_end = std::min(
+                    segment_domain_, range_end > segment_base
+                        ? range_end - segment_base : 0);
+                if (local_range_begin >= local_range_end) continue;
+                for (const NativeGkrInputSupportInterval &interval : (*support_)[segment]) {
+                    std::uint64_t local = std::max(interval.begin,
+                                                   local_range_begin);
+                    const std::uint64_t support_end = std::min(
+                        interval.end, local_range_end);
+                    while (local < support_end) {
+                        const std::uint64_t folded_index = local / divisor;
+                        const std::uint64_t folded_end = std::min(
+                            support_end, (folded_index + 1) * divisor);
+                        fold_weights.initialize_at(local % divisor);
+                        while (local < folded_end) {
+                            witness_cache_[segment][static_cast<std::size_t>(folded_index)] +=
+                                value_at_(segment_base + local) *
+                                fold_weights.current();
+                            ++local;
+                            if (local < folded_end) fold_weights.increment();
+                        }
+                    }
+                }
+            }
+        };
+        masked_run_fold_cache_workers(ranges.size(), build_range);
+        cache_active_ = true;
+        std::uint64_t entries = 0;
+        for (const zkgpt::NativeFieldVector &values : witness_cache_)
+            entries += values.size();
+        const double elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - build_begin).count();
+        std::cerr << "[zkGPT][gkr] input-fold-cache witness-complete entries="
+                  << entries << " workers=" << ranges.size()
+                  << " elapsed_ms=" << elapsed_ms << std::endl;
+        return ranges.size();
+    }
+
+    void fold_cache(const F &challenge) {
+        if (!cache_active_)
+            throw std::logic_error("masked GKR witness cache is not active");
+        for (zkgpt::NativeFieldVector &values : witness_cache_)
+            masked_fold_field_cache(values, challenge);
+    }
+
+    std::uint64_t cache_extent(std::size_t segment) const {
+        return witness_cache_.at(segment).size();
+    }
+
+    std::uint64_t cache_total_entries() const {
+        std::uint64_t entries = 0;
+        for (const zkgpt::NativeFieldVector &values : witness_cache_)
+            entries += values.size();
+        return entries;
+    }
+
+    void release_fold_cache() {
+        for (zkgpt::NativeFieldVector &values : witness_cache_)
+            zkgpt::NativeFieldVector().swap(values);
+        cache_active_ = false;
+        cache_enabled_ = false;
+    }
+
     void begin_selector_fold() {
         selectors_.assign(4, F_ZERO);
         for (std::size_t segment = 0; segment < logical_lengths_.size(); ++segment)
             selectors_[segment] = segment_value(segment, 0);
+        if (cache_active_) release_fold_cache();
     }
 
     void fold_round(const F &challenge, std::uint64_t round,
@@ -2501,8 +2717,12 @@ class MaskedInputWitnessFold {
     const NativeGkrInputSupport *support_ = nullptr;
     bool support_complete_ = false;
     bool value_at_read_only_thread_safe_ = false;
+    bool cache_enabled_ = false;
+    bool cache_active_ = false;
+    NativeMaskedGkrInputFoldCachePlan cache_plan_;
     std::vector<F> local_challenges_;
     MaskedEqualityWeightCursor local_weight_cursor_;
+    std::array<zkgpt::NativeFieldVector, 4> witness_cache_;
     zkgpt::NativeFieldVector selectors_;
 };
 
@@ -2581,6 +2801,7 @@ class MaskedInputCoefficientOracle {
         masked_validate_input_support(*support_, support_logical_lengths(logical_lengths), segment_domain_);
         const std::array<std::uint64_t, 4> source_extents =
             masked_input_source_support_extents(sources, input_size_, segment_domain_, logical_lengths);
+        source_extents_ = source_extents;
         for (std::size_t segment = 0; segment < source_extents.size(); ++segment)
             if (source_extents[segment] > logical_lengths_[segment])
                 throw std::invalid_argument("masked GKR input coefficient source extent exceeds its segment");
@@ -2676,6 +2897,20 @@ class MaskedInputCoefficientOracle {
     std::uint64_t segment_domain() const { return segment_domain_; }
     const std::vector<std::size_t> &logical_lengths() const { return logical_lengths_; }
 
+    void enable_late_fold_cache(
+        const NativeMaskedGkrInputFoldCachePlan &cache_plan) {
+        if (cache_enabled_ || cache_plan.scalar_bytes != sizeof(F) ||
+            cache_plan.late_fold_rounds >= local_bits_)
+            throw std::invalid_argument(
+                "masked GKR coefficient cache plan is invalid");
+        cache_plan_ = cache_plan;
+        cache_enabled_ = true;
+    }
+
+    std::uint64_t cache_extent(std::size_t segment) const {
+        return coefficient_cache_.at(segment).size();
+    }
+
     bool add_source(const MaskedGkrInputSource &source, const F &rho,
                     std::string *reason) {
         if (next_source_to_add_ >= sources_.size() ||
@@ -2757,6 +2992,15 @@ class MaskedInputCoefficientOracle {
                 throw std::logic_error("masked GKR local coefficient fold is inconsistent");
             if (next_source_to_add_ != sources_.size())
                 throw std::logic_error("masked GKR input sources were not fully registered");
+            if (cache_enabled_ && !cache_active_ &&
+                round == cache_plan_.late_fold_rounds) {
+                build_fold_cache(round, witness);
+            }
+            if (cache_active_) {
+                run_cached_round_sums(round, witness, even_sum, odd_sum,
+                                      at_two_sum);
+                return;
+            }
             prepare_round_weights();
             run_local_round_sums(witness, round, even_sum, odd_sum, at_two_sum);
             return;
@@ -2787,6 +3031,11 @@ class MaskedInputCoefficientOracle {
         if (round < local_bits_) {
             folded_weight_cursor_.initialize(folded_challenges_,
                                              static_cast<std::size_t>(round + 1));
+            if (cache_active_) {
+                for (zkgpt::NativeFieldVector &values : coefficient_cache_)
+                    masked_fold_field_cache(values, challenge);
+                witness.fold_cache(challenge);
+            }
             witness.fold_round(challenge, round, local_bits_);
         } else {
             if (active != selector_coefficients_.size())
@@ -2806,6 +3055,15 @@ class MaskedInputCoefficientOracle {
             throw std::logic_error(
                 "masked GKR selector coefficient fold history is incomplete");
         last_evaluation_valid_ = false;
+        if (cache_active_) {
+            selector_coefficients_.assign(4, F_ZERO);
+            for (std::size_t segment = 0; segment < coefficient_cache_.size(); ++segment)
+                if (!coefficient_cache_[segment].empty())
+                    selector_coefficients_[segment] = coefficient_cache_[segment][0];
+            witness.begin_selector_fold();
+            release_fold_cache();
+            return;
+        }
         prepare_terminal_weights();
         selector_coefficients_.assign(4, F_ZERO);
         for (MaskedInputSourceState &state : sources_)
@@ -2832,6 +3090,138 @@ class MaskedInputCoefficientOracle {
     }
 
   private:
+    void build_fold_cache(std::uint64_t round,
+                          MaskedInputWitnessFold &witness) {
+        if (!cache_enabled_ || cache_active_ ||
+            round != cache_plan_.late_fold_rounds ||
+            folded_challenges_.size() != round)
+            throw std::logic_error("masked GKR coefficient cache activation is out of order");
+        const auto build_begin = std::chrono::steady_clock::now();
+        prepare_terminal_weights();
+        const std::uint64_t divisor = std::uint64_t(1) << round;
+        for (std::size_t segment = 0; segment < coefficient_cache_.size(); ++segment) {
+            const std::uint64_t extent = source_extents_[segment];
+            const std::uint64_t entries = extent / divisor +
+                                          (extent % divisor != 0);
+            coefficient_cache_[segment] = masked_zero_field_cache(entries);
+        }
+        bool has_source = false;
+        std::uint64_t first_coordinate = 0;
+        std::uint64_t last_coordinate = 0;
+        std::uint64_t reference_count_capped = 0;
+        for (const MaskedInputSourceState &state : sources_) {
+            if (state.reference_count == 0) continue;
+            const std::uint64_t source_first = source_coordinate_for_cursor(state, 0);
+            const std::uint64_t source_last = source_coordinate_for_cursor(
+                state, state.reference_count - 1);
+            if (!has_source) {
+                first_coordinate = source_first;
+                has_source = true;
+            } else {
+                first_coordinate = std::min(first_coordinate, source_first);
+            }
+            last_coordinate = std::max(last_coordinate, source_last);
+            if (reference_count_capped < 32768) {
+                const std::uint64_t remaining = 32768 - reference_count_capped;
+                reference_count_capped += std::min(remaining, state.reference_count);
+            }
+        }
+        const std::vector<MaskedFoldCacheRange> ranges = has_source
+            ? masked_fold_cache_ranges(first_coordinate, last_coordinate,
+                                       reference_count_capped, divisor)
+            : std::vector<MaskedFoldCacheRange>{};
+        std::cerr << "[zkGPT][gkr] input-fold-cache begin late_round=" << round
+                  << " bytes_upper=" << cache_plan_.raw_bytes_upper_bound
+                  << " coefficient_workers=" << ranges.size() << std::endl;
+        std::vector<std::vector<MaskedInputRoundSourceState>> worker_sources(
+            ranges.size());
+        const auto build_range = [&](std::size_t worker) {
+            initialize_round_source_states(ranges[worker].first,
+                                           ranges[worker].second,
+                                           worker_sources[worker]);
+            for (std::size_t source_index = 0; source_index < sources_.size();
+                 ++source_index) {
+                const MaskedInputSourceState &source_state = sources_[source_index];
+                MaskedInputRoundSourceState &worker_state =
+                    worker_sources[worker][source_index];
+                while (worker_state.cursor < source_state.reference_count) {
+                    const std::uint64_t coordinate = source_coordinate_for_cursor(
+                        source_state, worker_state.cursor);
+                    if (coordinate >= ranges[worker].second) break;
+                    const std::uint64_t lane = source_lane_for_cursor(
+                        source_state, worker_state.cursor);
+                    const std::size_t segment = static_cast<std::size_t>(
+                        coordinate / segment_domain_);
+                    const std::uint64_t local = coordinate % segment_domain_;
+                    const F low_weight = masked_equality_weight_at(
+                        folded_challenges_, local % divisor,
+                        static_cast<std::size_t>(round));
+                    coefficient_cache_[segment][static_cast<std::size_t>(
+                        local / divisor)] += source_state.rho * source_weight_for_lane(
+                            *source_state.source, worker_state.primary_weights,
+                            worker_state.secondary_weights,
+                            worker_state.active_inner_group, lane) * low_weight;
+                    ++worker_state.cursor;
+                }
+            }
+        };
+        masked_run_fold_cache_workers(ranges.size(), build_range);
+        std::uint64_t coefficient_entries = 0;
+        for (const zkgpt::NativeFieldVector &values : coefficient_cache_)
+            coefficient_entries += values.size();
+        std::cerr << "[zkGPT][gkr] input-fold-cache coefficient-complete entries="
+                  << coefficient_entries << " workers=" << ranges.size()
+                  << std::endl;
+        const std::size_t witness_workers = witness.build_fold_cache(round);
+        const std::uint64_t witness_entries = witness.cache_total_entries();
+        const std::uint64_t total_entries = coefficient_entries + witness_entries;
+        if (total_entries > std::numeric_limits<std::uint64_t>::max() / sizeof(F))
+            throw std::overflow_error("masked GKR input-fold cache byte count overflows");
+        cache_active_ = true;
+        const double elapsed_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - build_begin).count();
+        std::cerr << "[zkGPT][gkr] input-fold-cache ready late_round=" << round
+                  << " bytes=" << total_entries * sizeof(F)
+                  << " coefficient_entries=" << coefficient_entries
+                  << " witness_entries=" << witness_entries
+                  << " coefficient_workers=" << ranges.size()
+                  << " witness_workers=" << witness_workers
+                  << " elapsed_ms=" << elapsed_ms << std::endl;
+    }
+
+    void run_cached_round_sums(std::uint64_t round,
+                               MaskedInputWitnessFold &witness,
+                               F &even_sum, F &odd_sum, F &at_two_sum) {
+        const std::uint64_t local_domain = segment_domain_ >> round;
+        for (std::size_t segment = 0; segment < coefficient_cache_.size(); ++segment) {
+            const auto &coefficients = coefficient_cache_[segment];
+            const std::uint64_t count = std::min<std::uint64_t>(
+                local_domain,
+                std::max<std::uint64_t>(coefficients.size(),
+                                        witness.cache_extent(segment)));
+            for (std::uint64_t index = 0; index < count; index += 2) {
+                const F coefficient_even = index < coefficients.size()
+                    ? coefficients[static_cast<std::size_t>(index)] : F_ZERO;
+                const F coefficient_odd = index + 1 < coefficients.size()
+                    ? coefficients[static_cast<std::size_t>(index + 1)] : F_ZERO;
+                const F witness_even = witness.segment_value(segment, index);
+                const F witness_odd = witness.segment_value(segment, index + 1);
+                even_sum += coefficient_even * witness_even;
+                odd_sum += coefficient_odd * witness_odd;
+                at_two_sum +=
+                    (F(2) * coefficient_odd - coefficient_even) *
+                    (F(2) * witness_odd - witness_even);
+            }
+        }
+    }
+
+    void release_fold_cache() {
+        for (zkgpt::NativeFieldVector &values : coefficient_cache_)
+            zkgpt::NativeFieldVector().swap(values);
+        cache_active_ = false;
+        cache_enabled_ = false;
+    }
+
     std::uint64_t source_lane_for_cursor(
         const MaskedInputSourceState &state, std::uint64_t cursor) const {
         if (state.source->kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy)
@@ -3393,6 +3783,7 @@ class MaskedInputCoefficientOracle {
     std::uint64_t local_bits_ = 0;
     std::vector<std::size_t> logical_lengths_;
     const NativeGkrInputSupport *support_ = nullptr;
+    std::array<std::uint64_t, 4> source_extents_{};
     std::vector<MaskedInputSourceState> sources_;
     std::vector<std::uint64_t> canonical_lane_order_;
     std::size_t next_source_to_add_ = 0;
@@ -3404,6 +3795,10 @@ class MaskedInputCoefficientOracle {
     zkgpt::NativeFieldVector selector_coefficients_;
     std::vector<F> folded_challenges_;
     MaskedEqualityWeightCursor folded_weight_cursor_;
+    bool cache_enabled_ = false;
+    bool cache_active_ = false;
+    NativeMaskedGkrInputFoldCachePlan cache_plan_;
+    std::array<zkgpt::NativeFieldVector, 4> coefficient_cache_;
 };
 
 std::shared_ptr<const NativeMaskedPublicProvider>
@@ -3550,7 +3945,27 @@ bool masked_public_product_prove(
                           "masked GKR input aggregation domain is invalid");
         return false;
     }
-    MaskedInputWitnessFold witness(*input_provider);
+    NativeMaskedGkrInputFoldCachePlan fold_cache_plan;
+    const bool use_fold_cache = input_provider->support_complete &&
+                                input_provider->value_at_read_only_thread_safe &&
+                                input_provider->segment_domain > 1;
+    if (use_fold_cache) {
+        fold_cache_plan = native_masked_gkr_input_fold_cache_plan(
+            input_provider->segment_domain, input_provider->logical_lengths,
+            std::max(
+                zkgpt::native_storage::filesystem_allocation_unit_bytes(
+                    zkgpt::native_storage::scratch_directory()),
+                zkgpt::native_storage::page_size()),
+            zkgpt::native_storage::heap_limit);
+        public_oracle->enable_late_fold_cache(fold_cache_plan);
+        std::cerr << "[zkGPT][gkr] input-fold-cache plan late_round="
+                  << fold_cache_plan.late_fold_rounds << " raw_bytes_upper="
+                  << fold_cache_plan.raw_bytes_upper_bound
+                  << " mapped_bytes_upper="
+                  << fold_cache_plan.mapped_bytes_upper_bound << std::endl;
+    }
+    MaskedInputWitnessFold witness(
+        *input_provider, use_fold_cache ? &fold_cache_plan : nullptr);
     std::uint64_t expected_rounds = 0;
     for (std::uint64_t active = public_oracle->size(); active > 1; active >>= 1)
         ++expected_rounds;
@@ -4265,10 +4680,225 @@ std::uint64_t native_masked_gkr_input_fold_storage_bytes(
                 sizeof(MaskedEqualityWeightCursor::Transition)));
     add(product(Wide(2) * input_bits + 2, sizeof(F)));
     add(Wide(8) * sizeof(F));
+    constexpr Wide kMaximumFoldCacheWorkers = 20;
+    add(product(product(source_count, kMaximumFoldCacheWorkers),
+                sizeof(MaskedInputRoundSourceState)));
+    const Wide worker_cursor_count =
+        kMaximumFoldCacheWorkers * (Wide(2) * source_count + 1);
+    add(product(product(worker_cursor_count, input_bits),
+                sizeof(MaskedEqualityWeightCursor::Transition)));
     if (total > std::numeric_limits<std::uint64_t>::max())
         throw std::overflow_error(
             "masked GKR input-fold storage bound exceeds uint64 bytes");
     return static_cast<std::uint64_t>(total);
+}
+
+NativeMaskedGkrInputFoldCachePlan native_masked_gkr_input_fold_cache_plan(
+    std::uint64_t segment_domain,
+    const std::array<std::uint64_t, 4> &logical_lengths,
+    std::uint64_t allocation_unit_bytes,
+    std::uint64_t heap_limit_bytes) {
+    if (segment_domain == 0 || (segment_domain & (segment_domain - 1)) != 0 ||
+        allocation_unit_bytes == 0)
+        throw std::invalid_argument("masked GKR fold-cache planning domain is invalid");
+    for (std::uint64_t length : logical_lengths)
+        if (length > segment_domain)
+            throw std::invalid_argument("masked GKR fold-cache segment extent is invalid");
+    if (segment_domain == 1)
+        return {0, 0, 0, 0, sizeof(F)};
+
+    using Wide = unsigned __int128;
+    std::uint64_t local_bits = 0;
+    for (std::uint64_t size = segment_domain; size > 1; size >>= 1)
+        ++local_bits;
+    const Wide cap = kNativeMaskedGkrInputFoldCacheBudgetBytes;
+    for (std::uint64_t rounds = 0; rounds < local_bits; ++rounds) {
+        const std::uint64_t divisor = std::uint64_t(1) << rounds;
+        Wide raw_bytes = 0;
+        Wide mapped_bytes = 0;
+        Wide heap_bytes = 0;
+        for (std::uint64_t length : logical_lengths) {
+            const std::uint64_t entries = length / divisor +
+                                          (length % divisor != 0);
+            const Wide bytes = Wide(entries) * sizeof(F);
+            raw_bytes += Wide(2) * bytes;
+            if (bytes == 0) continue;
+            heap_bytes += Wide(2) * std::min<Wide>(bytes, heap_limit_bytes);
+            if (bytes <= heap_limit_bytes) {
+                continue;
+            }
+            const Wide unit = allocation_unit_bytes;
+            const Wide rounded = ((bytes + unit - 1) / unit) * unit;
+            mapped_bytes += Wide(2) * rounded;
+        }
+        if (raw_bytes <= cap && mapped_bytes <= cap &&
+            raw_bytes <= std::numeric_limits<std::uint64_t>::max() &&
+            mapped_bytes <= std::numeric_limits<std::uint64_t>::max() &&
+            heap_bytes <= std::numeric_limits<std::uint64_t>::max())
+            return {rounds, static_cast<std::uint64_t>(raw_bytes),
+                    static_cast<std::uint64_t>(mapped_bytes),
+                    static_cast<std::uint64_t>(heap_bytes), sizeof(F)};
+    }
+    throw std::length_error("masked GKR fold caches cannot fit their fixed storage budget");
+}
+
+bool native_masked_gkr_input_fold_cache_equivalence_smoke(std::string *reason) {
+    try {
+        const NativeMaskedGkrInputFoldCachePlan no_local_fold_plan =
+            native_masked_gkr_input_fold_cache_plan(
+                1, {{1, 1, 1, 1}}, 4096,
+                zkgpt::native_storage::heap_limit);
+        if (no_local_fold_plan.late_fold_rounds != 0 ||
+            no_local_fold_plan.raw_bytes_upper_bound != 0 ||
+            no_local_fold_plan.mapped_bytes_upper_bound != 0 ||
+            no_local_fold_plan.heap_bytes_upper_bound != 0 ||
+            no_local_fold_plan.scalar_bytes != sizeof(F)) {
+            masked_set_reason(reason,
+                              "single-entry GKR cache plan must be disabled");
+            return false;
+        }
+        constexpr std::uint64_t segment_domain = 16;
+        constexpr std::uint64_t input_size = 4 * segment_domain;
+        const std::vector<std::size_t> logical_lengths{13, 11, 9, 14};
+        NativeGkrInputSupport support;
+        support[0] = {{0, 2}, {4, 6}};
+        support[1] = {{1, 4}};
+        support[2] = {{1, 4}, {7, 9}};
+        support[3] = {{2, 6}};
+        auto input_values = std::make_shared<zkgpt::NativeFieldVector>(
+            input_size, F_ZERO);
+        for (std::uint64_t coordinate = 0; coordinate < input_size; ++coordinate)
+            (*input_values)[static_cast<std::size_t>(coordinate)] =
+                F(static_cast<int>(17 + coordinate));
+        for (std::size_t segment = 0; segment < support.size(); ++segment)
+            for (std::uint64_t local = 0; local < segment_domain; ++local)
+                if (!masked_support_contains(support[segment], local))
+                    (*input_values)[segment * segment_domain + local] = F_ZERO;
+
+        NativeGkrInputProvider implicit_provider;
+        implicit_provider.full_size = input_size;
+        implicit_provider.segment_domain = segment_domain;
+        implicit_provider.logical_lengths = {{13, 11, 9, 14}};
+        implicit_provider.segment_support = support;
+        implicit_provider.support_complete = true;
+        implicit_provider.value_at = [input_values](std::uint64_t coordinate) {
+            return input_values->at(static_cast<std::size_t>(coordinate));
+        };
+        NativeGkrInputProvider cached_provider = implicit_provider;
+        cached_provider.value_at_read_only_thread_safe = true;
+
+        MaskedGkrInputSource source;
+        source.kind = MaskedGkrInputSource::Kind::LayerCanonicalCopy;
+        source.canonical_copy_coordinates = {0, 1, 4, 18, 39};
+        source.point = {F(2), F(3), F(5)};
+        const std::vector<MaskedGkrInputSource> sources{source};
+        const MaskedGkrInputSource &source_ref = sources.front();
+        const auto logical_array = implicit_provider.logical_lengths;
+        NativeMaskedGkrInputFoldCachePlan cache_plan =
+            native_masked_gkr_input_fold_cache_plan(
+                segment_domain, logical_array, 4096,
+                zkgpt::native_storage::heap_limit);
+        // Keep this internal equivalence fixture late enough to exercise a
+        // nontrivial challenge prefix while leaving two local rounds to fold.
+        cache_plan.late_fold_rounds = 2;
+        cache_plan.raw_bytes_upper_bound = 0;
+        cache_plan.mapped_bytes_upper_bound = 0;
+        cache_plan.heap_bytes_upper_bound = 0;
+        const std::uint64_t cache_divisor = std::uint64_t(1) << 2;
+        for (std::uint64_t length : logical_array) {
+            const std::uint64_t entries = length / cache_divisor +
+                (length % cache_divisor != 0);
+            const std::uint64_t bytes = entries * sizeof(F);
+            cache_plan.raw_bytes_upper_bound += 2 * bytes;
+            cache_plan.heap_bytes_upper_bound += 2 *
+                std::min<std::uint64_t>(bytes,
+                                        zkgpt::native_storage::heap_limit);
+            if (bytes > zkgpt::native_storage::heap_limit) {
+                const std::uint64_t unit = std::max<std::uint64_t>(
+                    4096, zkgpt::native_storage::page_size());
+                cache_plan.mapped_bytes_upper_bound +=
+                    2 * ((bytes + unit - 1) / unit) * unit;
+            }
+        }
+
+        MaskedInputCoefficientOracle implicit_coefficients(
+            input_size, segment_domain, logical_lengths, support, sources);
+        MaskedInputCoefficientOracle cached_coefficients(
+            input_size, segment_domain, logical_lengths, support, sources);
+        cached_coefficients.enable_late_fold_cache(cache_plan);
+        const F rho(13);
+        if (!implicit_coefficients.add_source(source_ref, rho, reason) ||
+            !cached_coefficients.add_source(source_ref, rho, reason))
+            return false;
+        MaskedInputWitnessFold implicit_witness(implicit_provider);
+        MaskedInputWitnessFold cached_witness(cached_provider, &cache_plan);
+
+        std::vector<F> fixed_challenges{
+            F(2), F(3), F(5), F(7), F(11), F(13)};
+        std::vector<F> consumed_challenges;
+        std::uint64_t active = input_size;
+        std::uint64_t local_bits = 0;
+        for (std::uint64_t size = segment_domain; size > 1; size >>= 1)
+            ++local_bits;
+        for (std::uint64_t round = 0; round < local_bits + 2; ++round) {
+            if (round == local_bits) {
+                implicit_coefficients.begin_selector_fold(active,
+                                                          implicit_witness);
+                cached_coefficients.begin_selector_fold(active,
+                                                        cached_witness);
+                if (implicit_witness.selectors() != cached_witness.selectors()) {
+                    masked_set_reason(reason,
+                                      "cached GKR selector witness differs from implicit fold");
+                    return false;
+                }
+            }
+            F implicit_even = F_ZERO, implicit_odd = F_ZERO,
+              implicit_at_two = F_ZERO;
+            F cached_even = F_ZERO, cached_odd = F_ZERO,
+              cached_at_two = F_ZERO;
+            implicit_coefficients.round_sums(
+                implicit_witness, active, round, implicit_even, implicit_odd,
+                implicit_at_two);
+            cached_coefficients.round_sums(
+                cached_witness, active, round, cached_even, cached_odd,
+                cached_at_two);
+            if (implicit_even != cached_even || implicit_odd != cached_odd ||
+                implicit_at_two != cached_at_two) {
+                masked_set_reason(reason,
+                                  "cached GKR round sums differ from implicit fold");
+                return false;
+            }
+            if (round == cache_plan.late_fold_rounds &&
+                (cached_coefficients.cache_extent(2) != 2 ||
+                 cached_witness.cache_extent(2) != 3)) {
+                masked_set_reason(reason,
+                                  "cached GKR coefficient/support prefixes were conflated");
+                return false;
+            }
+            const F challenge = fixed_challenges.at(
+                static_cast<std::size_t>(round));
+            consumed_challenges.push_back(challenge);
+            implicit_coefficients.fold_round(challenge, active, round,
+                                             implicit_witness);
+            cached_coefficients.fold_round(challenge, active, round,
+                                           cached_witness);
+            active >>= 1;
+        }
+        if (implicit_coefficients.terminal_value() !=
+                cached_coefficients.terminal_value() ||
+            implicit_witness.terminal_value() != cached_witness.terminal_value() ||
+            implicit_coefficients.evaluate_mle(consumed_challenges) !=
+                cached_coefficients.evaluate_mle(consumed_challenges)) {
+            masked_set_reason(reason,
+                              "cached GKR terminal fold differs from implicit fold");
+            return false;
+        }
+        if (reason != nullptr) reason->clear();
+        return true;
+    } catch (const std::exception &error) {
+        masked_set_reason(reason, error.what());
+        return false;
+    }
 }
 
 bool prove_masked_gkr_transcript(
@@ -4396,6 +5026,7 @@ bool prove_masked_gkr_transcript(
                         throw std::out_of_range("masked GKR legacy input coordinate is invalid");
                     return legacy_input->at(static_cast<std::size_t>(coordinate));
                 };
+            legacy_provider->value_at_read_only_thread_safe = true;
             input_provider = legacy_provider;
         }
         if (input_segment_logical_lengths.size() != 4 ||
@@ -4433,8 +5064,11 @@ bool prove_masked_gkr_transcript(
         native_prover.native_circuit = &circuit;
         native_prover.native_values = &witness_values;
         native_prover.native_terminal_values = &terminal_values;
-        if (input_provider != nullptr)
+        if (input_provider != nullptr) {
             native_prover.native_input_value_at = input_provider->value_at;
+            native_prover.native_input_value_at_thread_safe =
+                input_provider->value_at_read_only_thread_safe;
+        }
         native_prover.init();
         native_prover.sumcheckInitAll(r_u[circuit.size].begin());
 

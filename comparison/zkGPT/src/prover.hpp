@@ -77,6 +77,7 @@ public:
     const std::vector<zkgpt::NativeFieldVector>* native_values = nullptr;
     const zkgpt::NativeFieldView* native_terminal_values = nullptr;
     std::function<F(u64)> native_input_value_at;
+    bool native_input_value_at_thread_safe = false;
     template <class CoordinateVector>
     F getCirValue(u8 layer_id, const CoordinateVector &ori, u64 u) {
         if (native_values != nullptr) {
@@ -86,6 +87,13 @@ public:
             return !layer_id ? native_values->at(0).at(ori.at(u)) : native_values->at(layer_id).at(u);
         }
         return !layer_id ? val[0][ori[u]] : val[layer_id][u];
+    }
+    bool getCirValueReadOnlyThreadSafe(u8 layer_id) const {
+        if (native_values == nullptr) return false;
+        if (!layer_id && native_input_value_at) return native_input_value_at_thread_safe;
+        if (native_terminal_values != nullptr && static_cast<std::size_t>(layer_id) + 1 == native_values->size())
+            return native_terminal_values->read_only_thread_safe();
+        return true;
     }
     u64 proof_size;
     vector<G> gens;

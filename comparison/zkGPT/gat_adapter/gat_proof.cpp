@@ -3808,7 +3808,13 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
         return plan;
     }
 
+    const auto subset_begin = std::chrono::steady_clock::now();
+    std::cerr << "gat_adapter_prover_stage: native-initSubset begin" << std::endl;
     plan.circuit.initSubset();
+    std::cerr << "gat_adapter_prover_stage: native-initSubset complete elapsed_ms="
+              << std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - subset_begin).count()
+              << std::endl;
     std::vector<NativeGkrMatmulShape> materialized_point_shapes;
     materialized_point_shapes.reserve(plan.matmuls.size());
     for (const MatMulDescriptor& descriptor : plan.matmuls)
@@ -6994,6 +7000,8 @@ bool read_context_plan(ContextReader &reader, GatCircuitPlan &plan) {
 #endif
 
 bool materialize_compact_plan(const Graph& graph, const QuantConfig& quant, const GatCircuitPlan& recipe, GatCircuitPlan& materialized, std::string* reason) {
+    const auto materialize_begin = std::chrono::steady_clock::now();
+    std::cerr << "gat_adapter_prover_stage: fullplan-materialize begin" << std::endl;
     const auto fail = [reason](const std::string& message) {
         if (reason != nullptr) *reason = message;
         return false;
@@ -7018,6 +7026,10 @@ bool materialize_compact_plan(const Graph& graph, const QuantConfig& quant, cons
             return fail(validation_reason.empty() ? "materialized compact plan failed validation" : validation_reason);
         }
         materialized = std::move(generated);
+        std::cerr << "gat_adapter_prover_stage: fullplan-materialize complete elapsed_ms="
+                  << std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - materialize_begin).count()
+                  << std::endl;
         return true;
     } catch (const std::exception& error) { return fail(error.what()); }
 }
@@ -8236,6 +8248,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t prefix_allocation_unit_bytes =
             zkgpt::native_storage::filesystem_allocation_unit_bytes(zkgpt::native_storage::scratch_directory());
         report.gkr_prefix_filesystem_allocation_unit_bytes = prefix_allocation_unit_bytes;
+        report.gkr_input_fold_cache_page_size_bytes = prefix_page_bytes;
         const auto prefix_round_to_allocation = [&uadd, &umul, prefix_allocation_unit_bytes](std::uint64_t bytes, const char* what) {
             if (bytes == 0U) return std::uint64_t(0);
             return umul(uadd(bytes, prefix_allocation_unit_bytes - 1U, what) / prefix_allocation_unit_bytes,
@@ -8347,6 +8360,30 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t gkr_layers = report.gkr_layer_count_upper_bound;
         const std::uint64_t input_domain = report.flattened_input_domain_entries;
         const std::uint64_t input_bits = bits_for(input_domain);
+        if (report.input_layout.segments.size() != 4)
+            throw std::logic_error("GKR input-fold cache requires four canonical segments");
+        std::array<std::uint64_t, 4> input_segment_logical_lengths{};
+        for (std::size_t segment = 0; segment < input_segment_logical_lengths.size(); ++segment)
+            input_segment_logical_lengths[segment] = u64_from_size(
+                report.input_layout.segments[segment].logical_length,
+                "GKR input-fold cache logical segment length");
+        const NativeMaskedGkrInputFoldCachePlan input_fold_cache_plan =
+            native_masked_gkr_input_fold_cache_plan(
+                u64_from_size(report.input_layout.n_in,
+                              "GKR input-fold cache segment domain"),
+                input_segment_logical_lengths,
+                std::max(prefix_allocation_unit_bytes, prefix_page_bytes),
+                prefix_heap_limit);
+        report.gkr_input_fold_cache_late_rounds =
+            input_fold_cache_plan.late_fold_rounds;
+        report.gkr_input_fold_cache_scalar_bytes =
+            input_fold_cache_plan.scalar_bytes;
+        report.gkr_input_fold_cache_raw_bytes_upper_bound =
+            input_fold_cache_plan.raw_bytes_upper_bound;
+        report.gkr_input_fold_cache_mapped_bytes_upper_bound =
+            input_fold_cache_plan.mapped_bytes_upper_bound;
+        report.gkr_input_fold_cache_heap_bytes_upper_bound =
+            input_fold_cache_plan.heap_bytes_upper_bound;
         const std::uint64_t input_fold_heap_bytes = uadd(
             native_masked_gkr_input_fold_storage_bytes(
                 canonical_copy_entries,
@@ -8749,10 +8786,15 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t subset_v_bytes = ubytes(subset_v_entries, sizeof(PackedU40), "GKR V exact unique source map capacity");
         report.gkr_subset_source_map_bytes_upper_bound = std::max(subset_u_bytes, subset_v_bytes);
         const std::uint64_t bitmap_word_count = origin_map_domain / 64 + (origin_map_domain % 64 != 0);
-        const std::uint64_t mapped_subset_scratch_peak = mapped_allocation(
-            ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map bitmap"));
+        const std::uint64_t subset_bitmap_bytes = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map bitmap");
+        const std::uint64_t subset_rank_bytes = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map rank prefix");
+        const std::uint64_t mapped_subset_bitmap = mapped_allocation(subset_bitmap_bytes);
+        const std::uint64_t mapped_subset_rank = mapped_allocation(subset_rank_bytes);
+        const std::uint64_t mapped_subset_scratch_peak = uadd(mapped_subset_bitmap, mapped_subset_rank,
+            "mapped source-map bitmap and rank prefixes");
         report.gkr_subset_sort_scratch_bytes_upper_bound = 0;
-        report.gkr_subset_bitmap_scratch_bytes_upper_bound = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map bitmap");
+        report.gkr_subset_bitmap_scratch_bytes_upper_bound = subset_bitmap_bytes;
+        report.gkr_subset_rank_scratch_bytes_upper_bound = subset_rank_bytes;
         const std::uint64_t gate_builder_mapped_peak = uadd(
             uadd(uadd(mapped_direct_gate_arrays, mapped_direct_wide_ids, "gate-builder direct gates and coefficient IDs"),
                 coefficient_pools_mapped_bytes, "gate-builder coefficient pools"),
@@ -8863,9 +8905,11 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t gkr_validation_mapped_peak = uadd(proof_persistent_mapped, mapped_stream_validation,
             "mapped GKR witness-validation live peak");
         const std::uint64_t gkr_proving_mapped_peak = uadd(proof_persistent_mapped,
-            uadd(mapped_input_oracle_fold,
-                uadd(mapped_fconn_fold,
-                    uadd(mapped_fconn_source_weights, mapped_gkr_prefix, "mapped GKR prefix and FCONN"), "mapped GKR workspaces"), "mapped input oracle and GKR workspaces"),
+            uadd(report.gkr_input_fold_cache_mapped_bytes_upper_bound,
+                uadd(mapped_input_oracle_fold,
+                    uadd(mapped_fconn_fold,
+                        uadd(mapped_fconn_source_weights, mapped_gkr_prefix, "mapped GKR prefix and FCONN"), "mapped GKR workspaces"), "mapped input oracle and GKR workspaces"),
+                "mapped GKR input-fold caches and workspaces"),
             "mapped GKR live peak");
         const std::uint64_t gkr_mapped_peak = std::max(gkr_validation_mapped_peak, gkr_proving_mapped_peak);
         const std::uint64_t lasso_tensor_mapped_peak = uadd(lasso_phase_persistent_mapped,
@@ -8890,6 +8934,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             {"component:layer_values", mapped_layer_values},
             {"component:input_segments", mapped_input_segments},
             {"component:input_oracle_fold", mapped_input_oracle_fold},
+            {"component:input_fold_cache", report.gkr_input_fold_cache_mapped_bytes_upper_bound},
             {"component:fconn_fold", mapped_fconn_fold},
             {"component:fconn_source_weights", mapped_fconn_source_weights},
             {"component:gkr_prefix", mapped_gkr_prefix},
@@ -8898,7 +8943,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             {"component:lasso_transient", mapped_lasso_transient_peak},
             {"component:tensor_opening", mapped_tensor_opening_peak},
             {"component:w_mle", mapped_w_mle_peak},
-            {"component:source_bitmap", mapped_subset_scratch_peak},
+            {"component:source_bitmap", mapped_subset_bitmap},
+            {"component:source_rank", mapped_subset_rank},
             {"component:explicit_unary_gate_buffer", mapped_explicit_unary_gate_buffer},
         };
         const std::uint64_t gate_plan_scratch_peak = gate_plan_mapped_peak;
@@ -8914,8 +8960,10 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.estimated_native_heap_bytes_upper_bound = uadd(
             umul(native_live_allocation_count, heap_limit, "native heap allocation upper bound"),
             uadd(max_prefix_heap_bytes,
-                uadd(uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
+                uadd(uadd(uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
                          "native coefficient-pool and bounded input-fold heap"),
+                    report.gkr_input_fold_cache_heap_bytes_upper_bound,
+                    "native input-fold cache and input-fold helper heap"),
                     uadd(builder_target_dictionary_heap_bytes,
                          explicit_unary_gate_buffer_bytes <= prefix_heap_limit
                              ? explicit_unary_gate_buffer_bytes : 0,
@@ -8923,9 +8971,12 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                     "native coefficient, input-fold, target-dictionary, and explicit unary builder heap"),
                 "GKR prefix and bounded native heap workspace"),
             "native heap and bounded GKR/helper workspaces upper bound");
+        const std::uint64_t source_map_heap_scratch = uadd(
+            subset_bitmap_bytes <= heap_limit ? subset_bitmap_bytes : 0,
+            subset_rank_bytes <= heap_limit ? subset_rank_bytes : 0,
+            "heap-backed source-map bitmap and rank prefixes");
         report.estimated_native_heap_bytes_upper_bound = uadd(report.estimated_native_heap_bytes_upper_bound,
-            mapped_subset_scratch_peak == 0 ? report.gkr_subset_bitmap_scratch_bytes_upper_bound : 0,
-            "native heap plus one heap-backed source-map bitmap");
+            source_map_heap_scratch, "native heap plus source-map bitmap and rank prefixes");
         const std::uint64_t source_ledger_temporary_host_bytes = uadd(320,
             umul(report.gkr_input_source_count_upper_bound,
                 uadd(2048, umul(144, input_bits, "GKR source-ledger point serialization"), "GKR source-ledger per-source metadata"),
@@ -9116,7 +9167,11 @@ void finalize_gat_capacity_report(GatCapacityReport& report) {
                  report.gkr_point_shape_bitmap_scratch_bytes !=
                      2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
                  report.gkr_point_shape_touched_index_scratch_bytes_upper_bound !=
-                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t))
+                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t) ||
+                 report.gkr_subset_bitmap_scratch_bytes_upper_bound !=
+                     ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
+                 report.gkr_subset_rank_scratch_bytes_upper_bound !=
+                     ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t))
             report.reason = "native GKR point-domain scratch does not match exact logical source support";
         else if (report.flattened_input_domain_entries == 0 || report.flattened_input_domain_entries > report.flattened_input_domain_limit_u64 ||
                  report.input_layout.n_in > report.coordinate_domain_limit_u64)
@@ -9389,7 +9444,13 @@ bool evaluate_signed_round_div_gate_assignment(Int dividend, Int denominator, co
     if (relation.uni_gates.empty() && relation.bin_gates.empty()) throw std::invalid_argument("SignedRoundDiv relation has no gates");
     plan.circuit.circuit.push_back(std::move(relation));
     plan.circuit.size = static_cast<u8>(plan.circuit.circuit.size());
+    const auto subset_begin = std::chrono::steady_clock::now();
+    std::cerr << "gat_adapter_prover_stage: native-initSubset begin" << std::endl;
     plan.circuit.initSubset();
+    std::cerr << "gat_adapter_prover_stage: native-initSubset complete elapsed_ms="
+              << std::chrono::duration<double, std::milli>(
+                     std::chrono::steady_clock::now() - subset_begin).count()
+              << std::endl;
     std::vector<NativeFieldVector> values;
     if (!evaluate_layered_values(plan, input, values, reason)) return false;
     for (std::size_t index = 0; index < builder.next_output; ++index) if (values.back()[index] != Fr(builder.targets[index])) {

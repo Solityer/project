@@ -1700,11 +1700,11 @@ struct MatrixRowFold {
     hyrax::HyraxMleBasisView view;
     hyrax::HyraxScalarProvider values;
     std::shared_ptr<std::vector<F>> folded_values;
+    F row_weight_sum = F_ZERO;
     F raw_evaluation = F_ZERO;
 };
 
-MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const MaskedFamilyState& state, const std::vector<F>& point,
-                               bool complement = false) {
+MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const MaskedFamilyState& state, const std::vector<F>& point) {
     const std::uint64_t rows = family.matrix_layout.rows;
     const std::uint64_t columns = family.matrix_layout.columns;
     const std::uint32_t column_bits = family.matrix_layout.column_bits;
@@ -1728,11 +1728,9 @@ MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const Mask
         const std::uint64_t column = index & (columns - 1);
         (*folded_values)[static_cast<std::size_t>(column)] += row_weights[static_cast<std::size_t>(row)] * value;
     });
-    if (complement) {
-        for (F& value : *folded_values) value -= row_weight_sum;
-    }
     MatrixRowFold result;
     result.folded_values = folded_values;
+    result.row_weight_sum = row_weight_sum;
     result.values.size = columns;
     result.values.at = [folded_values](std::uint64_t index) {
         if (index >= folded_values->size()) throw std::out_of_range("native Lasso row-folded M_f index is out of range");
@@ -1747,11 +1745,36 @@ MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const Mask
     result.view.full_domain = columns;
     result.view.logical_length = columns;
     result.view.active_domain = columns;
-    result.view.role = complement ? "native-lasso-M_f-minus-one-rowfold-v2" : "native-lasso-M_f-rowfold-v2";
+    result.view.role = "native-lasso-M_f-rowfold-v2";
     result.view.basis_id = state.basis_id;
     result.view.point = column_point;
     result.view.generators = matrix_generators(family);
     result.raw_evaluation = mle_eval(*folded_values, column_point);
+    return result;
+}
+
+MatrixRowFold complement_family_rows(const NativeLassoFamilyProver& family, const MatrixRowFold& base) {
+    const std::uint64_t columns = family.matrix_layout.columns;
+    if (columns == 0 || base.folded_values == nullptr || base.folded_values->size() != columns || family.matrix_layout.column_generators.size() != columns)
+        throw std::invalid_argument("native Lasso complement row fold dimensions are invalid");
+    auto folded_values = std::make_shared<std::vector<F>>(*base.folded_values);
+    for (F& value : *folded_values) value -= base.row_weight_sum;
+    G1 generator_sum = family.matrix_layout.column_generators.front();
+    for (std::size_t index = 1; index < family.matrix_layout.column_generators.size(); ++index)
+        generator_sum += family.matrix_layout.column_generators[index];
+    MatrixRowFold result;
+    result.folded_values = folded_values;
+    result.row_weight_sum = base.row_weight_sum;
+    result.values.size = columns;
+    result.values.at = [folded_values](std::uint64_t index) {
+        if (index >= folded_values->size()) throw std::out_of_range("native Lasso complement row-folded M_f index is out of range");
+        return (*folded_values)[static_cast<std::size_t>(index)];
+    };
+    result.commitment = base.commitment;
+    result.commitment.commitment -= generator_sum * base.row_weight_sum;
+    result.view = base.view;
+    result.view.role = "native-lasso-M_f-minus-one-rowfold-v2";
+    result.raw_evaluation = base.raw_evaluation - base.row_weight_sum;
     return result;
 }
 
@@ -2657,14 +2680,14 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             NativeMaskedSumcheckResult boolean_result;
             if (!boolean_prover.finish({boolean_value, complement_value}, &boolean_result, reason)) return false;
             hyrax::MaskedMleOpening boolean_opening;
+            MatrixRowFold boolean_fold = fold_family_rows(family, states[family_index], boolean_point);
             {
-                MatrixRowFold boolean_fold = fold_family_rows(family, states[family_index], boolean_point);
                 if (!hyrax::open_masked_mle_with_claim(boolean_fold.commitment, boolean_fold.view, boolean_fold.values, boolean_result.terminal_values[0], session,
                                                        prefix + "/c-boolean-open", boolean_opening, reason, false, "", &scalar_basis,
                                                        &boolean_result.terminal_openings[0], &boolean_raw_opening)) return false;
             }
             {
-                MatrixRowFold complement_fold = fold_family_rows(family, states[family_index], boolean_point, true);
+                MatrixRowFold complement_fold = complement_family_rows(family, boolean_fold);
                 if (!hyrax::open_masked_mle_with_claim(complement_fold.commitment, complement_fold.view, complement_fold.values,
                                                        boolean_result.terminal_values[1], session, prefix + "/c-boolean-complement-open", boolean_opening,
                                                        reason, false, "", &scalar_basis, &boolean_result.terminal_openings[1], &complement_raw_opening)) return false;

@@ -1,0 +1,12 @@
+[zkGPT][verifier] public_context_load_plan_restore_begin
+gat_adapter_prover_stage: fullplan-materialize begin
+gat_adapter_prover_stage: native-initSubset begin
+gat_adapter_prover_stage: native-initSubset complete elapsed_ms=0.03128
+gat_adapter_prover_stage: fullplan-materialize complete elapsed_ms=1.70256
+[zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=2.70027 ok=true
+[zkGPT][verifier] artifact_read_parse_begin
+[zkGPT][verifier] artifact_read_parse_complete elapsed_ms=10.8953 ok=true
+[zkGPT][verifier] crypto_verify_begin
+[zkGPT][verifier] crypto_verify_complete elapsed_ms=3263.98 ok=true
+VERIFY_OK
+independent_cli_verify_elapsed=3.31 exit=0

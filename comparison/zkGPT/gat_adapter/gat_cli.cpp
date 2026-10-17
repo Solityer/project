@@ -783,6 +783,13 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("gkr_subset_source_map_bytes_upper_bound", report.gkr_subset_source_map_bytes_upper_bound);
     number("gkr_subset_sort_scratch_bytes_upper_bound", report.gkr_subset_sort_scratch_bytes_upper_bound);
     number("gkr_subset_bitmap_scratch_bytes_upper_bound", report.gkr_subset_bitmap_scratch_bytes_upper_bound);
+    number("gkr_subset_rank_scratch_bytes_upper_bound", report.gkr_subset_rank_scratch_bytes_upper_bound);
+    number("gkr_input_fold_cache_late_rounds", report.gkr_input_fold_cache_late_rounds);
+    number("gkr_input_fold_cache_scalar_bytes", report.gkr_input_fold_cache_scalar_bytes);
+    number("gkr_input_fold_cache_raw_bytes_upper_bound", report.gkr_input_fold_cache_raw_bytes_upper_bound);
+    number("gkr_input_fold_cache_mapped_bytes_upper_bound", report.gkr_input_fold_cache_mapped_bytes_upper_bound);
+    number("gkr_input_fold_cache_heap_bytes_upper_bound", report.gkr_input_fold_cache_heap_bytes_upper_bound);
+    number("gkr_input_fold_cache_page_size_bytes", report.gkr_input_fold_cache_page_size_bytes);
     number("gkr_point_shape_bitmap_scratch_bytes", report.gkr_point_shape_bitmap_scratch_bytes);
     number("gkr_point_shape_touched_index_scratch_bytes_upper_bound",
            report.gkr_point_shape_touched_index_scratch_bytes_upper_bound);

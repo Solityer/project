@@ -118,6 +118,26 @@ struct NativeGkrInputProvider {
     std::function<F(std::uint64_t)> value_at;
 };
 
+inline constexpr std::uint64_t kNativeMaskedGkrInputFoldCacheBudgetBytes =
+    128ULL * 1024 * 1024 * 1024;
+
+struct NativeMaskedGkrInputFoldCachePlan {
+    std::uint64_t late_fold_rounds = 0;
+    std::uint64_t raw_bytes_upper_bound = 0;
+    std::uint64_t mapped_bytes_upper_bound = 0;
+    std::uint64_t heap_bytes_upper_bound = 0;
+    std::uint64_t scalar_bytes = 0;
+};
+
+// Selects the earliest local fold round whose two conservative dense prefixes
+// fit the fixed input-fold cache budget. Allocation rounding mirrors the
+// native scratch allocator used by the prover.
+NativeMaskedGkrInputFoldCachePlan native_masked_gkr_input_fold_cache_plan(
+    std::uint64_t segment_domain,
+    const std::array<std::uint64_t, 4> &logical_lengths,
+    std::uint64_t allocation_unit_bytes,
+    std::uint64_t heap_limit_bytes);
+
 // Conservative peak storage bound for the bounded masked-GKR input fold
 // oracle. The existing producer supplies the canonical-copy entry count,
 // input-source count, and full canonical input-domain bit width.
@@ -175,6 +195,10 @@ bool prove_masked_gkr_transcript(
     const zkgpt::NativeFieldView &public_output, std::string *reason = nullptr,
     NativeGkrInputBinding *input_binding = nullptr,
     NativeGkrProverResult *prover_result = nullptr);
+
+// Internal deterministic equivalence fixture used by the native smoke test.
+bool native_masked_gkr_input_fold_cache_equivalence_smoke(
+    std::string *reason = nullptr);
 
 bool prove_masked_gkr_transcript(
     NativeProofSession &session, const layeredCircuit &circuit,

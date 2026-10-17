@@ -468,6 +468,13 @@ struct GatCapacityReport {
     std::uint64_t gkr_subset_source_map_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_sort_scratch_bytes_upper_bound = 0;
     std::uint64_t gkr_subset_bitmap_scratch_bytes_upper_bound = 0;
+    std::uint64_t gkr_subset_rank_scratch_bytes_upper_bound = 0;
+    std::uint64_t gkr_input_fold_cache_late_rounds = 0;
+    std::uint64_t gkr_input_fold_cache_scalar_bytes = 0;
+    std::uint64_t gkr_input_fold_cache_raw_bytes_upper_bound = 0;
+    std::uint64_t gkr_input_fold_cache_mapped_bytes_upper_bound = 0;
+    std::uint64_t gkr_input_fold_cache_heap_bytes_upper_bound = 0;
+    std::uint64_t gkr_input_fold_cache_page_size_bytes = 0;
     std::uint64_t gkr_point_shape_bitmap_scratch_bytes = 0;
     std::uint64_t gkr_point_shape_touched_index_scratch_bytes_upper_bound = 0;
     std::uint64_t gkr_point_shape_layer_count = 0;

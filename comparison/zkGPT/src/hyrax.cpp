@@ -3,6 +3,7 @@
 #include "native_masked_sumcheck.hpp"
 #include "timer.hpp"
 #include <cmath>
+#include <future>
 #include <thread>
 #include <vector>
 #include <mutex>
@@ -25,11 +26,32 @@ namespace
 static_assert(sizeof(G1) == sizeof(mclBnG1) && alignof(G1) == alignof(mclBnG1), "MCL G1 C and C++ layouts differ");
 static_assert(sizeof(Fr) == sizeof(mclBnFr) && alignof(Fr) == alignof(mclBnFr), "MCL Fr C and C++ layouts differ");
 constexpr std::size_t kHyraxMsmThreadCap = 20;
+constexpr std::size_t kHyraxIpaParallelMinCount = 1ULL << 12;
+
+std::size_t hyrax_worker_limit() {
+    return std::min({kHyraxMsmThreadCap, static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())), static_cast<std::size_t>(std::max(1, omp_get_num_procs())), static_cast<std::size_t>(std::max(1, omp_get_max_threads())), static_cast<std::size_t>(std::max(1, omp_get_thread_limit()))});
+}
 
 std::size_t hyrax_msm_thread_count(std::size_t count) {
     const std::size_t min_n = mcl::fp::maxMulVecN;
-    const std::size_t available = std::min({kHyraxMsmThreadCap, static_cast<std::size_t>(std::max(1, omp_get_num_procs())), static_cast<std::size_t>(std::max(1, omp_get_max_threads())), static_cast<std::size_t>(std::max(1, omp_get_thread_limit()))});
+    const std::size_t available = hyrax_worker_limit();
     return count == 0 ? 1 : std::max<std::size_t>(1, std::min(available, 1 + (count - 1) / min_n));
+}
+
+template <class Function>
+void hyrax_parallel_for_static_ranges(std::size_t count, Function &&function) {
+    const std::size_t available = hyrax_worker_limit();
+    if (count < kHyraxIpaParallelMinCount || available <= 1) { function(0, 0, count); return; }
+    const std::size_t task_count = std::min(available, std::max<std::size_t>(2, count / kHyraxIpaParallelMinCount));
+    const std::size_t chunk_base = count / task_count, chunk_remainder = count % task_count;
+    std::vector<std::future<void>> futures;
+    futures.reserve(task_count);
+    for (std::size_t task = 0; task < task_count; ++task) {
+        const std::size_t begin = chunk_base * task + std::min(task, chunk_remainder);
+        const std::size_t end = begin + chunk_base + static_cast<std::size_t>(task < chunk_remainder);
+        futures.emplace_back(std::async(std::launch::async, [&, task, begin, end]() { function(task, begin, end); }));
+    }
+    for (std::future<void> &future : futures) future.get();
 }
 
 G1 hyrax_native_mul_vec_mt(G1 *mutable_points, const Fr *scalars, std::size_t count) {
@@ -1231,11 +1253,15 @@ void bullet_reduce_masked_response(
     std::size_t round = 0;
     while (size > 1) {
         const std::size_t half = size / 2;
+        std::vector<Fr> cross_left_partials(kHyraxMsmThreadCap, Fr(0)), cross_right_partials(kHyraxMsmThreadCap, Fr(0));
+        hyrax_parallel_for_static_ranges(half, [&](std::size_t task, std::size_t begin, std::size_t end) {
+            for (std::size_t index = begin; index < end; ++index) {
+                cross_left_partials[task] += response[index] * basis[index + half];
+                cross_right_partials[task] += response[index + half] * basis[index];
+            }
+        });
         Fr cross_left(0), cross_right(0);
-        for (std::size_t index = 0; index < half; ++index) {
-            cross_left += response[index] * basis[index + half];
-            cross_right += response[index + half] * basis[index];
-        }
+        for (std::size_t task = 0; task < kHyraxMsmThreadCap; ++task) { cross_left += cross_left_partials[task]; cross_right += cross_right_partials[task]; }
         const G1 gamma_minus1 = evaluation_base * cross_left + masked_provider_commit(generators, half, [&response](std::uint64_t index) { return response[static_cast<std::size_t>(index)]; }, half);
         const G1 gamma_1 = evaluation_base * cross_right +
             masked_provider_commit(generators, half,
@@ -1253,13 +1279,13 @@ void bullet_reduce_masked_response(
                 gamma_1 * inverse * inverse + gamma;
         evaluation = challenge * challenge * cross_left +
                      inverse * inverse * cross_right + evaluation;
-        for (std::size_t index = 0; index < half; ++index) {
-            basis[index] = basis[index] * inverse + basis[index + half] * challenge;
-            generators[index] = generators[index] * inverse +
-                                generators[index + half] * challenge;
-            response[index] = challenge * response[index] +
-                              inverse * response[index + half];
-        }
+        hyrax_parallel_for_static_ranges(half, [&](std::size_t, std::size_t begin, std::size_t end) {
+            for (std::size_t index = begin; index < end; ++index) {
+                basis[index] = basis[index] * inverse + basis[index + half] * challenge;
+                generators[index] = generators[index] * inverse + generators[index + half] * challenge;
+                response[index] = challenge * response[index] + inverse * response[index + half];
+            }
+        });
         size = half;
         ++round;
     }
@@ -1279,8 +1305,10 @@ bool verify_masked_response_ipa(
     const G1 &evaluation_base, const NativeProofSession &session,
     std::size_t &cursor, const std::string &label, std::string *reason) {
     std::size_t size = generators.size();
+    const std::size_t original_size = size;
     std::size_t round_count = 0;
     for (std::size_t count = size; count > 1; count >>= 1) ++round_count;
+    std::vector<Fr> challenges(round_count), inverses(round_count);
     G1 gamma = initial_gamma;
     for (std::size_t round = 0; round < round_count; ++round) {
         const NativeProofMessage *fold = consume_masked_message(
@@ -1303,16 +1331,28 @@ bool verify_masked_response_ipa(
         }
         Fr inverse;
         Fr::inv(inverse, challenge);
+        challenges[round] = challenge;
+        inverses[round] = inverse;
         gamma = gamma_minus1 * challenge * challenge +
                 gamma_1 * inverse * inverse + gamma;
         const std::size_t half = size / 2;
-        for (std::size_t index = 0; index < half; ++index) {
-            basis[index] = basis[index] * inverse + basis[index + half] * challenge;
-            generators[index] = generators[index] * inverse +
-                                generators[index + half] * challenge;
-        }
+        for (std::size_t index = 0; index < half; ++index) basis[index] = basis[index] * inverse + basis[index + half] * challenge;
         size = half;
     }
+    const Fr folded_basis = basis[0];
+    basis[0] = Fr(1);
+    std::size_t lambda_size = 1;
+    for (std::size_t round = round_count; round > 0; --round) {
+        const std::size_t challenge_index = round - 1;
+        const std::size_t half = lambda_size;
+        for (std::size_t index = 0; index < half; ++index) {
+            const Fr prefix = basis[index];
+            basis[index] = prefix * inverses[challenge_index];
+            basis[index + half] = prefix * challenges[challenge_index];
+        }
+        lambda_size += half;
+    }
+    const G1 folded_generator = hyrax_native_mul_vec_mt(generators.data(), basis.data(), original_size);
     const NativeProofMessage *terminal = consume_masked_message(
         session, cursor, NativeProofMessageKind::Data, label + "/terminal", reason);
     if (terminal == nullptr) return false;
@@ -1325,8 +1365,8 @@ bool verify_masked_response_ipa(
         !decode_open_field(terminal_parts[2], terminal_basis) ||
         !decode_open_field(terminal_parts[3], terminal_response) ||
         !decode_open_field(terminal_parts[4], terminal_evaluation) ||
-        size != 1 || terminal_gamma != gamma ||
-        terminal_generator != generators[0] || terminal_basis != basis[0] ||
+        size != 1 || lambda_size != original_size || terminal_gamma != gamma ||
+        terminal_generator != folded_generator || terminal_basis != folded_basis ||
         terminal_evaluation != terminal_response * terminal_basis ||
         terminal_gamma != terminal_generator * terminal_response +
                               evaluation_base * terminal_evaluation) {

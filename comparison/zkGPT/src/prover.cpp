@@ -200,7 +200,7 @@ void prover::sumcheckInitPhase1(const F &relu_rou_0)
         native_value_prefix[lane].initialize_source_view(active_extent, zkgpt::NativeFieldView::borrowed(
             active_extent, source_layer, [this, dep, source_layer](std::size_t index) {
                 return getCirValue(static_cast<u8>(dep), source_layer->ori_id_u, static_cast<u64>(index));
-            }));
+            }, getCirValueReadOnlyThreadSafe(static_cast<u8>(dep))));
     }
     timer useless_t;
     useless_t.start();
@@ -346,7 +346,7 @@ void prover::sumcheckInitPhase2()
         native_value_prefix[lane].initialize_source_view(active_extent, zkgpt::NativeFieldView::borrowed(
             active_extent, source_layer, [this, dep, source_layer](std::size_t index) {
                 return getCirValue(static_cast<u8>(dep), source_layer->ori_id_v, static_cast<u64>(index));
-            }));
+            }, getCirValueReadOnlyThreadSafe(static_cast<u8>(dep))));
     }
 
 

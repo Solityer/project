@@ -34,6 +34,39 @@ std::vector<Fr> mle_basis(const std::vector<Fr>& point) {
     return basis;
 }
 
+bool response_ipa_lambda_matches_recursive_fold() {
+    constexpr std::size_t size = 8;
+    const std::vector<Fr> challenges{Fr(2), Fr(3), Fr(5)};
+    std::vector<Fr> inverses(challenges.size());
+    for (std::size_t round = 0; round < challenges.size(); ++round) Fr::inv(inverses[round], challenges[round]);
+    std::vector<G1> generators(size), folded_generators(size);
+    for (std::size_t index = 0; index < size; ++index) hashAndMapToG1(generators[index], "masked-hyrax-smoke/ipa-fold/" + std::to_string(index));
+    folded_generators = generators;
+    std::size_t folded_size = size;
+    for (std::size_t round = 0; round < challenges.size(); ++round) {
+        const std::size_t half = folded_size / 2;
+        for (std::size_t index = 0; index < half; ++index) folded_generators[index] = folded_generators[index] * inverses[round] + folded_generators[index + half] * challenges[round];
+        folded_size = half;
+    }
+    std::vector<Fr> lambdas(size, Fr(0));
+    lambdas[0] = Fr(1);
+    std::size_t lambda_size = 1;
+    for (std::size_t round = challenges.size(); round > 0; --round) {
+        const std::size_t challenge_index = round - 1;
+        const std::size_t half = lambda_size;
+        for (std::size_t index = 0; index < half; ++index) {
+            const Fr prefix = lambdas[index];
+            lambdas[index] = prefix * inverses[challenge_index];
+            lambdas[index + half] = prefix * challenges[challenge_index];
+        }
+        lambda_size += half;
+    }
+    G1 lambda_fold;
+    lambda_fold.clear();
+    G1::mulVec(lambda_fold, generators.data(), lambdas.data(), size);
+    return folded_size == 1 && lambda_size == size && folded_generators[0] == lambda_fold;
+}
+
 bool tensor_tail_rounds_match_dense_reference(const std::vector<Fr>& values, std::uint64_t logical_length, std::uint64_t active_domain, const std::vector<Fr>& beta, const std::vector<Fr>& challenges, const std::vector<std::vector<Fr>>& trace) {
     if (values.size() != logical_length || beta.size() != challenges.size() || trace.size() != challenges.size()) HYRAX_SMOKE_FAIL();
     std::vector<Fr> private_values(static_cast<std::size_t>(active_domain), Fr(0)), public_values(static_cast<std::size_t>(active_domain), Fr(0));
@@ -612,12 +645,14 @@ int main() {
         }
         return true;
     };
+    if (!check_case("ipa-fold(lambda-vs-recursive)", [] { return response_ipa_lambda_matches_recursive_fold(); })) return 1;
     if (!check_case("provider(1,1)", [] { return run_provider_case(1, 1); })) return 1;
     if (!check_case("provider(8,1)", [] { return run_provider_case(8, 1); })) return 1;
     if (!check_case("provider(8,3)", [] { return run_provider_case(8, 3); })) return 1;
     if (!check_case("provider(16,5)", [] { return run_provider_case(16, 5); })) return 1;
     if (!check_case("provider(32,9)", [] { return run_provider_case(32, 9); })) return 1;
     if (!check_case("provider(64,64)", [] { return run_provider_case(64, 64); })) return 1;
+    if (!check_case("provider(8192,8192)", [] { return run_provider_case(8192, 8192); })) return 1;
     if (!check_case("legacy(1)", [] { return run_legacy_wrapper_case(1); })) return 1;
     if (!check_case("legacy(4)", [] { return run_legacy_wrapper_case(4); })) return 1;
     if (!check_case("tensor", [] { return run_tensor_case(); })) return 1;

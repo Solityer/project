@@ -74,6 +74,48 @@ void challenged_compaction_cases() {
     std::cout << "NATIVE_GKR_CHALLENGE_COMPACTION_OK cases=5 rounds=6\n";
 }
 
+void parallel_challenge_apply_equivalence() {
+    constexpr std::uint64_t source_extent = (std::uint64_t(1) << 16U) + 1U;
+    constexpr std::uint64_t folded_extent = source_extent / 2U + source_extent % 2U;
+    require(zkgpt::native_gkr::challenge_apply_worker_count(folded_extent) > 1U,
+            "parallel challenge fixture did not select multiple workers");
+    std::vector<F> source(static_cast<std::size_t>(source_extent));
+    for (std::uint64_t index = 0U; index < source_extent; ++index)
+        source[static_cast<std::size_t>(index)] = F(static_cast<int>(index % 101U + 3U));
+    for (const F challenge : {F_ZERO, F_ONE}) {
+        zkgpt::native_gkr::PackedAffinePrefixArena source_pending;
+        source_pending.initialize_source_view(source_extent, zkgpt::NativeFieldView::from_vector(source));
+        source_pending.finish_fold(folded_extent);
+        source_pending.apply_challenge(challenge);
+        for (std::uint64_t index = 0U; index < folded_extent; ++index) {
+            const std::uint64_t even = index * 2U;
+            const std::uint64_t odd = even + 1U;
+            const F zero_value = source[static_cast<std::size_t>(even)];
+            const F one_value = odd < source_extent ? source[static_cast<std::size_t>(odd)] : F_ZERO;
+            const F expected = (one_value - zero_value).isZero() ? zero_value : (one_value - zero_value) * challenge + zero_value;
+            require(source_pending.coordinate_value(index, challenge) == expected,
+                    "parallel pending-source challenge differs from the serial affine formula");
+        }
+        zkgpt::native_gkr::PackedAffinePrefixArena affine;
+        affine.initialize_scalars(source_extent);
+        for (std::uint64_t index = 0U; index < folded_extent; ++index) {
+            const F slope = index % 7U == 0U ? F_ZERO : F(static_cast<int>(index % 23U + 5U));
+            const F intercept(static_cast<int>(index % 29U + 7U));
+            affine.store_folded(index, linear_poly(slope, intercept));
+        }
+        affine.finish_fold(folded_extent);
+        affine.apply_challenge(challenge);
+        for (std::uint64_t index = 0U; index < folded_extent; ++index) {
+            const F slope = index % 7U == 0U ? F_ZERO : F(static_cast<int>(index % 23U + 5U));
+            const F intercept(static_cast<int>(index % 29U + 7U));
+            const F expected = slope.isZero() ? intercept : slope * challenge + intercept;
+            require(affine.coordinate_value(index, challenge) == expected,
+                    "parallel affine challenge differs from the serial affine formula");
+        }
+    }
+    std::cout << "NATIVE_GKR_PARALLEL_CHALLENGE_OK extent=" << folded_extent << " challenges=zero,one\n";
+}
+
 void source_materialization_microbenchmark() {
     constexpr std::uint64_t extent = 300001U;
     const F challenge(29);
@@ -399,6 +441,7 @@ void empty_lane_zero_terminal() {
 int main() {
     initPairing(mcl::BN_SNARK1);
     challenged_compaction_cases();
+    parallel_challenge_apply_equivalence();
     source_materialization_microbenchmark();
     dense_round_equivalence();
     asymmetric_lanes_and_chunk_boundary();

@@ -189,6 +189,7 @@ void test_bitmap_subset_matches_raw_sort_unique() {
     circuit.circuit[2].add_binary(1, 17, 4, 1, 0);
     circuit.circuit[2].add_binary(2, 2, 3, 1, 1); // Both operands come from layer 1.
     circuit.circuit[2].add_binary(3, 8, 17, 1, 2); // U from layer 1, V from layer 0.
+    circuit.set_source_support_ranges({{0, 64}, {128, 3}});
 
     std::vector<u64> expected_u{17, 17, 130, 2, 4, 17};
     std::vector<u64> expected_v{129, 4, 17};
@@ -532,6 +533,10 @@ bool test_input_aggregate_parallel_proof() {
     provider->full_size = kInputSize;
     provider->segment_domain = kSegmentDomain;
     provider->logical_lengths = {1, kSegmentDomain, kSegmentDomain, 0};
+    provider->segment_support[0] = {{0, 1}};
+    provider->segment_support[1] = {{0, kSegmentDomain}};
+    provider->segment_support[2] = {{0, kSegmentDomain}};
+    provider->support_complete = true;
     provider->value_at_read_only_thread_safe = true;
     provider->value_at = [input_values](std::uint64_t coordinate) {
         if (coordinate >= input_values->size())
@@ -587,6 +592,12 @@ bool test_input_aggregate_parallel_proof() {
 int main() {
     test_bitmap_subset_matches_raw_sort_unique();
     initPairing(BN254);
+    std::string cache_reason;
+    if (!native_masked_gkr_input_fold_cache_equivalence_smoke(&cache_reason)) {
+        std::cerr << "native masked GKR fold-cache equivalence failed: "
+                  << cache_reason << '\n';
+        return 13;
+    }
     test_masked_eq_lookup_matches_scalar();
     test_masked_gkr_coefficients_scalar_and_parallel();
     if (!test_input_aggregate_parallel_proof()) return 15;

@@ -295,29 +295,32 @@ public:
     NativeFieldView() = default;
 
     // The caller owns the referenced storage. Keep lifetime_token alive until
-    // every synchronous consumer has returned; getters must be thread-safe and read-only.
+    // every synchronous consumer has returned; declare concurrent getter safety explicitly.
     static NativeFieldView borrowed(std::size_t logical_size,
                                     const void* lifetime_token,
-                                    Getter getter) {
+                                    Getter getter,
+                                    bool read_only_thread_safe = false) {
         if (lifetime_token == nullptr || !getter)
             throw std::invalid_argument("native field view requires a live lifetime token and getter");
         NativeFieldView view;
         view.logical_size_ = logical_size;
         view.lifetime_token_ = lifetime_token;
         view.getter_ = std::move(getter);
+        view.read_only_thread_safe_ = read_only_thread_safe;
         return view;
     }
 
     template<class Vector> static NativeFieldView from_vector(const Vector& values) {
         const Vector* borrowed_values = &values;
         return borrowed(values.size(), borrowed_values,
-                        [borrowed_values](std::size_t index) { return borrowed_values->at(index); });
+                        [borrowed_values](std::size_t index) { return borrowed_values->at(index); }, true);
     }
 
     bool configured() const noexcept {
         return logical_size_ != 0 || lifetime_token_ != nullptr || static_cast<bool>(getter_);
     }
     bool valid() const noexcept { return lifetime_token_ != nullptr && static_cast<bool>(getter_); }
+    bool read_only_thread_safe() const noexcept { return read_only_thread_safe_; }
     std::size_t size() const noexcept { return logical_size_; }
 
     F at(std::size_t index) const {
@@ -331,6 +334,7 @@ private:
     std::size_t logical_size_ = 0;
     const void* lifetime_token_ = nullptr;
     Getter getter_;
+    bool read_only_thread_safe_ = false;
 };
 
 class NativeStreamingDigest {

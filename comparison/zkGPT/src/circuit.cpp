@@ -209,10 +209,13 @@ void layeredCircuit::initSubset()
         throw std::length_error("native GKR source support exceeds native size_t");
     const std::size_t bitmap_word_count = static_cast<std::size_t>(support_entries / 64 + (support_entries % 64 != 0));
     // Reuse one zeroed bitmap for all lanes. Each enumeration clears its words
-    // before returning, so only one packed source-support allocation is live.
+    // after its gates are remapped, so only one bitmap/rank pair is live.
     zkgpt::NativeVector<std::uint64_t> source_seen(bitmap_word_count, 0);
     if (source_seen.capacity() != bitmap_word_count)
         throw std::length_error("native GKR source bitmap capacity differs from its exact support bound");
+    zkgpt::NativeVector<std::uint64_t> source_rank(bitmap_word_count, 0);
+    if (source_rank.capacity() != bitmap_word_count)
+        throw std::length_error("native GKR source rank capacity differs from its exact support bound");
     const auto support_index_for_coordinate = [&support_ranges, &support_prefix](u64 coordinate) -> std::size_t {
         const auto after = std::upper_bound(support_ranges.begin(), support_ranges.end(), coordinate,
             [](u64 value, const auto& range) { return value < range.first; });
@@ -244,7 +247,7 @@ void layeredCircuit::initSubset()
         };
         const auto make_subset_map = [&](std::size_t source_layer, const auto& visit_coordinates, auto& coordinates) {
             const std::size_t domain = circuit.at(source_layer).size;
-            if (source_layer != 0 || source_seen.size() != static_cast<std::size_t>(support_entries / 64 + (support_entries % 64 != 0)))
+            if (source_layer != 0 || source_seen.size() != bitmap_word_count || source_rank.size() != bitmap_word_count)
                 throw std::logic_error("native GKR source-map bitmap does not match its logical source support");
             std::size_t unique_count = 0;
             visit_coordinates([&](std::size_t actual_source_layer, u64 coordinate) {
@@ -257,6 +260,12 @@ void layeredCircuit::initSubset()
                 if ((word & mask) == 0) { word |= mask; ++unique_count; }
             });
             if (unique_count == 0) return;
+            std::size_t rank = 0;
+            for (std::size_t word_index = 0; word_index < source_seen.size(); ++word_index) {
+                source_rank[word_index] = rank;
+                rank += static_cast<std::size_t>(__builtin_popcountll(source_seen[word_index]));
+            }
+            if (rank != unique_count) throw std::logic_error("native GKR source bitmap rank differs from its unique coordinate count");
             coordinates.reserve(unique_count);
             if (coordinates.capacity() != unique_count)
                 throw std::length_error("native GKR source map capacity differs from its exact unique count");
@@ -269,7 +278,6 @@ void layeredCircuit::initSubset()
                     coordinates.push_back(coordinate_for_support_index(support_index));
                     word &= word - 1;
                 }
-                source_seen[word_index] = 0;
             }
             if (coordinates.size() != unique_count)
                 throw std::logic_error("native GKR source bitmap unique count changed during enumeration");
@@ -277,10 +285,16 @@ void layeredCircuit::initSubset()
         auto finish_map = [](auto& map, u64& count) {
             count = map.size();
         };
-        auto subset_index = [](const auto& sorted_coordinates, u64 coordinate) {
-            const auto found = std::lower_bound(sorted_coordinates.begin(), sorted_coordinates.end(), coordinate);
-            if (found == sorted_coordinates.end() || *found != coordinate) throw std::logic_error("native GKR input subset map is incomplete");
-            return static_cast<u64>(found - sorted_coordinates.begin());
+        const auto subset_index = [&](u64 coordinate) {
+            const std::size_t support_index = support_index_for_coordinate(coordinate);
+            const std::size_t word_index = support_index >> 6U;
+            const unsigned bit_index = static_cast<unsigned>(support_index & 63U);
+            if (word_index >= source_seen.size()) throw std::logic_error("native GKR input subset rank word is outside its bitmap");
+            const std::uint64_t word = source_seen[word_index];
+            const std::uint64_t bit = std::uint64_t(1) << bit_index;
+            if ((word & bit) == 0U) throw std::logic_error("native GKR input subset map is incomplete");
+            const std::uint64_t lower_mask = bit_index == 0U ? 0U : bit - 1U;
+            return source_rank[word_index] + static_cast<std::uint64_t>(__builtin_popcountll(word & lower_mask));
         };
         {
             const auto source_layer_for_unary = [i](const uniGate& gate) -> std::size_t {
@@ -301,11 +315,12 @@ void layeredCircuit::initSubset()
             }, cur.ori_id_u);
             finish_map(cur.ori_id_u, cur.size_u[0]);
             for (auto& gate : cur.uni_gates) {
-                if (!gate.lu) gate.u = subset_index(cur.ori_id_u, gate.u);
+                if (!gate.lu) gate.u = subset_index(gate.u);
             }
             for (auto& gate : cur.bin_gates) {
-                if (!gate.getLayerIdU(i)) gate.u = subset_index(cur.ori_id_u, gate.u);
+                if (!gate.getLayerIdU(i)) gate.u = subset_index(gate.u);
             }
+            std::fill(source_seen.begin(), source_seen.end(), 0U);
         }
         {
             make_subset_map(0, [&](const auto& add) {
@@ -315,7 +330,8 @@ void layeredCircuit::initSubset()
                 }
             }, cur.ori_id_v);
             finish_map(cur.ori_id_v, cur.size_v[0]);
-            for (auto& gate : cur.bin_gates) if (!gate.getLayerIdV(i)) gate.v = subset_index(cur.ori_id_v, gate.v);
+            for (auto& gate : cur.bin_gates) if (!gate.getLayerIdV(i)) gate.v = subset_index(gate.v);
+            std::fill(source_seen.begin(), source_seen.end(), 0U);
         }
         cur.bit_length_u[0] = ceilPow2BitLength(cur.size_u[0]);
         cur.bit_length_v[0] = ceilPow2BitLength(cur.size_v[0]);

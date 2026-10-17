@@ -49,10 +49,11 @@ from common import (
 CAPACITY_SCHEMA = "zkgpt-gat-capacity-v8"
 CAPACITY_U64_MAX = (1 << 64) - 1
 CAPACITY_SHAPE_FIELDS = ("num_nodes", "num_edges", "num_features", "num_classes", "graph_count", "model_layers", "model_output_heads", "model_classes", "model_input_dim", "model_hidden_dim", "n_raw", "n_in")
-CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
+CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
 CAPACITY_INTEGER_FIELDS += ("gkr_point_shape_bitmap_scratch_bytes", "gkr_point_shape_touched_index_scratch_bytes_upper_bound", "gkr_point_shape_layer_count", "gkr_point_shape_fconn_count")
 CAPACITY_INTEGER_FIELDS += ("forward_admission_peak_host_memory_bytes_upper_bound",)
 CAPACITY_INTEGER_FIELDS += ("explicit_unary_gate_buffer_entry_bytes",)
+CAPACITY_INTEGER_FIELDS += ("gkr_prefix_filesystem_allocation_unit_bytes", "gkr_input_fold_cache_late_rounds", "gkr_input_fold_cache_scalar_bytes", "gkr_input_fold_cache_raw_bytes_upper_bound", "gkr_input_fold_cache_mapped_bytes_upper_bound", "gkr_input_fold_cache_heap_bytes_upper_bound", "gkr_input_fold_cache_page_size_bytes")
 LASSO_PROFILE_U64_FIELDS = ("padded_queries", "table_domain", "full_domain", "rows", "columns", "private_witness_entries", "private_witness_element_bytes", "private_witness_bytes", "row_blinding_bytes", "row_commitment_bytes", "column_generator_bytes", "row_fold_weights_bytes", "row_fold_values_bytes", "onehot_query_bytes", "t2_column_one_bytes", "onehot_heap_peak_bytes", "masked_opening_generator_bytes", "masked_opening_coefficient_bytes", "masked_opening_response_bytes", "row_ledger_retained_bytes", "commit_peak_bytes", "booleanity_peak_bytes", "row_fold_peak_bytes", "opening_peak_bytes", "family_peak_bytes", "row_commitment_chunk_count", "booleanity_rounds", "onehot_rounds", "lookup_rounds", "hyrax_matrix_masked_openings", "hyrax_l_qry_tensor_openings")
 LASSO_FAMILY_IDS = ("lrelu", "exp", "elu", "range")
 GKR_LAYER_U64_FIELDS = ("size", "size_u0", "size_u1", "size_v0", "size_v1", "unary_gates", "binary_gates", "native_rows", "native_inner", "native_cols", "phase1_rounds", "phase1_first_round_pair_visits", "phase1_followup_pair_visits", "phase1_total_pair_visits", "phase1_extent_visits", "phase1_followup_extent_visits", "phase1_first_round_field_adds_upper_bound", "phase1_first_round_field_subs_upper_bound", "phase1_first_round_field_muls_upper_bound", "phase1_followup_field_adds_upper_bound", "phase1_followup_field_subs_upper_bound", "phase1_followup_field_muls_upper_bound", "phase1_init_active_scalar_assignments", "phase2_rounds", "phase2_first_round_pair_visits", "phase2_followup_pair_visits", "phase2_total_pair_visits", "phase2_extent_visits", "phase2_followup_extent_visits", "phase2_first_round_field_adds_upper_bound", "phase2_first_round_field_subs_upper_bound", "phase2_first_round_field_muls_upper_bound", "phase2_followup_field_adds_upper_bound", "phase2_followup_field_subs_upper_bound", "phase2_followup_field_muls_upper_bound", "phase2_init_active_scalar_assignments")
@@ -192,9 +193,71 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     source_support_entries = payload["gkr_subset_source_support_entries_upper_bound"]
     if source_support_entries > payload["flattened_input_domain_entries"]:
         raise ChainError(f"capacity logical source support exceeds the full source domain for {dataset}")
-    expected_bitmap_bytes = ((source_support_entries + 63) // 64) * 8
-    if payload["gkr_subset_bitmap_scratch_bytes_upper_bound"] != expected_bitmap_bytes or payload["gkr_subset_sort_scratch_bytes_upper_bound"] != 0:
-        raise ChainError(f"capacity source-map bitmap/sort scratch bound is inconsistent for {dataset}")
+    source_words = source_support_entries // 64 + (1 if source_support_entries % 64 else 0)
+    expected_bitmap_bytes = capacity_mul(source_words, 8, "GKR source-map bitmap", dataset)
+    expected_rank_bytes = capacity_mul(source_words, 8, "GKR source-map rank prefix", dataset)
+    if (payload["gkr_subset_bitmap_scratch_bytes_upper_bound"] != expected_bitmap_bytes or
+            payload["gkr_subset_rank_scratch_bytes_upper_bound"] != expected_rank_bytes or
+            payload["gkr_subset_sort_scratch_bytes_upper_bound"] != 0):
+        raise ChainError(f"capacity source-map bitmap/rank/sort scratch bound is inconsistent for {dataset}")
+    cache_scalar_bytes = capacity_u64(
+        payload["gkr_input_fold_cache_scalar_bytes"],
+        "gkr_input_fold_cache_scalar_bytes", dataset, positive=True)
+    cache_unit_bytes = capacity_u64(
+        payload["gkr_prefix_filesystem_allocation_unit_bytes"],
+        "gkr_prefix_filesystem_allocation_unit_bytes", dataset, positive=True)
+    cache_page_size_bytes = capacity_u64(
+        payload["gkr_input_fold_cache_page_size_bytes"],
+        "gkr_input_fold_cache_page_size_bytes", dataset, positive=True)
+    cache_rounding_unit_bytes = max(cache_unit_bytes, cache_page_size_bytes)
+    cache_domain = capacity_u64(payload["n_in"], "n_in", dataset, positive=True)
+    cache_segments = payload.get("input_segments")
+    if (cache_domain & (cache_domain - 1) or not isinstance(cache_segments, list) or
+            len(cache_segments) != 4):
+        raise ChainError(f"capacity input-fold cache domain/segments are invalid for {dataset}")
+    cache_lengths = [capacity_u64(
+        segment.get("logical_length") if isinstance(segment, dict) else None,
+        f"input_segments[{index}].logical_length", dataset)
+        for index, segment in enumerate(cache_segments)]
+    if any(length > cache_domain for length in cache_lengths):
+        raise ChainError(f"capacity input-fold cache segment exceeds its domain for {dataset}")
+    cache_cap = 128 * 1024 * 1024 * 1024
+    cache_heap_limit = 8 << 20
+    expected_cache_plan = (0, 0, 0, 0) if cache_domain == 1 else None
+    if cache_domain > 1:
+        for late_round in range(cache_domain.bit_length() - 1):
+            divisor = 1 << late_round
+            raw_bytes = 0
+            mapped_bytes = 0
+            heap_bytes = 0
+            for length in cache_lengths:
+                entries = length // divisor + (1 if length % divisor else 0)
+                array_bytes = capacity_mul(
+                    entries, cache_scalar_bytes, "input-fold cache array", dataset)
+                raw_bytes = capacity_add(
+                    (raw_bytes, 2 * array_bytes), "input-fold cache raw bytes", dataset)
+                heap_bytes = capacity_add(
+                    (heap_bytes, 2 * min(array_bytes, cache_heap_limit)),
+                    "input-fold cache heap bytes", dataset)
+                if array_bytes > cache_heap_limit:
+                    rounded = ((array_bytes + cache_rounding_unit_bytes - 1) //
+                               cache_rounding_unit_bytes) * cache_rounding_unit_bytes
+                    mapped_bytes = capacity_add(
+                        (mapped_bytes, 2 * rounded),
+                        "input-fold cache mapped bytes", dataset)
+            if raw_bytes <= cache_cap and mapped_bytes <= cache_cap:
+                expected_cache_plan = (late_round, raw_bytes, mapped_bytes, heap_bytes)
+                break
+    if expected_cache_plan is None:
+        raise ChainError(f"capacity input-fold cache has no bounded late-fold round for {dataset}")
+    reported_cache_plan = (
+        payload["gkr_input_fold_cache_late_rounds"],
+        payload["gkr_input_fold_cache_raw_bytes_upper_bound"],
+        payload["gkr_input_fold_cache_mapped_bytes_upper_bound"],
+        payload["gkr_input_fold_cache_heap_bytes_upper_bound"],
+    )
+    if reported_cache_plan != expected_cache_plan:
+        raise ChainError(f"capacity input-fold cache plan/bounds are inconsistent for {dataset}")
     forward_admission_peak = capacity_u64(payload["forward_admission_peak_host_memory_bytes_upper_bound"],
                                           "forward_admission_peak_host_memory_bytes_upper_bound", dataset, positive=True)
     if payload["estimated_peak_host_memory_bytes"] < forward_admission_peak:
@@ -205,12 +268,21 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         raise ChainError(f"capacity source-map bound exceeds logical source support for {dataset}")
     breakdown = payload.get("native_mapped_phase_breakdown")
     phase_keys = ("gate_plan", "plan_restore", "gkr_validation", "gkr_proving", "lasso_tensor", "input_opening", "shape_admission")
-    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:explicit_unary_gate_buffer", "component:shape_admission_bitmap", "component:shape_admission_touched_indices")
+    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:input_fold_cache", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:source_rank", "component:explicit_unary_gate_buffer", "component:shape_admission_bitmap", "component:shape_admission_touched_indices")
     if not isinstance(breakdown, dict) or set(breakdown) != set(phase_keys + component_keys):
         raise ChainError(f"capacity native mapped phase breakdown is incomplete for {dataset}")
     phase_bytes = {key: capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset) for key in phase_keys}
     for key in component_keys:
         capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset)
+    expected_subset_bitmap_mapped = expected_bitmap_bytes if expected_bitmap_bytes > (8 << 20) else 0
+    expected_subset_rank_mapped = expected_rank_bytes if expected_rank_bytes > (8 << 20) else 0
+    if (breakdown["component:source_bitmap"] != expected_subset_bitmap_mapped or
+            breakdown["component:source_rank"] != expected_subset_rank_mapped):
+        raise ChainError(f"capacity source-map bitmap/rank allocator classes are inconsistent for {dataset}")
+    if (breakdown["component:input_fold_cache"] != expected_cache_plan[2] or
+            phase_bytes["gkr_proving"] < expected_cache_plan[2] or
+            payload["estimated_native_heap_bytes_upper_bound"] < expected_cache_plan[3]):
+        raise ChainError(f"capacity input-fold cache is absent from native resource bounds for {dataset}")
     explicit_unary_bytes = payload["max_explicit_unary_gate_buffer_bytes_upper_bound"]
     explicit_unary_entry_bytes = payload["explicit_unary_gate_buffer_entry_bytes"]
     if explicit_unary_entry_bytes == 0 or explicit_unary_bytes % explicit_unary_entry_bytes != 0 or explicit_unary_bytes > capacity_mul(

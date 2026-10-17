@@ -1,0 +1,4 @@
+native_lasso_unexpected_tensor_scope: PASS session rebuilt; unconsumed tensor label rejected
+NATIVE_LASSO_STORAGE Fr_bytes=32 G1_bytes=144 sparse_entry_bytes=80 T2_private_bytes=549755813888 T2_field_bytes=32 sparse_private_bytes=2684354560
+native_lasso_range_smoke: PASS
+lasso_range_structure_elapsed=2.13 exit=0

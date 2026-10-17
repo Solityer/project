@@ -1,0 +1,135 @@
+[zkGPT][gkr] input-fold-cache begin late_round=2 bytes_upper=896 coefficient_workers=1
+[zkGPT][gkr] input-fold-cache coefficient-complete entries=5 workers=1
+[zkGPT][gkr] input-fold-cache build-begin late_round=2
+[zkGPT][gkr] input-fold-cache witness-complete entries=8 workers=1 elapsed_ms=0.013456
+[zkGPT][gkr] input-fold-cache ready late_round=2 bytes=416 coefficient_entries=5 witness_entries=8 coefficient_workers=1 witness_workers=1 elapsed_ms=0.072847
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=2 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=5.7663e-05
+[zkGPT][gkr] FCONN column fold cols=32768 inner=1 complete rounds=32768/32768 elapsed_s=0.00970316
+[zkGPT][gkr] FCONN product label=gkr/layer/2/matmul complete rounds=0/0 elapsed_s=1.44e-07
+[zkGPT][gkr] layer=2 fconn end rounds=0
+[zkGPT][gkr] layer=1 begin ty=3 size=32768 bits=15 u=15 v=0 phase2=0
+[zkGPT][gkr] layer=1 phase1 begin rounds=15
+[zkGPT][gkr] gkr/layer/1 phase1 complete rounds=15/15 elapsed_s=0.0485445
+[zkGPT][gkr] layer=1 phase1 terminal end
+[zkGPT][gkr] layer=1 end
+[zkGPT][gkr] input aggregate begin sources=4
+[zkGPT][gkr] input-fold-cache plan late_round=0 raw_bytes_upper=4194368 mapped_bytes_upper=0
+[zkGPT][gkr] input-fold-cache begin late_round=0 bytes_upper=4194368 coefficient_workers=20
+[zkGPT][gkr] input-fold-cache coefficient-complete entries=65537 workers=20
+[zkGPT][gkr] input-fold-cache build-begin late_round=0
+[zkGPT][gkr] input-fold-cache witness-complete entries=65537 workers=20 elapsed_ms=0.511578
+[zkGPT][gkr] input-fold-cache ready late_round=0 bytes=4194368 coefficient_entries=65537 witness_entries=65537 coefficient_workers=20 witness_workers=20 elapsed_ms=4.04877
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=17/17 elapsed_s=0.0612532
+[zkGPT][gkr] input aggregate end rounds=17
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=3 size=2 bits=1 u=1 v=0 phase2=0
+[zkGPT][gkr] layer=2 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=1/1 elapsed_s=0.00266787
+[zkGPT][gkr] layer=2 phase1 terminal end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=2 bits=1 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=5.76e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=2.72e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00264968
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=2
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.0106294
+[zkGPT][gkr] input aggregate end rounds=4
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=3 size=2 bits=1 u=1 v=0 phase2=0
+[zkGPT][gkr] layer=2 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=1/1 elapsed_s=0.00263642
+[zkGPT][gkr] layer=2 phase1 terminal end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=2 bits=1 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=2.24e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=1.92e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00263854
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=2
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.010641
+[zkGPT][gkr] input aggregate end rounds=4
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=3 size=2 bits=1 u=1 v=0 phase2=0
+[zkGPT][gkr] layer=2 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=1/1 elapsed_s=0.00267398
+[zkGPT][gkr] layer=2 phase1 terminal end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=2 bits=1 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=8e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=4.48e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00265906
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=2
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.010632
+[zkGPT][gkr] input aggregate end rounds=4
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=11 size=2 bits=1 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=2 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=2.24e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=1.76e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/2/matmul complete rounds=1/1 elapsed_s=0.00261544
+[zkGPT][gkr] layer=2 fconn end rounds=1
+[zkGPT][gkr] layer=1 begin ty=3 size=2 bits=1 u=1 v=0 phase2=0
+[zkGPT][gkr] layer=1 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/1 phase1 complete rounds=1/1 elapsed_s=0.00265421
+[zkGPT][gkr] layer=1 phase1 terminal end
+[zkGPT][gkr] layer=1 end
+[zkGPT][gkr] input aggregate begin sources=4
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.0106972
+[zkGPT][gkr] input aggregate end rounds=4
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=3 size=15 bits=4 u=5 v=0 phase2=0
+[zkGPT][gkr] layer=2 phase1 begin rounds=5
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=5/5 elapsed_s=0.0133167
+[zkGPT][gkr] layer=2 phase1 terminal end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=32 bits=5 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=5 inner=2 complete rounds=5/5 elapsed_s=1.328e-06
+[zkGPT][gkr] FCONN column fold cols=3 inner=2 complete rounds=3/3 elapsed_s=4.32e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00265502
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=3
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=6/6 elapsed_s=0.0160988
+[zkGPT][gkr] input aggregate end rounds=6
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=3 size=2 bits=1 u=1 v=0 phase2=0
+[zkGPT][gkr] layer=2 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=1/1 elapsed_s=0.00264638
+[zkGPT][gkr] layer=2 phase1 terminal end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=2 bits=1 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=5.76e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=4.32e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00265534
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=2
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.010604
+[zkGPT][gkr] input aggregate end rounds=4
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=5 size=2 bits=1 u=1 v=1 phase2=1
+[zkGPT][gkr] layer=2 phase1 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase1 complete rounds=1/1 elapsed_s=0.00247751
+[zkGPT][gkr] layer=2 phase2 begin rounds=1
+[zkGPT][gkr] gkr/layer/2 phase2 complete rounds=1/1 elapsed_s=0.00254206
+[zkGPT][gkr] layer=2 phase2 end
+[zkGPT][gkr] layer=2 end
+[zkGPT][gkr] layer=1 begin ty=11 size=2 bits=1 u=-1 v=0 phase2=0
+[zkGPT][gkr] layer=1 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=2 complete rounds=1/1 elapsed_s=2.4e-07
+[zkGPT][gkr] FCONN column fold cols=2 inner=2 complete rounds=2/2 elapsed_s=1.92e-07
+[zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=1/1 elapsed_s=0.00255875
+[zkGPT][gkr] layer=1 fconn end rounds=1
+[zkGPT][gkr] input aggregate begin sources=4
+[zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=4/4 elapsed_s=0.0102772
+[zkGPT][gkr] input aggregate end rounds=4
+native_masked_layered_gkr_smoke: PASS
+gkr_cache_branch_retry_elapsed=4.07 exit=0

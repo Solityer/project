@@ -3,9 +3,12 @@
 #include "polynomial.h"
 #include "../gat_adapter/native_storage.hpp"
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <condition_variable>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -29,6 +32,100 @@ inline std::size_t checked_extent(std::uint64_t extent, const char* name) {
         throw std::length_error(std::string(name) + " extent exceeds native storage index width");
     }
     return static_cast<std::size_t>(extent);
+}
+
+inline std::size_t challenge_apply_worker_count(std::uint64_t extent) {
+    constexpr std::uint64_t kMinimumItemsPerWorker = 1U << 15U;
+    constexpr std::size_t kMaximumWorkers = 20U;
+    const std::uint64_t requested = extent / kMinimumItemsPerWorker + (extent % kMinimumItemsPerWorker != 0U);
+    const std::size_t available = std::max<unsigned>(1U, std::thread::hardware_concurrency());
+    return std::min({kMaximumWorkers, available, checked_extent(std::max<std::uint64_t>(1U, requested), "packed GKR challenge worker count")});
+}
+
+class PrefixChallengeBarrier {
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    const std::size_t participants_;
+    std::size_t waiting_ = 0U;
+    std::size_t generation_ = 0U;
+    std::atomic<bool> aborted_{false};
+
+public:
+    explicit PrefixChallengeBarrier(std::size_t participants) : participants_(participants) {}
+
+    bool wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        if (aborted_.load(std::memory_order_acquire)) return false;
+        const std::size_t generation = generation_;
+        if (++waiting_ == participants_) {
+            waiting_ = 0U;
+            ++generation_;
+            lock.unlock();
+            condition_.notify_all();
+            return true;
+        }
+        condition_.wait(lock, [this, generation] { return aborted_.load(std::memory_order_acquire) || generation_ != generation; });
+        return !aborted_.load(std::memory_order_acquire);
+    }
+
+    void abort() noexcept {
+        aborted_.store(true, std::memory_order_release);
+        condition_.notify_all();
+    }
+};
+
+template<class Worker, class OnError>
+inline void run_prefix_challenge_workers(std::size_t worker_count, Worker&& worker, OnError&& on_error) {
+    if (worker_count == 0U) throw std::invalid_argument("packed GKR challenge requires at least one worker");
+    if (worker_count == 1U) { worker(0U); return; }
+    std::vector<std::exception_ptr> errors(worker_count);
+    std::vector<std::thread> threads;
+    threads.reserve(worker_count - 1U);
+    std::mutex start_mutex;
+    std::condition_variable start_condition;
+    bool start = false;
+    bool cancel = false;
+    const auto invoke = [&](std::size_t worker_id) {
+        try {
+            worker(worker_id);
+        } catch (...) {
+            errors[worker_id] = std::current_exception();
+            on_error();
+        }
+    };
+    try {
+        for (std::size_t worker_id = 1U; worker_id < worker_count; ++worker_id) {
+            threads.emplace_back([&, worker_id] {
+                try {
+                    {
+                        std::unique_lock<std::mutex> lock(start_mutex);
+                        start_condition.wait(lock, [&] { return start || cancel; });
+                        if (cancel) return;
+                    }
+                    invoke(worker_id);
+                } catch (...) {
+                    errors[worker_id] = std::current_exception();
+                    on_error();
+                }
+            });
+        }
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(start_mutex);
+            cancel = true;
+        }
+        start_condition.notify_all();
+        for (auto& thread : threads) if (thread.joinable()) thread.join();
+        throw;
+    }
+    {
+        std::lock_guard<std::mutex> lock(start_mutex);
+        start = true;
+    }
+    start_condition.notify_all();
+    invoke(0U);
+    for (auto& thread : threads) if (thread.joinable()) thread.join();
+    for (const auto& error : errors) if (error != nullptr) std::rethrow_exception(error);
 }
 
 class EqualityWeightProvider {
@@ -301,31 +398,73 @@ public:
             const std::uint64_t source_extent = source_extent_;
             const std::uint64_t folded_extent = pending_extent_;
             const NativeFieldView source = source_;
-            initialize_scalars(folded_extent, F_ZERO, false);
-            for (std::uint64_t index = 0U; index < folded_extent; ++index) {
-                const std::uint64_t even = index * 2U;
-                const std::uint64_t odd = even + 1U;
-                const F zero_value = source.at(checked_extent(even, "packed GKR source fold"));
-                const F one_value = odd < source_extent
-                    ? source.at(checked_extent(odd, "packed GKR source fold")) : F_ZERO;
-                const F slope = one_value - zero_value;
-                fields_[static_cast<std::size_t>(index)] = slope.isZero() ? zero_value : slope * challenge + zero_value;
-            }
+            const std::uint64_t expected_folded_extent = source_extent / 2U + source_extent % 2U;
+            if (!source.valid() || source.size() != source_extent || logical_extent_ != source_extent || folded_extent != expected_folded_extent)
+                throw std::logic_error("packed GKR pending source extent is inconsistent");
+            const std::size_t source_size = checked_extent(source_extent, "packed GKR challenge source extent");
+            const std::size_t output_size = checked_extent(folded_extent, "packed GKR challenge output extent");
+            if (!fields_.empty() || fields_.capacity() != 0U)
+                throw std::logic_error("packed GKR pending source output arena is not empty");
+            const std::size_t output_capacity = required_capacity(folded_extent);
+            fields_.reserve(output_capacity);
+            if (fields_.capacity() != output_capacity)
+                throw std::logic_error("packed GKR pending source capacity differs from its exact bound");
+            fields_.resize(output_capacity);
+            if (fields_.size() < output_size) throw std::logic_error("packed GKR challenge output allocation is truncated");
+            const std::size_t workers = source.read_only_thread_safe() ? challenge_apply_worker_count(folded_extent) : 1U;
+            const auto worker = [&](std::size_t worker_id) {
+                const std::uint64_t base = folded_extent / workers;
+                const std::uint64_t remainder = folded_extent % workers;
+                const std::uint64_t begin = worker_id * base + std::min<std::uint64_t>(worker_id, remainder);
+                const std::uint64_t end = begin + base + (worker_id < remainder ? 1U : 0U);
+                for (std::uint64_t index = begin; index < end; ++index) {
+                    const std::size_t even = static_cast<std::size_t>(index * 2U);
+                    const std::size_t odd = even + 1U;
+                    const F zero_value = source.at(even);
+                    const F one_value = odd < source_size ? source.at(odd) : F_ZERO;
+                    const F slope = one_value - zero_value;
+                    fields_[static_cast<std::size_t>(index)] = slope.isZero() ? zero_value : slope * challenge + zero_value;
+                }
+            };
+            run_prefix_challenge_workers(workers, worker, []() noexcept {});
+            logical_extent_ = folded_extent;
             source_extent_ = 0U;
             pending_extent_ = 0U;
             source_ = NativeFieldView();
+            mode_ = Mode::Scalar;
             native_storage::reclaim_tail(fields_.data(), logical_extent_ * sizeof(F), capacity_bytes());
             return;
         }
         if (mode_ != Mode::Affine) throw std::logic_error("packed GKR challenge was applied more than once or before a fold");
         const std::uint64_t extent = logical_extent_;
-        for (std::uint64_t index = 0U; index < extent; ++index) {
-            const std::size_t offset = checked_extent(index * 2U, "packed GKR challenge compaction");
-            const F& slope = fields_[offset];
-            const F& intercept = fields_[offset + 1U];
-            const F value = slope.isZero() ? intercept : slope * challenge + intercept;
-            fields_[static_cast<std::size_t>(index)] = value;
-        }
+        if (extent > std::numeric_limits<std::uint64_t>::max() / 2U)
+            throw std::length_error("packed GKR affine challenge extent overflows");
+        const std::size_t source_fields = checked_extent(extent * 2U, "packed GKR challenge affine source");
+        if (source_fields > fields_.size()) throw std::logic_error("packed GKR affine challenge source exceeds its arena");
+        constexpr std::uint64_t kChunkFields = 1U << 16U;
+        const std::size_t scratch_size = checked_extent(std::min(extent, kChunkFields), "packed GKR challenge scratch");
+        std::vector<F> transformed(scratch_size);
+        const std::size_t workers = challenge_apply_worker_count(extent);
+        PrefixChallengeBarrier barrier(workers);
+        const auto worker = [&](std::size_t worker_id) {
+            for (std::uint64_t chunk_start = 0U; chunk_start < extent;) {
+                const std::uint64_t chunk_count = std::min(kChunkFields, extent - chunk_start);
+                const std::uint64_t begin = chunk_start + (chunk_count * worker_id) / workers;
+                const std::uint64_t end = chunk_start + (chunk_count * (worker_id + 1U)) / workers;
+                for (std::uint64_t index = begin; index < end; ++index) {
+                    const std::size_t offset = static_cast<std::size_t>(index * 2U);
+                    const F& slope = fields_[offset];
+                    const F& intercept = fields_[offset + 1U];
+                    transformed[static_cast<std::size_t>(index - chunk_start)] = slope.isZero() ? intercept : slope * challenge + intercept;
+                }
+                if (!barrier.wait()) return;
+                for (std::uint64_t index = begin; index < end; ++index)
+                    fields_[static_cast<std::size_t>(index)] = transformed[static_cast<std::size_t>(index - chunk_start)];
+                if (!barrier.wait()) return;
+                chunk_start += chunk_count;
+            }
+        };
+        run_prefix_challenge_workers(workers, worker, [&barrier]() noexcept { barrier.abort(); });
         mode_ = Mode::Scalar;
         native_storage::reclaim_tail(fields_.data(), checked_extent(extent, "packed GKR challenge live prefix") * sizeof(F), capacity_bytes());
     }
