@@ -337,8 +337,21 @@ namespace gatzk::protocol
 
                 release_boundary_buffers();
 
+                const auto snapshot = util::read_effective_memory_snapshot();
+                const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{8} << 30, 1, 8);
+                const auto one_buffer_bytes = target_size_ * sizeof(mcl::Fr);
+                const auto remaining_device_bytes = one_buffer_bytes * std::size_t{3};
+                if (!snapshot.effective_available_known || snapshot.effective_available_bytes <= reserve ||
+                    remaining_device_bytes > snapshot.effective_available_bytes - reserve)
+                {
+                    throw std::runtime_error("CUDA t_FH final coefficient/NTT working set is not admitted: remaining_bytes=" +
+                                             std::to_string(remaining_device_bytes) + " available_bytes=" +
+                                             std::to_string(snapshot.effective_available_bytes) + " reserve_bytes=" + std::to_string(reserve));
+                }
+
                 mcl::Fr *device_coefficients = nullptr;
-                auto status = cudaMalloc(reinterpret_cast<void **>(&device_coefficients), target_size_ * sizeof(mcl::Fr));
+                auto status = cudaMalloc(reinterpret_cast<void **>(&device_coefficients), one_buffer_bytes);
+                
                 if (status != cudaSuccess)
                     throw_cuda_t_fh_error("resident coefficient allocation", status);
 

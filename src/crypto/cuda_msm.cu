@@ -1489,6 +1489,51 @@ namespace gatzk::crypto
 
             std::vector<bls12_381::scalar_t> converted_scalars;
 
+            const G1Point *stable_srs_base = nullptr;
+            std::size_t stable_srs_capacity = 0;
+            BaseStorageFingerprint stable_srs_fingerprint{};
+            std::vector<bls12_381::affine_t> stable_srs_affine;
+            std::unordered_map<std::size_t, std::size_t> stable_srs_ready_windows;
+
+            bool prepare_stable_srs_affine(const G1Point *points, std::size_t count, std::size_t storage_capacity)
+            {
+                constexpr std::size_t kMaximumCachedAffineBytes = std::size_t{1} << 30;
+                constexpr std::size_t kExtraHostHeadroomBytes = std::size_t{4} << 30;
+                if (points == nullptr || storage_capacity < count || count < (std::size_t{1} << 19) ||
+                    count > kMaximumCachedAffineBytes / sizeof(bls12_381::affine_t))
+                    return false;
+
+                const auto fingerprint = fingerprint_storage(points, storage_capacity);
+                if (stable_srs_base == points && stable_srs_capacity == storage_capacity &&
+                    stable_srs_fingerprint == fingerprint && stable_srs_affine.size() >= count)
+                    return true;
+
+                const auto snapshot = util::read_effective_memory_snapshot();
+                const auto reserve = util::recommended_memory_reserve_bytes(snapshot, std::size_t{16} << 30, 1, 4);
+                const auto requested_bytes = count * sizeof(bls12_381::affine_t);
+                if (!snapshot.effective_available_known || snapshot.effective_available_bytes <= reserve ||
+                    snapshot.effective_available_bytes - reserve <= kExtraHostHeadroomBytes ||
+                    requested_bytes > snapshot.effective_available_bytes - reserve - kExtraHostHeadroomBytes)
+                    return false;
+
+                std::vector<bls12_381::affine_t>().swap(stable_srs_affine);
+                stable_srs_ready_windows.clear();
+                stable_srs_base = nullptr;
+                stable_srs_capacity = 0;
+                try
+                {
+                    stable_srs_affine.resize(count);
+                }
+                catch (const std::bad_alloc &)
+                {
+                    return false;
+                }
+                stable_srs_base = points;
+                stable_srs_capacity = storage_capacity;
+                stable_srs_fingerprint = fingerprint;
+                return true;
+            }
+
             ~StreamMsmBuffers()
             {
                 if (device_points != nullptr)
@@ -1517,6 +1562,11 @@ namespace gatzk::crypto
                 std::vector<bls12_381::affine_t>().swap(converted_points);
 
                 std::vector<bls12_381::scalar_t>().swap(converted_scalars);
+                std::vector<bls12_381::affine_t>().swap(stable_srs_affine);
+                stable_srs_ready_windows.clear();
+                stable_srs_base = nullptr;
+                stable_srs_capacity = 0;
+                stable_srs_fingerprint = {};
             }
 
             bool prepare(std::size_t chunk_size, std::size_t scalar_batch_size = 1, bool prepare_scalar_staging = true)
@@ -1596,17 +1646,34 @@ namespace gatzk::crypto
         }
 
         void release_stream_msm_buffers() { stream_msm_buffers().release(); }
-        void upload_stream_msm_points(StreamMsmBuffers &buffers, const G1Point *points, std::size_t count)
+        void upload_stream_msm_points(StreamMsmBuffers &buffers, const G1Point *points, std::size_t count, std::size_t offset,
+                                      bool reuse_stable_srs_affine)
         {
             static_assert(sizeof(G1Point) == sizeof(mcl::G1), "G1Point must wrap exactly one mcl::G1");
 
-            auto *native_points = const_cast<mcl::G1 *>(reinterpret_cast<const mcl::G1 *>(points));
+            const bls12_381::affine_t *upload_source = buffers.converted_points.data();
+            if (reuse_stable_srs_affine)
+            {
+                if (offset > buffers.stable_srs_affine.size() || count > buffers.stable_srs_affine.size() - offset)
+                    throw std::runtime_error("streamed SRS affine cache window exceeds the admitted prefix");
+                const auto ready = buffers.stable_srs_ready_windows.find(offset);
+                if (ready == buffers.stable_srs_ready_windows.end() || ready->second < count)
+                {
+                    auto *native_points = const_cast<mcl::G1 *>(reinterpret_cast<const mcl::G1 *>(points));
+                    normalize_mcl_g1_parallel(buffers.normalized_points.data(), native_points, count);
+                    convert_normalized_points_to_icicle(buffers.stable_srs_affine.data() + offset, buffers.normalized_points.data(), count);
+                    buffers.stable_srs_ready_windows[offset] = count;
+                }
+                upload_source = buffers.stable_srs_affine.data() + offset;
+            }
+            else
+            {
+                auto *native_points = const_cast<mcl::G1 *>(reinterpret_cast<const mcl::G1 *>(points));
+                normalize_mcl_g1_parallel(buffers.normalized_points.data(), native_points, count);
+                convert_normalized_points_to_icicle(buffers.converted_points.data(), buffers.normalized_points.data(), count);
+            }
 
-            normalize_mcl_g1_parallel(buffers.normalized_points.data(), native_points, count);
-
-            convert_normalized_points_to_icicle(buffers.converted_points.data(), buffers.normalized_points.data(), count);
-
-            const auto status = cudaMemcpy(buffers.device_points, buffers.converted_points.data(), count * sizeof(bls12_381::affine_t), cudaMemcpyHostToDevice);
+            const auto status = cudaMemcpy(buffers.device_points, upload_source, count * sizeof(bls12_381::affine_t), cudaMemcpyHostToDevice);
 
             if (status != cudaSuccess)
             {
@@ -1616,7 +1683,8 @@ namespace gatzk::crypto
 
         void execute_streamed_cuda_msm(G1Point *output, const G1Point *points, const algebra::FieldElement *scalars, std::size_t count,
                                        const std::uint64_t *device_montgomery_scalars = nullptr, std::size_t device_montgomery_scalar_capacity = 0,
-                                       int device_montgomery_scalar_device = -1)
+                                       int device_montgomery_scalar_device = -1, bool stable_srs_bases = false,
+                                       std::size_t stable_srs_capacity = 0)
         {
             if (count == 0)
             {
@@ -1648,6 +1716,7 @@ namespace gatzk::crypto
                 chunk_size = std::max(minimum_chunk, chunk_size / 2);
             }
 
+            const bool reuse_stable_srs_affine = stable_srs_bases && buffers.prepare_stable_srs_affine(points, count, stable_srs_capacity);
             util::info("cuda_msm route=streamed count=" + std::to_string(count) + " chunk=" + std::to_string(chunk_size));
 
             G1Point total = g1_zero();
@@ -1658,7 +1727,7 @@ namespace gatzk::crypto
             {
                 const auto current_count = std::min(chunk_size, count - offset);
 
-                upload_stream_msm_points(buffers, points + offset, current_count);
+                upload_stream_msm_points(buffers, points + offset, current_count, offset, reuse_stable_srs_affine);
 
                 auto config = msm::default_msm_config();
 
@@ -1735,7 +1804,8 @@ namespace gatzk::crypto
         }
 
         void execute_streamed_cuda_msm_same_bases_batch(G1Point *const *outputs, const G1Point *points, const algebra::FieldElement *const *scalar_vectors,
-                                                        const std::size_t *counts, std::size_t max_count, std::size_t batch_size)
+                                                        const std::size_t *counts, std::size_t max_count, std::size_t batch_size,
+                                                        std::size_t stable_srs_capacity)
         {
             if (outputs == nullptr || points == nullptr || scalar_vectors == nullptr || batch_size == 0)
             {
@@ -1787,6 +1857,8 @@ namespace gatzk::crypto
                 chunk_size = std::max(minimum_chunk, chunk_size / 2);
             }
 
+            const bool reuse_stable_srs_affine = buffers.prepare_stable_srs_affine(points, max_count, stable_srs_capacity);
+            const bool reuse_stable_srs_affine = buffers.prepare_stable_srs_affine(points, max_count, stable_srs_capacity);
             util::info("cuda_msm route=streamed_batch"
                        " max_count=" +
                        std::to_string(max_count) + " batch=" + std::to_string(batch_size) + " chunk=" + std::to_string(chunk_size));
@@ -1799,7 +1871,7 @@ namespace gatzk::crypto
             {
                 const auto current_count = std::min(chunk_size, max_count - offset);
 
-                upload_stream_msm_points(buffers, points + offset, current_count);
+                upload_stream_msm_points(buffers, points + offset, current_count, offset, reuse_stable_srs_affine);
 
                 for (std::size_t batch = 0; batch < batch_size; ++batch)
                 {
@@ -2081,7 +2153,7 @@ namespace gatzk::crypto
         try
         {
             execute_streamed_cuda_msm(output, points, scalars, count, device_montgomery_scalars, device_montgomery_scalar_capacity,
-                                      device_montgomery_scalar_device);
+                                      device_montgomery_scalar_device, stable_srs_bases, stable_srs_capacity);
 
             return true;
         }
@@ -2093,7 +2165,7 @@ namespace gatzk::crypto
                        "cleared resident base cache and retrying");
 
             execute_streamed_cuda_msm(output, points, scalars, count, device_montgomery_scalars, device_montgomery_scalar_capacity,
-                                      device_montgomery_scalar_device);
+                                      device_montgomery_scalar_device, stable_srs_bases, stable_srs_capacity);
 
             return true;
         }
@@ -2293,7 +2365,8 @@ namespace gatzk::crypto
                     }
 
                     execute_streamed_cuda_msm(outputs[batch], points, nullptr, counts[batch], device_montgomery_scalar_vectors[batch],
-                                              device_montgomery_scalar_capacities[batch], device_montgomery_scalar_devices[batch]);
+                                              device_montgomery_scalar_capacities[batch], device_montgomery_scalar_devices[batch], true,
+                                              stable_srs_capacity);
                 }
             };
 
@@ -2337,7 +2410,7 @@ namespace gatzk::crypto
 
         try
         {
-            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size);
+            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size, stable_srs_capacity);
 
             return true;
         }
@@ -2349,7 +2422,7 @@ namespace gatzk::crypto
                        "resource pressure: cleared "
                        "resident base cache and retrying");
 
-            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size);
+            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size, stable_srs_capacity);
 
             return true;
         }
@@ -2361,7 +2434,7 @@ namespace gatzk::crypto
                        "host staging pressure: cleared "
                        "resident base cache and retrying");
 
-            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size);
+            execute_streamed_cuda_msm_same_bases_batch(outputs, points, scalar_vectors, counts, max_count, batch_size, stable_srs_capacity);
 
             return true;
         }

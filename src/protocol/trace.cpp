@@ -2152,10 +2152,12 @@ namespace gatzk::protocol
             {
                 constexpr std::size_t kSharedBackingThreshold = 1024;
 
-                if (!keep_trace_payloads && spec.kind == DynamicCommitmentKind::Column && spec.shared_column_values != nullptr &&
-                    spec.shared_column_values->size() >= kSharedBackingThreshold)
+                if (!keep_trace_payloads && spec.kind == DynamicCommitmentKind::Column)
                 {
-                    return 0;
+                    if (spec.shared_column_values != nullptr && spec.shared_column_values->size() >= kSharedBackingThreshold)
+                        return 0;
+                    if (spec.shared_column_values == nullptr && spec.borrowed_column_values == nullptr)
+                        return 0;
                 }
 
                 return estimated_dynamic_commitment_payload_bytes(spec);
@@ -6887,10 +6889,14 @@ namespace gatzk::protocol
 
                 auto widehat_v_pre_star = std::make_shared<std::vector<FieldElement>>(domains.edge->size, FieldElement::zero());
 
-                for (std::size_t k = 0; k < n_edges; ++k)
-                {
-                    (*widehat_v_pre_star)[k] = alpha[k] * h_star_edge[k];
-                }
+                parallel_for_ranges(n_edges, 128,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t k = begin; k < end; ++k)
+                                        {
+                                            (*widehat_v_pre_star)[k] = alpha[k] * h_star_edge[k];
+                                        }
+                                    });
 
                 add_metric(metrics != nullptr ? &metrics->hidden_softmax_chain_trace_ms : nullptr, stage_start);
 
@@ -7161,16 +7167,25 @@ namespace gatzk::protocol
                 const auto eta_dst_powers = powers(eta_dst, 6);
                 std::vector<FieldElement> dst_table(n_nodes, FieldElement::zero());
                 std::vector<FieldElement> dst_query(n_edges, FieldElement::zero());
-                for (std::size_t i = 0; i < n_nodes; ++i)
-                {
-                    dst_table[i] = absolute_id_fields[i] + eta_dst_powers[1] * e_dst[i] + eta_dst_powers[2] * m[i] + eta_dst_powers[3] * sum[i] +
-                                   eta_dst_powers[4] * inv[i] + eta_dst_powers[5] * h_agg_star[i];
-                }
-                for (std::size_t k = 0; k < n_edges; ++k)
-                {
-                    dst_query[k] = edge_dst_fields[k] + eta_dst_powers[1] * e_dst_edge[k] + eta_dst_powers[2] * m_edge[k] + eta_dst_powers[3] * sum_edge[k] +
-                                   eta_dst_powers[4] * inv_edge[k] + eta_dst_powers[5] * h_agg_star_edge[k];
-                }
+                parallel_for_ranges(n_nodes, 64,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t i = begin; i < end; ++i)
+                                        {
+                                            dst_table[i] = absolute_id_fields[i] + eta_dst_powers[1] * e_dst[i] + eta_dst_powers[2] * m[i] +
+                                                           eta_dst_powers[3] * sum[i] + eta_dst_powers[4] * inv[i] + eta_dst_powers[5] * h_agg_star[i];
+                                        }
+                                    });
+                parallel_for_ranges(n_edges, 128,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t k = begin; k < end; ++k)
+                                        {
+                                            dst_query[k] = edge_dst_fields[k] + eta_dst_powers[1] * e_dst_edge[k] + eta_dst_powers[2] * m_edge[k] +
+                                                           eta_dst_powers[3] * sum_edge[k] + eta_dst_powers[4] * inv_edge[k] +
+                                                           eta_dst_powers[5] * h_agg_star_edge[k];
+                                        }
+                                    });
                 auto dst_table_padded = padded_column(dst_table, domains.n->size);
                 auto dst_query_padded = padded_column(dst_query, domains.edge->size);
                 auto dst_multiplicity_padded = padded_column(dst_multiplicity_template, domains.n->size);
@@ -8016,16 +8031,20 @@ namespace gatzk::protocol
                 std::vector<FieldElement> output_sum_flat(domains.edge->size, FieldElement::zero());
                 std::vector<FieldElement> output_pre_field_flat(domains.edge->size, FieldElement::zero());
                 std::vector<FieldElement> output_agg_num_flat(domains.edge->size, FieldElement::zero());
-                for (std::size_t node = 0; node < n_nodes; ++node)
-                {
-                    for (std::size_t column = 0; column < n_classes; ++column)
-                    {
-                        const auto flat_index = node * n_classes + column;
-                        output_sum_flat[flat_index] = out_sum[node];
-                        output_pre_field_flat[flat_index] = y_lin_matrix[node][column];
-                        output_agg_num_flat[flat_index] = out_sum[node] * y_lin_matrix[node][column];
-                    }
-                }
+                parallel_for_ranges(n_nodes, 32,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t node = begin; node < end; ++node)
+                                        {
+                                            for (std::size_t column = 0; column < n_classes; ++column)
+                                            {
+                                                const auto flat_index = node * n_classes + column;
+                                                output_sum_flat[flat_index] = out_sum[node];
+                                                output_pre_field_flat[flat_index] = y_lin_matrix[node][column];
+                                                output_agg_num_flat[flat_index] = out_sum[node] * y_lin_matrix[node][column];
+                                            }
+                                        }
+                                    });
                 add_dynamic_commitment_batch(trace,
                                              {
                                                  shared_compact_column_spec(prefix + "Y_pre_flat", forward_artifacts, quantized.y_pre_flat, domains.edge),
@@ -8175,11 +8194,23 @@ namespace gatzk::protocol
                 trace.challenges[route.eta_challenge_label] = eta;
                 std::vector<FieldElement> table(n_nodes, FieldElement::zero());
                 std::vector<FieldElement> query(n_edges, FieldElement::zero());
-                for (std::size_t node = 0; node < n_nodes; ++node)
-                    table[node] = FieldElement(node) + eta * node_values[node];
+                parallel_for_ranges(n_nodes, 64,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t node = begin; node < end; ++node)
+                                        {
+                                            table[node] = FieldElement(node) + eta * node_values[node];
+                                        }
+                                    });
                 const auto &indices = use_source_index ? edge_src_fields : edge_dst_fields;
-                for (std::size_t edge = 0; edge < n_edges; ++edge)
-                    query[edge] = indices[edge] + eta * edge_values[edge];
+                parallel_for_ranges(n_edges, 128,
+                                    [&](std::size_t begin, std::size_t end)
+                                    {
+                                        for (std::size_t edge = begin; edge < end; ++edge)
+                                        {
+                                            query[edge] = indices[edge] + eta * edge_values[edge];
+                                        }
+                                    });
                 const auto &multiplicity = use_source_index ? src_multiplicity_template : dst_multiplicity_template;
                 auto table_padded = padded_column(table, domains.n->size);
                 auto query_padded = padded_column(query, domains.edge->size);
@@ -8862,9 +8893,8 @@ namespace gatzk::protocol
                                                                                                      { return candidate == chunk.terminal_point; });
                                                        });
                     trace.challenges[basis_meta.gamma_challenge_label] = gamma;
-                    std::vector<FieldElement> power_column(domains.edge->size, FieldElement::one());
-                    for (std::size_t row = 1; row < power_column.size(); ++row)
-                        power_column[row] = power_column[row - 1] * gamma;
+                    std::vector<FieldElement> power_column(domains.edge->size);
+                    algebra::geometric_powers_native(FieldElement::mutable_native_array_data(power_column.data()), power_column.size(), gamma);
                     auto power_polynomial = Polynomial::from_evaluations(basis_meta.power_object, std::move(power_column), domains.edge);
                     trace.polynomial_domains[basis_meta.power_object] = domains.edge->name;
                     trace.polynomials.emplace(basis_meta.power_object, std::move(power_polynomial));
@@ -9202,6 +9232,7 @@ namespace gatzk::protocol
 
             finalize_trace_registry(context, trace, metrics);
             trace.evaluation_commitment_cache.reset();
+            trace.semantic_spill_source_cache.clear();
             if (metrics != nullptr)
             {
                 const auto total_trace_ms = elapsed_ms(trace_start, Clock::now());

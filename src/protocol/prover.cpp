@@ -4011,6 +4011,7 @@ namespace gatzk::protocol
         struct QuotientWorkingSetPlan
         {
             bool enabled = false;
+            bool cuda_t_fh_route = false;
             std::size_t target_size = 0;
             std::size_t total_bytes = 0;
             std::size_t available_bytes = 0;
@@ -4026,9 +4027,12 @@ namespace gatzk::protocol
         class ScopedQuotientWorkingSet
         {
         public:
-            ScopedQuotientWorkingSet(std::size_t target_size, bool cuda_enabled, const std::string &label)
+            ScopedQuotientWorkingSet(std::size_t target_size, std::size_t domain_size, bool cuda_enabled, const std::string &label)
             {
                 plan_.target_size = target_size;
+                plan_.cuda_t_fh_route = label == "t_FH" && cuda_enabled && target_size >= (std::size_t{1} << 20) &&
+                                          cuda_t_fh_executor_available() &&
+                                          cuda_t_fh_executor_can_admit(domain_size, target_size, std::size_t{1} << 20);
                 if (label == "t_edge" || target_size < (std::size_t{1} << 17))
                     return;
                 if (thread_owns_working_set())
@@ -4055,10 +4059,11 @@ namespace gatzk::protocol
                 const auto mapped_coset = util::spill_align_up(one_coset, static_cast<std::size_t>(page_size_raw), label);
                 constexpr std::size_t maximum_writers = 1;
 
-                const auto geometry = checked_mul(one_coset, 2);
+                cconst auto geometry = checked_mul(one_coset, 2);
                 const auto device_headroom = cuda_enabled ? (std::size_t{4} << 30) : 0;
                 const auto fixed_bytes = checked_add(geometry, device_headroom);
-                const auto writer_bytes = checked_add(checked_mul(one_coset, 3), mapped_coset);
+                const auto producer_cosets = plan_.cuda_t_fh_route ? std::size_t{1} : std::size_t{3};
+                const auto writer_bytes = checked_add(checked_mul(one_coset, producer_cosets), mapped_coset);
                 const auto minimum_bytes = checked_add(fixed_bytes, writer_bytes);
                 constexpr std::size_t maximum_hot_cache = std::size_t{24} << 30;
                 const auto preferred_bytes = checked_add(checked_add(fixed_bytes, writer_bytes), maximum_hot_cache);
@@ -4086,7 +4091,7 @@ namespace gatzk::protocol
                             throw std::runtime_error("quotient working-set admission produced zero writers: " + label);
                         const auto producer_bytes = checked_mul(writer_bytes, writers);
                         const auto hot_bytes = std::min(maximum_hot_cache, grant - fixed_bytes - producer_bytes);
-                        const auto transient = checked_add(checked_mul(checked_mul(one_coset, 3), writers), device_headroom);
+                        const auto transient = checked_add(checked_mul(checked_mul(one_coset, producer_cosets), writers), device_headroom);
 
                         plan_.enabled = true;
                         plan_.total_bytes = snapshot.effective_total_bytes;
@@ -5290,6 +5295,7 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("quotient materialization is missing domain: " + label_);
                 }
+                cuda_t_fh_route_planned_ = working_set.cuda_t_fh_route;
                 t_edge_descriptor_shape_.hidden_head_counts.reserve(context_.model.hidden_layers.size());
                 for (const auto &layer : context_.model.hidden_layers)
                 {
@@ -5587,7 +5593,7 @@ namespace gatzk::protocol
                     return false;
                 if (target_size_ < (std::size_t{1} << 20))
                     return false;
-                return cuda_t_fh_executor_can_admit(domain_->size, target_size_, std::size_t{1} << 20);
+                return cuda_t_fh_route_planned_;
             }
 
             void reset_cuda_t_edge_transient_leaf_state()
@@ -9504,6 +9510,7 @@ namespace gatzk::protocol
             std::size_t target_size_ = 0;
             std::size_t rotation_step_ = 0;
             FieldElement shift_;
+            bool cuda_t_fh_route_planned_ = false;
             std::once_flag shift_powers_once_;
             std::vector<mcl::Fr> shift_powers_;
             std::shared_ptr<const TEdgeEvaluationPlan> edge_evaluation_plan_;
@@ -9595,7 +9602,7 @@ namespace gatzk::protocol
                 {
                     throw std::runtime_error("invalid quotient working-set domain: " + label);
                 }
-                const ScopedQuotientWorkingSet working_set(domain->size * multiplier, util::route2_options().cuda_field_hotspots, label);
+                const ScopedQuotientWorkingSet working_set(domain->size * multiplier, domain->size, util::route2_options().cuda_field_hotspots, label);
                 QuotientPolynomialMaterializer materializer(context, trace, challenges, label, working_set.plan());
                 auto polynomial = materializer.materialize(context.kzg);
 
