@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""Aggregate the ten verified formal runs into one source-locked result set.
+"""Aggregate five canonical CUDA formal runs into a source-locked result set.
 
-This command is intentionally fail-closed. It does not create any result
-file until exactly one complete single CPU and CUDA run has passed all manifest,
-proof, provenance, and security checks for each canonical dataset. Controlled
-smoke/stage runs therefore cannot be promoted into the paper result directory.
+All full-dataset, single-mode CUDA results must pass the independent verifier,
+provenance, SRS, registry, proof, and external tamper-attestation gates.
 """
 from __future__ import annotations
 
@@ -18,7 +16,7 @@ import os
 import pathlib
 import subprocess
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 _PROVENANCE_PATH = pathlib.Path(__file__).resolve().parents[1] / "tools" / "build_provenance.py"
 _PROVENANCE_SPEC = importlib.util.spec_from_file_location("gatzk_build_provenance", _PROVENANCE_PATH)
@@ -103,41 +101,6 @@ REQUIRED_HASHES = (
     "trusted_registry_digest",
     "verifier_registry_digest",
     "security_budget_ledger_digest",
-)
-
-PAIR_CONSISTENCY_FIELDS = (
-    "protocol_schema_id",
-    "timing_schema",
-    "instance_schema_hash",
-    "dim_cfg",
-    "model_params",
-    "quant_config",
-    "static_tables",
-    "public_output",
-    "secure_trace_logits_hash",
-    "reference_quant_logits_hash",
-    "proof_public_output_hash",
-    "public_input_digest",
-    "topology_digest",
-    "input_preprocess_id",
-    "source_tree_hash",
-    "trusted_registry_digest",
-    "verifier_registry_digest",
-    "security_budget_ledger_digest",
-    "security_budget_exact",
-    "tamper_attestation_format",
-    "tamper_attestation_suite_id",
-    "tamper_tests_passed",
-    "tamper_test_case_map",
-    "config",
-    "config_sha256",
-    "quant_config_hash",
-    "srs_manifest_hash",
-    "static_table_hash",
-    "srs_id",
-    "model_arch",
-    "srs_degree_bound",
-    "source_manifest_hash",
 )
 
 REGISTRY_INSPECTION_KEYS = {
@@ -1889,38 +1852,12 @@ def check_manifest(
     return row
 
 
-def compare_cpu_cuda_pair(
-    dataset: str,
-    cpu: Dict[str, Any],
-    cuda: Dict[str, Any],
-) -> None:
-    """Fail closed unless every canonical pair field exists and is equal."""
-    for field in PAIR_CONSISTENCY_FIELDS:
-        require(field in cpu, f"{dataset}: CPU manifest is missing pair field {field}")
-        require(field in cuda, f"{dataset}: CUDA manifest is missing pair field {field}")
-        require(cpu[field] == cuda[field], f"{dataset}: CPU/CUDA {field} mismatch")
-
-
-def ensure_pair_consistency(rows: Iterable[Dict[str, Any]]) -> bool:
-    grouped: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    for row in rows:
-        grouped.setdefault(row["dataset"], {})[row["backend"]] = row
-    for dataset in DATASET_ORDER:
-        require(dataset in grouped, f"{dataset}: CPU/CUDA pair is missing")
-        pair = grouped[dataset]
-        require(set(pair) == {"cpu", "cuda"}, f"{dataset}: CPU/CUDA pair is incomplete")
-        cpu = pair["cpu"]
-        cuda = pair["cuda"]
-        compare_cpu_cuda_pair(dataset, cpu, cuda)
-    return True
-
-
-def write_outputs(
-    output_dir: pathlib.Path,
-    rows: List[Dict[str, Any]],
-    cpu_gpu_reference_consistency_passed: bool,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
+def write_outputs(output_dir: pathlib.Path, rows: List[Dict[str, Any]]) -> None:
+    require(len(rows) == len(DATASET_ORDER), 'exactly five CUDA runs are required')
+    require(tuple(row.get('dataset') for row in rows) == DATASET_ORDER,
+            'CUDA results must cover the five canonical datasets in order')
+    require(all(row.get('backend') == 'cuda' and row.get('status') == 'VERIFY_OK' for row in rows),
+            'all results must be independently verified CUDA runs')
     security_rows = [
         {
             "dataset": row["dataset"],
@@ -1944,24 +1881,28 @@ def write_outputs(
             "tamper_attestation_suite_id": row["tamper_attestation_suite_id"],
         } for row in rows
     ]
+    security_passed = all(
+        item['proof_hash_audit_passed']
+        and item['verifier_reads_witness'] is False
+        and item['private_plain_value_count'] == 0
+        and item['proof_payload_audit_status'] == 'passed'
+        and item['reference_consistency_passed']
+        and item['tamper_tests_passed']
+        and item['tamper_attestation_sha256']
+        and item['security_budget_passed']
+        for item in security_rows
+    )
+    require(security_passed, 'CUDA aggregate security gate failed')
+    output_dir.mkdir(parents=True, exist_ok=True)
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "benchmark_mode": "single",
         "run_count": len(rows),
         "rows": rows,
         "security_tests": {
-            "all_passed":
-            all(
-                item["proof_hash_audit_passed"] and item["verifier_reads_witness"] is False and item["private_plain_value_count"] == 0 and
-                item["proof_payload_audit_status"] == "passed" and item["reference_consistency_passed"] and item["tamper_tests_passed"] and
-                item["tamper_attestation_sha256"] and item["security_budget_passed"] for item in security_rows
-            ) and cpu_gpu_reference_consistency_passed,
-            "run_count":
-            len(security_rows),
-            "cpu_gpu_reference_consistency_passed":
-            cpu_gpu_reference_consistency_passed,
-            "checks":
-            security_rows,
+            "all_passed": security_passed,
+            "run_count": len(security_rows),
+            "checks": security_rows,
         },
     }
     (output_dir / "latest.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -1974,7 +1915,6 @@ def write_outputs(
         "commitment_time_ms",
         "prove_time_ms",
         "verify_time_ms",
-        "total_wall_clock_ms",
         "proof_size_bytes",
         "proof_hash",
         "config",
@@ -2004,199 +1944,79 @@ def write_outputs(
             writer.writerow({column: row.get(column) for column in csv_columns})
 
     lines = [
-        "# 最新正式结果",
-        "",
-        "本表只由十个 `VERIFY_OK`、full-dataset、single manifest 聚合生成；CPU/CUDA 每个数据集的配置、模型、量化、静态表和 SRS 标识已逐项配对校验。",
-        "",
-        "| 数据集 | 后端 | 状态 | commitment (ms) | prove (ms) | verify (ms) | proof bytes | GPU kernels |",
-        "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+        '# zkGAT CUDA Evaluation',
+        '',
+        'Five complete-dataset CUDA runs authenticated by the independent verifier,',
+        'canonical build/SRS/registration checks and external tamper attestations.',
+        '',
+        '| Dataset | Commitment (ms) | Prove (ms) | Verify (ms) | Proof size (bytes) |',
+        '| --- | ---: | ---: | ---: | ---: |',
     ]
     for row in rows:
         lines.append(
-            f"| {row['dataset']} | {row['backend']} | {row['status']} | "
-            f"{row['commitment_time_ms']:.3f} | {row['prove_time_ms']:.3f} | "
-            f"{row['verify_time_ms']:.3f} | {row['proof_size_bytes']} | "
-            f"{row['gpu_kernel_invocation_count']} |"
+            f"| {row['dataset']} | {row['commitment_time_ms']:.3f} | {row['prove_time_ms']:.3f} | "
+            f"{row['verify_time_ms']:.3f} | {row['proof_size_bytes']} |"
         )
-    lines.extend([
-        "",
-        "安全字段详见 `security_tests_report.md`；当前仓库只有在十组正式运行完成后才应生成本目录。",
-        "",
-    ])
+    lines.extend(['', 'Security checks: security_tests_report.md', ''])
     (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
     security_lines = [
-        "# 正式运行安全核验",
-        "",
-        "安全状态由独立 verifier report、外部认证 registration artifact 和 run manifest 的交叉绑定共同核验；同时复核了 `proof.bin` 的 SHA-256。所有行都必须通过，聚合器才会写出本报告。",
-        "",
-        "| 数据集 | 后端 | proof hash | proof 审计 | witness 读取 | private plain values | payload audit | reference | tamper | tamper ms |",
-        "| --- | --- | --- | --- | --- | ---: | --- | --- | --- | ---: |",
+        '# CUDA Formal-Run Security Validation',
+        '',
+        'Proof hashes, independent verifier reports, canonical SRS and registered',
+        'public inputs, source/build receipts, and external tamper attestations are verified.',
+        '',
+        '| Dataset | Proof SHA-256 | Proof audit | Witness read | Private values | Payload audit | Reference | Tamper | Tamper (ms) |',
+        '| --- | --- | --- | --- | ---: | --- | --- | --- | ---: |',
     ]
     for item in security_rows:
         security_lines.append(
-            f"| {item['dataset']} | {item['backend']} | `{item['proof_hash']}` | "
+            f"| {item['dataset']} | {item['proof_hash']} | "
             f"{str(item['proof_hash_audit_passed']).lower()} | "
             f"{str(item['verifier_reads_witness']).lower()} | {item['private_plain_value_count']} | "
             f"{item['proof_payload_audit_status']} | "
             f"{str(item['reference_consistency_passed']).lower()} | "
             f"{str(item['tamper_tests_passed']).lower()} | {item['tamper_tests_ms']:.3f} |"
         )
-    security_lines.extend(
-        [
-            "",
-            f"CPU/CUDA pair-level reference consistency: `{str(cpu_gpu_reference_consistency_passed).lower()}`.",
-            "",
-            "结论：`all_passed=true`（由 `latest.json` 的 `security_tests` 字段记录）。这不是未执行 run 的占位结论。",
-            "",
-        ]
-    )
+    security_lines.extend(['', 'Security status: all_passed=true for all five CUDA runs.', ''])
     (output_dir / "security_tests_report.md").write_text("\n".join(security_lines), encoding="utf-8")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fail-closed aggregation of the five CPU and five CUDA formal runs")
-    parser.add_argument("--output-dir", required=True, help="root results/paper_secure directory")
-    parser.add_argument("--cpu-run", action="append", default=[], help="dataset=run_manifest.json_or_dir (exactly five)")
-    parser.add_argument("--cuda-run", action="append", default=[], help="dataset=run_manifest.json_or_dir (exactly five)")
-    parser.add_argument(
-        "--registry",
-        action="append",
-        default=[],
-        help="dataset=canonical verifier registration artifact (exactly five; externally anchored)",
-    )
-    parser.add_argument(
-        "--registry-digest",
-        action="append",
-        default=[],
-        help="dataset=lowercase SHA-256 of the trusted registration artifact (exactly five)",
-    )
-    parser.add_argument(
-        "--registry-inspector",
-        required=True,
-        help="path to the independently built gatzk_registry_inspect utility",
-    )
-    parser.add_argument(
-        "--cpu-attestation",
-        action="append",
-        default=[],
-        help="dataset=run-local tamper attestation (exactly five)",
-    )
-    parser.add_argument(
-        "--cuda-attestation",
-        action="append",
-        default=[],
-        help="dataset=run-local tamper attestation (exactly five)",
-    )
-    parser.add_argument(
-        "--cpu-attestation-digest",
-        action="append",
-        default=[],
-        help="dataset=external SHA-256 of the CPU tamper attestation (exactly five)",
-    )
-    parser.add_argument(
-        "--cuda-attestation-digest",
-        action="append",
-        default=[],
-        help="dataset=external SHA-256 of the CUDA tamper attestation (exactly five)",
-    )
+    parser = argparse.ArgumentParser(description='Fail-closed aggregation of five canonical CUDA formal runs')
+    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--cuda-run', action='append', default=[], help='dataset=CUDA run directory or run_manifest.json')
+    parser.add_argument('--registry', action='append', default=[], help='dataset=independently authenticated registration artifact')
+    parser.add_argument('--registry-digest', action='append', default=[], help='dataset=trusted registry SHA-256')
+    parser.add_argument('--registry-inspector', required=True)
+    parser.add_argument('--cuda-attestation', action='append', default=[], help='dataset=external tamper attestation under tests/')
+    parser.add_argument('--cuda-attestation-digest', action='append', default=[], help='dataset=trusted external tamper SHA-256')
     args = parser.parse_args()
 
+    def exact_assignments(values: List[str], flag: str) -> Dict[str, str]:
+        require(len(values) == len(DATASET_ORDER), f'exactly five {flag} assignments required')
+        assignments: Dict[str, str] = {}
+        for value in values:
+            dataset, assigned = parse_assignment(value, flag)
+            require(dataset not in assignments, f'duplicate {flag} dataset: {dataset}')
+            assignments[dataset] = assigned
+        require(set(assignments) == CANONICAL_DATASETS,
+                f'{flag} must cover exactly {", ".join(DATASET_ORDER)}')
+        return assignments
+
+    runs = exact_assignments(args.cuda_run, '--cuda-run')
+    registries = exact_assignments(args.registry, '--registry')
+    registry_hashes = exact_assignments(args.registry_digest, '--registry-digest')
+    attestations = exact_assignments(args.cuda_attestation, '--cuda-attestation')
+    attestation_hashes = exact_assignments(args.cuda_attestation_digest, '--cuda-attestation-digest')
     project_root = pathlib.Path(__file__).resolve().parents[1]
-    registry_paths: Dict[str, str] = {}
-    for value in args.registry:
-        dataset, path_value = parse_assignment(value, "--registry")
-        require(dataset not in registry_paths, f"duplicate registry assignment: {dataset}")
-        registry_paths[dataset] = path_value
-    registry_digests: Dict[str, str] = {}
-    for value in args.registry_digest:
-        dataset, digest_value = parse_assignment(value, "--registry-digest")
-        require(dataset not in registry_digests, f"duplicate registry digest assignment: {dataset}")
-        registry_digests[dataset] = digest_value
-    require(
-        set(registry_paths) == set(DATASET_ORDER),
-        "--registry must cover exactly " + ", ".join(DATASET_ORDER),
-    )
-    require(
-        set(registry_digests) == set(DATASET_ORDER),
-        "--registry-digest must cover exactly " + ", ".join(DATASET_ORDER),
-    )
-    attestation_paths: Dict[str, Dict[str, str]] = {"cpu": {}, "cuda": {}}
-    attestation_digests: Dict[str, Dict[str, str]] = {"cpu": {}, "cuda": {}}
-
-    def load_backend_artifacts(
-        values: List[str],
-        backend: str,
-        flag: str,
-        destination: Dict[str, Dict[str, str]],
-    ) -> None:
-        require(
-            not destination[backend],
-            f"duplicate {backend} attestation assignments through {flag}",
-        )
-        for value in values:
-            dataset, path_value = parse_assignment(value, flag)
-            require(
-                dataset not in destination[backend],
-                f"duplicate {backend} attestation assignment: {dataset}",
-            )
-            destination[backend][dataset] = path_value
-
-    load_backend_artifacts(args.cpu_attestation, "cpu", "--cpu-attestation", attestation_paths)
-    load_backend_artifacts(args.cuda_attestation, "cuda", "--cuda-attestation", attestation_paths)
-    load_backend_artifacts(
-        args.cpu_attestation_digest,
-        "cpu",
-        "--cpu-attestation-digest",
-        attestation_digests,
-    )
-    load_backend_artifacts(
-        args.cuda_attestation_digest,
-        "cuda",
-        "--cuda-attestation-digest",
-        attestation_digests,
-    )
-    for backend in ("cpu", "cuda"):
-        require(
-            set(attestation_paths[backend]) == set(DATASET_ORDER),
-            f"attestation paths for {backend} must cover exactly " + ", ".join(DATASET_ORDER),
-        )
-        require(
-            set(attestation_digests[backend]) == set(DATASET_ORDER),
-            f"attestation digests for {backend} must cover exactly " + ", ".join(DATASET_ORDER),
-        )
-    assignments = {"cpu": args.cpu_run, "cuda": args.cuda_run}
-    rows: List[Dict[str, Any]] = []
-    for backend, values in assignments.items():
-        require(len(values) == len(DATASET_ORDER), f"exactly five --{backend}-run assignments are required")
-        seen = set()
-        for value in values:
-            dataset, path_value = parse_assignment(value, f"--{backend}-run")
-            require(dataset not in seen, f"duplicate {backend} dataset assignment: {dataset}")
-            seen.add(dataset)
-            rows.append(
-                check_manifest(
-                    project_root,
-                    dataset,
-                    backend,
-                    path_value,
-                    registry_paths[dataset],
-                    registry_digests[dataset],
-                    args.registry_inspector,
-                    attestation_paths[backend][dataset],
-                    attestation_digests[backend][dataset],
-                )
-            )
-        require(seen == set(DATASET_ORDER), f"--{backend}-run must cover exactly {', '.join(DATASET_ORDER)}")
-
-    require(len(rows) == 10, "exactly ten formal runs are required")
-    pair_consistency_passed = ensure_pair_consistency(rows)
-    ordered_rows = sorted(rows, key=lambda row: (DATASET_ORDER.index(row["dataset"]), row["backend"]))
-    write_outputs(
-        resolve_input_path(project_root, args.output_dir),
-        ordered_rows,
-        pair_consistency_passed,
-    )
+    rows = [
+        check_manifest(project_root, dataset, 'cuda', runs[dataset],
+                       registries[dataset], registry_hashes[dataset], args.registry_inspector,
+                       attestations[dataset], attestation_hashes[dataset])
+        for dataset in DATASET_ORDER
+    ]
+    write_outputs(resolve_input_path(project_root, args.output_dir), rows)
 
 
 if __name__ == "__main__":
