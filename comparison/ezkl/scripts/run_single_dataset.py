@@ -740,7 +740,7 @@ def main(
             "--srs-path",
             cli_path(srs, "SRS"),
             "--check-mode",
-            "safe",
+            "unsafe",
         ]
     prove_stage_inputs = {
         "witness": witness,

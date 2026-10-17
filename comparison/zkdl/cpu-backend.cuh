@@ -2342,6 +2342,76 @@ inline void cpu_ipa_fold_projective_vectors_parallel(
 #endif
 }
 
+inline void cpu_ipa_fold_scalar_vectors_parallel(
+    const std::vector<FrWire>& current_a,
+    const std::vector<FrWire>& current_b,
+    const FrWire& challenge, const FrWire& inverse,
+    std::vector<FrWire>& next_a, std::vector<FrWire>& next_b) {
+    const std::size_t current_size = current_a.size();
+    if (current_size == 0U || (current_size & 1U) != 0U ||
+        current_b.size() != current_size)
+        throw std::invalid_argument("Hyrax scalar fold vector shape mismatch");
+    if (!fr_canonical(challenge) || !fr_canonical(inverse))
+        throw std::invalid_argument("non-canonical Hyrax fold challenge");
+    for (const FrWire& value : current_a)
+        if (!fr_canonical(value))
+            throw std::invalid_argument("non-canonical Hyrax a-fold input");
+    for (const FrWire& value : current_b)
+        if (!fr_canonical(value))
+            throw std::invalid_argument("non-canonical Hyrax b-fold input");
+
+    const std::size_t half = current_size / 2U;
+    next_a.resize(half);
+    next_b.resize(half);
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const CpuIpaPreparedScalar challenge_scalar =
+        cpu_ipa_prepare_frwire_checked(challenge);
+    const CpuIpaPreparedScalar inverse_scalar =
+        cpu_ipa_prepare_frwire_checked(inverse);
+    std::vector<zkdl_blst::blst_fr> current_a_montgomery;
+    current_a_montgomery.reserve(current_a.size());
+    for (const FrWire& value : current_a)
+        current_a_montgomery.push_back(
+            cpu_ipa_frwire_to_montgomery_unchecked(value));
+    std::vector<zkdl_blst::blst_fr> current_b_montgomery;
+    current_b_montgomery.reserve(current_b.size());
+    for (const FrWire& value : current_b)
+        current_b_montgomery.push_back(
+            cpu_ipa_frwire_to_montgomery_unchecked(value));
+    cpu_parallel_for(half, 128U, [&](std::size_t index) {
+        const zkdl_blst::blst_fr& a_low = current_a_montgomery[index];
+        const zkdl_blst::blst_fr& a_high = current_a_montgomery[half + index];
+        const zkdl_blst::blst_fr& b_low = current_b_montgomery[index];
+        const zkdl_blst::blst_fr& b_high = current_b_montgomery[half + index];
+        zkdl_blst::blst_fr a_low_product{}, a_high_product{}, a_folded{};
+        zkdl_blst::blst_fr b_low_product{}, b_high_product{}, b_folded{};
+        zkdl_blst::blst_fr_mul(&a_low_product, &a_low,
+                               &challenge_scalar.montgomery);
+        zkdl_blst::blst_fr_mul(&a_high_product, &a_high,
+                               &inverse_scalar.montgomery);
+        zkdl_blst::blst_fr_add(&a_folded, &a_low_product, &a_high_product);
+        zkdl_blst::blst_fr_mul(&b_low_product, &b_low,
+                               &inverse_scalar.montgomery);
+        zkdl_blst::blst_fr_mul(&b_high_product, &b_high,
+                               &challenge_scalar.montgomery);
+        zkdl_blst::blst_fr_add(&b_folded, &b_low_product, &b_high_product);
+        next_a[index] = cpu_ipa_montgomery_to_frwire(a_folded);
+        next_b[index] = cpu_ipa_montgomery_to_frwire(b_folded);
+        if (!fr_canonical(next_a[index]) || !fr_canonical(next_b[index]))
+            throw std::runtime_error("Hyrax folded scalar is not canonical");
+    });
+#else
+    cpu_parallel_for(half, 128U, [&](std::size_t index) {
+        next_a[index] = fr_add(
+            fr_mul(current_a[index], challenge),
+            fr_mul(current_a[half + index], inverse));
+        next_b[index] = fr_add(
+            fr_mul(current_b[index], inverse),
+            fr_mul(current_b[half + index], challenge));
+    });
+#endif
+}
+
 inline void cpu_ipa_fold_generator_lrs_indexed(
     CpuG1MsmSession& msm_session, const CpuIpaBasisContext& basis,
     const std::vector<CpuG1Point>& generators, std::size_t generator_count,
@@ -2512,7 +2582,10 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         ? *checked_xi
         : cpu_g1_add(cpu_g1_sum(generators.data(), values.data(), generator_count),
                      cpu_g1_mul(blinding_generator, randomness));
-    const FrWire evaluation = cpu_ipa_inner_product(values, cpu_ipa_mle_weights(point));
+    std::vector<FrWire> current_b = cpu_ipa_mle_weights(point);
+    current_b.resize(padded_size, FrWire{});
+    const FrWire evaluation = cpu_ipa_inner_product(
+        values, 0U, current_b, 0U, generator_count);
     result.tau_blinder = public_evaluation ? FrWire{} : tau_blinder;
     const CpuG1Point tau = cpu_g1_add(
         cpu_g1_mul(u_generator, evaluation),
@@ -2522,15 +2595,24 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     opening.xi = cpu_g1_to_native(xi);
     opening.tau = cpu_g1_to_native(tau);
 
-    (void)msm_session;
-    std::vector<CpuG1Point> current_generators(padded_size, CpuG1Point::zero());
-    std::vector<FrWire> current_a(padded_size), current_b(padded_size);
+    const bool indexed_generator_fold =
+        authenticated_basis != nullptr && msm_session != nullptr;
+    std::vector<CpuG1Point> current_generators;
+    std::vector<FrWire> current_weights;
+    std::vector<std::uint32_t> indexed_indices;
+    std::vector<FrWire> indexed_scalars;
+    if (indexed_generator_fold) {
+        current_weights.push_back(fr_from_u32(1U));
+        indexed_indices.reserve(generator_count);
+        indexed_scalars.reserve(generator_count);
+    } else {
+        current_generators.assign(padded_size, CpuG1Point::zero());
+    }
+    std::vector<FrWire> current_a(padded_size);
     for (std::size_t i = 0U; i < generator_count; ++i) {
-        current_generators[i] = generators[i];
+        if (!indexed_generator_fold) current_generators[i] = generators[i];
         current_a[i] = values[i];
     }
-    const std::vector<FrWire> weights = cpu_ipa_mle_weights(point);
-    std::copy(weights.begin(), weights.end(), current_b.begin());
     CpuG1Point current_upsilon = cpu_g1_add(xi, tau);
     FrWire current_blinder = fr_add(randomness, result.tau_blinder);
 
@@ -2542,10 +2624,17 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         const std::size_t half = current_size / 2U;
         CpuG1Point left = CpuG1Point::zero();
         CpuG1Point right = CpuG1Point::zero();
-        left = cpu_g1_sum(current_generators.data() + half,
-                          current_a.data(), half);
-        right = cpu_g1_sum(current_generators.data(),
-                           current_a.data() + half, half);
+        if (indexed_generator_fold) {
+            cpu_ipa_fold_generator_lrs_indexed(
+                *msm_session, *authenticated_basis, generators, generator_count,
+                blinding_generator, u_generator, current_weights, current_a,
+                indexed_indices, indexed_scalars, left, right);
+        } else {
+            left = cpu_g1_sum(current_generators.data() + half,
+                              current_a.data(), half);
+            right = cpu_g1_sum(current_generators.data(),
+                               current_a.data() + half, half);
+        }
         left = cpu_g1_add(left, cpu_g1_mul(
             u_generator, cpu_ipa_inner_product(
                 current_a, 0U, current_b, half, half)));
@@ -2570,14 +2659,21 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         current_blinder = fr_add(current_blinder,
                                  fr_add(fr_mul(challenge_sq, r_left),
                                         fr_mul(inverse_sq, r_right)));
-        std::vector<CpuG1Point> next_generators;
         std::vector<FrWire> next_a(half), next_b(half);
-        cpu_ipa_fold_projective_vectors_parallel(
-            current_generators, current_a, current_b, challenge, inverse,
-            next_generators, next_a, next_b);
+        if (indexed_generator_fold) {
+            cpu_ipa_fold_scalar_vectors_parallel(
+                current_a, current_b, challenge, inverse, next_a, next_b);
+            current_weights = cpu_ipa_next_generator_weights_fast(
+                current_weights, challenge, inverse);
+        } else {
+            std::vector<CpuG1Point> next_generators;
+            cpu_ipa_fold_projective_vectors_parallel(
+                current_generators, current_a, current_b, challenge, inverse,
+                next_generators, next_a, next_b);
+            current_generators.swap(next_generators);
+        }
         current_a.swap(next_a);
         current_b.swap(next_b);
-        current_generators.swap(next_generators);
         current_size = half;
     }
 
@@ -2588,7 +2684,11 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
     const FrWire b_hat = current_b[0];
     if (fr_compare(b_hat, FrWire{}) == 0)
         throw std::runtime_error("BLOCKED: Hyrax v3 terminal weight is zero");
-    const CpuG1Point g_hat = current_generators[0];
+    const CpuG1Point g_hat = indexed_generator_fold
+        ? msm_session->sum(*authenticated_basis, generators,
+                           blinding_generator, u_generator,
+                           current_weights.data(), generator_count)
+        : current_generators[0];
     const FrWire d = cpu_fresh_csprng_scalar();
     const FrWire r_delta = cpu_fresh_csprng_scalar();
     const FrWire r_beta = cpu_fresh_csprng_scalar();

@@ -5,3 +5,9 @@
 [pubmed/prover] gat_adapter_prover_stage: generators
 [pubmed/prover] gat_adapter_prover_stage: lasso-prove
 [pubmed/prover] gat_adapter_prover_stage: restore-native-plan
+[pubmed/prover] gat_adapter_prover_stage: gkr-prove
+[pubmed/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[pubmed/prover] [zkGPT][gkr] layer=112 begin ty=4 size=1191617455 bits=31 u=31 v=30 phase2=1
+[pubmed/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=31
+[pubmed/prover] FAILED: native masked GKR proof failed: native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=18414665728, bound=18414645248, active=18414633184, page_live=18414637056, file=36829266368, tail=448)
+ZKGPT_INTERNAL_PHASE_FAILED phase=cell: native prover failed with 1; see baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/pubmed/prover.stderr.log

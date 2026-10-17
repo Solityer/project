@@ -4,6 +4,7 @@
 #include <cybozu/sha2.hpp>
 #include <algorithm>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -23,6 +24,9 @@
 #include <unistd.h>
 #ifdef __linux__
 #include <linux/falloc.h>
+#include <linux/fiemap.h>
+#include <linux/fs.h>
+#include <sys/ioctl.h>
 #endif
 
 namespace zkgpt {
@@ -45,6 +49,51 @@ inline std::size_t page_size() {
     if (size <= 0) throw std::runtime_error("cannot inspect native scratch page size");
     return static_cast<std::size_t>(size);
 }
+
+namespace detail {
+inline bool punched_range_has_no_allocated_extent(int fd, std::uint64_t begin, std::uint64_t end) {
+    // An empty range cannot establish that the punch removed its data.
+    if (begin >= end) return false;
+#ifdef __linux__
+    static_assert(offsetof(struct fiemap, fm_extents) == sizeof(struct fiemap));
+    static_assert(alignof(struct fiemap) >= alignof(struct fiemap_extent));
+    constexpr std::size_t extent_offset = offsetof(struct fiemap, fm_extents);
+    alignas(struct fiemap) unsigned char buffer[extent_offset + sizeof(struct fiemap_extent)]{};
+    auto* request = reinterpret_cast<struct fiemap*>(buffer);
+    request->fm_start = begin;
+    request->fm_length = end - begin;
+    request->fm_flags = 0;
+    request->fm_extent_count = 1;
+    request->fm_mapped_extents = 0;
+
+    int ioctl_result;
+    do { ioctl_result = ::ioctl(fd, FS_IOC_FIEMAP, request); } while (ioctl_result != 0 && errno == EINTR);
+    if (ioctl_result != 0) {
+        const int error = errno;
+        throw std::runtime_error("cannot inspect native scratch reclaimed extents: " + std::to_string(error));
+    }
+    if (request->fm_start != begin || request->fm_length != end - begin ||
+        request->fm_flags != 0U || request->fm_extent_count != 1U || request->fm_mapped_extents > 1U)
+        throw std::runtime_error("native scratch FIEMAP returned unsupported extent metadata");
+    if (request->fm_mapped_extents == 0U) return true;
+
+    const auto* extent = reinterpret_cast<const struct fiemap_extent*>(buffer + extent_offset);
+    if (extent->fe_length == 0U ||
+        extent->fe_logical > std::numeric_limits<std::uint64_t>::max() - extent->fe_length)
+        throw std::runtime_error("native scratch FIEMAP returned an invalid extent range");
+    const std::uint64_t extent_end = extent->fe_logical + extent->fe_length;
+
+    // Every FIEMAP extent is treated as allocated, including unwritten,
+    // delayed-allocation, and unknown extents. Only a proven logical hole passes.
+    if (extent_end <= begin || extent->fe_logical >= end)
+        throw std::runtime_error("native scratch FIEMAP returned an extent outside the queried range");
+    return false;
+#else
+    (void)fd;
+    throw std::runtime_error("native scratch FIEMAP extent inspection is unsupported on this platform");
+#endif
+}
+} // namespace detail
 
 inline std::size_t filesystem_allocation_unit_bytes(const std::filesystem::path& directory) {
     struct statvfs capacity{};
@@ -198,12 +247,14 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     if (allocation_margin == 0U || expected_bound > std::numeric_limits<std::size_t>::max() - allocation_margin)
         throw std::overflow_error("native scratch physical block bound overflows");
     const std::size_t physical_bound = expected_bound + allocation_margin;
-    if (after > physical_bound) throw std::runtime_error(
-        "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
-        std::to_string(after) + ", bound=" + std::to_string(physical_bound) +
-        ", active=" + std::to_string(active_bytes) + ", page_live=" +
-        std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
-        ", tail=" + std::to_string(trailing_fragment) + ")");
+    if (after > physical_bound &&
+        !detail::punched_range_has_no_allocated_extent(mapping.fd, aligned_live, aligned_end))
+        throw std::runtime_error(
+            "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
+            std::to_string(after) + ", bound=" + std::to_string(physical_bound) +
+            ", active=" + std::to_string(active_bytes) + ", page_live=" +
+            std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
+            ", tail=" + std::to_string(trailing_fragment) + ")");
     mapping.live_bytes = active_bytes;
     mapping.allocated_bytes = after;
     return {before, after, mapping.bytes, mapping.live_bytes, true};

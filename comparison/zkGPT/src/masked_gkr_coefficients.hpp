@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <exception>
+#include <limits>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -21,33 +23,48 @@ inline F masked_eq_at(const std::vector<F> &point, u64 index) {
 
 class MaskedEqLookup {
 public:
-    explicit MaskedEqLookup(const std::vector<F> &point, bool build_table = true)
-        : MaskedEqLookup(&point, build_table) {}
+    MaskedEqLookup() = default;
 
-    explicit MaskedEqLookup(const std::vector<F> *point, bool build_table = true)
-        : point_(point) {
+    explicit MaskedEqLookup(const std::vector<F> &point, bool build_table = true, const F &scale = F_ONE, std::size_t maximum_table_bits = 36)
+        : MaskedEqLookup(&point, build_table, scale, maximum_table_bits) {}
+
+    explicit MaskedEqLookup(const std::vector<F> *point, bool build_table = true, const F &scale = F_ONE, std::size_t maximum_table_bits = 36)
+        : point_(point), scale_(scale) {
         if (!build_table || point_ == nullptr || point_->size() < 2 ||
-            point_->size() > kMaximumTableBits)
+            maximum_table_bits > kMaximumTableBits || point_->size() > maximum_table_bits)
             return;
         low_bits_ = point_->size() / 2;
         const std::size_t high_bits = point_->size() - low_bits_;
         low_mask_ = (u64(1) << low_bits_) - 1;
         low_table_ = build_half(*point_, 0, low_bits_);
         high_table_ = build_half(*point_, low_bits_, high_bits);
+        if (!(scale_ == F_ONE))
+            for (F &value : low_table_) value *= scale_;
     }
 
     bool uses_table() const noexcept { return !low_table_.empty(); }
+    std::size_t table_storage_bytes() const {
+        const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+        if (low_table_.capacity() > maximum / sizeof(F) ||
+            high_table_.capacity() > maximum / sizeof(F))
+            throw std::length_error("masked equality table storage size overflows");
+        const std::size_t low_bytes = low_table_.capacity() * sizeof(F);
+        const std::size_t high_bytes = high_table_.capacity() * sizeof(F);
+        if (low_bytes > maximum - high_bytes)
+            throw std::length_error("masked equality table storage size overflows");
+        return low_bytes + high_bytes;
+    }
 
     F at(u64 index) const {
         if (point_ == nullptr) return F_ZERO;
-        if (!uses_table()) return masked_eq_at(*point_, index);
+        if (!uses_table()) return scale_ == F_ONE ? masked_eq_at(*point_, index) : scale_ * masked_eq_at(*point_, index);
         if ((index >> point_->size()) != 0) return F_ZERO;
         return low_table_[static_cast<std::size_t>(index & low_mask_)] *
                high_table_[static_cast<std::size_t>(index >> low_bits_)];
     }
 
 private:
-    static constexpr std::size_t kMaximumTableBits = 36;
+    static constexpr std::size_t kMaximumTableBits = 37;
 
     static std::vector<F> build_half(const std::vector<F> &point,
                                      std::size_t offset,
@@ -71,9 +88,25 @@ private:
     const std::vector<F> *point_ = nullptr;
     std::size_t low_bits_ = 0;
     u64 low_mask_ = 0;
+    F scale_ = F_ONE;
     std::vector<F> low_table_;
     std::vector<F> high_table_;
 };
+
+inline bool masked_eq_table_storage_bytes(std::size_t point_bits, std::size_t &bytes, std::size_t maximum_table_bits = 36) {
+    bytes = 0;
+    if (point_bits < 2 || maximum_table_bits > 37 || point_bits > maximum_table_bits) return false;
+    const std::size_t low_bits = point_bits / 2;
+    const std::size_t high_bits = point_bits - low_bits;
+    const std::size_t low_size = std::size_t(1) << low_bits;
+    const std::size_t high_size = std::size_t(1) << high_bits;
+    const std::size_t maximum = std::numeric_limits<std::size_t>::max();
+    if (low_size > maximum - high_size) return false;
+    const std::size_t entries = low_size + high_size;
+    if (entries > maximum / sizeof(F)) return false;
+    bytes = entries * sizeof(F);
+    return true;
+}
 
 inline std::size_t masked_eq_table_build_cost(std::size_t point_bits) {
     if (point_bits < 2 || point_bits > 36) return 0;

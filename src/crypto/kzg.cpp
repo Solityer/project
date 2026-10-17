@@ -5877,6 +5877,8 @@ namespace gatzk::crypto
 
         std::vector<std::size_t> estimated_work(object_count, 0);
 
+        std::vector<std::shared_ptr<algebra::Polynomial>> mutable_opening_materials(object_count);
+
         std::vector<std::pair<std::string, const algebra::Polynomial *>> view;
 
         view.reserve(object_count);
@@ -5923,6 +5925,8 @@ namespace gatzk::crypto
                 .point = point,
                 .opening_polynomial = material,
             };
+
+            mutable_opening_materials[index] = std::move(material);
 
             if (profile != nullptr)
             {
@@ -6037,11 +6041,19 @@ namespace gatzk::crypto
                                      "left an object uncommitted");
         }
 
-        for (auto &commitment : out)
+        for (std::size_t index = 0; index < object_count; ++index)
         {
-            if (commitment.opening_polynomial == nullptr)
+            if (out[index].opening_polynomial == nullptr || mutable_opening_materials[index] == nullptr)
+            {
                 throw std::runtime_error("owned KZG commitment is missing opening polynomial material");
-            finalize_cuda_resident_coefficient_material(commitment.opening_polynomial.get());
+            }
+
+            if (out[index].opening_polynomial.get() != mutable_opening_materials[index].get())
+            {
+                throw std::runtime_error("owned KZG commitment opening polynomial identity mismatch");
+            }
+
+            finalize_cuda_resident_coefficient_material(mutable_opening_materials[index].get());
         }
 
         if (profile != nullptr)

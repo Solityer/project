@@ -2471,7 +2471,9 @@ pub(crate) fn spill_log() -> io::Result<SpillLog> {
 
 #[cfg(test)]
 mod native_successor_read_cache_tests {
-    use super::{NativeSuccessorReadCache, NATIVE_SUCCESSOR_READ_CACHE_BYTES};
+    use super::{
+        NativeSuccessorEncoding, NativeSuccessorReadCache, NATIVE_SUCCESSOR_READ_CACHE_BYTES,
+    };
     use std::fs::{self, File, OpenOptions};
     use std::io::{self, Write};
     use std::path::PathBuf;
@@ -2498,13 +2500,21 @@ mod native_successor_read_cache_tests {
         }
         file.write_all(&bytes)?;
         file.flush()?;
+        let file_len = file.metadata()?.len();
 
         let mut cache = NativeSuccessorReadCache::new(2)?;
         let sequence = [0, PAGE_PAIRS - 1, PAGE_PAIRS, 0, PAGE_PAIRS * 2, PAGE_PAIRS, 0, PAGE_PAIRS * 7];
         for index in sequence {
             let expected_source = index * 3;
             assert_eq!(
-                cache.pair_at(&file, PAIR_COUNT, index)?,
+                cache.pair_at(
+                    &file,
+                    0,
+                    file_len,
+                    NativeSuccessorEncoding::RawPairs,
+                    PAIR_COUNT,
+                    index,
+                )?,
                 (expected_source, expected_source + 1),
             );
         }
@@ -2512,8 +2522,28 @@ mod native_successor_read_cache_tests {
         assert!(cache.allocated_bytes() <= NATIVE_SUCCESSOR_READ_CACHE_BYTES);
 
         for index in [0, 1, 255, 256, 512, 1023, PAIR_COUNT - 1] {
-            assert_eq!(cache.source_ordinal(&file, PAIR_COUNT, index * 3)?, Some(index));
-            assert_eq!(cache.source_ordinal(&file, PAIR_COUNT, index * 3 + 1)?, None);
+            assert_eq!(
+                cache.source_ordinal(
+                    &file,
+                    0,
+                    file_len,
+                    NativeSuccessorEncoding::RawPairs,
+                    PAIR_COUNT,
+                    index * 3,
+                )?,
+                Some(index)
+            );
+            assert_eq!(
+                cache.source_ordinal(
+                    &file,
+                    0,
+                    file_len,
+                    NativeSuccessorEncoding::RawPairs,
+                    PAIR_COUNT,
+                    index * 3 + 1,
+                )?,
+                None
+            );
         }
         drop(cache);
         drop(file);

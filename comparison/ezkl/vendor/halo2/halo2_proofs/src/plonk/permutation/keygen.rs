@@ -346,7 +346,7 @@ impl Assembly {
     }
 
     pub(crate) fn build_vk<'params, C: CurveAffine, P: Params<'params, C>>(
-        mut self,
+        &mut self,
         params: &P,
         domain: &EvaluationDomain<C::Scalar>,
         p: &Argument,

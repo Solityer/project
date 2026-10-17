@@ -123,6 +123,35 @@ int main() {
         assert(before - after >= active_bytes - (std::size_t(1) << 20) && after <= active_bytes + (std::size_t(1) << 20));
         std::cout << "NATIVE_STORAGE_RECLAIM blocks_before_bytes=" << before << " blocks_after_bytes=" << after << " mapping_bytes=" << original_bytes << " live_bytes=" << active_bytes << '\n';
     }
+    {
+        constexpr std::size_t original_bytes = std::size_t(16) << 20;
+        const std::size_t active_bytes = (std::size_t(8) << 20) + 1U;
+        void* untouched = zkgpt::native_storage::allocate(original_bytes, alignof(F));
+        const auto mapping = zkgpt::native_storage::mappings.at(untouched);
+        assert(!zkgpt::native_storage::detail::punched_range_has_no_allocated_extent(
+            mapping.fd, 0U, original_bytes));
+        const auto reclaimed = zkgpt::native_storage::reclaim_tail(untouched, active_bytes, original_bytes);
+        const std::size_t page = zkgpt::native_storage::page_size();
+        const std::size_t aligned_live = ((active_bytes + page - 1U) / page) * page;
+        assert(reclaimed.mapped && reclaimed.live_bytes == active_bytes);
+        assert(zkgpt::native_storage::detail::punched_range_has_no_allocated_extent(
+            mapping.fd, aligned_live, original_bytes));
+        const auto repeated = zkgpt::native_storage::reclaim_tail(untouched, active_bytes, original_bytes);
+        assert(repeated.mapped);
+        bool invalid_extent_query_rejected = false;
+        try {
+            (void)zkgpt::native_storage::detail::punched_range_has_no_allocated_extent(
+                -1, aligned_live, original_bytes);
+        } catch (const std::runtime_error&) { invalid_extent_query_rejected = true; }
+        assert(invalid_extent_query_rejected);
+        assert(!zkgpt::native_storage::detail::punched_range_has_no_allocated_extent(
+            mapping.fd, aligned_live, aligned_live));
+        bool live_prefix_rejected = false;
+        try { (void)zkgpt::native_storage::reclaim_tail(untouched, original_bytes + 1U, original_bytes); }
+        catch (const std::out_of_range&) { live_prefix_rejected = true; }
+        assert(live_prefix_rejected);
+        zkgpt::native_storage::deallocate(untouched, alignof(F));
+    }
     std::vector<F> values(5003), point(13);
     for (std::size_t i = 0; i < values.size(); ++i) values[i] = F(static_cast<int>(i % 79) - 40);
     for (std::size_t i = 0; i < point.size(); ++i) point[i] = F(static_cast<int>(i + 2));

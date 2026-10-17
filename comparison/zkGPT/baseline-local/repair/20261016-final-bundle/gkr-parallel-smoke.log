@@ -1,0 +1,4 @@
+[zkGPT][gkr] begin layers=3 fconn=1
+input-aggregate parallel proof failed: masked GKR MatMul output segment/offset/span mismatch
+Command exited with non-zero status 15
+gkr_parallel_smoke_elapsed=0.29 exit=15

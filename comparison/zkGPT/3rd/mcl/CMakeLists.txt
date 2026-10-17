@@ -164,6 +164,9 @@ set_target_properties(mcl_st PROPERTIES
 
 target_compile_definitions(mcl PUBLIC MCL_FP_BIT=${MCL_FP_BIT} MCL_FR_BIT=${MCL_FR_BIT})
 target_compile_definitions(mcl_st PUBLIC MCL_FP_BIT=${MCL_FP_BIT} MCL_FR_BIT=${MCL_FR_BIT})
+target_compile_definitions(mcl PRIVATE MCL_USE_OMP=1)
+target_compile_options(mcl PRIVATE ${OpenMP_CXX_FLAGS})
+target_link_libraries(mcl PRIVATE ${OpenMP_CXX_LIBRARIES})
 
 # Compiler and linker settings
 if(ARM64_CROSS)

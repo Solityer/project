@@ -1,0 +1,660 @@
+[cora/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=10172.2
+[cora/prover] gat_adapter_prover_stage: begin
+[cora/prover] gat_adapter_prover_stage: lasso-build
+[cora/prover] gat_adapter_prover_stage: witness
+[cora/prover] gat_adapter_prover_stage: generators
+[cora/prover] gat_adapter_prover_stage: lasso-prove
+[cora/prover] gat_adapter_prover_stage: restore-native-plan
+[cora/prover] gat_adapter_prover_stage: gkr-prove
+[cora/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[cora/prover] [zkGPT][gkr] layer=112 begin ty=4 size=153465368 bits=28 u=28 v=27 phase2=1
+[cora/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=28
+[cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 progress rounds=1/28 elapsed_s=218.766
+[cora/prover] [zkGPT][gkr] gkr/layer/112 phase1 complete rounds=28/28 elapsed_s=222.078
+[cora/prover] [zkGPT][gkr] layer=112 phase2 begin rounds=27
+[cora/prover] [zkGPT][gkr] gkr/layer/112 phase2 progress rounds=1/27 elapsed_s=314.567
+[cora/prover] [zkGPT][gkr] gkr/layer/112 phase2 complete rounds=27/27 elapsed_s=316.934
+[cora/prover] [zkGPT][gkr] layer=112 phase2 end
+[cora/prover] [zkGPT][gkr] layer=112 end
+[cora/prover] [zkGPT][gkr] layer=111 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=111 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/111 phase1 complete rounds=15/15 elapsed_s=0.0433999
+[cora/prover] [zkGPT][gkr] layer=111 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=111 end
+[cora/prover] [zkGPT][gkr] layer=110 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=110 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/110 phase1 complete rounds=12/12 elapsed_s=0.0316747
+[cora/prover] [zkGPT][gkr] layer=110 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=110 end
+[cora/prover] [zkGPT][gkr] layer=109 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=109 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00125943
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=1.088e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/109/matmul complete rounds=3/3 elapsed_s=0.00770222
+[cora/prover] [zkGPT][gkr] layer=109 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=108 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=108 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/108 phase1 complete rounds=12/12 elapsed_s=0.0317396
+[cora/prover] [zkGPT][gkr] layer=108 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=108 end
+[cora/prover] [zkGPT][gkr] layer=107 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=107 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00125677
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=6.4e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/107/matmul complete rounds=3/3 elapsed_s=0.00771325
+[cora/prover] [zkGPT][gkr] layer=107 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=106 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=106 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/106 phase1 complete rounds=15/15 elapsed_s=0.0484257
+[cora/prover] [zkGPT][gkr] layer=106 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=106 end
+[cora/prover] [zkGPT][gkr] layer=105 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=105 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00656659
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=7 inner=64 complete rounds=7/7 elapsed_s=1.7233e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/105/matmul complete rounds=6/6 elapsed_s=0.0154026
+[cora/prover] [zkGPT][gkr] layer=105 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=104 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=104 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/104 phase1 complete rounds=12/12 elapsed_s=0.0318216
+[cora/prover] [zkGPT][gkr] layer=104 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=104 end
+[cora/prover] [zkGPT][gkr] layer=103 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=103 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.0012569
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=7.52e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/103/matmul complete rounds=3/3 elapsed_s=0.00771277
+[cora/prover] [zkGPT][gkr] layer=103 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=102 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=102 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/102 phase1 complete rounds=12/12 elapsed_s=0.0318087
+[cora/prover] [zkGPT][gkr] layer=102 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=102 end
+[cora/prover] [zkGPT][gkr] layer=101 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=101 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=7 complete rounds=2708/2708 elapsed_s=0.00125658
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=7 complete rounds=1/1 elapsed_s=7.36e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/101/matmul complete rounds=3/3 elapsed_s=0.00769337
+[cora/prover] [zkGPT][gkr] layer=101 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=100 begin ty=3 size=18956 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=100 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/100 phase1 complete rounds=15/15 elapsed_s=0.0485031
+[cora/prover] [zkGPT][gkr] layer=100 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=100 end
+[cora/prover] [zkGPT][gkr] layer=99 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=99 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00650752
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=7 inner=64 complete rounds=7/7 elapsed_s=1.6592e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/99/matmul complete rounds=6/6 elapsed_s=0.0154002
+[cora/prover] [zkGPT][gkr] layer=99 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=98 begin ty=3 size=173312 bits=18 u=18 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=98 phase1 begin rounds=18
+[cora/prover] [zkGPT][gkr] gkr/layer/98 phase1 complete rounds=18/18 elapsed_s=0.101312
+[cora/prover] [zkGPT][gkr] layer=98 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=98 end
+[cora/prover] [zkGPT][gkr] layer=97 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=97 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/97 phase1 complete rounds=12/12 elapsed_s=0.0318382
+[cora/prover] [zkGPT][gkr] layer=97 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=97 end
+[cora/prover] [zkGPT][gkr] layer=96 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=96 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134668
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.6e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/96/matmul complete rounds=3/3 elapsed_s=0.0077259
+[cora/prover] [zkGPT][gkr] layer=96 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=95 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=95 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/95 phase1 complete rounds=12/12 elapsed_s=0.0318602
+[cora/prover] [zkGPT][gkr] layer=95 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=95 end
+[cora/prover] [zkGPT][gkr] layer=94 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=94 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013445
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.312e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/94/matmul complete rounds=3/3 elapsed_s=0.00829722
+[cora/prover] [zkGPT][gkr] layer=94 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=93 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=93 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/93 phase1 complete rounds=15/15 elapsed_s=0.0496851
+[cora/prover] [zkGPT][gkr] layer=93 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=93 end
+[cora/prover] [zkGPT][gkr] layer=92 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=92 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00656195
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.8673e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/92/matmul complete rounds=6/6 elapsed_s=0.0154226
+[cora/prover] [zkGPT][gkr] layer=92 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=91 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=91 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/91 phase1 complete rounds=12/12 elapsed_s=0.0318524
+[cora/prover] [zkGPT][gkr] layer=91 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=91 end
+[cora/prover] [zkGPT][gkr] layer=90 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=90 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134751
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.73e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/90/matmul complete rounds=3/3 elapsed_s=0.00773747
+[cora/prover] [zkGPT][gkr] layer=90 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=89 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=89 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/89 phase1 complete rounds=12/12 elapsed_s=0.0318871
+[cora/prover] [zkGPT][gkr] layer=89 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=89 end
+[cora/prover] [zkGPT][gkr] layer=88 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=88 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00133754
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.04e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/88/matmul complete rounds=3/3 elapsed_s=0.00772401
+[cora/prover] [zkGPT][gkr] layer=88 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=87 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=87 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/87 phase1 complete rounds=15/15 elapsed_s=0.0500532
+[cora/prover] [zkGPT][gkr] layer=87 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=87 end
+[cora/prover] [zkGPT][gkr] layer=86 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=86 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00655208
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0225e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/86/matmul complete rounds=6/6 elapsed_s=0.0156914
+[cora/prover] [zkGPT][gkr] layer=86 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=85 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=85 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/85 phase1 complete rounds=12/12 elapsed_s=0.0319701
+[cora/prover] [zkGPT][gkr] layer=85 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=85 end
+[cora/prover] [zkGPT][gkr] layer=84 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=84 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134111
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.056e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/84/matmul complete rounds=3/3 elapsed_s=0.00772811
+[cora/prover] [zkGPT][gkr] layer=84 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=83 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=83 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/83 phase1 complete rounds=12/12 elapsed_s=0.0319443
+[cora/prover] [zkGPT][gkr] layer=83 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=83 end
+[cora/prover] [zkGPT][gkr] layer=82 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=82 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134599
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.488e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/82/matmul complete rounds=3/3 elapsed_s=0.00773854
+[cora/prover] [zkGPT][gkr] layer=82 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=81 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=81 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/81 phase1 complete rounds=15/15 elapsed_s=0.0498467
+[cora/prover] [zkGPT][gkr] layer=81 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=81 end
+[cora/prover] [zkGPT][gkr] layer=80 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=80 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00652288
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0385e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/80/matmul complete rounds=6/6 elapsed_s=0.0155177
+[cora/prover] [zkGPT][gkr] layer=80 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=79 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=79 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/79 phase1 complete rounds=12/12 elapsed_s=0.0319027
+[cora/prover] [zkGPT][gkr] layer=79 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=79 end
+[cora/prover] [zkGPT][gkr] layer=78 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=78 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134278
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.12e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/78/matmul complete rounds=3/3 elapsed_s=0.0172247
+[cora/prover] [zkGPT][gkr] layer=78 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=77 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=77 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/77 phase1 complete rounds=12/12 elapsed_s=0.0317649
+[cora/prover] [zkGPT][gkr] layer=77 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=77 end
+[cora/prover] [zkGPT][gkr] layer=76 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=76 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134239
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.057e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/76/matmul complete rounds=3/3 elapsed_s=0.00771326
+[cora/prover] [zkGPT][gkr] layer=76 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=75 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=75 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/75 phase1 complete rounds=15/15 elapsed_s=0.0497201
+[cora/prover] [zkGPT][gkr] layer=75 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=75 end
+[cora/prover] [zkGPT][gkr] layer=74 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=74 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.0064843
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9169e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/74/matmul complete rounds=6/6 elapsed_s=0.0154662
+[cora/prover] [zkGPT][gkr] layer=74 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=73 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=73 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/73 phase1 complete rounds=12/12 elapsed_s=0.0319
+[cora/prover] [zkGPT][gkr] layer=73 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=73 end
+[cora/prover] [zkGPT][gkr] layer=72 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=72 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00135515
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/72/matmul complete rounds=3/3 elapsed_s=0.00773667
+[cora/prover] [zkGPT][gkr] layer=72 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=71 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=71 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/71 phase1 complete rounds=12/12 elapsed_s=0.0318001
+[cora/prover] [zkGPT][gkr] layer=71 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=71 end
+[cora/prover] [zkGPT][gkr] layer=70 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=70 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134046
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.2e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/70/matmul complete rounds=3/3 elapsed_s=0.00770734
+[cora/prover] [zkGPT][gkr] layer=70 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=69 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=69 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/69 phase1 complete rounds=15/15 elapsed_s=0.0499454
+[cora/prover] [zkGPT][gkr] layer=69 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=69 end
+[cora/prover] [zkGPT][gkr] layer=68 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=68 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00654386
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0657e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/68/matmul complete rounds=6/6 elapsed_s=0.0158008
+[cora/prover] [zkGPT][gkr] layer=68 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=67 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=67 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/67 phase1 complete rounds=12/12 elapsed_s=0.0318544
+[cora/prover] [zkGPT][gkr] layer=67 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=67 end
+[cora/prover] [zkGPT][gkr] layer=66 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=66 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134073
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.201e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/66/matmul complete rounds=3/3 elapsed_s=0.00769777
+[cora/prover] [zkGPT][gkr] layer=66 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=65 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=65 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/65 phase1 complete rounds=12/12 elapsed_s=0.0318906
+[cora/prover] [zkGPT][gkr] layer=65 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=65 end
+[cora/prover] [zkGPT][gkr] layer=64 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=64 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134439
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.8e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/64/matmul complete rounds=3/3 elapsed_s=0.00770296
+[cora/prover] [zkGPT][gkr] layer=64 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=63 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=63 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/63 phase1 complete rounds=15/15 elapsed_s=0.0505324
+[cora/prover] [zkGPT][gkr] layer=63 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=63 end
+[cora/prover] [zkGPT][gkr] layer=62 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=62 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00655128
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=1.9057e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/62/matmul complete rounds=6/6 elapsed_s=0.0154772
+[cora/prover] [zkGPT][gkr] layer=62 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=61 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=61 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/61 phase1 complete rounds=12/12 elapsed_s=0.0318508
+[cora/prover] [zkGPT][gkr] layer=61 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=61 end
+[cora/prover] [zkGPT][gkr] layer=60 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=60 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134518
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.216e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/60/matmul complete rounds=3/3 elapsed_s=0.00772603
+[cora/prover] [zkGPT][gkr] layer=60 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=59 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=59 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/59 phase1 complete rounds=12/12 elapsed_s=0.0319153
+[cora/prover] [zkGPT][gkr] layer=59 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=59 end
+[cora/prover] [zkGPT][gkr] layer=58 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=58 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134634
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.072e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/58/matmul complete rounds=3/3 elapsed_s=0.00773309
+[cora/prover] [zkGPT][gkr] layer=58 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=57 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=57 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/57 phase1 complete rounds=15/15 elapsed_s=0.0507987
+[cora/prover] [zkGPT][gkr] layer=57 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=57 end
+[cora/prover] [zkGPT][gkr] layer=56 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=56 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00649353
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0641e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/56/matmul complete rounds=6/6 elapsed_s=0.0155181
+[cora/prover] [zkGPT][gkr] layer=56 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=55 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=55 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/55 phase1 complete rounds=12/12 elapsed_s=0.0319128
+[cora/prover] [zkGPT][gkr] layer=55 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=55 end
+[cora/prover] [zkGPT][gkr] layer=54 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=54 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134358
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.024e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/54/matmul complete rounds=3/3 elapsed_s=0.00772243
+[cora/prover] [zkGPT][gkr] layer=54 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=53 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=53 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/53 phase1 complete rounds=12/12 elapsed_s=0.031895
+[cora/prover] [zkGPT][gkr] layer=53 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=53 end
+[cora/prover] [zkGPT][gkr] layer=52 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=52 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134108
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/52/matmul complete rounds=3/3 elapsed_s=0.00770918
+[cora/prover] [zkGPT][gkr] layer=52 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=51 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=51 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/51 phase1 complete rounds=15/15 elapsed_s=0.0508905
+[cora/prover] [zkGPT][gkr] layer=51 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=51 end
+[cora/prover] [zkGPT][gkr] layer=50 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=50 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=64 complete rounds=2708/2708 elapsed_s=0.00655285
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=64 complete rounds=8/8 elapsed_s=2.0017e-05
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/50/matmul complete rounds=6/6 elapsed_s=0.0155043
+[cora/prover] [zkGPT][gkr] layer=50 fconn end rounds=6
+[cora/prover] [zkGPT][gkr] layer=49 begin ty=3 size=173312 bits=18 u=18 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=49 phase1 begin rounds=18
+[cora/prover] [zkGPT][gkr] gkr/layer/49 phase1 complete rounds=18/18 elapsed_s=0.106522
+[cora/prover] [zkGPT][gkr] layer=49 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=49 end
+[cora/prover] [zkGPT][gkr] layer=48 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=48 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/48 phase1 complete rounds=12/12 elapsed_s=0.0319282
+[cora/prover] [zkGPT][gkr] layer=48 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=48 end
+[cora/prover] [zkGPT][gkr] layer=47 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=47 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134279
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.344e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/47/matmul complete rounds=3/3 elapsed_s=0.0077375
+[cora/prover] [zkGPT][gkr] layer=47 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=46 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=46 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/46 phase1 complete rounds=12/12 elapsed_s=0.0318912
+[cora/prover] [zkGPT][gkr] layer=46 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=46 end
+[cora/prover] [zkGPT][gkr] layer=45 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=45 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134649
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.344e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/45/matmul complete rounds=3/3 elapsed_s=0.00766955
+[cora/prover] [zkGPT][gkr] layer=45 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=44 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=44 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/44 phase1 complete rounds=15/15 elapsed_s=0.049657
+[cora/prover] [zkGPT][gkr] layer=44 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=44 end
+[cora/prover] [zkGPT][gkr] layer=43 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=43 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125088
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000378276
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/43/matmul complete rounds=11/11 elapsed_s=0.0287716
+[cora/prover] [zkGPT][gkr] layer=43 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=42 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=42 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/42 phase1 complete rounds=12/12 elapsed_s=0.0319332
+[cora/prover] [zkGPT][gkr] layer=42 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=42 end
+[cora/prover] [zkGPT][gkr] layer=41 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=41 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00135066
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.072e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/41/matmul complete rounds=3/3 elapsed_s=0.00775613
+[cora/prover] [zkGPT][gkr] layer=41 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=40 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=40 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/40 phase1 complete rounds=12/12 elapsed_s=0.0319211
+[cora/prover] [zkGPT][gkr] layer=40 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=40 end
+[cora/prover] [zkGPT][gkr] layer=39 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=39 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013455
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.168e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/39/matmul complete rounds=3/3 elapsed_s=0.00773249
+[cora/prover] [zkGPT][gkr] layer=39 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=38 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=38 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/38 phase1 complete rounds=15/15 elapsed_s=0.0498083
+[cora/prover] [zkGPT][gkr] layer=38 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=38 end
+[cora/prover] [zkGPT][gkr] layer=37 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=37 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.12498
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000379061
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/37/matmul complete rounds=11/11 elapsed_s=0.0287445
+[cora/prover] [zkGPT][gkr] layer=37 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=36 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=36 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/36 phase1 complete rounds=12/12 elapsed_s=0.0319207
+[cora/prover] [zkGPT][gkr] layer=36 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=36 end
+[cora/prover] [zkGPT][gkr] layer=35 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=35 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134911
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.12e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/35/matmul complete rounds=3/3 elapsed_s=0.00773986
+[cora/prover] [zkGPT][gkr] layer=35 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=34 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=34 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/34 phase1 complete rounds=12/12 elapsed_s=0.031947
+[cora/prover] [zkGPT][gkr] layer=34 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=34 end
+[cora/prover] [zkGPT][gkr] layer=33 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=33 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134521
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/33/matmul complete rounds=3/3 elapsed_s=0.0077235
+[cora/prover] [zkGPT][gkr] layer=33 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=32 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=32 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/32 phase1 complete rounds=15/15 elapsed_s=0.0497858
+[cora/prover] [zkGPT][gkr] layer=32 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=32 end
+[cora/prover] [zkGPT][gkr] layer=31 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=31 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125417
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000377765
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/31/matmul complete rounds=11/11 elapsed_s=0.0287807
+[cora/prover] [zkGPT][gkr] layer=31 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=30 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=30 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/30 phase1 complete rounds=12/12 elapsed_s=0.0319586
+[cora/prover] [zkGPT][gkr] layer=30 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=30 end
+[cora/prover] [zkGPT][gkr] layer=29 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=29 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134121
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.72e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/29/matmul complete rounds=3/3 elapsed_s=0.00772592
+[cora/prover] [zkGPT][gkr] layer=29 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=28 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=28 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/28 phase1 complete rounds=12/12 elapsed_s=0.0319016
+[cora/prover] [zkGPT][gkr] layer=28 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=28 end
+[cora/prover] [zkGPT][gkr] layer=27 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=27 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.001339
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=6.88e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/27/matmul complete rounds=3/3 elapsed_s=0.00771342
+[cora/prover] [zkGPT][gkr] layer=27 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=26 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=26 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/26 phase1 complete rounds=15/15 elapsed_s=0.0497997
+[cora/prover] [zkGPT][gkr] layer=26 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=26 end
+[cora/prover] [zkGPT][gkr] layer=25 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=25 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125011
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000384405
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/25/matmul complete rounds=11/11 elapsed_s=0.0287854
+[cora/prover] [zkGPT][gkr] layer=25 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=24 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=24 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/24 phase1 complete rounds=12/12 elapsed_s=0.0319612
+[cora/prover] [zkGPT][gkr] layer=24 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=24 end
+[cora/prover] [zkGPT][gkr] layer=23 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=23 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134257
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.12e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/23/matmul complete rounds=3/3 elapsed_s=0.00771083
+[cora/prover] [zkGPT][gkr] layer=23 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=22 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=22 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/22 phase1 complete rounds=12/12 elapsed_s=0.0318928
+[cora/prover] [zkGPT][gkr] layer=22 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=22 end
+[cora/prover] [zkGPT][gkr] layer=21 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=21 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134134
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.96e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/21/matmul complete rounds=3/3 elapsed_s=0.00771995
+[cora/prover] [zkGPT][gkr] layer=21 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=20 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=20 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/20 phase1 complete rounds=15/15 elapsed_s=0.0504888
+[cora/prover] [zkGPT][gkr] layer=20 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=20 end
+[cora/prover] [zkGPT][gkr] layer=19 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=19 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125193
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.00038146
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/19/matmul complete rounds=11/11 elapsed_s=0.0288253
+[cora/prover] [zkGPT][gkr] layer=19 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=18 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=18 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/18 phase1 complete rounds=12/12 elapsed_s=0.0319312
+[cora/prover] [zkGPT][gkr] layer=18 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=18 end
+[cora/prover] [zkGPT][gkr] layer=17 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=17 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013414
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=9.28e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/17/matmul complete rounds=3/3 elapsed_s=0.00773395
+[cora/prover] [zkGPT][gkr] layer=17 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=16 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=16 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/16 phase1 complete rounds=12/12 elapsed_s=0.0319942
+[cora/prover] [zkGPT][gkr] layer=16 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=16 end
+[cora/prover] [zkGPT][gkr] layer=15 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=15 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134175
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=7.84e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/15/matmul complete rounds=3/3 elapsed_s=0.00772448
+[cora/prover] [zkGPT][gkr] layer=15 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=14 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=14 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/14 phase1 complete rounds=15/15 elapsed_s=0.0505999
+[cora/prover] [zkGPT][gkr] layer=14 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=14 end
+[cora/prover] [zkGPT][gkr] layer=13 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=13 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125206
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000384324
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/13/matmul complete rounds=11/11 elapsed_s=0.0287959
+[cora/prover] [zkGPT][gkr] layer=13 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=12 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=12 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/12 phase1 complete rounds=12/12 elapsed_s=0.031969
+[cora/prover] [zkGPT][gkr] layer=12 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=12 end
+[cora/prover] [zkGPT][gkr] layer=11 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=11 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013419
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.64e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/11/matmul complete rounds=3/3 elapsed_s=0.00773504
+[cora/prover] [zkGPT][gkr] layer=11 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=10 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=10 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/10 phase1 complete rounds=12/12 elapsed_s=0.0319031
+[cora/prover] [zkGPT][gkr] layer=10 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=10 end
+[cora/prover] [zkGPT][gkr] layer=9 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=9 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00133686
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/9/matmul complete rounds=3/3 elapsed_s=0.00774785
+[cora/prover] [zkGPT][gkr] layer=9 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=8 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=8 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/8 phase1 complete rounds=15/15 elapsed_s=0.0716183
+[cora/prover] [zkGPT][gkr] layer=8 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=8 end
+[cora/prover] [zkGPT][gkr] layer=7 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=7 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125097
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000380517
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/7/matmul complete rounds=11/11 elapsed_s=0.0286284
+[cora/prover] [zkGPT][gkr] layer=7 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] layer=6 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=6 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/6 phase1 complete rounds=12/12 elapsed_s=0.0318473
+[cora/prover] [zkGPT][gkr] layer=6 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=6 end
+[cora/prover] [zkGPT][gkr] layer=5 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=5 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.0013421
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=1.392e-06
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/5/matmul complete rounds=3/3 elapsed_s=0.00770572
+[cora/prover] [zkGPT][gkr] layer=5 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=4 begin ty=3 size=2708 bits=12 u=12 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=4 phase1 begin rounds=12
+[cora/prover] [zkGPT][gkr] gkr/layer/4 phase1 complete rounds=12/12 elapsed_s=0.0319092
+[cora/prover] [zkGPT][gkr] layer=4 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=4 end
+[cora/prover] [zkGPT][gkr] layer=3 begin ty=11 size=4096 bits=12 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=3 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=8 complete rounds=2708/2708 elapsed_s=0.00134233
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=1 inner=8 complete rounds=1/1 elapsed_s=8.32e-07
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/3/matmul complete rounds=3/3 elapsed_s=0.00775413
+[cora/prover] [zkGPT][gkr] layer=3 fconn end rounds=3
+[cora/prover] [zkGPT][gkr] layer=2 begin ty=3 size=21664 bits=15 u=15 v=0 phase2=0
+[cora/prover] [zkGPT][gkr] layer=2 phase1 begin rounds=15
+[cora/prover] [zkGPT][gkr] gkr/layer/2 phase1 complete rounds=15/15 elapsed_s=0.0508713
+[cora/prover] [zkGPT][gkr] layer=2 phase1 terminal end
+[cora/prover] [zkGPT][gkr] layer=2 end
+[cora/prover] [zkGPT][gkr] layer=1 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[cora/prover] [zkGPT][gkr] layer=1 fconn begin
+[cora/prover] [zkGPT][gkr] FCONN row fold rows=2708 inner=1433 complete rounds=2708/2708 elapsed_s=0.125305
+[cora/prover] [zkGPT][gkr] FCONN column fold cols=8 inner=1433 complete rounds=8/8 elapsed_s=0.000380132
+[cora/prover] [zkGPT][gkr] FCONN product label=gkr/layer/1/matmul complete rounds=11/11 elapsed_s=0.0287466
+[cora/prover] [zkGPT][gkr] layer=1 fconn end rounds=11
+[cora/prover] [zkGPT][gkr] input aggregate begin sources=169
+[cora/prover] [zkGPT][gkr] input-aggregate parallel workers=20 round=0 pair_blocks=536870912
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=2/30 elapsed_s=23.0725
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=4/30 elapsed_s=44.9615
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=6/30 elapsed_s=66.906
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=8/30 elapsed_s=88.6909
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=10/30 elapsed_s=110.617
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=12/30 elapsed_s=132.695
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=14/30 elapsed_s=155.029
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=16/30 elapsed_s=176.309
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=18/30 elapsed_s=198.77
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=20/30 elapsed_s=219.755
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=22/30 elapsed_s=241.785
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=24/30 elapsed_s=262.113
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=26/30 elapsed_s=283.765
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=27/30 elapsed_s=308.804
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=28/30 elapsed_s=337.009
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate progress rounds=29/30 elapsed_s=526.074
+[cora/prover] [zkGPT][gkr] input-aggregate label=gkr/input/aggregate complete rounds=30/30 elapsed_s=526.077
+[cora/prover] [zkGPT][gkr] input aggregate end rounds=30
+[cora/prover] gat_adapter_prover_stage: input-openings
+[cora/prover] gat_adapter_prover_stage: artifact
+[cora/prover] gat_adapter_prover_stage: selfverify-deferred-to-independent-verifier
+[cora/prover] [zkGPT][artifact] serialize_begin wire_limit_bytes=1195196416
+[cora/prover] [zkGPT][artifact] serialize_complete bytes=122281101 elapsed_ms=126.297
+[cora/prover] [zkGPT][artifact] readback_begin
+[cora/prover] [zkGPT][artifact] readback_complete elapsed_ms=563.877 ok=true
+[cora/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_begin
+[cora/cpu/verifier] [zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=39573 ok=true
+[cora/cpu/verifier] [zkGPT][verifier] artifact_read_parse_begin
+[cora/cpu/verifier] [zkGPT][verifier] artifact_read_parse_complete elapsed_ms=227.584 ok=true
+[cora/cpu/verifier] [zkGPT][verifier] crypto_verify_begin
+[cora/cpu/verifier] [zkGPT][verifier] crypto_verify_complete elapsed_ms=317414 ok=true

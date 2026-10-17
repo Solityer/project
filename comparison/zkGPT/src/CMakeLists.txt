@@ -3,6 +3,7 @@ list(FILTER gpt_src EXCLUDE REGEX "main*")
 option(ENABLE_MY_ASSERT "Turn on MY_ASSERT checks" ON)
 SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 add_library(gpt_lib ${gpt_src})
+target_link_libraries(gpt_lib PRIVATE ${OpenMP_CXX_LIBRARIES})
 
 
 add_executable(demo_llm_run main_demo_llm.cpp)

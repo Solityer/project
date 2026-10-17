@@ -9,14 +9,14 @@
   ],
   "lock_device": 66306,
   "lock_inode": 24906071,
-  "owner_pid": 89509,
-  "owner_start_ticks": 10516013,
-  "owner_token_sha256": "7f8f869316f2febf4e409a963cfa3786c9529819ebbfcd1fb923ec42f4465b2b",
-  "recovered_previous_session_id": "94bf9d73bba6f34c3f9503ec208992ee",
+  "owner_pid": 268746,
+  "owner_start_ticks": 17191316,
+  "owner_token_sha256": "223bbe87c7caf50200e03371164bd0516d5d2dc3632112d6b9fc97cf71af2f21",
+  "recovered_previous_session_id": "a4ab97b1fb98c1fcaaf4aae9082f09cd",
   "schema": "zkgpt-local-formal-owner-v1",
-  "session_id": "a4ab97b1fb98c1fcaaf4aae9082f09cd",
-  "stage_nonce": "0d48d09672087bc1dee95cdeff7bd440",
-  "started_unix_ns": 1792129693124633921,
+  "session_id": "73ea69b3ad00ee5f137415d32654147e",
+  "stage_nonce": "fd1eb64bfd560f75edee5ad3017eba84",
+  "started_unix_ns": 1792196446153545334,
   "status": "RUNNING",
-  "updated_unix_ns": 1792138833608321146
+  "updated_unix_ns": 1792201594351144144
 }

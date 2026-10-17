@@ -566,6 +566,36 @@ bool tiny_independent_opening_case() {
         opened.proof.inner_point.capacity() != opened.proof.inner_point.size() ||
         opened.proof.outer_point.capacity() != opened.proof.outer_point.size())
         return false;
+    bool wrong_tau_rejected = false;
+    try {
+        const CpuG1Point wrong_tau = cpu_g1_add(tau, seed);
+        (void)cpu_open_hyrax_v3_authenticated(
+            prover_basis, values, point, randomness, tau_blinder, wrong_tau,
+            metadata, xi, &prover_session);
+    } catch (const std::invalid_argument&) {
+        wrong_tau_rejected = true;
+    }
+    if (!wrong_tau_rejected) return false;
+    bool value_shape_rejected = false;
+    try {
+        std::vector<FrWire> short_values(values.begin(), values.end() - 1);
+        (void)cpu_open_hyrax_v3_authenticated(
+            prover_basis, short_values, point, randomness, tau_blinder, tau,
+            metadata, xi, &prover_session);
+    } catch (const std::invalid_argument&) {
+        value_shape_rejected = true;
+    }
+    if (!value_shape_rejected) return false;
+    bool point_shape_rejected = false;
+    try {
+        const std::vector<FrWire> short_point{fr_from_u32(2U), fr_from_u32(5U)};
+        (void)cpu_open_hyrax_v3_authenticated(
+            prover_basis, values, short_point, randomness, tau_blinder, tau,
+            metadata, xi, &prover_session);
+    } catch (const std::invalid_argument&) {
+        point_shape_rejected = true;
+    }
+    if (!point_shape_rejected) return false;
     CpuIpaBasisContext verifier_basis;
     if (!CpuIpaBasisContext::authenticate(
             std::vector<CpuG1Point>(prover_basis.generators()), h, u,
@@ -586,6 +616,7 @@ bool tiny_independent_opening_case() {
             tampered, xi, tau, verifier_basis, point, metadata, &error,
             &verifier_session)) return false;
     std::cout << "tiny_opening=PASS independent_verify=PASS tamper=REJECTED"
+              << " wrong_tau=REJECTED value_shape=REJECTED point_shape=REJECTED"
               << " rounds_size=" << opened.proof.rounds.size()
               << " rounds_capacity=" << opened.proof.rounds.capacity()
               << " inner_size=" << opened.proof.inner_point.size()

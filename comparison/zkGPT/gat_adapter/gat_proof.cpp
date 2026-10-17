@@ -11439,6 +11439,7 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                                        std::uint64_t coordinate) {
             return input_oracle->value_at(static_cast<std::size_t>(coordinate));
         };
+        input_provider->value_at_read_only_thread_safe = true;
         gkr_witness.input_provider = input_provider;
         gkr_witness.matmuls.reserve(plan.matmuls.size());
         for (const MatMulDescriptor& descriptor : plan.matmuls) {

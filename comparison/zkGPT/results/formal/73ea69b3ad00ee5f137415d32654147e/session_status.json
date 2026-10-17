@@ -1,0 +1,66 @@
+{
+  "active_stage": "cell:pubmed",
+  "completed_stages": [
+    "prepare",
+    "cell:cora",
+    "cell:citeseer"
+  ],
+  "failure": "",
+  "local_capacity_rechecks": [
+    {
+      "checked_unix_ns": 1792197036067043231,
+      "disk_available_bytes": 1653033811968,
+      "disk_required_bytes": 11814379344,
+      "fs_device_id": "66306",
+      "host_available_bytes": 123684626432,
+      "host_required_bytes": 10342911144,
+      "pending_datasets": [
+        "cora"
+      ],
+      "stage": "before-cell:cora"
+    },
+    {
+      "checked_unix_ns": 1792199178253176826,
+      "disk_available_bytes": 1652624556032,
+      "disk_required_bytes": 13760589639,
+      "fs_device_id": "66306",
+      "host_available_bytes": 123596537856,
+      "host_required_bytes": 11202375740,
+      "pending_datasets": [
+        "citeseer"
+      ],
+      "stage": "before-cell:citeseer"
+    },
+    {
+      "checked_unix_ns": 1792201594347237867,
+      "disk_available_bytes": 1652335378432,
+      "disk_required_bytes": 83811446782,
+      "fs_device_id": "66306",
+      "host_available_bytes": 123513069568,
+      "host_required_bytes": 12906681163,
+      "pending_datasets": [
+        "pubmed"
+      ],
+      "stage": "before-cell:pubmed"
+    }
+  ],
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906071,
+    "owner_pid": 268746,
+    "owner_start_ticks": 17191316,
+    "owner_token_sha256": "223bbe87c7caf50200e03371164bd0516d5d2dc3632112d6b9fc97cf71af2f21",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "73ea69b3ad00ee5f137415d32654147e"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "73ea69b3ad00ee5f137415d32654147e",
+  "stage_status": {
+    "cell:citeseer": "PASS",
+    "cell:cora": "PASS",
+    "prepare": "PASS"
+  },
+  "started_unix_ns": 1792196446189971326,
+  "status": "RUNNING",
+  "updated_unix_ns": 1792201594565212936
+}

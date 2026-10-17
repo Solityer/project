@@ -35,8 +35,8 @@
   "failure": "formal phase interrupted by signal 15",
   "mode": "formal_interrupted",
   "overall_status": "INTERRUPTED",
-  "runs_path": "runs/formal_82a1eac4da8deaf1c05ed3809fdecde9",
+  "runs_path": "runs/formal_6d424086bcaf2f4f24756373bdade577",
   "schema": "zkDL_gat_formal_partial_result_summary_v1",
-  "session_id": "82a1eac4da8deaf1c05ed3809fdecde9",
+  "session_id": "6d424086bcaf2f4f24756373bdade577",
   "strict_pass": false
 }

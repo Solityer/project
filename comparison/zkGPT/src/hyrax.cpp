@@ -12,11 +12,36 @@
 #include <stdexcept>
 #include <memory>
 #include <limits>
+#include <algorithm>
+#include <mcl/bn.h>
+#include <omp.h>
 using namespace std;
 using namespace mcl::bn;
 
 namespace
 {
+
+// MCL's public C API maps these layouts back to C++ types inside the same initialized libmcl instance.
+static_assert(sizeof(G1) == sizeof(mclBnG1) && alignof(G1) == alignof(mclBnG1), "MCL G1 C and C++ layouts differ");
+static_assert(sizeof(Fr) == sizeof(mclBnFr) && alignof(Fr) == alignof(mclBnFr), "MCL Fr C and C++ layouts differ");
+constexpr std::size_t kHyraxMsmThreadCap = 20;
+
+std::size_t hyrax_msm_thread_count(std::size_t count) {
+    const std::size_t min_n = mcl::fp::maxMulVecN;
+    const std::size_t available = std::min({kHyraxMsmThreadCap, static_cast<std::size_t>(std::max(1, omp_get_num_procs())), static_cast<std::size_t>(std::max(1, omp_get_max_threads())), static_cast<std::size_t>(std::max(1, omp_get_thread_limit()))});
+    return count == 0 ? 1 : std::max<std::size_t>(1, std::min(available, 1 + (count - 1) / min_n));
+}
+
+G1 hyrax_native_mul_vec_mt(G1 *mutable_points, const Fr *scalars, std::size_t count) {
+    G1 result;
+    result.clear();
+    if (count != 0) {
+        const std::size_t threads = hyrax_msm_thread_count(count);
+        if (threads == 1) G1::mulVec(result, mutable_points, scalars, count);
+        else mclBnG1_mulVecMT(reinterpret_cast<mclBnG1 *>(&result), reinterpret_cast<mclBnG1 *>(mutable_points), reinterpret_cast<const mclBnFr *>(scalars), count, threads);
+    }
+    return result;
+}
 
 std::string point_encoding(const G1 &point)
 {
@@ -1126,19 +1151,22 @@ template<class ScalarAt>
 G1 masked_provider_commit(const zkgpt::NativeVector<G1> &generators, std::uint64_t count, ScalarAt scalar_at, std::uint64_t generator_offset = 0) {
     if (count == 0 || generator_offset > generators.size() || count > generators.size() - generator_offset)
         throw std::invalid_argument("masked provider commitment length is invalid");
-    constexpr std::uint64_t chunk_limit = 1ULL << 16;
+    constexpr std::uint64_t chunk_limit = 1ULL << 12;
     const std::size_t chunk_size = static_cast<std::size_t>(
         std::min(count, chunk_limit));
+    zkgpt::NativeVector<G1> mutable_generators(chunk_size);
     zkgpt::NativeFieldVector scalars(chunk_size);
-    if (scalars.capacity() != chunk_size)
-        throw std::length_error("Hyrax commitment scalar capacity differs from its exact chunk size");
+    if (mutable_generators.capacity() != chunk_size || scalars.capacity() != chunk_size)
+        throw std::length_error("Hyrax commitment workspace capacity differs from its exact chunk size");
     G1 result;
     result.clear();
     for (std::uint64_t offset = 0; offset < count; offset += chunk_limit) {
         const std::uint64_t actual = std::min(chunk_limit, count - offset);
-        for (std::uint64_t index = 0; index < actual; ++index)
+        for (std::uint64_t index = 0; index < actual; ++index) {
+            mutable_generators[static_cast<std::size_t>(index)] = generators[static_cast<std::size_t>(generator_offset + offset + index)];
             scalars[static_cast<std::size_t>(index)] = scalar_at(offset + index);
-        result += perdersen_commit(const_cast<G1 *>(generators.data() + static_cast<std::size_t>(generator_offset + offset)), scalars.data(), static_cast<int>(actual));
+        }
+        result += hyrax_native_mul_vec_mt(mutable_generators.data(), scalars.data(), static_cast<std::size_t>(actual));
     }
     return result;
 }
@@ -2159,7 +2187,7 @@ zkgpt::NativeFieldVector tensor_row_weights(const std::vector<Fr> &full_point, c
 
 struct HyraxTensorFoldedColumn { G1 commitment; Fr blinding; zkgpt::NativeFieldVector values; };
 
-HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxTensorShape &shape, const zkgpt::NativeVector<G1> &generators, const HyraxScalarProvider &values, const std::vector<Fr> &full_point) {
+HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const HyraxTensorShape &shape, const HyraxScalarProvider &values, const std::vector<Fr> &full_point) {
     if (state.row_blindings.size() != view.rows || !values.at || values.size != view.logical_length)
         throw std::invalid_argument("Hyrax tensor prover state or value provider is invalid");
     zkgpt::NativeFieldVector weights = tensor_row_weights(full_point, shape, view.rows);
@@ -2170,14 +2198,8 @@ HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const
     if (folded.values.capacity() != static_cast<std::size_t>(view.columns))
         throw std::length_error("Hyrax tensor fold capacity differs from its exact column count");
     for (Fr &value : folded.values) value = Fr(0);
-    const G1 H = derive_pedersen_blinding_generator(view.basis_id);
     for (std::uint64_t row = 0; row < view.rows; ++row) {
         const Fr rho = state.row_blindings[static_cast<std::size_t>(row)];
-        const G1 expected_row = masked_provider_commit(generators, view.columns, [&values, &view, row](std::uint64_t column) {
-            const std::uint64_t index = row * view.columns + column;
-            return index < view.logical_length ? values.at(index) : Fr(0);
-        }) + H * rho;
-        if (expected_row != commitment.row_commitments[static_cast<std::size_t>(row)]) throw std::invalid_argument("Hyrax tensor row commitment does not match the prover witness");
         const Fr &weight = weights[static_cast<std::size_t>(row)];
         folded.commitment += commitment.row_commitments[static_cast<std::size_t>(row)] * weight;
         folded.blinding += rho * weight;
@@ -2191,9 +2213,22 @@ HyraxTensorFoldedColumn tensor_fold_prover(const HyraxTensorMleView &view, const
 
 G1 tensor_fold_verifier(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorShape &shape, const std::vector<Fr> &full_point) {
     zkgpt::NativeFieldVector weights = tensor_row_weights(full_point, shape, view.rows);
+    if (weights.size() != view.rows || commitment.row_commitments.size() != weights.size())
+        throw std::invalid_argument("Hyrax tensor row-fold dimensions are invalid");
     G1 folded;
     folded.clear();
-    for (std::uint64_t row = 0; row < view.rows; ++row) folded += commitment.row_commitments[static_cast<std::size_t>(row)] * weights[static_cast<std::size_t>(row)];
+    constexpr std::size_t msm_chunk_rows = 4096;
+    const std::size_t row_count = weights.size();
+    const std::size_t block_size = row_count < msm_chunk_rows ? row_count : msm_chunk_rows;
+    zkgpt::NativeVector<G1> row_commitments(block_size);
+    for (std::size_t offset = 0; offset < row_count;) {
+        const std::size_t count = row_count - offset < block_size ? row_count - offset : block_size;
+        for (std::size_t index = 0; index < count; ++index) row_commitments[index] = commitment.row_commitments[offset + index];
+        G1 partial;
+        partial = hyrax_native_mul_vec_mt(row_commitments.data(), weights.data() + offset, count);
+        folded += partial;
+        offset += count;
+    }
     return folded;
 }
 
@@ -2223,8 +2258,7 @@ bool open_hyrax_tensor_mle_impl(const HyraxTensorMleView &view, const HyraxTenso
         const HyraxTensorShape shape = validate_tensor_view(view, &full_point);
         validate_tensor_commitment(view, commitment);
         if (!safe_open_text(label, 200) || !values.at || values.size != view.logical_length) throw std::invalid_argument("Hyrax tensor opening arguments are invalid");
-        const zkgpt::NativeVector<G1> generators = tensor_column_generators(view);
-        HyraxTensorFoldedColumn folded = tensor_fold_prover(view, commitment, state, shape, generators, values, full_point);
+        HyraxTensorFoldedColumn folded = tensor_fold_prover(view, commitment, state, shape, values, full_point);
         PedersenMleCommitment column_commitment{folded.commitment, derive_pedersen_blinding_generator(view.basis_id), folded.blinding, view.basis_id};
         const HyraxMleBasisView column_view = tensor_column_view(view, full_point, shape);
         const HyraxScalarProvider column_values{view.columns, [&folded](std::uint64_t index) { return folded.values.at(static_cast<std::size_t>(index)); }};

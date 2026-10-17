@@ -366,12 +366,22 @@ bool replace_opening_payload(std::vector<NativeProofMessage>& messages, const st
 void test_masked_eq_lookup_matches_scalar() {
     using zkgpt::verifier_detail::MaskedEqLookup;
     using zkgpt::verifier_detail::masked_eq_at;
+    using zkgpt::verifier_detail::masked_eq_table_storage_bytes;
     const auto check = [](const std::vector<Fr> &point, bool expect_table,
                           const std::vector<u64> &indices) {
         const MaskedEqLookup lookup(point);
         assert(lookup.uses_table() == expect_table);
+        std::size_t expected_bytes = 0;
+        assert(masked_eq_table_storage_bytes(point.size(), expected_bytes) == expect_table);
+        assert(lookup.table_storage_bytes() == expected_bytes);
         for (u64 index : indices)
             assert(lookup.at(index) == masked_eq_at(point, index));
+        if (point.size() <= 3 || !expect_table) {
+            const Fr rho(7);
+            const MaskedEqLookup scaled_lookup(point, true, rho);
+            for (u64 index : indices)
+                assert(scaled_lookup.at(index) == rho * masked_eq_at(point, index));
+        }
     };
 
     check({}, false, {0, 1});
@@ -393,6 +403,10 @@ void test_masked_eq_lookup_matches_scalar() {
                (u64(1) << bits) - 1, u64(1) << bits});
     }
     check(make_point(37), false, {0, 1, u64(1) << 36, u64(1) << 37});
+    std::size_t terminal_37_bit_bytes = 0;
+    assert(!masked_eq_table_storage_bytes(37, terminal_37_bit_bytes));
+    assert(masked_eq_table_storage_bytes(37, terminal_37_bit_bytes, 37));
+    assert(terminal_37_bit_bytes <= std::size_t(64) * 1024 * 1024);
     check(make_point(64), false, {0, 1, std::numeric_limits<u64>::max()});
 }
 
@@ -469,6 +483,105 @@ void test_masked_gkr_coefficients_scalar_and_parallel() {
     check(&rv);
 }
 
+bool test_input_aggregate_parallel_proof() {
+    constexpr std::size_t kSegmentDomain = 32768;
+    constexpr std::size_t kInputSize = 4 * kSegmentDomain;
+
+    layeredCircuit circuit;
+    circuit.init(0, 3);
+    circuit.circuit[0].ty = layerType::INPUT;
+    circuit.circuit[0].size = kInputSize;
+    circuit.circuit[0].zero_start_id = kInputSize;
+    circuit.circuit[0].bit_length = 17;
+
+    circuit.circuit[1].ty = layerType::ADD_BIAS;
+    circuit.circuit[1].size = kSegmentDomain;
+    circuit.circuit[1].zero_start_id = kSegmentDomain;
+    circuit.circuit[1].bit_length = 15;
+    circuit.circuit[1].reserve_gate_arrays(kSegmentDomain, 0);
+    circuit.circuit[1].reserve_coefficients(1);
+    for (std::size_t index = 0; index < kSegmentDomain; ++index)
+        circuit.circuit[1].add_unary(index, 2 * kSegmentDomain + index, 0, 1);
+
+    circuit.circuit[2].ty = layerType::FCONN;
+    circuit.circuit[2].size = kSegmentDomain;
+    circuit.circuit[2].zero_start_id = kSegmentDomain;
+    circuit.circuit[2].bit_length = 15;
+    circuit.circuit[2].need_phase2 = true;
+    circuit.circuit[2].native_relation_id = "masked-layered-gkr/input-parallel-fconn";
+    circuit.circuit[2].native_family_id = "masked-layered-gkr/input-parallel-family";
+    circuit.circuit[2].native_rows = 1;
+    circuit.circuit[2].native_inner = 1;
+    circuit.circuit[2].native_cols = kSegmentDomain;
+    circuit.circuit[2].native_lhs_offset = 0;
+    circuit.circuit[2].native_rhs_offset = kSegmentDomain;
+    circuit.circuit[2].native_output_offset = 2 * kSegmentDomain;
+    circuit.initSubset();
+
+    auto input_values = std::make_shared<zkgpt::NativeFieldVector>(
+        kInputSize, F_ZERO);
+    input_values->at(0) = F_ONE;
+    zkgpt::NativeFieldVector source_values(kSegmentDomain, F_ZERO);
+    for (std::size_t index = 0; index < kSegmentDomain; ++index) {
+        const Fr value(static_cast<long>(index + 1));
+        source_values[index] = value;
+        input_values->at(kSegmentDomain + index) = value;
+        input_values->at(2 * kSegmentDomain + index) = value;
+    }
+    auto provider = std::make_shared<NativeGkrInputProvider>();
+    provider->full_size = kInputSize;
+    provider->segment_domain = kSegmentDomain;
+    provider->logical_lengths = {1, kSegmentDomain, kSegmentDomain, 0};
+    provider->value_at_read_only_thread_safe = true;
+    provider->value_at = [input_values](std::uint64_t coordinate) {
+        if (coordinate >= input_values->size())
+            throw std::out_of_range("parallel GKR smoke input coordinate is invalid");
+        return input_values->at(static_cast<std::size_t>(coordinate));
+    };
+
+    NativeGkrMatmulWitness matmul;
+    matmul.shape = {1, 1, kSegmentDomain};
+    matmul.shape.relation_id = circuit.circuit[2].native_relation_id;
+    matmul.shape.family_id = circuit.circuit[2].native_family_id;
+    matmul.shape.lhs_offset = 0;
+    matmul.shape.rhs_offset = kSegmentDomain;
+    matmul.shape.output_offset = 2 * kSegmentDomain;
+    matmul.shape.input_segment_domain = kSegmentDomain;
+    matmul.shape.lhs_segment = "X_pub";
+    matmul.shape.rhs_segment = "W";
+    matmul.shape.input_segment_logical_lengths = {1, kSegmentDomain,
+                                                   kSegmentDomain, 0};
+    matmul.shape.output_segment = "Aux";
+    matmul.left = {F_ONE};
+    matmul.right.assign(source_values.begin(), source_values.end());
+
+    NativeLayeredGkrWitness witness;
+    witness.layer_values.emplace_back();
+    witness.layer_values.emplace_back(source_values);
+    witness.layer_values.emplace_back(source_values);
+    witness.input_provider = provider;
+    witness.matmuls.push_back(std::move(matmul));
+    const zkgpt::NativeFieldView output_view =
+        zkgpt::NativeFieldView::from_vector(witness.layer_values.back());
+    const std::vector<NativeGkrMatmulShape> descriptors{
+        witness.matmuls.front().shape};
+    std::string reason;
+    NativeProofSession session("masked-layered-gkr-input-parallel-smoke-v1",
+                               statement_fixture());
+    if (!prove_masked_gkr_transcript(session, circuit, witness, output_view,
+                                     &reason)) {
+        std::cerr << "input-aggregate parallel proof failed: " << reason << '\n';
+        return false;
+    }
+    if (!verify_masked_gkr_transcript(session, circuit, output_view,
+                                      descriptors, &reason)) {
+        std::cerr << "input-aggregate parallel independent verify failed: "
+                  << reason << '\n';
+        return false;
+    }
+    return true;
+}
+
 }
 
 int main() {
@@ -476,6 +589,7 @@ int main() {
     initPairing(BN254);
     test_masked_eq_lookup_matches_scalar();
     test_masked_gkr_coefficients_scalar_and_parallel();
+    if (!test_input_aggregate_parallel_proof()) return 15;
     const layeredCircuit circuit = make_circuit();
     NativeLayeredGkrWitness witness = make_witness();
     const std::vector<Fr> output{Fr(11), Fr(27)};

@@ -1,0 +1,58 @@
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=resource_snapshot
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=resource_snapshot host_headroom_bytes=123673546752 shared_disk_available_bytes=1653059833856 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_graph_load nodes=169343 edges=1335586 features=128 graphs=1
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=shape_estimate
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=7914651648 layer_unary=5229272448 layer_binary=2574290192 current_layer=112 elapsed_ms=15008
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=19476250624 layer_unary=12975935312 layer_binary=6389226304 current_layer=112 elapsed_ms=30011
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=36385587200 layer_unary=24244671524 layer_binary=12029826668 current_layer=112 elapsed_ms=45019
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=40145780736 layer_unary=26932593722 layer_binary=13102098006 current_layer=112 elapsed_ms=60026
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=41215328256 layer_unary=28002141242 layer_binary=13102098006 current_layer=112 elapsed_ms=75032
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=42283827200 layer_unary=29070640186 layer_binary=13102098006 current_layer=112 elapsed_ms=90041
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=43354423296 layer_unary=30141236282 layer_binary=13102098006 current_layer=112 elapsed_ms=105046
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=44427116544 layer_unary=31213929530 layer_binary=13102098006 current_layer=112 elapsed_ms=120060
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=shape_estimate host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=0 artifact_bytes_upper=1123976246
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=gkr_point_shape
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=8837424656 touched_index_bytes_upper=8837424656
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_forward_inputs
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_forward_inputs feature_rows=169343 feature_cols=128 model_layers=3 hidden_heads=8 output_heads=2
+CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_all_value_forward
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_all_value_forward status=PASS

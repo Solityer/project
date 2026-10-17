@@ -617,6 +617,7 @@ int main() {
     if (!check_case("provider(8,3)", [] { return run_provider_case(8, 3); })) return 1;
     if (!check_case("provider(16,5)", [] { return run_provider_case(16, 5); })) return 1;
     if (!check_case("provider(32,9)", [] { return run_provider_case(32, 9); })) return 1;
+    if (!check_case("provider(64,64)", [] { return run_provider_case(64, 64); })) return 1;
     if (!check_case("legacy(1)", [] { return run_legacy_wrapper_case(1); })) return 1;
     if (!check_case("legacy(4)", [] { return run_legacy_wrapper_case(4); })) return 1;
     if (!check_case("tensor", [] { return run_tensor_case(); })) return 1;

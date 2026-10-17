@@ -17,6 +17,8 @@ static bool masked_fconn_shape_matches(const layer &current, const NativeGkrMatm
 #include <iterator>
 #include <limits>
 #include <chrono>
+#include <exception>
+#include <thread>
 
 using namespace std;
 using namespace mcl::bn;
@@ -2332,8 +2334,23 @@ class MaskedEqualityWeightCursor {
             (dimensions_ < std::numeric_limits<std::uint64_t>::digits &&
              target >= (std::uint64_t(1) << dimensions_)))
             throw std::out_of_range("masked GKR equality lane exceeds its point domain");
+        if (target - index_ > dimensions_) {
+            initialize_at(target);
+            return current();
+        }
         while (index_ < target) increment();
         return current();
+    }
+
+    void initialize_at(std::uint64_t target) {
+        if (dimensions_ < std::numeric_limits<std::uint64_t>::digits &&
+            target >= (std::uint64_t(1) << dimensions_))
+            throw std::out_of_range("masked GKR equality lane exceeds its point domain");
+        rewind();
+        for (std::size_t bit = 0; bit < dimensions_; ++bit)
+            if (((target >> bit) & 1U) != 0)
+                apply_transition(bit, false, true);
+        index_ = target;
     }
 
     F current() const { return zero_count_ == 0 ? product_ : F_ZERO; }
@@ -2397,7 +2414,8 @@ class MaskedInputWitnessFold {
     explicit MaskedInputWitnessFold(const NativeGkrInputProvider &provider)
         : segment_domain_(provider.segment_domain),
           logical_lengths_(provider.logical_lengths), value_at_(provider.value_at),
-          support_(&provider.segment_support), support_complete_(provider.support_complete) {
+          support_(&provider.segment_support), support_complete_(provider.support_complete),
+          value_at_read_only_thread_safe_(provider.value_at_read_only_thread_safe) {
         if (provider.full_size == 0 || segment_domain_ == 0 ||
             (segment_domain_ & (segment_domain_ - 1)) != 0 ||
             segment_domain_ > std::numeric_limits<std::uint64_t>::max() / 4 ||
@@ -2438,6 +2456,9 @@ class MaskedInputWitnessFold {
     }
 
     const zkgpt::NativeFieldVector &selectors() const { return selectors_; }
+    bool value_at_read_only_thread_safe() const {
+        return value_at_read_only_thread_safe_;
+    }
 
     void begin_selector_fold() {
         selectors_.assign(4, F_ZERO);
@@ -2479,6 +2500,7 @@ class MaskedInputWitnessFold {
     std::function<F(std::uint64_t)> value_at_;
     const NativeGkrInputSupport *support_ = nullptr;
     bool support_complete_ = false;
+    bool value_at_read_only_thread_safe_ = false;
     std::vector<F> local_challenges_;
     MaskedEqualityWeightCursor local_weight_cursor_;
     zkgpt::NativeFieldVector selectors_;
@@ -2490,6 +2512,8 @@ struct MaskedInputSourceState {
     std::uint64_t reference_count = 0;
     std::uint64_t cursor = 0;
     std::size_t canonical_index_begin = 0;
+    bool cache_round_weight = false;
+    zkgpt::verifier_detail::MaskedEqLookup round_weight_lookup;
     MaskedEqualityWeightCursor primary_weights;
     MaskedEqualityWeightCursor secondary_weights;
     std::uint64_t active_inner_group = std::numeric_limits<std::uint64_t>::max();
@@ -2517,6 +2541,19 @@ struct MaskedInputHeapCompare {
             return left.source_index > right.source_index;
         return left.lane > right.lane;
     }
+};
+
+struct MaskedInputRoundSourceState {
+    std::uint64_t cursor = 0;
+    MaskedEqualityWeightCursor primary_weights;
+    MaskedEqualityWeightCursor secondary_weights;
+    std::uint64_t active_inner_group = std::numeric_limits<std::uint64_t>::max();
+};
+
+struct MaskedInputRoundSums {
+    F even = F_ZERO;
+    F odd = F_ZERO;
+    F at_two = F_ZERO;
 };
 
 class MaskedInputCoefficientOracle {
@@ -2601,8 +2638,6 @@ class MaskedInputCoefficientOracle {
                     for (std::size_t lane = 1; lane < coordinates.size(); ++lane)
                         if (coordinates[lane - 1] >= coordinates[lane])
                             throw std::invalid_argument("masked GKR direct input coordinate map is not strictly sorted and unique");
-                    state.primary_weights.reserve_dimensions(source.point.size());
-                    state.primary_weights.initialize(source.point, source.point.size());
                 }
             } else {
                 std::string validation_reason;
@@ -2653,6 +2688,7 @@ class MaskedInputCoefficientOracle {
             if (!validate_source_coordinate(source_coordinate_for_cursor(state, cursor), reason))
                 return false;
         state.rho = rho;
+        last_evaluation_valid_ = false;
         ++next_source_to_add_;
         return true;
     }
@@ -2669,7 +2705,7 @@ class MaskedInputCoefficientOracle {
         return value;
     }
 
-    F evaluate_mle(const std::vector<F> &point) const {
+    F evaluate_mle(const std::vector<F> &point) {
         if (point.size() != static_cast<std::size_t>(local_bits_ + 2))
             throw std::invalid_argument("masked GKR coefficient point has the wrong dimension");
         if (!folded_challenges_.empty()) {
@@ -2677,13 +2713,32 @@ class MaskedInputCoefficientOracle {
                 throw std::logic_error("masked GKR folded coefficient MLE requested at another point");
             return terminal_value();
         }
+        if (last_evaluation_valid_ && last_evaluation_point_ == point)
+            return last_evaluation_value_;
+
+        prepare_terminal_weights();
+        constexpr std::size_t kTableBudgetBytes = std::size_t(64) * 1024 * 1024;
+        std::size_t terminal_table_bytes = 0;
+        const bool build_terminal_table =
+            zkgpt::verifier_detail::masked_eq_table_storage_bytes(
+                point.size(), terminal_table_bytes, 37) &&
+            terminal_table_bytes <= kTableBudgetBytes;
+        zkgpt::verifier_detail::MaskedEqLookup terminal_weights(
+            &point, build_terminal_table, F_ONE, 37);
+        if (terminal_weights.table_storage_bytes() > kTableBudgetBytes)
+            terminal_weights = zkgpt::verifier_detail::MaskedEqLookup(
+                &point, false, F_ONE, 37);
+
         F evaluation = F_ZERO;
-        for (const MaskedInputSourceState &state : sources_)
+        for (MaskedInputSourceState &state : sources_)
             for (std::uint64_t lane = 0; lane < state.reference_count; ++lane) {
                 const std::uint64_t coordinate = source_coordinate_for_lane(state, lane);
-                evaluation += state.rho * source_weight_at(state, lane) *
-                              masked_equality_weight_at(point, coordinate, point.size());
+                evaluation += state.rho * source_weight_for_terminal_lane(state, lane) *
+                              terminal_weights.at(coordinate);
             }
+        last_evaluation_point_ = point;
+        last_evaluation_value_ = evaluation;
+        last_evaluation_valid_ = true;
         return evaluation;
     }
 
@@ -2702,102 +2757,8 @@ class MaskedInputCoefficientOracle {
                 throw std::logic_error("masked GKR local coefficient fold is inconsistent");
             if (next_source_to_add_ != sources_.size())
                 throw std::logic_error("masked GKR input sources were not fully registered");
-            for (MaskedInputSourceState &state : sources_) state.reset_round_weights();
-            std::vector<MaskedInputHeapEntry> heap_storage;
-            heap_storage.reserve(sources_.size());
-            if (heap_storage.capacity() != sources_.size())
-                throw std::length_error(
-                    "masked GKR source heap allocation is not exact");
-            const MaskedInputHeapCompare heap_compare;
-            const auto sift_up = [&heap_storage, &heap_compare](std::size_t child) {
-                while (child != 0) {
-                    const std::size_t parent = (child - 1) / 2;
-                    if (!heap_compare(heap_storage[parent], heap_storage[child]))
-                        break;
-                    std::swap(heap_storage[parent], heap_storage[child]);
-                    child = parent;
-                }
-            };
-            const auto sift_down = [&heap_storage, &heap_compare](std::size_t parent) {
-                const std::size_t count = heap_storage.size();
-                while (parent < count / 2) {
-                    const std::size_t left = parent * 2 + 1;
-                    std::size_t first = parent;
-                    if (heap_compare(heap_storage[first], heap_storage[left]))
-                        first = left;
-                    const std::size_t right = left + 1;
-                    if (right < count &&
-                        heap_compare(heap_storage[first], heap_storage[right]))
-                        first = right;
-                    if (first == parent) break;
-                    std::swap(heap_storage[parent], heap_storage[first]);
-                    parent = first;
-                }
-            };
-            const auto push_heap_entry = [&heap_storage, &sift_up,
-                                          this](std::size_t source_index) {
-                if (heap_storage.size() >= sources_.size())
-                    throw std::logic_error(
-                        "masked GKR source heap exceeds its reserved capacity");
-                heap_storage.push_back(heap_entry(source_index));
-                sift_up(heap_storage.size() - 1);
-            };
-            const auto pop_heap_entry = [&heap_storage, &sift_down]() {
-                if (heap_storage.empty())
-                    throw std::logic_error("masked GKR source heap is empty");
-                const MaskedInputHeapEntry entry = heap_storage.front();
-                if (heap_storage.size() > 1) {
-                    heap_storage.front() = heap_storage.back();
-                    heap_storage.pop_back();
-                    sift_down(0);
-                    return entry;
-                }
-                heap_storage.pop_back();
-                return entry;
-            };
-            for (std::size_t source_index = 0; source_index < sources_.size(); ++source_index)
-                if (sources_[source_index].reference_count != 0)
-                    push_heap_entry(source_index);
-            folded_weight_cursor_.rewind();
-            const std::uint64_t block_size = std::uint64_t(1) << round;
-            while (!heap_storage.empty()) {
-                const std::uint64_t first_coordinate = heap_storage.front().coordinate;
-                const std::size_t segment = static_cast<std::size_t>(first_coordinate / segment_domain_);
-                const std::uint64_t local = first_coordinate % segment_domain_;
-                const std::uint64_t folded_index = local >> round;
-                const std::uint64_t pair = folded_index >> 1;
-                const std::uint64_t pair_begin = pair * (block_size * 2);
-                const std::uint64_t segment_base = static_cast<std::uint64_t>(segment) * segment_domain_;
-                F coefficient_values[2] = {F_ZERO, F_ZERO};
-                F witness_values[2] = {F_ZERO, F_ZERO};
-                for (std::uint64_t side = 0; side < 2; ++side) {
-                    folded_weight_cursor_.rewind();
-                    const std::uint64_t block_begin = pair_begin + side * block_size;
-                    const std::uint64_t block_end = block_begin + block_size;
-                    witness_values[side] = witness.segment_value(
-                        segment, (pair << 1) + side);
-                    while (!heap_storage.empty() &&
-                           heap_storage.front().coordinate < segment_base + block_end) {
-                        const std::uint64_t coordinate = heap_storage.front().coordinate;
-                        const std::uint64_t offset = coordinate - (segment_base + block_begin);
-                        const F fold_weight = folded_weight_cursor_.at(offset);
-                        while (!heap_storage.empty() &&
-                               heap_storage.front().coordinate == coordinate) {
-                            const MaskedInputHeapEntry entry = pop_heap_entry();
-                            MaskedInputSourceState &state = sources_[entry.source_index];
-                            coefficient_values[side] += state.rho *
-                                source_weight_for_lane(state, entry.lane) * fold_weight;
-                            ++state.cursor;
-                            if (state.cursor < state.reference_count)
-                                push_heap_entry(entry.source_index);
-                        }
-                    }
-                }
-                even_sum += coefficient_values[0] * witness_values[0];
-                odd_sum += coefficient_values[1] * witness_values[1];
-                at_two_sum += (F(2) * coefficient_values[1] - coefficient_values[0]) *
-                              (F(2) * witness_values[1] - witness_values[0]);
-            }
+            prepare_round_weights();
+            run_local_round_sums(witness, round, even_sum, odd_sum, at_two_sum);
             return;
         }
         if (active != selector_coefficients_.size() ||
@@ -2821,6 +2782,7 @@ class MaskedInputCoefficientOracle {
                     std::uint64_t round, MaskedInputWitnessFold &witness) {
         if (active < 2 || (active & 1U) != 0 || round >= input_rounds())
             throw std::invalid_argument("masked GKR coefficient fold domain is invalid");
+        last_evaluation_valid_ = false;
         folded_challenges_.push_back(challenge);
         if (round < local_bits_) {
             folded_weight_cursor_.initialize(folded_challenges_,
@@ -2843,8 +2805,10 @@ class MaskedInputCoefficientOracle {
         if (folded_challenges_.size() != local_bits_)
             throw std::logic_error(
                 "masked GKR selector coefficient fold history is incomplete");
+        last_evaluation_valid_ = false;
+        prepare_terminal_weights();
         selector_coefficients_.assign(4, F_ZERO);
-        for (const MaskedInputSourceState &state : sources_)
+        for (MaskedInputSourceState &state : sources_)
             for (std::uint64_t lane = 0; lane < state.reference_count; ++lane) {
                 const std::uint64_t coordinate =
                     source_coordinate_for_lane(state, lane);
@@ -2852,7 +2816,7 @@ class MaskedInputCoefficientOracle {
                     coordinate / segment_domain_);
                 const std::uint64_t local = coordinate % segment_domain_;
                 selector_coefficients_.at(segment) +=
-                    state.rho * source_weight_at(state, lane) *
+                    state.rho * source_weight_for_terminal_lane(state, lane) *
                     masked_equality_weight_at(
                         folded_challenges_, local,
                         static_cast<std::size_t>(local_bits_));
@@ -2868,6 +2832,390 @@ class MaskedInputCoefficientOracle {
     }
 
   private:
+    std::uint64_t source_lane_for_cursor(
+        const MaskedInputSourceState &state, std::uint64_t cursor) const {
+        if (state.source->kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy)
+            return canonical_lane_order_.at(
+                state.canonical_index_begin + static_cast<std::size_t>(cursor));
+        return cursor;
+    }
+
+    std::uint64_t source_cursor_at_or_after(
+        const MaskedInputSourceState &state, std::uint64_t coordinate) const {
+        std::uint64_t first = 0;
+        std::uint64_t last = state.reference_count;
+        while (first < last) {
+            const std::uint64_t middle = first + (last - first) / 2;
+            if (source_coordinate_for_cursor(state, middle) < coordinate)
+                first = middle + 1;
+            else
+                last = middle;
+        }
+        return first;
+    }
+
+    MaskedInputHeapEntry round_heap_entry(
+        const std::vector<MaskedInputRoundSourceState> &worker_sources,
+        std::size_t source_index) const {
+        const MaskedInputSourceState &state = sources_.at(source_index);
+        const std::uint64_t cursor = worker_sources.at(source_index).cursor;
+        const std::uint64_t lane = source_lane_for_cursor(state, cursor);
+        return {source_coordinate_for_cursor(state, cursor), lane, source_index};
+    }
+
+    void initialize_round_source_states(
+        std::uint64_t range_begin, std::uint64_t range_end,
+        std::vector<MaskedInputRoundSourceState> &worker_sources) const {
+        worker_sources.clear();
+        worker_sources.resize(sources_.size());
+        for (std::size_t source_index = 0; source_index < sources_.size(); ++source_index) {
+            const MaskedInputSourceState &source_state = sources_[source_index];
+            MaskedInputRoundSourceState &worker_state = worker_sources[source_index];
+            worker_state.cursor = source_cursor_at_or_after(source_state, range_begin);
+            if (worker_state.cursor >= source_state.reference_count ||
+                source_coordinate_for_cursor(source_state, worker_state.cursor) >= range_end) {
+                worker_state.cursor = source_state.reference_count;
+                continue;
+            }
+            if (source_state.cache_round_weight) continue;
+
+            const MaskedGkrInputSource &source = *source_state.source;
+            worker_state.primary_weights = source_state.primary_weights;
+            worker_state.secondary_weights = source_state.secondary_weights;
+            const std::uint64_t lane = source_lane_for_cursor(source_state,
+                                                               worker_state.cursor);
+            switch (source.kind) {
+            case MaskedGkrInputSource::Kind::LayerU0:
+            case MaskedGkrInputSource::Kind::LayerV0:
+                worker_state.primary_weights.initialize_at(lane);
+                break;
+            case MaskedGkrInputSource::Kind::LayerCanonicalCopy:
+                break;
+            case MaskedGkrInputSource::Kind::FconnLeft: {
+                const std::uint64_t row = lane / source.shape.inner;
+                const std::uint64_t term = lane % source.shape.inner;
+                worker_state.primary_weights.initialize_at(term);
+                worker_state.secondary_weights.initialize_at(row);
+                worker_state.active_inner_group = row;
+                break;
+            }
+            case MaskedGkrInputSource::Kind::FconnRight: {
+                const std::uint64_t term = lane / source.shape.cols;
+                const std::uint64_t col = lane % source.shape.cols;
+                worker_state.primary_weights.initialize_at(term);
+                worker_state.secondary_weights.initialize_at(col);
+                worker_state.active_inner_group = term;
+                break;
+            }
+            }
+        }
+    }
+
+    MaskedInputRoundSums round_sums_for_range(
+        MaskedInputWitnessFold &witness, std::uint64_t round,
+        std::uint64_t range_begin, std::uint64_t range_end,
+        std::vector<MaskedInputRoundSourceState> &worker_sources,
+        MaskedEqualityWeightCursor &fold_weights) const {
+        MaskedInputRoundSums sums;
+        initialize_round_source_states(range_begin, range_end, worker_sources);
+
+        std::vector<MaskedInputHeapEntry> heap_storage;
+        heap_storage.reserve(sources_.size());
+        if (heap_storage.capacity() != sources_.size())
+            throw std::length_error(
+                "masked GKR source heap allocation is not exact");
+        const MaskedInputHeapCompare heap_compare;
+        const auto sift_up = [&heap_storage, &heap_compare](std::size_t child) {
+            while (child != 0) {
+                const std::size_t parent = (child - 1) / 2;
+                if (!heap_compare(heap_storage[parent], heap_storage[child])) break;
+                std::swap(heap_storage[parent], heap_storage[child]);
+                child = parent;
+            }
+        };
+        const auto sift_down = [&heap_storage, &heap_compare](std::size_t parent) {
+            const std::size_t count = heap_storage.size();
+            while (parent < count / 2) {
+                const std::size_t left = parent * 2 + 1;
+                std::size_t first = parent;
+                if (heap_compare(heap_storage[first], heap_storage[left])) first = left;
+                const std::size_t right = left + 1;
+                if (right < count && heap_compare(heap_storage[first], heap_storage[right]))
+                    first = right;
+                if (first == parent) break;
+                std::swap(heap_storage[parent], heap_storage[first]);
+                parent = first;
+            }
+        };
+        const auto push_heap_entry = [&](std::size_t source_index) {
+            if (heap_storage.size() >= sources_.size())
+                throw std::logic_error("masked GKR source heap exceeds its reserved capacity");
+            heap_storage.push_back(round_heap_entry(worker_sources, source_index));
+            sift_up(heap_storage.size() - 1);
+        };
+        const auto pop_heap_entry = [&]() {
+            if (heap_storage.empty())
+                throw std::logic_error("masked GKR source heap is empty");
+            const MaskedInputHeapEntry entry = heap_storage.front();
+            if (heap_storage.size() > 1) {
+                heap_storage.front() = heap_storage.back();
+                heap_storage.pop_back();
+                sift_down(0);
+            } else {
+                heap_storage.pop_back();
+            }
+            return entry;
+        };
+        for (std::size_t source_index = 0; source_index < sources_.size(); ++source_index) {
+            const MaskedInputRoundSourceState &worker_state = worker_sources[source_index];
+            if (worker_state.cursor < sources_[source_index].reference_count &&
+                source_coordinate_for_cursor(sources_[source_index], worker_state.cursor) < range_end)
+                push_heap_entry(source_index);
+        }
+
+        const std::uint64_t block_size = std::uint64_t(1) << round;
+        while (!heap_storage.empty()) {
+            const std::uint64_t first_coordinate = heap_storage.front().coordinate;
+            const std::uint64_t pair_width = block_size * 2;
+            const std::uint64_t pair_start = (first_coordinate / pair_width) * pair_width;
+            const std::size_t segment = static_cast<std::size_t>(pair_start / segment_domain_);
+            const std::uint64_t segment_base = static_cast<std::uint64_t>(segment) * segment_domain_;
+            const std::uint64_t pair = (pair_start - segment_base) / pair_width;
+            F coefficient_values[2] = {F_ZERO, F_ZERO};
+            F witness_values[2] = {F_ZERO, F_ZERO};
+            for (std::uint64_t side = 0; side < 2; ++side) {
+                fold_weights.rewind();
+                bool fold_weight_started = false;
+                const std::uint64_t block_begin = pair_start + side * block_size;
+                const std::uint64_t block_end = block_begin + block_size;
+                witness_values[side] = witness.segment_value(
+                    segment, (pair << 1) + side);
+                while (!heap_storage.empty() &&
+                       heap_storage.front().coordinate < block_end) {
+                    const std::uint64_t coordinate = heap_storage.front().coordinate;
+                    const std::uint64_t offset = coordinate - block_begin;
+                    F fold_weight = F_ZERO;
+                    if (fold_weight_started) {
+                        fold_weight = fold_weights.at(offset);
+                    } else {
+                        fold_weights.initialize_at(offset);
+                        fold_weight_started = true;
+                        fold_weight = fold_weights.current();
+                    }
+                    while (!heap_storage.empty() &&
+                           heap_storage.front().coordinate == coordinate) {
+                        const MaskedInputHeapEntry entry = pop_heap_entry();
+                        const MaskedInputSourceState &source_state =
+                            sources_[entry.source_index];
+                        MaskedInputRoundSourceState &worker_state =
+                            worker_sources[entry.source_index];
+                        const F source_weight = source_state.cache_round_weight
+                            ? source_state.round_weight_lookup.at(entry.lane)
+                            : source_state.rho * source_weight_for_lane(
+                                  *source_state.source, worker_state.primary_weights,
+                                  worker_state.secondary_weights,
+                                  worker_state.active_inner_group, entry.lane);
+                        coefficient_values[side] += source_weight * fold_weight;
+                        ++worker_state.cursor;
+                        if (worker_state.cursor < source_state.reference_count &&
+                            source_coordinate_for_cursor(source_state,
+                                                         worker_state.cursor) < range_end)
+                            push_heap_entry(entry.source_index);
+                    }
+                }
+            }
+            sums.even += coefficient_values[0] * witness_values[0];
+            sums.odd += coefficient_values[1] * witness_values[1];
+            sums.at_two +=
+                (F(2) * coefficient_values[1] - coefficient_values[0]) *
+                (F(2) * witness_values[1] - witness_values[0]);
+        }
+        return sums;
+    }
+
+    void run_local_round_sums(MaskedInputWitnessFold &witness, std::uint64_t round,
+                              F &even_sum, F &odd_sum, F &at_two_sum) {
+        constexpr std::uint64_t kMinimumParallelReferences = 32768;
+        constexpr unsigned int kMaximumWorkers = 20;
+        const std::uint64_t pair_width = std::uint64_t(1) << (round + 1);
+        bool has_active_source = false;
+        std::uint64_t first_pair = 0;
+        std::uint64_t last_pair = 0;
+        std::uint64_t reference_count_capped = 0;
+        for (const MaskedInputSourceState &state : sources_) {
+            if (state.reference_count == 0) continue;
+            const std::uint64_t first_coordinate = source_coordinate_for_cursor(state, 0);
+            const std::uint64_t last_coordinate = source_coordinate_for_cursor(
+                state, state.reference_count - 1);
+            const std::uint64_t source_first_pair = first_coordinate / pair_width;
+            const std::uint64_t source_last_pair = last_coordinate / pair_width;
+            if (!has_active_source) {
+                first_pair = source_first_pair;
+                last_pair = source_last_pair;
+                has_active_source = true;
+            } else {
+                first_pair = std::min(first_pair, source_first_pair);
+                last_pair = std::max(last_pair, source_last_pair);
+            }
+            if (reference_count_capped < kMinimumParallelReferences) {
+                const std::uint64_t remaining =
+                    kMinimumParallelReferences - reference_count_capped;
+                reference_count_capped += std::min(remaining, state.reference_count);
+            }
+        }
+        if (!has_active_source) return;
+
+        const std::uint64_t active_blocks = last_pair - first_pair + 1;
+        const std::uint64_t active_begin = first_pair * pair_width;
+        const unsigned int hardware_workers = std::max(
+            1U, std::thread::hardware_concurrency());
+        const std::size_t worker_count = static_cast<std::size_t>(std::min<std::uint64_t>(
+            std::min(kMaximumWorkers, hardware_workers), active_blocks));
+        if (!witness.value_at_read_only_thread_safe() ||
+            reference_count_capped < kMinimumParallelReferences || worker_count < 2) {
+            MaskedInputRoundSums sums;
+            std::vector<MaskedInputRoundSourceState> worker_sources;
+            MaskedEqualityWeightCursor fold_weights = folded_weight_cursor_;
+            sums = round_sums_for_range(witness, round, 0, input_size_,
+                                        worker_sources, fold_weights);
+            even_sum = sums.even;
+            odd_sum = sums.odd;
+            at_two_sum = sums.at_two;
+            return;
+        }
+
+        const std::uint64_t blocks_per_worker = active_blocks / worker_count;
+        const std::uint64_t extra_blocks = active_blocks % worker_count;
+        std::vector<std::pair<std::uint64_t, std::uint64_t>> ranges;
+        ranges.reserve(worker_count);
+        std::uint64_t next_block = first_pair;
+        for (std::size_t worker = 0; worker < worker_count; ++worker) {
+            const std::uint64_t worker_blocks = blocks_per_worker +
+                (worker < extra_blocks ? 1 : 0);
+            const std::uint64_t end_block = next_block + worker_blocks;
+            ranges.emplace_back(next_block * pair_width, end_block * pair_width);
+            next_block = end_block;
+        }
+
+        std::vector<std::vector<MaskedInputRoundSourceState>> worker_sources(
+            worker_count);
+        std::vector<MaskedEqualityWeightCursor> fold_weights(
+            worker_count, folded_weight_cursor_);
+        std::vector<MaskedInputWitnessFold> worker_witnesses;
+        worker_witnesses.reserve(worker_count);
+        for (std::size_t worker = 0; worker < worker_count; ++worker)
+            worker_witnesses.push_back(witness);
+        std::vector<MaskedInputRoundSums> partial_sums(worker_count);
+        std::vector<std::exception_ptr> worker_errors(worker_count);
+        std::vector<std::thread> workers;
+        workers.reserve(worker_count);
+        if (!parallel_marker_emitted_) {
+            std::cerr << "[zkGPT][gkr] input-aggregate parallel workers="
+                      << worker_count << " round=" << round
+                      << " pair_blocks=" << active_blocks << std::endl;
+            parallel_marker_emitted_ = true;
+        }
+        try {
+            for (std::size_t worker = 0; worker < worker_count; ++worker) {
+                workers.emplace_back([&, worker]() {
+                    try {
+                        partial_sums[worker] = round_sums_for_range(
+                            worker_witnesses[worker], round,
+                            ranges[worker].first, ranges[worker].second,
+                            worker_sources[worker], fold_weights[worker]);
+                    } catch (...) {
+                        worker_errors[worker] = std::current_exception();
+                    }
+                });
+            }
+        } catch (...) {
+            for (std::thread &worker : workers)
+                if (worker.joinable()) worker.join();
+            throw;
+        }
+        for (std::thread &worker : workers)
+            if (worker.joinable()) worker.join();
+        for (const std::exception_ptr &error : worker_errors)
+            if (error != nullptr) std::rethrow_exception(error);
+
+        even_sum = F_ZERO;
+        odd_sum = F_ZERO;
+        at_two_sum = F_ZERO;
+        for (const MaskedInputRoundSums &sums : partial_sums) {
+            even_sum += sums.even;
+            odd_sum += sums.odd;
+            at_two_sum += sums.at_two;
+        }
+    }
+
+    void prepare_terminal_weights() {
+        for (MaskedInputSourceState &state : sources_) {
+            state.cache_round_weight = false;
+            state.round_weight_lookup =
+                zkgpt::verifier_detail::MaskedEqLookup();
+        }
+        round_weights_prepared_ = false;
+        for (MaskedInputSourceState &state : sources_) {
+            const MaskedGkrInputSource &source = *state.source;
+            if (source.kind == MaskedGkrInputSource::Kind::LayerU0 ||
+                source.kind == MaskedGkrInputSource::Kind::LayerV0 ||
+                source.kind == MaskedGkrInputSource::Kind::LayerCanonicalCopy) {
+                state.primary_weights.reserve_dimensions(source.point.size());
+                state.primary_weights.initialize(source.point, source.point.size());
+            } else {
+                state.reset_round_weights();
+            }
+        }
+    }
+
+    void prepare_round_weights() {
+        if (round_weights_prepared_) return;
+        struct Candidate {
+            std::size_t source_index;
+            std::uint64_t reference_count;
+            std::size_t bytes;
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(sources_.size());
+        for (std::size_t source_index = 0; source_index < sources_.size(); ++source_index) {
+            const MaskedInputSourceState &state = sources_[source_index];
+            const MaskedGkrInputSource &source = *state.source;
+            if (state.reference_count == 0 ||
+                (source.kind != MaskedGkrInputSource::Kind::LayerU0 &&
+                 source.kind != MaskedGkrInputSource::Kind::LayerV0 &&
+                 source.kind != MaskedGkrInputSource::Kind::LayerCanonicalCopy))
+                continue;
+            std::size_t bytes = 0;
+            if (zkgpt::verifier_detail::masked_eq_table_storage_bytes(source.point.size(), bytes)) candidates.push_back({source_index, state.reference_count, bytes});
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate &left, const Candidate &right) { if (left.reference_count != right.reference_count) return left.reference_count > right.reference_count; return left.source_index < right.source_index; });
+        constexpr std::size_t kTableBudgetBytes = std::size_t(64) * 1024 * 1024;
+        std::size_t planned_table_bytes = 0;
+        for (const Candidate &candidate : candidates) {
+            if (candidate.bytes > kTableBudgetBytes - planned_table_bytes) continue;
+            sources_[candidate.source_index].cache_round_weight = true;
+            planned_table_bytes += candidate.bytes;
+        }
+        std::size_t resident_table_bytes = 0;
+        for (const Candidate &candidate : candidates) {
+            MaskedInputSourceState &state = sources_[candidate.source_index];
+            if (!state.cache_round_weight) continue;
+            state.round_weight_lookup = zkgpt::verifier_detail::MaskedEqLookup(&state.source->point, true, state.rho);
+            const std::size_t bytes = state.round_weight_lookup.table_storage_bytes();
+            if (bytes > kTableBudgetBytes - resident_table_bytes) throw std::length_error("masked GKR input equality tables exceed their memory budget");
+            resident_table_bytes += bytes;
+        }
+        if (resident_table_bytes > planned_table_bytes) throw std::length_error("masked GKR input equality table allocation exceeded its checked size");
+        for (MaskedInputSourceState &state : sources_)
+            if (!state.cache_round_weight &&
+                (state.source->kind == MaskedGkrInputSource::Kind::LayerU0 ||
+                 state.source->kind == MaskedGkrInputSource::Kind::LayerV0)) {
+                state.primary_weights.reserve_dimensions(state.source->point.size());
+                state.primary_weights.initialize(state.source->point, state.source->point.size());
+            }
+        round_weights_prepared_ = true;
+    }
+
     static std::array<std::uint64_t, 4> support_logical_lengths(const std::vector<std::size_t> &lengths) {
         if (lengths.size() != 4) throw std::invalid_argument("masked GKR logical segment count is invalid");
         return {{static_cast<std::uint64_t>(lengths[0]), static_cast<std::uint64_t>(lengths[1]),
@@ -2937,33 +3285,50 @@ class MaskedInputCoefficientOracle {
 
     F source_weight_for_lane(MaskedInputSourceState &state,
                              std::uint64_t lane) const {
-        const MaskedGkrInputSource &source = *state.source;
+        return source_weight_for_lane(*state.source, state.primary_weights,
+                                      state.secondary_weights,
+                                      state.active_inner_group, lane);
+    }
+
+    F source_weight_for_lane(
+        const MaskedGkrInputSource &source,
+        MaskedEqualityWeightCursor &primary_weights,
+        MaskedEqualityWeightCursor &secondary_weights,
+        std::uint64_t &active_inner_group, std::uint64_t lane) const {
         switch (source.kind) {
         case MaskedGkrInputSource::Kind::LayerU0:
         case MaskedGkrInputSource::Kind::LayerV0:
-            return state.primary_weights.at(lane);
+            return primary_weights.at(lane);
         case MaskedGkrInputSource::Kind::LayerCanonicalCopy:
             return masked_equality_weight_at(source.point, lane, source.point.size());
         case MaskedGkrInputSource::Kind::FconnLeft: {
             const std::uint64_t row = lane / source.shape.inner;
             const std::uint64_t term = lane % source.shape.inner;
-            if (state.active_inner_group != row) {
-                state.primary_weights.rewind();
-                state.active_inner_group = row;
+            if (active_inner_group != row) {
+                primary_weights.rewind();
+                active_inner_group = row;
             }
-            return state.secondary_weights.at(row) * state.primary_weights.at(term);
+            return secondary_weights.at(row) * primary_weights.at(term);
         }
         case MaskedGkrInputSource::Kind::FconnRight: {
             const std::uint64_t term = lane / source.shape.cols;
             const std::uint64_t col = lane % source.shape.cols;
-            if (state.active_inner_group != term) {
-                state.secondary_weights.rewind();
-                state.active_inner_group = term;
+            if (active_inner_group != term) {
+                secondary_weights.rewind();
+                active_inner_group = term;
             }
-            return state.primary_weights.at(term) * state.secondary_weights.at(col);
+            return primary_weights.at(term) * secondary_weights.at(col);
         }
         }
         throw std::logic_error("masked GKR source kind is invalid");
+    }
+
+    F source_weight_for_terminal_lane(MaskedInputSourceState &state,
+                                      std::uint64_t lane) const {
+        if (state.source->kind ==
+            MaskedGkrInputSource::Kind::LayerCanonicalCopy)
+            return state.primary_weights.at(lane);
+        return source_weight_for_lane(state, lane);
     }
 
     F source_weight_at(const MaskedInputSourceState &state,
@@ -3031,6 +3396,11 @@ class MaskedInputCoefficientOracle {
     std::vector<MaskedInputSourceState> sources_;
     std::vector<std::uint64_t> canonical_lane_order_;
     std::size_t next_source_to_add_ = 0;
+    bool round_weights_prepared_ = false;
+    bool parallel_marker_emitted_ = false;
+    bool last_evaluation_valid_ = false;
+    std::vector<F> last_evaluation_point_;
+    F last_evaluation_value_ = F_ZERO;
     zkgpt::NativeFieldVector selector_coefficients_;
     std::vector<F> folded_challenges_;
     MaskedEqualityWeightCursor folded_weight_cursor_;

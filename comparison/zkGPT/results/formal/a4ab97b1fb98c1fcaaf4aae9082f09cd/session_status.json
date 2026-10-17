@@ -1,11 +1,14 @@
 {
-  "active_stage": "cell:pubmed",
+  "active_stage": "owner-interrupted",
   "completed_stages": [
     "prepare",
     "cell:cora",
     "cell:citeseer"
   ],
-  "failure": "",
+  "dataset_failures": {
+    "pubmed": "ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/a4ab97b1fb98c1fcaaf4aae9082f09cd/cell-pubmed.stderr.log"
+  },
+  "failure": "official zkGPT owner received an interrupt",
   "local_capacity_rechecks": [
     {
       "checked_unix_ns": 1792130282581305258,
@@ -42,6 +45,18 @@
         "pubmed"
       ],
       "stage": "before-cell:pubmed"
+    },
+    {
+      "checked_unix_ns": 1792147126279520452,
+      "disk_available_bytes": 1656293027840,
+      "disk_required_bytes": 774683804204,
+      "fs_device_id": "66306",
+      "host_available_bytes": 124315701248,
+      "host_required_bytes": 24859202427,
+      "pending_datasets": [
+        "ppi"
+      ],
+      "stage": "before-cell:ppi"
     }
   ],
   "local_owner": {
@@ -58,9 +73,10 @@
   "stage_status": {
     "cell:citeseer": "PASS",
     "cell:cora": "PASS",
+    "cell:pubmed": "FAILED",
     "prepare": "PASS"
   },
   "started_unix_ns": 1792129693176052743,
-  "status": "RUNNING",
-  "updated_unix_ns": 1792138833802203967
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792196446149677600
 }

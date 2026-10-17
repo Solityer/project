@@ -62,6 +62,7 @@ from formal_common import (
     load_json,
     parse_cfg,
     print_error,
+    require_digest,
     require_file,
     require_formal_srs,
     resource_manifest_hash,
@@ -508,7 +509,6 @@ def validate_resource_auth_handoff(
 ]:
     expected_keys = {
         "schema_version",
-        "shape_evidence_kind",
         "authenticated",
         "session_id",
         "source_tree_sha256",
@@ -1182,6 +1182,7 @@ def native_admit_all_datasets(
     admissions: dict[str, dict[str, object]] = {}
     expected_keys = {
         "schema_version",
+        "shape_evidence_kind",
         "relation_id",
         "dataset",
         "model_arch_id",
@@ -2457,6 +2458,7 @@ def _native_capacity_requirements(
         or permutation_grand_product_window_bytes > sys.maxsize
     ):
         abort("EZKL native permutation grand-product bank is inconsistent with its authenticated chunk geometry")
+    permutation_grand_product_commit_workspace_bytes = 4 * permutation_grand_product_window_bytes
     if expected_successor_entries_upper > sys.maxsize // 16:
         abort("EZKL native sparse successor-file ceiling exceeds the native address range")
     selector_activation_storage_ceiling = int(memory["selector_activation_storage_bytes_upper"])
@@ -3069,7 +3071,6 @@ def _native_capacity_requirements(
     # Commit's live mapped/heap windows are omega powers, sigma, the current
     # Z polynomial, and its modified-values accumulator. Z conversion to
     # coefficients is in-place, so the persistent Z bank below is not copied.
-    permutation_grand_product_commit_workspace_bytes = 4 * permutation_grand_product_window_bytes
     proof_permutation_grand_product_commit_host_peak = (
         proof_nonprepare_resident
         + permutation_grand_product_commit_workspace_bytes

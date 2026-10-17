@@ -12,12 +12,10 @@ use crate::circuit::CheckMode;
 use crate::graph::GraphWitness;
 use crate::{EZKL_BUF_CAPACITY, EZKL_KEY_FORMAT};
 use halo2_proofs::plonk::{
-    create_proof, keygen_pk, keygen_vk_custom,
+    create_proof, keygen_pk, keygen_pk_with_native_gate, keygen_vk_custom,
     keygen_vk_custom_with_native_gate, verify_proof, Circuit, NativeKeygenBudget,
     NativeKeygenCensus, NativeKeygenPreflight, NativePkReadTiming, ProvingKey, VerifyingKey,
 };
-#[cfg(not(feature = "formal-gpu"))]
-use halo2_proofs::plonk::keygen_pk_with_native_gate;
 #[cfg(feature = "formal-gpu")]
 use halo2_proofs::plonk::keygen_pk_with_native_gate_compact_artifact;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params, ParamsProver, Prover, Verifier};
@@ -459,8 +457,7 @@ where
 
 /// Create EZKL's native keypair while allowing the formal runner to gate the
 /// actual Halo2 allocations and record the mandatory keygen synthesis census.
-/// VK and PK each synthesize once as required by Halo2; their source-derived
-/// geometry and observed census must agree exactly before the PK is accepted.
+/// VK and PK each use their native synthesis and resource gate.
 pub fn create_keys_with_native_gate<Scheme, C, Before, After>(
     circuit: &C,
     params: &Scheme::ParamsProver,
@@ -478,17 +475,20 @@ where
     let empty_circuit = <C as Circuit<Scheme::Scalar>>::without_witnesses(circuit);
     let mut vk_preflight = None;
     let mut vk_census = None;
-
     let now = Instant::now();
-    trace!("preparing VK with native resource gate");
+    trace!("preparing VK with native resource-gated keygen");
     let vk = keygen_vk_custom_with_native_gate(
         params,
         &empty_circuit,
         !disable_selector_compression,
         |preflight| {
             let budget = before_assembly("vk", preflight)?;
-            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
-                return Err(io::Error::other("native VK keygen allocation caps must be finite"));
+            if budget.max_selector_activation_bytes == u64::MAX
+                || budget.max_permutation_backing_bytes == u64::MAX
+            {
+                return Err(io::Error::other(
+                    "native VK keygen allocation caps must be finite",
+                ));
             }
             vk_preflight = Some(preflight.clone());
             Ok(budget)
@@ -500,59 +500,71 @@ where
         },
     )?;
     let elapsed = now.elapsed();
-    info!("VK with native resource gate took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
+    info!("VK took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
 
-    let expected_preflight = vk_preflight.ok_or(halo2_proofs::plonk::Error::Synthesis)?;
-    let expected_census = vk_census.ok_or(halo2_proofs::plonk::Error::Synthesis)?;
+    let mut pk_census = None;
+    let before_pk = |preflight: &NativeKeygenPreflight| {
+        let expected = vk_preflight
+            .as_ref()
+            .ok_or_else(|| io::Error::other("native VK preflight gate did not run first"))?;
+        if preflight != expected {
+            return Err(io::Error::other(
+                "native VK/PK keygen preflight geometry changed",
+            ));
+        }
+        let budget = before_assembly("pk", preflight)?;
+        if budget.max_selector_activation_bytes == u64::MAX
+            || budget.max_permutation_backing_bytes == u64::MAX
+        {
+            return Err(io::Error::other(
+                "native PK keygen allocation caps must be finite",
+            ));
+        }
+        Ok(budget)
+    };
+    let after_pk = |census: &NativeKeygenCensus| {
+        let expected_preflight = vk_preflight
+            .as_ref()
+            .ok_or_else(|| io::Error::other("native VK preflight gate did not run first"))?;
+        let expected_census = vk_census
+            .as_ref()
+            .ok_or_else(|| io::Error::other("native VK synthesis census did not run first"))?;
+        if &census.preflight != expected_preflight || census != expected_census {
+            return Err(io::Error::other(
+                "native VK/PK keygen synthesis census changed",
+            ));
+        }
+        after_synthesis("pk", census)?;
+        pk_census = Some(census.clone());
+        Ok(())
+    };
+
     let now = Instant::now();
-    trace!("preparing PK with native resource gate");
+    trace!("preparing PK with native resource-gated keygen");
     #[cfg(feature = "formal-gpu")]
     let pk = keygen_pk_with_native_gate_compact_artifact(
         params,
         vk,
         &empty_circuit,
-        |preflight| {
-            if preflight != &expected_preflight {
-                return Err(io::Error::other("native VK/PK keygen preflight geometry changed"));
-            }
-            let budget = before_assembly("pk", preflight)?;
-            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
-                return Err(io::Error::other("native PK keygen allocation caps must be finite"));
-            }
-            Ok(budget)
-        },
-        |census| {
-            if census != &expected_census {
-                return Err(io::Error::other("native VK/PK keygen synthesis census changed"));
-            }
-            after_synthesis("pk", census)
-        },
+        before_pk,
+        after_pk,
     )?;
     #[cfg(not(feature = "formal-gpu"))]
     let pk = keygen_pk_with_native_gate(
         params,
         vk,
         &empty_circuit,
-        |preflight| {
-            if preflight != &expected_preflight {
-                return Err(io::Error::other("native VK/PK keygen preflight geometry changed"));
-            }
-            let budget = before_assembly("pk", preflight)?;
-            if budget.max_selector_activation_bytes == u64::MAX || budget.max_permutation_backing_bytes == u64::MAX {
-                return Err(io::Error::other("native PK keygen allocation caps must be finite"));
-            }
-            Ok(budget)
-        },
-        |census| {
-            if census != &expected_census {
-                return Err(io::Error::other("native VK/PK keygen synthesis census changed"));
-            }
-            after_synthesis("pk", census)
-        },
+        before_pk,
+        after_pk,
     )?;
     let elapsed = now.elapsed();
-    info!("PK with native resource gate took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
-    Ok((pk, expected_census))
+    info!("PK took {}.{}", elapsed.as_secs(), elapsed.subsec_millis());
+
+    let native_census = pk_census.ok_or(halo2_proofs::plonk::Error::Synthesis)?;
+    if vk_census.as_ref() != Some(&native_census) {
+        return Err(halo2_proofs::plonk::Error::Synthesis);
+    }
+    Ok((pk, native_census))
 }
 
 /// a wrapper around halo2's create_proof

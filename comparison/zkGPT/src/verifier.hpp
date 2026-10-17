@@ -113,6 +113,8 @@ struct NativeGkrInputProvider {
     std::array<std::uint64_t, 4> logical_lengths{};
     NativeGkrInputSupport segment_support;
     bool support_complete = false;
+    // Set only by producers whose value callback reads immutable shared data.
+    bool value_at_read_only_thread_safe = false;
     std::function<F(std::uint64_t)> value_at;
 };
 

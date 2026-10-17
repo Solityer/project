@@ -1,0 +1,2 @@
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9048162304 layer_unary=6007655210 layer_binary=2980089510 current_layer=112 elapsed_ms=15007
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24211619840 layer_unary=16031907574 layer_binary=8119294682 current_layer=112 elapsed_ms=30012

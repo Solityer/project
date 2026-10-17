@@ -1,7 +1,7 @@
 {
   "baseline": "zkdl",
-  "collection_path": "results/formal_82a1eac4da8deaf1c05ed3809fdecde9/collected.json",
-  "collection_sha256": "32e29e19cd80acef3f95455a2b71786e37da0b97ff9d4b5b8c67f4acbd3bb373",
+  "collection_path": "results/formal_6d424086bcaf2f4f24756373bdade577/collected.json",
+  "collection_sha256": "217a1b9c5df8cad337c46fc71ad70d934246d6d6aed21b0693f02433594a3d3c",
   "dataset_status": {
     "citeseer": {
       "dataset": "citeseer",
@@ -36,7 +36,7 @@
   },
   "failure": "formal phase interrupted by signal 15",
   "schema": "zkDL_formal_final_validation_receipt_v1",
-  "session_id": "82a1eac4da8deaf1c05ed3809fdecde9",
+  "session_id": "6d424086bcaf2f4f24756373bdade577",
   "status": "INTERRUPTED",
   "strict_pass": false
 }

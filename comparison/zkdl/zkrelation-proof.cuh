@@ -7635,6 +7635,8 @@ inline bool prove_zk_terminal_relation_segmented(
             }
             const std::vector<FrWire> low_point =
                 zktr_segment_point(evaluation_point, layout.segment_size);
+            const std::vector<FrWire> low_weights =
+                zkdl::cpu_ipa_mle_weights(low_point);
             std::vector<zkdl::CpuG1Point> segment_generators;
             if (authenticated_basis == nullptr)
                 segment_generators.assign(
@@ -7700,7 +7702,7 @@ inline bool prove_zk_terminal_relation_segmented(
                 if (!tensor_providers[tensor_index].read_segment(
                         segment, segment_values, error)) return false;
                 const FrWire segment_value = zkdl::cpu_ipa_inner_product(
-                    segment_values, zkdl::cpu_ipa_mle_weights(low_point));
+                    segment_values, low_weights);
                 const FrWire segment_tau_blinder = zkdl::cpu_fresh_csprng_scalar();
                 const zkdl::CpuG1Point segment_xi = fixed_material->commitments[segment];
                 zkdl::CpuG1Point checked_xi = segment_xi;

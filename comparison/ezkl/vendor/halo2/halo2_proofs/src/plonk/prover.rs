@@ -732,7 +732,7 @@ where
     }
 
     let start = Instant::now();
-    let instance: Vec<InstanceSingle<Scheme::Curve>> = instances
+    let mut instance: Vec<InstanceSingle<Scheme::Curve>> = instances
         .iter()
         .map(|instance| -> Result<InstanceSingle<Scheme::Curve>, Error> {
             let instance_values = instance
@@ -778,18 +778,9 @@ where
                 }
             }
 
-            let instance_polys: Vec<_> = instance_values
-                .iter()
-                .map(|poly| -> Result<_, Error> {
-                    let mut lagrange_poly = Polynomial::<Scheme::Scalar, LagrangeCoeff>::mapped_filled(poly.len(), Scheme::Scalar::ZERO).map_err(Error::NativeStorage)?;
-                    lagrange_poly.copy_from_slice(&poly[..]);
-                    Ok(domain.lagrange_to_coeff(lagrange_poly))
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-
             Ok(InstanceSingle {
                 instance_values,
-                instance_polys,
+                instance_polys: Vec::new(),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -1716,6 +1707,18 @@ where
         .collect::<Result<Vec<_>, _>>()?;
     log::trace!("Shuffle commitment: {:?}", start.elapsed());
 
+    // Shuffle commitments are the final consumer of the Lagrange-form
+    // instance columns. Reuse their backing for the coefficient form instead
+    // of allocating and copying another full column before the iFFT.
+    let start = Instant::now();
+    for proof_instance in &mut instance {
+        proof_instance.instance_polys = std::mem::take(&mut proof_instance.instance_values)
+            .into_iter()
+            .map(|poly| domain.lagrange_to_coeff(poly))
+            .collect();
+    }
+    log::trace!("Instance coefficient conversion: {:?}", start.elapsed());
+
     let start = Instant::now();
     // Commit to the vanishing argument's random polynomial for blinding h(x_3)
     let vanishing = vanishing::Argument::commit(params, domain, &mut rng, transcript)?;
@@ -1991,21 +1994,28 @@ where
 fn test_create_proof() {
     use crate::{
         circuit::SimpleFloorPlanner,
-        plonk::{keygen_pk, keygen_vk, Column, Instance},
+        plonk::{
+            keygen_pk, keygen_vk, verify_proof, ConstraintSystem, Expression, Selector,
+        },
         poly::kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
-            multiopen::ProverSHPLONK,
+            multiopen::{ProverSHPLONK, VerifierSHPLONK},
+            strategy::SingleStrategy,
         },
-        transcript::{Blake2bWrite, Challenge255, TranscriptWriterBuffer},
+        poly::Rotation,
+        transcript::{
+            Blake2bRead, Blake2bWrite, Challenge255, TranscriptReadBuffer, TranscriptWriterBuffer,
+        },
     };
     use halo2curves::bn256::{Bn256, Fr};
-    use rand_core::OsRng;
+    use rand_chacha::ChaCha20Rng;
+    use rand_core::SeedableRng;
 
     #[derive(Clone, Copy)]
     struct MyCircuit;
 
-    impl<F: Field> Circuit<F> for MyCircuit {
-        type Config = Column<Instance>;
+    impl<F: Field + From<u64>> Circuit<F> for MyCircuit {
+        type Config = Selector;
         type FloorPlanner = SimpleFloorPlanner;
         #[cfg(feature = "circuit-params")]
         type Params = ();
@@ -2015,45 +2025,92 @@ fn test_create_proof() {
         }
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
-            meta.instance_column()
+            let instance = meta.instance_column();
+            let q_instance = meta.selector();
+            meta.create_gate("public instance equals seven", |meta| {
+                let q_instance = meta.query_selector(q_instance);
+                let instance = meta.query_instance(instance, Rotation::cur());
+                vec![q_instance * (instance - Expression::Constant(F::from(7u64)))]
+            });
+            q_instance
         }
 
         fn synthesize(
             &self,
-            _config: Self::Config,
-            _layouter: impl crate::circuit::Layouter<F>,
+            q_instance: Self::Config,
+            mut layouter: impl crate::circuit::Layouter<F>,
         ) -> Result<(), Error> {
+            layouter.assign_region(
+                || "public instance constraint",
+                |mut region| q_instance.enable(&mut region, 0),
+            )?;
             Ok(())
         }
     }
 
-    let params: ParamsKZG<Bn256> = ParamsKZG::setup(3, OsRng);
+    let params: ParamsKZG<Bn256> = ParamsKZG::setup(3, ChaCha20Rng::from_seed([0x11; 32]));
     let vk = keygen_vk(&params, &MyCircuit).expect("keygen_vk should not fail");
     let pk = keygen_pk(&params, vk, &MyCircuit).expect("keygen_pk should not fail");
-    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+
+    // Compare the prior copy-then-iFFT path with consuming the original mapped
+    // Lagrange backing. The move path must retain that same allocation.
+    let domain = &pk.get_vk().domain;
+    let mut instance_values =
+        Polynomial::<Fr, LagrangeCoeff>::mapped_filled(params.n() as usize, Fr::ZERO)
+            .expect("create mapped instance values");
+    for (index, value) in instance_values.iter_mut().enumerate() {
+        *value = Fr::from(index as u64 + 1);
+    }
+    let mut copied_values =
+        Polynomial::<Fr, LagrangeCoeff>::mapped_filled(params.n() as usize, Fr::ZERO)
+            .expect("create legacy copied instance values");
+    copied_values.copy_from_slice(&instance_values[..]);
+    let expected_coefficients = domain.lagrange_to_coeff(copied_values);
+    let instance_backing = instance_values.as_ptr();
+    let actual_coefficients = domain.lagrange_to_coeff(instance_values);
+    assert_eq!(
+        actual_coefficients.as_ptr(),
+        instance_backing,
+        "basis conversion should preserve the consumed mapped backing"
+    );
+    assert_eq!(&actual_coefficients[..], &expected_coefficients[..]);
 
     // Create proof with wrong number of instances
+    let mut invalid_transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     let proof = create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
         &[MyCircuit, MyCircuit],
         &[],
-        OsRng,
-        &mut transcript,
+        ChaCha20Rng::from_seed([0x22; 32]),
+        &mut invalid_transcript,
     );
     assert!(matches!(proof.unwrap_err(), Error::InvalidInstances));
 
     // Create proof with correct number of instances
     let public = [Fr::from(7)];
+    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
     create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
         &params,
         &pk,
         &[MyCircuit, MyCircuit],
         &[&[&public[..]], &[&public[..]]],
-        OsRng,
+        ChaCha20Rng::from_seed([0x33; 32]),
         &mut transcript,
     )
     .expect("proof generation should not fail");
+
+    let proof = transcript.finalize();
+    let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
+    verify_proof::<KZGCommitmentScheme<_>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
+        &params,
+        pk.get_vk(),
+        SingleStrategy::new(&params),
+        &[&[&public[..]], &[&public[..]]],
+        &mut transcript,
+        params.n(),
+    )
+    .expect("proof with nonempty public instances should verify independently");
 }
 
 #[test]

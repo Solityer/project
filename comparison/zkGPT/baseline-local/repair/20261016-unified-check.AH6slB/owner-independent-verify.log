@@ -1,0 +1,7 @@
+[zkGPT][verifier] public_context_load_plan_restore_begin
+[zkGPT][verifier] public_context_load_plan_restore_complete elapsed_ms=2.58713 ok=true
+[zkGPT][verifier] artifact_read_parse_begin
+[zkGPT][verifier] artifact_read_parse_complete elapsed_ms=9.79778 ok=true
+[zkGPT][verifier] crypto_verify_begin
+[zkGPT][verifier] crypto_verify_complete elapsed_ms=3286.21 ok=true
+VERIFY_OK

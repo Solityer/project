@@ -1,0 +1,142 @@
+[ 25%] Built target gen_bint.o
+[ 50%] Built target gen_base.o
+[ 75%] Building CXX object 3rd/mcl/CMakeFiles/mcl.dir/src/fp.cpp.o
+In file included from /home/pzh/project/comparison/zkGPT/3rd/mcl/src/fp.cpp:606:
+/home/pzh/project/comparison/zkGPT/3rd/mcl/src/pairing_impl.hpp: In function ‘void mcl::millerLoopVecMT(Fp12&, const G1*, const G2*, size_t, size_t)’:
+/home/pzh/project/comparison/zkGPT/3rd/mcl/src/pairing_impl.hpp:1131:30: error: too few arguments to function ‘void mcl::millerLoopVec(Fp12&, const G1*, const G2*, size_t, bool)’
+ 1131 |                 millerLoopVec(f, Pvec, Qvec, n);
+      |                 ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~
+/home/pzh/project/comparison/zkGPT/3rd/mcl/src/pairing_impl.hpp:1105:18: note: declared here
+ 1105 | MCL_DLL_API void millerLoopVec(Fp12& f, const G1* Pvec, const G2* Qvec, size_t n, bool initF)
+      |                  ^~~~~~~~~~~~~
+/home/pzh/project/comparison/zkGPT/3rd/mcl/src/pairing_impl.hpp:1140:30: error: too few arguments to function ‘void mcl::millerLoopVec(Fp12&, const G1*, const G2*, size_t, bool)’
+ 1140 |                 millerLoopVec(fs[i], Pvec + adj, Qvec + adj, q + (i < r));
+      |                 ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/pzh/project/comparison/zkGPT/3rd/mcl/src/pairing_impl.hpp:1105:18: note: declared here
+ 1105 | MCL_DLL_API void millerLoopVec(Fp12& f, const G1* Pvec, const G2* Qvec, size_t n, bool initF)
+      |                  ^~~~~~~~~~~~~
+gmake[3]: *** [3rd/mcl/CMakeFiles/mcl.dir/build.make:76: 3rd/mcl/CMakeFiles/mcl.dir/src/fp.cpp.o] Error 1
+gmake[2]: *** [CMakeFiles/Makefile2:242: 3rd/mcl/CMakeFiles/mcl.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:249: 3rd/mcl/CMakeFiles/mcl.dir/rule] Error 2
+gmake: *** [Makefile:205: mcl] Error 2
+Command exited with non-zero status 2
+build_elapsed=0.39 exit=2
+[ 25%] Built target gen_bint.o
+[ 50%] Built target gen_base.o
+[ 75%] Building CXX object 3rd/mcl/CMakeFiles/mcl.dir/src/fp.cpp.o
+[100%] Linking CXX shared library ../../lib/libmcl.so
+[100%] Built target mcl
+[  5%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax.cpp.o
+[ 11%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+/home/pzh/project/comparison/zkGPT/src/hyrax.cpp: In function ‘std::pair<double, double> hyrax::open(mcl::Fr*, mcl::Fr*, mcl::Fr, mcl::G1&, mcl::G1*, mcl::Fr*, mcl::Fr*, mcl::G1*, int)’:
+/home/pzh/project/comparison/zkGPT/src/hyrax.cpp:587:91: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+  587 | pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
+      |                                                                                           ^
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp: In lambda function:
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:3121:68: error: cannot convert ‘__gnu_cxx::__alloc_traits<std::allocator<{anonymous}::MaskedInputRoundSourceState>, {anonymous}::MaskedInputRoundSourceState>::value_type’ {aka ‘{anonymous}::MaskedInputRoundSourceState’} to ‘std::vector<{anonymous}::MaskedInputRoundSourceState>&’
+ 3121 |                         partial_sums[worker] = round_sums_for_range(
+      |                                                ~~~~~~~~~~~~~~~~~~~~^
+ 3122 |                             worker_witnesses[worker], round,
+      |                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~        
+ 3123 |                             ranges[worker].first, ranges[worker].second,
+      |                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 3124 |                             worker_sources[worker], fold_weights[worker]);
+      |                             ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:2917:51: note:   initializing argument 5 of ‘{anonymous}::MaskedInputRoundSums {anonymous}::MaskedInputCoefficientOracle::round_sums_for_range({anonymous}::MaskedInputWitnessFold&, uint64_t, uint64_t, uint64_t, std::vector<{anonymous}::MaskedInputRoundSourceState>&, {anonymous}::MaskedEqualityWeightCursor&) const’
+ 2917 |         std::vector<MaskedInputRoundSourceState> &worker_sources,
+      |         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp: In member function ‘bool verifier::openCommit()’:
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:1612:39: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+ 1612 |         tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1613 |                                        comm.G, comm.g, Lp.get(), Rp.get(), comm.comm,
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1614 |                                        comm.l, *session_, "hyrax/opening");
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+gmake[3]: *** [src/CMakeFiles/gpt_lib.dir/build.make:300: src/CMakeFiles/gpt_lib.dir/verifier.cpp.o] Error 1
+gmake[3]: *** Waiting for unfinished jobs....
+gmake[2]: *** [CMakeFiles/Makefile2:188: src/CMakeFiles/gpt_lib.dir/all] Error 2
+gmake[1]: *** [CMakeFiles/Makefile2:195: src/CMakeFiles/gpt_lib.dir/rule] Error 2
+gmake: *** [Makefile:179: gpt_lib] Error 2
+Command exited with non-zero status 2
+retry_build_elapsed=9.98 exit=2
+[  5%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp: In member function ‘bool verifier::openCommit()’:
+/home/pzh/project/comparison/zkGPT/src/verifier.cpp:1612:39: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+ 1612 |         tim = hyrax::open_with_session(comm.w, r_u[0].data(), eval_in,
+      |               ~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1613 |                                        comm.G, comm.g, Lp.get(), Rp.get(), comm.comm,
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 1614 |                                        comm.l, *session_, "hyrax/opening");
+      |                                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[ 11%] Linking CXX static library libgpt_lib.a
+[100%] Built target gpt_lib
+[  3%] Built target gen_bint.o
+[  6%] Built target gen_base.o
+[ 13%] Built target mcl
+[ 73%] Built target gpt_lib
+[ 76%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_native.cpp.o
+[ 80%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[ 83%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_input_oracle.cpp.o
+[ 86%] Linking CXX static library libgat_adapter.a
+[100%] Built target gat_adapter
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_prover
+[100%] Built target zkgpt_gat_prover
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_verifier.dir/gat_verifier_cli.cpp.o
+[100%] Linking CXX executable zkgpt_gat_verifier
+[100%] Built target zkgpt_gat_verifier
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_masked_hyrax_smoke.dir/native_masked_hyrax_smoke.cpp.o
+[100%] Linking CXX executable native_masked_hyrax_smoke
+[100%] Built target native_masked_hyrax_smoke
+[  6%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_masked_layered_gkr_smoke.dir/native_masked_layered_gkr_smoke.cpp.o
+[100%] Linking CXX executable native_masked_layered_gkr_smoke
+[100%] Built target native_masked_layered_gkr_smoke
+retry_build_after_input_fix_elapsed=34.30 exit=0
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_masked_layered_gkr_smoke.dir/native_masked_layered_gkr_smoke.cpp.o
+[100%] Linking CXX executable native_masked_layered_gkr_smoke
+[100%] Built target native_masked_layered_gkr_smoke
+gkr_target_rebuild_elapsed=2.51 exit=0
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_masked_layered_gkr_smoke.dir/native_masked_layered_gkr_smoke.cpp.o
+[100%] Linking CXX executable native_masked_layered_gkr_smoke
+[100%] Built target native_masked_layered_gkr_smoke
+gkr_target_rebuild_final_elapsed=2.72 exit=0
+[  3%] Built target gen_bint.o
+[  6%] Built target gen_base.o
+[ 62%] Built target gpt_lib
+[ 68%] Built target mcl
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/gat_adapter_smoke.dir/gat_adapter_smoke.cpp.o
+[100%] Linking CXX executable gat_adapter_smoke
+[100%] Built target gat_adapter_smoke
+gat_adapter_smoke_target_elapsed=5.48 exit=0

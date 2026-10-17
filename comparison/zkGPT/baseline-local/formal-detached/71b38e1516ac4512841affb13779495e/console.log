@@ -1694,3 +1694,14 @@ ZKGPT_FORMAL_CHILD_STARTED launch_id=71b38e1516ac4512841affb13779495e child_pid=
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: generators
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: lasso-prove
 [local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: restore-native-plan
+[local-cell-pubmed] [pubmed/prover] gat_adapter_prover_stage: gkr-prove
+[local-cell-pubmed] [pubmed/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[local-cell-pubmed] [pubmed/prover] [zkGPT][gkr] layer=112 begin ty=4 size=1191617455 bits=31 u=31 v=30 phase2=1
+[local-cell-pubmed] [pubmed/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=31
+[local-cell-pubmed] [pubmed/prover] FAILED: native masked GKR proof failed: native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=18414665728, bound=18414645248, active=18414633184, page_live=18414637056, file=36829266368, tail=448)
+[local-cell-pubmed] ZKGPT_INTERNAL_PHASE_FAILED phase=cell: native prover failed with 1; see baseline-local/runs/formal/a4ab97b1fb98c1fcaaf4aae9082f09cd/pubmed/prover.stderr.log
+ZKGPT_FORMAL_CELL_FAILED dataset=pubmed error=ChainError: zkGPT local cell phase exited with code 2; see /home/pzh/project/comparison/zkGPT/baseline-local/formal-owner-logs/a4ab97b1fb98c1fcaaf4aae9082f09cd/cell-pubmed.stderr.log
+[local-cell-ppi] [ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9048162304 layer_unary=6007655210 layer_binary=2980089510 current_layer=112 elapsed_ms=15007
+[local-cell-ppi] [ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24211619840 layer_unary=16031907574 layer_binary=8119294682 current_layer=112 elapsed_ms=30012
+ZKGPT_FORMAL_INTERRUPTED: local owner stopped its active stage group
+ZKGPT_FORMAL_CHILD_EXIT launch_id=71b38e1516ac4512841affb13779495e exit_code=130 status=INTERRUPTED

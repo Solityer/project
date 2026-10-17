@@ -1,0 +1,11 @@
+[zkGPT][gkr] begin layers=3 fconn=1
+[zkGPT][gkr] layer=2 begin ty=11 size=32768 bits=15 u=-1 v=-1 phase2=1
+[zkGPT][gkr] layer=2 fconn begin
+[zkGPT][gkr] FCONN row fold rows=1 inner=1 complete rounds=1/1 elapsed_s=5.7468e-05
+[zkGPT][gkr] FCONN column fold cols=32768 inner=1 complete rounds=32768/32768 elapsed_s=0.00982097
+[zkGPT][gkr] FCONN product label=gkr/layer/2/matmul complete rounds=0/0 elapsed_s=1.44e-07
+[zkGPT][gkr] layer=2 fconn end rounds=0
+[zkGPT][gkr] layer=1 begin ty=3 size=32768 bits=15 u=15 v=0 phase2=0
+input-aggregate parallel proof failed: masked GKR inactive lane has no canonical source anchor: masked GKR input-only copy source is not canonical Aux
+Command exited with non-zero status 15
+gkr_parallel_smoke_retry_elapsed=0.80 exit=15
