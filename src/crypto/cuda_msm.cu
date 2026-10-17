@@ -1858,7 +1858,6 @@ namespace gatzk::crypto
             }
 
             const bool reuse_stable_srs_affine = buffers.prepare_stable_srs_affine(points, max_count, stable_srs_capacity);
-            const bool reuse_stable_srs_affine = buffers.prepare_stable_srs_affine(points, max_count, stable_srs_capacity);
             util::info("cuda_msm route=streamed_batch"
                        " max_count=" +
                        std::to_string(max_count) + " batch=" + std::to_string(batch_size) + " chunk=" + std::to_string(chunk_size));

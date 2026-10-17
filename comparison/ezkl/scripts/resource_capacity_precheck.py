@@ -19,9 +19,10 @@ from formal_common import (
 
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
-_IDENTITY_SCHEMA = "ezkl_capacity_source_identity_v1"
-_FORMAT_ID = "halo2_native_pk_fixed_values_plus_fixed_polys_v1"
-_FORMULA_ID = "fixed_values_plus_fixed_polys_witnessless_selector_census_v2"
+_IDENTITY_SCHEMA = "ezkl_capacity_source_identity_v2"
+_REPORT_SCHEMA = "ezkl.resource_capacity_precheck.v2"
+_FORMAT_ID = "halo2_native_pk_v4_vk_fixed_values_permutation_no_fixed_polys"
+_FORMULA_ID = "native_pk_v4_fixed_payload_lower_bound_unavailable_from_admission_v1"
 _FIELD_BYTES = 32
 _FORMAT_SOURCES = (
     "vendor/halo2/halo2_proofs/src/plonk.rs",
@@ -263,40 +264,34 @@ def _fixed_payload_bounds(admission: dict[str, Any]) -> dict[str, Any]:
         abort(f"{dataset} Admission field width differs from the authenticated native format")
     if selector_columns > selectors:
         abort(f"{dataset} witnessless selector census exceeds the configured virtual-selector count")
-    # The production witnessless selector census counts the exact fixed
-    # columns emitted by the shared native compression plan.
-    old_column_field = _integer(cs.get("fixed_column_count_post_compression"), f"{dataset} legacy fixed-column field", minimum=1)
+    old_column_field = _integer(cs.get("fixed_column_count_post_compression"), f"{dataset} fixed-column count upper bound", minimum=1)
     source_upper_columns = fixed + selector_columns
     if old_column_field != source_upper_columns:
         abort(f"{dataset} fixed-column count disagrees with the witnessless selector census")
-    min_columns = source_upper_columns
-    floor_bytes = 2 * min_columns * rows * field_bytes
-    upper_bytes = 2 * source_upper_columns * rows * field_bytes
-    if max(floor_bytes, upper_bytes) > sys.maxsize:
-        abort(f"{dataset} fixed-payload bound exceeds the native address range")
     return {
         "dataset": dataset,
         "fixed_column_count_post_compression": old_column_field,
-        "fixed_payload_lower_bound_bytes": floor_bytes,
+        "fixed_payload_lower_bound_bytes": 0,
         "fixed_payload_lower_bound": {
             "formula_id": _FORMULA_ID,
             "format_id": _FORMAT_ID,
-            "census_fixed_column_count": min_columns,
-            "uncompressed_fixed_columns": fixed,
+            "status": "unknown_from_admission_missing_per_column_encoding_and_actual_permutation_count",
+            "admission_fixed_column_count_upper": source_upper_columns,
+            "uncompressed_fixed_columns_upper": fixed,
             "virtual_selectors": selectors,
-            "compressed_selector_columns": selector_columns,
+            "compressed_selector_columns_upper": selector_columns,
             "degree": degree,
             "domain_rows": rows,
             "serialized_field_bytes": field_bytes,
-            "payload_copies": 2,
-            "formula": "2 * (fixed_columns + census_compressed_selector_columns) * domain_rows * field_bytes",
-            "scope": "exact native fixed_values plus fixed_polys payload from the witnessless selector census; excludes other key material",
+            "fixed_values_serialized_copies": 1,
+            "fixed_polys_serialized": False,
+            "formula": "0 bytes counted because Admission does not identify Dense versus Compact columns or actual permutation entries",
+            "scope": "structural v4 PK lower bound only; fixed coefficient polynomials are reconstructed when reading the key",
         },
-        "source_model_fixed_payload_upper_bound_bytes": upper_bytes,
+        "source_model_fixed_payload_upper_bound_bytes": None,
         "source_model_fixed_payload_upper_bound": {
-            "column_count_upper": source_upper_columns,
-            "evidence_kind": "witnessless native selector-compression census under the authenticated native format",
-            "formula": "2 * (fixed_columns + census_compressed_selector_columns) * domain_rows * field_bytes",
+            "status": "not_estimated_by_this_structural_lower_bound",
+            "evidence_kind": "use source_model_estimates.setup_key_artifact_upper_bytes for the mandatory Setup capacity gate",
         },
     }
 
@@ -422,7 +417,7 @@ def _authenticated_admission(
 
 
 def _retained_setup(
-    document: dict[str, Any], output_root: Path, dataset: str, admission_digest: str, floor_bytes: int,
+    document: dict[str, Any], output_root: Path, dataset: str, admission_digest: str,
 ) -> tuple[bool, int | None]:
     anchors = document.get("setup_reuse_receipts", {})
     if not isinstance(anchors, dict):
@@ -451,8 +446,6 @@ def _retained_setup(
         if artifact.is_symlink() or not artifact.is_file() or sha256(artifact) != setup_files.get(name):
             abort(f"{dataset} setup artifact failed its session-anchored digest: {name}")
     pk_size = (output / "pk.key").stat().st_size
-    if pk_size < floor_bytes:
-        abort(f"{dataset} authenticated existing pk.key is smaller than its fixed-payload floor")
     return True, pk_size
 
 
@@ -468,7 +461,7 @@ def _fresh_row(document: dict[str, Any], root: Path, session_dir: Path, dataset:
         return _missing_row(dataset)
     admission, receipt = _authenticated_admission(document, session_dir, dataset, admission_path, settings_path)
     bounds = _fixed_payload_bounds(admission)
-    retained, observed = _retained_setup(document, root, dataset, receipt["sha256"], bounds["fixed_payload_lower_bound_bytes"])
+    retained, observed = _retained_setup(document, root, dataset, receipt["sha256"])
     memory = admission["native_memory_model"]
     return {
         **bounds,
@@ -477,7 +470,7 @@ def _fresh_row(document: dict[str, Any], root: Path, session_dir: Path, dataset:
         "settings_sha256": receipt["settings_sha256"],
         "setup_already_retained": retained,
         "observed_pk_file_bytes": observed,
-        "lower_bound_gate_status": "already_retained_authenticated_setup" if retained else "current_disk_comparison_required",
+        "lower_bound_gate_status": "already_retained_authenticated_setup" if retained else "unavailable_from_admission_encoding_metadata",
         "source_model_estimates": _model_estimates(admission),
         "admission_device_sample": {
             "cuda_free_bytes_at_admission": memory.get("cuda_free_bytes_at_admission"),
@@ -687,7 +680,7 @@ def audit_historical_session(
         and row["fixed_payload_lower_bound_bytes"] > hardware["disk"]["available_bytes"]
     ]
     report = {
-        "schema": "ezkl.resource_capacity_precheck.v1", "report_kind": "historical_negative_evidence_only",
+        "schema": _REPORT_SCHEMA, "report_kind": "historical_negative_evidence_only",
         "baseline": "ezkl", "historical_session_id": historical["session_id"],
         "historical_status": historical["status"], "historical_started_at_utc": historical.get("started_at_utc"),
         "historical_source_match": source_match,
@@ -711,7 +704,7 @@ def write_and_require_fresh_report(
     session_path: Path | str, records: list[dict[str, Any]], output_path: Path | str, *, output_root: Path | str,
     authenticated_context: AuthenticatedFormalContext | None = None,
 ) -> dict[str, Any]:
-    """Persist five Admission rows and fail before Setup if the current disk floor does not fit."""
+    """Persist five authenticated Admission rows and report whether v4 wire size is estimable."""
     _, root, session_dir, document = _session_context(session_path)
     supplied_root = Path(output_root)
     supplied_root = supplied_root if supplied_root.is_absolute() else local_path(supplied_root.as_posix(), "formal output root")
@@ -727,31 +720,34 @@ def write_and_require_fresh_report(
     missing = [row["dataset"] for row in rows if row.get("admission_status") != "authenticated_current_session_admission"]
     retained = {row["dataset"] for row in rows if row.get("setup_already_retained") is True}
     pending = [row for row in rows if row.get("admission_status") == "authenticated_current_session_admission" and row["dataset"] not in retained]
-    pending_floor = sum(_integer(row.get("fixed_payload_lower_bound_bytes"), f"{row['dataset']} floor", minimum=1) for row in pending)
+    pending_floor = sum(_integer(row.get("fixed_payload_lower_bound_bytes"), f"{row['dataset']} known floor") for row in pending)
     failing = [row["dataset"] for row in pending if row["fixed_payload_lower_bound_bytes"] > hardware["disk"]["available_bytes"]]
     aggregate_fail = pending_floor > hardware["disk"]["available_bytes"]
-    status = "incomplete_admission" if missing else "current_disk_floor_fail" if aggregate_fail else "current_disk_floor_pass"
+    unknown = [row["dataset"] for row in pending if row.get("lower_bound_gate_status") == "unavailable_from_admission_encoding_metadata"]
+    status = "incomplete_admission" if missing else "current_v4_pk_payload_lower_bound_unavailable" if unknown else "current_disk_floor_fail" if aggregate_fail else "current_disk_floor_pass"
     report = {
-        "schema": "ezkl.resource_capacity_precheck.v1", "report_kind": "current_fresh_admission_pre_setup",
+        "schema": _REPORT_SCHEMA, "report_kind": "current_fresh_admission_pre_setup",
         "baseline": "ezkl", "session_id": document["session_id"], "sampled_at_utc": datetime.now(timezone.utc).isoformat(),
         "gate_status": status, "readiness": "NOT_ESTABLISHED",
         "source_identity": provenance["capacity_source_identity"],
         "current_provenance": provenance,
         "actual_current_hardware_sample": hardware,
         "disk_floor_gate": {
+            "evidence_status": "structural_lower_bound_only; unavailable means this report does not authorize Setup",
             "disk_available_bytes": hardware["disk"]["available_bytes"],
-            "pending_fixed_payload_lower_bound_bytes": pending_floor,
+            "pending_known_fixed_payload_lower_bound_bytes": pending_floor,
             "pending_datasets": [row["dataset"] for row in pending], "individually_over_disk": failing,
+            "payload_size_unknown_datasets": unknown,
             "aggregate_floor_failure": aggregate_fail, "retained_setup_datasets_excluded": sorted(retained),
-            "comparison": "sum of pending fixed-payload floors <= current output-filesystem available bytes",
+            "comparison": "known structural lower bound only; unknown PK payload bytes are not estimated or treated as a capacity pass",
         },
         "datasets": rows,
         "source_model_estimate_scope": "per-dataset source_model_estimates are source-derived, not actual allocation samples or complete measured phase peaks",
-        "scope": "Admission geometry is authenticated; report does not establish run readiness or replace phase-specific capacity gates",
+        "scope": "Admission geometry is authenticated; source-model Setup upper and actual-census Prove gates remain mandatory and this report never establishes run readiness",
     }
     out = Path(output_path)
     out = out if out.is_absolute() else ROOT / out
     _write_report(out, report, session_dir=session_dir, output_root=root)
-    if status != "current_disk_floor_pass":
+    if status not in {"current_disk_floor_pass", "current_v4_pk_payload_lower_bound_unavailable"}:
         abort(f"EZKL capacity precheck {status}: missing={missing}; floor_bytes={pending_floor}; disk_available_bytes={hardware['disk']['available_bytes']}; individually_over_disk={failing}")
     return report

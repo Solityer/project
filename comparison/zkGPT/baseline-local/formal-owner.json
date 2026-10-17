@@ -1,0 +1,18 @@
+{
+  "active_dataset": null,
+  "active_stage": "prepare",
+  "baseline": "zkgpt",
+  "completed_stages": [],
+  "lock_device": 66306,
+  "lock_inode": 24906385,
+  "owner_pid": 1410321,
+  "owner_start_ticks": 21819204,
+  "owner_token_sha256": "2beb7d331d8f66eb75c587e6b09fa71ab0a3c525a2eef67f9e17995285a6fa26",
+  "recovered_previous_session_id": null,
+  "schema": "zkgpt-local-formal-owner-v1",
+  "session_id": "b04bbd621360e7deeaaf5847762211f5",
+  "stage_nonce": "c0067ee05753ce5fa6790cba69c089fd",
+  "started_unix_ns": 1792242725016426705,
+  "status": "RUNNING",
+  "updated_unix_ns": 1792242725020420474
+}

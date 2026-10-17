@@ -1,0 +1,41 @@
+[resource-authentication] AUTHENTICATED baseline-local resources for cora,citeseer,pubmed,ppi,ogbn_arxiv
+[native-build] -- Configuring done (0.0s)
+[native-build] -- Generating done (0.0s)
+[native-build] -- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[native-build] [  3%] Built target gen_bint.o
+[native-build] [  6%] Built target gen_base.o
+[native-build] [ 12%] Built target mcl
+[native-build] [ 15%] Building CXX object src/CMakeFiles/gpt_lib.dir/circuit.cpp.o
+[native-build] [ 18%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax.cpp.o
+[native-build] [ 21%] Building CXX object src/CMakeFiles/gpt_lib.dir/hyrax_rp.cpp.o
+[native-build] [ 25%] Building CXX object src/CMakeFiles/gpt_lib.dir/models.cpp.o
+[native-build] [ 28%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_lasso.cpp.o
+[native-build] [ 31%] Building CXX object src/CMakeFiles/gpt_lib.dir/native_masked_sumcheck.cpp.o
+[native-build] [ 34%] Building CXX object src/CMakeFiles/gpt_lib.dir/neuralNetwork.cpp.o
+[native-build] [ 37%] Building CXX object src/CMakeFiles/gpt_lib.dir/prover.cpp.o
+[native-build] [ 40%] Building CXX object src/CMakeFiles/gpt_lib.dir/range_prover.cpp.o
+[native-build] [ 43%] Building CXX object src/CMakeFiles/gpt_lib.dir/utils.cpp.o
+[native-build] [ 46%] Building CXX object src/CMakeFiles/gpt_lib.dir/verifier.cpp.o
+[native-build] [ 50%] Linking CXX static library libgpt_lib.a
+[native-build] [ 68%] Built target gpt_lib
+[native-build] [ 71%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_parser.cpp.o
+[native-build] [ 75%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_forward.cpp.o
+[native-build] [ 78%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_native.cpp.o
+[native-build] [ 81%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_input_oracle.cpp.o
+[native-build] [ 84%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_sparse_gkr.cpp.o
+[native-build] [ 87%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_proof.cpp.o
+[native-build] [ 90%] Building CXX object gat_adapter/CMakeFiles/gat_adapter.dir/gat_cuda_stub.cpp.o
+[native-build] [ 93%] Linking CXX static library libgat_adapter.a
+[native-build] [ 93%] Built target gat_adapter
+[native-build] [ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_prover.dir/gat_cli.cpp.o
+[native-build] [100%] Linking CXX executable zkgpt_gat_prover
+[native-build] [100%] Built target zkgpt_gat_prover
+[native-build] [  3%] Built target gen_bint.o
+[native-build] [  6%] Built target gen_base.o
+[native-build] [ 12%] Built target mcl
+[native-build] [ 68%] Built target gpt_lib
+[native-build] [ 93%] Built target gat_adapter
+[native-build] [ 96%] Building CXX object gat_adapter/CMakeFiles/zkgpt_gat_verifier.dir/gat_verifier_cli.cpp.o
+[native-build] [100%] Linking CXX executable zkgpt_gat_verifier
+[native-build] [100%] Built target zkgpt_gat_verifier
+[native-build] built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/

@@ -5,7 +5,8 @@
     "degree": 2,
     "fixed_column_count_post_compression": 8,
     "num_fixed_columns": 3,
-    "num_selectors": 5
+    "num_selectors": 5,
+    "selector_fixed_column_count_upper": 5
   },
   "native_memory_model": {
     "size_of_fr_bytes": 32

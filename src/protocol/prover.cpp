@@ -4059,7 +4059,7 @@ namespace gatzk::protocol
                 const auto mapped_coset = util::spill_align_up(one_coset, static_cast<std::size_t>(page_size_raw), label);
                 constexpr std::size_t maximum_writers = 1;
 
-                cconst auto geometry = checked_mul(one_coset, 2);
+                const auto geometry = checked_mul(one_coset, 2);
                 const auto device_headroom = cuda_enabled ? (std::size_t{4} << 30) : 0;
                 const auto fixed_bytes = checked_add(geometry, device_headroom);
                 const auto producer_cosets = plan_.cuda_t_fh_route ? std::size_t{1} : std::size_t{3};

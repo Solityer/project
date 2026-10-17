@@ -818,6 +818,7 @@ class JsonShapeReader {
                     fail("duplicate static table array in shape scan: " + key);
                 result.array_element_counts.emplace(key, element_count);
             } else {
+                skip_space();
                 std::string value;
                 if (peek() == '"') value = read_string();
                 else value = read_integer_token();

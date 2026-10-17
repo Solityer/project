@@ -5756,21 +5756,22 @@ def _run_five_admission_preflight(
         "report_sha256": sha256(report_path),
         "gate_status": report.get("gate_status"),
         "readiness": report.get("readiness", "NOT_ESTABLISHED"),
-        "purpose": "all-five-native-admission-and-current-fixed-disk-floor-only; no setup or proof success implied",
+        "purpose": "all-five-native-admission-and-v4-PK-lower-bound-report-only; no setup or proof success implied",
     }
     _write_session_record(session_file, session_document)
 
     failure_items = [f"{dataset} Admission {entry['exception_type']}: {entry['error']}" for dataset, entry in failures.items()]
     failure_items.extend(f"{dataset} capacity audit {entry['exception_type']}: {entry['error']}" for dataset, entry in audit_failures.items())
     gate_status = report.get("gate_status")
-    if failure_items or gate_status != "current_disk_floor_pass":
+    accepted_gate_statuses = {"current_disk_floor_pass", "current_v4_pk_payload_lower_bound_unavailable"}
+    if failure_items or gate_status not in accepted_gate_statuses:
         summary = "; ".join(failure_items) if failure_items else f"capacity gate status={gate_status}"
         if capacity_only:
-            print(f"[ezkl-formal] admission/capacity preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
+            print(f"[ezkl-formal] admission/v4 PK metadata preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
         else:
-            print(f"[ezkl-formal] all-five Admission/current disk-floor preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
+            print(f"[ezkl-formal] all-five Admission/v4 PK metadata preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
         abort(f"five-dataset admission/capacity preflight did not pass before any Setup: {summary}")
-    print(f"[ezkl-formal] all-five current fixed-payload disk-floor preflight PASS; report={report_path.relative_to(ROOT)}", flush=True)
+    print(f"[ezkl-formal] all-five Admission/v4 PK metadata report recorded; readiness remains unestablished and source-model Setup/actual-census Prove capacity gates remain mandatory; report={report_path.relative_to(ROOT)}", flush=True)
     return admissions
 
 

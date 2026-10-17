@@ -1,0 +1,21 @@
+{
+  "datasets": [
+    "cora",
+    "citeseer",
+    "pubmed",
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "native_source_sha256": "6974efb37e0b987b5d82f38128f2418aa95284999a45865e206d8984653697f5",
+  "run_nonces": {
+    "citeseer": "f6a6f884be878cdfc842e4d39994e367",
+    "cora": "06e33db8ebb9ccb11d3667461d12a46b",
+    "ogbn_arxiv": "299541ba30718a3858d623d9005e98cb",
+    "ppi": "f0a0ad8888344e7b05cad343aaedc2d6",
+    "pubmed": "7300b67d862a9cd34e0b4d2cbcb62778"
+  },
+  "runtime_source_sha256": "67fadbe1c94a6e6c4c09af9df2fbfa096d963984ad20d640343dd8ebd3b133fe",
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "b04bbd621360e7deeaaf5847762211f5",
+  "started_unix_ns": 1792242725051496246
+}
