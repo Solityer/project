@@ -1097,19 +1097,19 @@ where
                         }
                     })
                     .collect();
-                let advice_commitments_projective: Vec<_> = column_indices
-                    .iter()
-                    .zip(blinds.iter())
-                    .map(|(column_index, blind)| {
-                        let poly = &advice.advice_polys[*column_index];
-                        if current_phase == initial_advice_phase {
-                            let _commitment_timer = crate::plonk::commitment_timing::advice_guard();
-                            params.commit_lagrange(poly, *blind)
-                        } else {
-                            params.commit_lagrange(poly, *blind)
-                        }
-                    })
-                    .collect();
+                let mut advice_commitments_projective =
+                    Vec::with_capacity(column_indices.len());
+                for (column_index, blind) in column_indices.iter().zip(blinds.iter().copied()) {
+                    let poly = &advice.advice_polys[*column_index];
+                    let commitment = if current_phase == initial_advice_phase {
+                        let _commitment_timer =
+                            crate::plonk::commitment_timing::advice_guard();
+                        params.commit_lagrange(poly, blind)
+                    } else {
+                        params.commit_lagrange(poly, blind)
+                    };
+                    advice_commitments_projective.push(commitment);
+                }
                 let mut advice_commitments =
                     vec![Scheme::Curve::identity(); advice_commitments_projective.len()];
                 if current_phase == initial_advice_phase {
@@ -2000,7 +2000,11 @@ fn test_create_proof() {
         },
         poly::kzg::{
             commitment::{KZGCommitmentScheme, ParamsKZG},
-            multiopen::{ProverSHPLONK, VerifierSHPLONK},
+            multiopen::{
+                native_shplonk_fixed_aggregate_cache_scope,
+                native_shplonk_test_selected_cache_groups,
+                NativeShplonkFixedAggregateCacheLimits, ProverSHPLONK, VerifierSHPLONK,
+            },
             strategy::SingleStrategy,
         },
         poly::Rotation,
@@ -2016,7 +2020,7 @@ fn test_create_proof() {
     struct MyCircuit([u64; 2]);
 
     impl<F: Field + From<u64>> Circuit<F> for MyCircuit {
-        type Config = (Selector, Column<Advice>, Column<Fixed>);
+        type Config = (Selector, Selector, Column<Advice>, Column<Advice>, Column<Fixed>, Column<Fixed>);
         type FloorPlanner = SimpleFloorPlanner;
         #[cfg(feature = "circuit-params")]
         type Params = ();
@@ -2027,35 +2031,51 @@ fn test_create_proof() {
 
         fn configure(meta: &mut ConstraintSystem<F>) -> Self::Config {
             let instance = meta.instance_column();
-            let advice = meta.advice_column();
-            let fixed = meta.fixed_column();
-            let q_instance = meta.selector();
-            meta.create_gate("advice follows public instance at cur and next", |meta| {
-                let q_instance = meta.query_selector(q_instance);
+            let advice_long = meta.advice_column();
+            let advice_short = meta.advice_column();
+            let fixed_long = meta.fixed_column();
+            let fixed_short = meta.fixed_column();
+            let q_long = meta.selector();
+            let q_short = meta.selector();
+            meta.create_gate("short advice and fixed columns follow public instance", |meta| {
+                let q_short = meta.query_selector(q_short);
+                let instance_cur = meta.query_instance(instance, Rotation::cur());
+                let advice_cur = meta.query_advice(advice_short, Rotation::cur());
+                let fixed_cur = meta.query_fixed(fixed_short, Rotation::cur());
+                vec![q_short * (advice_cur - instance_cur - fixed_cur)]
+            });
+            meta.create_gate("long advice and fixed columns follow public instance", |meta| {
+                let q_long = meta.query_selector(q_long);
                 let instance_cur = meta.query_instance(instance, Rotation::cur());
                 let instance_next = meta.query_instance(instance, Rotation::next());
-                let advice_cur = meta.query_advice(advice, Rotation::cur());
-                let advice_next = meta.query_advice(advice, Rotation::next());
-                let fixed_cur = meta.query_fixed(fixed, Rotation::cur());
+                let advice_cur = meta.query_advice(advice_long, Rotation::cur());
+                let advice_next = meta.query_advice(advice_long, Rotation::next());
+                let fixed_cur = meta.query_fixed(fixed_long, Rotation::cur());
+                let fixed_next = meta.query_fixed(fixed_long, Rotation::next());
                 vec![
-                    q_instance.clone() * (advice_cur - instance_cur - fixed_cur),
-                    q_instance * (advice_next - instance_next),
+                    q_long.clone() * (advice_cur - instance_cur - fixed_cur),
+                    q_long * (advice_next - instance_next - fixed_next),
                 ]
             });
-            (q_instance, advice, fixed)
+            (q_long, q_short, advice_long, advice_short, fixed_long, fixed_short)
         }
 
         fn synthesize(
             &self,
-            (q_instance, advice, _fixed): Self::Config,
+            (q_long, q_short, advice_long, advice_short, fixed_long, fixed_short): Self::Config,
             mut layouter: impl crate::circuit::Layouter<F>,
         ) -> Result<(), Error> {
             layouter.assign_region(
                 || "public instance constraint",
                 |mut region| {
-                    q_instance.enable(&mut region, 0)?;
-                    region.assign_advice(|| "advice value cur", advice, 0, || Value::known(F::from(self.0[0])))?;
-                    region.assign_advice(|| "advice value next", advice, 1, || Value::known(F::from(self.0[1])))?;
+                    q_long.enable(&mut region, 0)?;
+                    q_short.enable(&mut region, 0)?;
+                    region.assign_advice(|| "long advice value cur", advice_long, 0, || Value::known(F::from(self.0[0] + 1)))?;
+                    region.assign_advice(|| "long advice value next", advice_long, 1, || Value::known(F::from(self.0[1] + 2)))?;
+                    region.assign_advice(|| "short advice value cur", advice_short, 0, || Value::known(F::from(self.0[0] + 3)))?;
+                    region.assign_fixed(|| "long fixed value cur", fixed_long, 0, || Value::known(F::from(1)))?;
+                    region.assign_fixed(|| "long fixed value next", fixed_long, 1, || Value::known(F::from(2)))?;
+                    region.assign_fixed(|| "short fixed value cur", fixed_short, 0, || Value::known(F::from(3)))?;
                     Ok(())
                 },
             )?;
@@ -2156,21 +2176,59 @@ fn test_create_proof() {
     );
     assert!(matches!(proof.unwrap_err(), Error::InvalidInstances));
 
-    // Create proof with correct number of instances
+    // Compare the unoptimized and bounded-cache paths with identical proof
+    // inputs and RNG state. The fixture has two mixed fixed/nonfixed opening
+    // sets with distinct rotation-point layouts.
     let public_a = [Fr::from(7), Fr::from(9)];
     let public_b = [Fr::from(8), Fr::from(10)];
-    let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
-    create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
-        &params,
-        &pk,
-        &[MyCircuit([7, 9]), MyCircuit([8, 10])],
-        &[&[&public_a[..]], &[&public_b[..]]],
-        ChaCha20Rng::from_seed([0x33; 32]),
-        &mut transcript,
-    )
-    .expect("proof generation should not fail");
+    let make_proof = |max_groups: usize| {
+        let _cache_scope = native_shplonk_fixed_aggregate_cache_scope(NativeShplonkFixedAggregateCacheLimits {
+            max_groups,
+            host_bytes: 4 * 1024 * 1024,
+            disk_bytes: 4 * 1024 * 1024,
+            group_host_bytes: 1024 * 1024,
+            group_disk_bytes: 1024 * 1024,
+            bank_header_bytes: 4096 + std::mem::size_of::<Vec<Fr>>() as u64,
+            domain_size: params.n(),
+            scalar_bytes: std::mem::size_of::<Fr>() as u64,
+        });
+        let mut transcript = Blake2bWrite::<_, _, Challenge255<_>>::init(vec![]);
+        create_proof::<KZGCommitmentScheme<_>, ProverSHPLONK<_>, _, _, _, _>(
+            &params,
+            &pk,
+            &[MyCircuit([7, 9]), MyCircuit([8, 10])],
+            &[&[&public_a[..]], &[&public_b[..]]],
+            ChaCha20Rng::from_seed([0x33; 32]),
+            &mut transcript,
+        )
+        .expect("proof generation should not fail");
+        let proof = transcript.finalize();
+        (proof, native_shplonk_test_selected_cache_groups())
+    };
+    let (proof_uncached, groups_uncached) = make_proof(0);
+    let (proof_cache_one, groups_cache_one) = make_proof(1);
+    let (proof_cache_two, groups_cache_two) = make_proof(2);
+    assert!(groups_uncached.is_empty(), "K=0 must take the legacy path");
+    assert_eq!(groups_cache_one.len(), 1, "K=1 must select one cache group");
+    assert_eq!(groups_cache_two.len(), 2, "K=2 must select both eligible groups");
+    let (_, commitment_count, nonconstant_fixed_count, fixed_indices) = &groups_cache_one[0];
+    assert!(*nonconstant_fixed_count > 0);
+    assert!(fixed_indices
+        .iter()
+        .any(|&index| index > 0 && index + 1 < *commitment_count),
+        "K=1 must place a nonconstant fixed source between nonfixed commitments to exercise original y ranks");
+    for group in &groups_cache_two {
+        let (_, commitment_count, nonconstant_fixed_count, fixed_indices) = group;
+        assert!(*nonconstant_fixed_count > 0);
+        assert!(!fixed_indices.is_empty() && fixed_indices.len() < *commitment_count,
+            "each K=2 group must contain both fixed and nonfixed commitments");
+    }
+    assert_ne!(groups_cache_two[0].0, groups_cache_two[1].0,
+        "K=2 must select two distinct rotation sets with distinct point sets");
+    assert_eq!(proof_uncached, proof_cache_one);
+    assert_eq!(proof_uncached, proof_cache_two);
 
-    let proof = transcript.finalize();
+    let proof = proof_cache_two;
     let mut transcript = Blake2bRead::<_, _, Challenge255<_>>::init(&proof[..]);
     verify_proof::<KZGCommitmentScheme<_>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
         &params,

@@ -2450,6 +2450,36 @@ impl NativeSpillScope {
         *guard = Arc::downgrade(&root);
         Ok(Self { _root: root })
     }
+
+    /// Returns currently available bytes on the filesystem holding this
+    /// session's spill directory. This is used only to trim optional spill
+    /// reservations after mandatory proof resources have been admitted.
+    pub fn available_bytes(&self) -> io::Result<u64> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let path = std::ffi::CString::new(self._root.path.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "native spill path contains a NUL byte")
+            })?;
+            let mut stats: libc::statvfs = unsafe { std::mem::zeroed() };
+            let result = unsafe { libc::statvfs(path.as_ptr(), &mut stats) };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let available = u64::try_from(stats.f_bavail)
+                .ok()
+                .and_then(|blocks| u64::try_from(stats.f_frsize).ok().and_then(|size| blocks.checked_mul(size)))
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "native spill free-space query overflow"))?;
+            Ok(available)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "native spill free-space query requires Linux statvfs",
+            ))
+        }
+    }
 }
 
 static ACTIVE_SPILL_ROOT: OnceLock<Mutex<Weak<SpillRoot>>> = OnceLock::new();

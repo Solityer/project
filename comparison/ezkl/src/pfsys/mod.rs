@@ -12,10 +12,12 @@ use crate::circuit::CheckMode;
 use crate::graph::GraphWitness;
 use crate::{EZKL_BUF_CAPACITY, EZKL_KEY_FORMAT};
 use halo2_proofs::plonk::{
-    create_proof, keygen_pk, keygen_pk_with_native_gate, keygen_vk_custom,
+    create_proof, keygen_pk, keygen_vk_custom,
     keygen_vk_custom_with_native_gate, verify_proof, Circuit, NativeKeygenBudget,
     NativeKeygenCensus, NativeKeygenPreflight, NativePkReadTiming, ProvingKey, VerifyingKey,
 };
+#[cfg(not(feature = "formal-gpu"))]
+use halo2_proofs::plonk::keygen_pk_with_native_gate;
 #[cfg(feature = "formal-gpu")]
 use halo2_proofs::plonk::keygen_pk_with_native_gate_compact_artifact;
 use halo2_proofs::poly::commitment::{CommitmentScheme, Params, ParamsProver, Prover, Verifier};

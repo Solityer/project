@@ -25,9 +25,6 @@ static CPU_FFT_CALLS: AtomicU64 = AtomicU64::new(0);
 static SYNCHRONIZED_CALLS: AtomicU64 = AtomicU64::new(0);
 static DEVICE_ID: AtomicUsize = AtomicUsize::new(0);
 static NTT_DOMAINS: Mutex<Option<HashMap<usize, (u32, Bn256Fr)>>> = Mutex::new(None);
-// Serialize all large CUDA allocations, including host-to-device conversion
-// buffers, so an MSM cannot overlap the NTT workspace (or vice versa).
-static GPU_OPERATION_LOCK: Mutex<()> = Mutex::new(());
 
 /// Maximum scalar/base slice handed to one native ICICLE MSM invocation.
 pub const MSM_MAX_CHUNK_SCALARS: usize = 1 << 20;
@@ -86,7 +83,6 @@ fn synchronized_operation(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
     SYNCHRONIZED_CALLS.fetch_add(1, Ordering::Relaxed);
 }
-
 
 /// Use the native CPU threshold for small multiexponentiations.
 pub fn should_use_cpu_msm(size: usize) -> bool {
@@ -165,11 +161,9 @@ fn c_from_icicle_point<C: CurveAffine>(point: &G1Projective) -> C::Curve {
 
 /// Perform the native ICICLE multiexponentiation and synchronize its result.
 pub fn multiexp_on_device<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
-    let _operation = GPU_OPERATION_LOCK.lock().expect("ICICLE GPU operation lock poisoned");
     select_device();
     assert_eq!(coeffs.len(), bases.len(), "native ICICLE MSM scalar/base length mismatch");
     assert!(!coeffs.is_empty(), "native ICICLE MSM input must not be empty");
-
     let mut result = C::Curve::identity();
     for (scalar_chunk, base_chunk) in coeffs
         .chunks(MSM_MAX_CHUNK_SCALARS)
@@ -205,11 +199,9 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
     log_n: u32, 
     inverse: bool
 ) {
-    let _operation = GPU_OPERATION_LOCK.lock().expect("ICICLE GPU operation lock poisoned");
     select_device();
     let cfg = NTTConfig::<'_, ScalarField>::default_for_device(DEVICE_ID.load(Ordering::Relaxed));
     let dir = if inverse { NTTDir::kInverse } else { NTTDir::kForward };
-
     assert_eq!(scalars.len(), 1usize << log_n, "native ICICLE FFT shape mismatch");
     let omega = if inverse { omega.invert().unwrap() } else { omega };
     assert!(omega.pow_vartime([1u64 << log_n]) == Scalar::ONE && (log_n == 0 || omega.pow_vartime([1u64 << (log_n - 1)]) != Scalar::ONE), "invalid native ICICLE FFT root");
@@ -229,7 +221,6 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
 
     let mut icicle_scalars: Vec<ScalarField> = icicle_scalars_from_c_scalars(scalars);
     let host_scalars = HostSlice::from_mut_slice(&mut icicle_scalars);
-
     ntt_inplace::<ScalarField, ScalarField>(
         host_scalars,
         dir,

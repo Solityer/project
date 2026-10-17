@@ -1812,21 +1812,23 @@ def _validate_cub_workspace_query(
     toolkit = value.get("cuda_toolkit_version")
     if not isinstance(toolkit, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", toolkit) is None:
         abort("native CUB workspace query has invalid CUDA toolkit version")
-    queries = value.get("queries")
-    if not isinstance(queries, list) or len(queries) != len(_CUB_QUERY_COUNTS):
-        abort("native CUB workspace query has an incomplete set of CUB operations")
-    query_sum = 0
-    for query, (expected_name, expected_count) in zip(queries, _CUB_QUERY_COUNTS.items(), strict=True):
-        if not isinstance(query, dict) or set(query) != {"name", "num_items", "scratch_bytes"}:
-            abort("native CUB workspace query contains a malformed operation")
-        if query.get("name") != expected_name or query.get("num_items") != expected_count:
-            abort(f"native CUB workspace query operation shape mismatch: {expected_name}")
-        scratch = query.get("scratch_bytes")
-        if isinstance(scratch, bool) or not isinstance(scratch, int) or scratch < 0:
-            abort(f"native CUB workspace query has invalid scratch bytes: {expected_name}")
-        query_sum += scratch
-    if value["scratch_bytes_sum"] != query_sum:
-        abort("native CUB workspace query scratch total does not equal its operation sum")
+    def validate_operations(name: str, operations: object, expected_sum: object) -> None:
+        if not isinstance(operations, list) or len(operations) != len(_CUB_QUERY_COUNTS):
+            abort(f"native {name} workspace query has an incomplete set of CUB operations")
+        scratch_sum = 0
+        for operation, (expected_name, expected_count) in zip(operations, _CUB_QUERY_COUNTS.items(), strict=True):
+            if not isinstance(operation, dict) or set(operation) != {"name", "num_items", "scratch_bytes"}:
+                abort(f"native {name} workspace query contains a malformed operation")
+            if operation.get("name") != expected_name or operation.get("num_items") != expected_count:
+                abort(f"native {name} workspace query operation shape mismatch: {expected_name}")
+            scratch = operation.get("scratch_bytes")
+            if isinstance(scratch, bool) or not isinstance(scratch, int) or scratch < 0:
+                abort(f"native {name} workspace query has invalid scratch bytes: {expected_name}")
+            scratch_sum += scratch
+        if expected_sum != scratch_sum:
+            abort(f"native {name} workspace query scratch total does not equal its operation sum")
+
+    validate_operations("single", value.get("queries"), value.get("scratch_bytes_sum"))
     return value
 
 
@@ -3764,6 +3766,7 @@ def _native_shplonk_fixed_cache_optional_limits(
     return {
         "shplonk_fixed_cache_max_groups": groups,
         "shplonk_fixed_cache_host_limit_bytes": host_limit,
+        "shplonk_fixed_cache_bank_header_limit_bytes": static["shplonk_fixed_cache_bank_header_bytes"] if groups else 0,
         "shplonk_fixed_cache_disk_limit_bytes": disk_limit,
     }
 
@@ -3995,7 +3998,7 @@ def _load_reusable_native_prove_budget_receipt(
         "disk_available_bytes", "disk_required_known_bytes", "max_total_backing_bytes",
         "host_available_bytes", "host_required_known_bytes",
         "shplonk_fixed_cache_max_groups", "shplonk_fixed_cache_host_limit_bytes",
-        "shplonk_fixed_cache_disk_limit_bytes",
+        "shplonk_fixed_cache_bank_header_limit_bytes", "shplonk_fixed_cache_disk_limit_bytes",
     }
     if set(budget) != set(expected) | dynamic_fields or any(budget.get(name) != value for name, value in expected.items()):
         return None
@@ -4014,7 +4017,7 @@ def _load_reusable_native_prove_budget_receipt(
             "native_pk_read_target_bitmap_fixed_cache_upper_bytes", "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes", "native_pk_read_stream_buffer_upper_bytes", "device_workspace_peak_bytes",
             "shplonk_fixed_cache_max_groups", "shplonk_fixed_cache_host_limit_bytes",
-            "shplonk_fixed_cache_disk_limit_bytes",
+            "shplonk_fixed_cache_bank_header_limit_bytes", "shplonk_fixed_cache_disk_limit_bytes",
         )
     }
     if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in integers.values()):
@@ -4269,7 +4272,7 @@ def _admit_local_capacity(
             sizes["scalar_bytes"] != model["size_of_fr_bytes"]
             or sizes["affine_bytes"] != model["size_of_g1_affine_bytes"]
             or sizes["projective_bytes"] != model["size_of_g1_projective_bytes"]
-            or sizes["unsigned_bytes"] != 4
+                or sizes["unsigned_bytes"] != 4
             or model["cuda_total_memory_bytes"] != query["total_memory_bytes"]
         ):
             abort(f"{dataset} native admission scalar/point/device sizes disagree with compiled ICICLE identity")

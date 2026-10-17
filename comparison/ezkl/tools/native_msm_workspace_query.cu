@@ -11,6 +11,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <curves/params/bn254.cuh>
 
@@ -114,6 +115,22 @@ Query query_inclusive_scan(const char* name, unsigned count, cudaStream_t stream
   return {name, count, checked_size(bytes, name)};
 }
 
+std::uint64_t scratch_sum(const std::vector<Query>& queries) {
+  std::uint64_t total = 0;
+  for (const Query& query : queries) total = checked_add(total, query.scratch_bytes);
+  return total;
+}
+
+void print_queries(const std::vector<Query>& queries) {
+  std::cout << '[';
+  for (size_t i = 0; i < queries.size(); ++i) {
+    if (i) std::cout << ',';
+    std::cout << "{\"name\":\"" << queries[i].name << "\",\"num_items\":" << queries[i].num_items
+              << ",\"scratch_bytes\":" << queries[i].scratch_bytes << '}';
+  }
+  std::cout << ']';
+}
+
 std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
                                            std::uint64_t affine_bytes,
                                            std::uint64_t projective_bytes,
@@ -134,8 +151,8 @@ std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
   add(array_bytes(kB, uint_bytes));                                      // sorted single bucket indices
   add(4ULL * uint_bytes);                                                // scalar counters
   add(array_bytes(kB + kWindowCount, projective_bytes));                // main buckets
-  add(array_bytes(kB + 1ULL, uint_bytes));                               // large bucket prefix sums
-  add(array_bytes(kLargeBucketThreadsMax, uint_bytes));                 // large bucket indices
+  add(array_bytes(kLMax + 1, uint_bytes));                              // large bucket prefix sums
+  add(array_bytes(kLargeBucketThreadsMax, uint_bytes));                // large bucket indices
   add(array_bytes(kLargeBucketThreadsMax, projective_bytes));           // large bucket points
 
   // The iterative reduction allocates one source array, two source-sized
@@ -148,8 +165,7 @@ std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
   for (;;) {
     const unsigned target_bits = (source_bits + 1U) >> 1U;
     const unsigned target_windows = source_windows << 1U;
-    const std::uint64_t target_count =
-        static_cast<std::uint64_t>(target_windows) << target_bits;
+    const std::uint64_t target_count = static_cast<std::uint64_t>(target_windows) << target_bits;
     std::uint64_t live = checked_add(checked_mul(3, source_count), target_count);
     if (target_bits == 1U) {
       const std::uint64_t final_results =
@@ -165,7 +181,7 @@ std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
     source_count = target_count;
   }
   add(array_bytes(reduction_peak_elements, projective_bytes));
-  add(array_bytes(kWindowCount + kScalarBits + 1ULL, projective_bytes));  // reduction/final result buffers
+  add(array_bytes(kWindowCount + (kScalarBits + 1ULL), projective_bytes));  // reduction/final result buffers
   add(scratch_bytes_sum);                                                // sum of all queried CUB temporaries
   return total;
 }
@@ -221,16 +237,15 @@ int main(int argc, char** argv) {
     check_cuda(cudaRuntimeGetVersion(&runtime_version), "cudaRuntimeGetVersion");
     check_cuda(cudaDriverGetVersion(&driver_version), "cudaDriverGetVersion");
     const cudaStream_t stream = nullptr;
-    const Query queries[] = {
-      query_sort_pairs("scalar_index_sort_pairs", kM, stream),
-      query_rle("sorted_bucket_run_length_encode", kM, stream),
-      query_exclusive_scan("bucket_offsets_exclusive_scan", kB + 1, stream),
-      query_sort_pairs_descending("bucket_size_offset_sort_pairs_descending", kHMax, stream),
-      query_sort_pairs_descending("bucket_size_index_sort_pairs_descending", kHMax, stream),
-      query_inclusive_scan("large_bucket_prefix_inclusive_scan", kLMax, stream),
+    const std::vector<Query> queries = {
+        query_sort_pairs("scalar_index_sort_pairs", kM, stream),
+        query_rle("sorted_bucket_run_length_encode", kM, stream),
+        query_exclusive_scan("bucket_offsets_exclusive_scan", kB + 1, stream),
+        query_sort_pairs_descending("bucket_size_offset_sort_pairs_descending", kHMax, stream),
+        query_sort_pairs_descending("bucket_size_index_sort_pairs_descending", kHMax, stream),
+        query_inclusive_scan("large_bucket_prefix_inclusive_scan", kLMax, stream),
     };
-    std::uint64_t total_scratch_bytes = 0;
-    for (const Query& query : queries) total_scratch_bytes = checked_add(total_scratch_bytes, query.scratch_bytes);
+    const std::uint64_t total_scratch_bytes = scratch_sum(queries);
     const auto scalar_size = static_cast<std::uint64_t>(sizeof(bn254::scalar_t));
     const auto affine_size = static_cast<std::uint64_t>(sizeof(bn254::affine_t));
     const auto projective_size = static_cast<std::uint64_t>(sizeof(bn254::projective_t));
@@ -265,13 +280,9 @@ int main(int argc, char** argv) {
               << ",\"affine_bytes\":" << affine_size << ",\"projective_bytes\":" << projective_size
               << ",\"unsigned_bytes\":" << uint_size << "}"
               << ",\"device_workspace_peak_bytes\":" << device_peak
-              << ",\"queries\":[";
-    for (size_t i = 0; i < sizeof(queries) / sizeof(queries[0]); ++i) {
-      if (i) std::cout << ',';
-      std::cout << "{\"name\":\"" << queries[i].name << "\",\"num_items\":" << queries[i].num_items
-                << ",\"scratch_bytes\":" << queries[i].scratch_bytes << '}';
-    }
-    std::cout << "],\"scratch_bytes_sum\":" << total_scratch_bytes << "}\n";
+              << ",\"queries\":";
+    print_queries(queries);
+    std::cout << ",\"scratch_bytes_sum\":" << total_scratch_bytes << "}\n";
     return std::cout.good() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << "native MSM CUB workspace query failed: " << error.what() << '\n';

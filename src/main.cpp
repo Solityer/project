@@ -320,7 +320,7 @@ int main(int argc, char **argv)
 
         std::string config_path;
         std::string benchmark_mode = "single";
-        std::string compute_backend = "cpu";
+        std::string compute_backend = GATZK_ENABLE_CUDA_BACKEND ? "cuda_hotspots" : "cpu";
         std::string export_tag;
         gatzk::util::Route2Options route2;
         std::set<std::string> cli_optimization_overrides;
@@ -386,10 +386,16 @@ int main(int argc, char **argv)
             {
                 export_tag = require_option_value(i, arg);
             }
+            else if (config_path.empty() && (arg == "cora" || arg == "citeseer" || arg == "pubmed" ||
+                                             arg == "ppi" || arg == "ogbn_arxiv"))
+            {
+                config_path = "configs/" + arg + "_secure.cfg";
+            }
             else
             {
                 throw std::runtime_error("unknown argument: " + arg);
             }
+
         }
         if (config_path.empty())
         {
@@ -413,6 +419,13 @@ int main(int argc, char **argv)
             }
         }
         compute_backend = normalize_compute_backend(compute_backend);
+        if (export_tag.empty())
+        {
+            const auto since_epoch = std::chrono::system_clock::now().time_since_epoch();
+            const auto timestamp = std::chrono::duration_cast<std::chrono::microseconds>(since_epoch).count();
+            export_tag = (compute_backend == "cuda_hotspots" ? "gpu_" : "cpu_") +
+                         std::to_string(timestamp) + "_" + std::to_string(::getpid());
+        }
 
         set_process_env("GATZK_ALGEBRA_BACKEND", "cpu");
         route2.cuda_trace_hotspots = compute_backend == "cuda_hotspots";

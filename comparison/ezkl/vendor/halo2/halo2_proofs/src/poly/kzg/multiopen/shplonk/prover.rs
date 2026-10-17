@@ -17,7 +17,7 @@ use ff::Field;
 use group::Curve;
 use halo2curves::pairing::Engine;
 use halo2curves::CurveExt;
-use maybe_rayon::iter::ParallelIterator;
+use maybe_rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use maybe_rayon::prelude::IntoParallelIterator;
 use rand_core::RngCore;
 use std::fmt::Debug;
@@ -186,6 +186,8 @@ fn prepare_fixed_aggregate_cache<E: Engine>(
 ) -> io::Result<Vec<FixedAggregate<E::Fr>>>
 where
     E::Fr: WithSmallOrderMulGroup<3>,
+    E::G1Affine: SerdeCurveAffine<ScalarExt = E::Fr, CurveExt = E::G1>,
+    E::G1: CurveExt<AffineExt = E::G1Affine>,
 {
     let disabled = || Ok(Vec::new());
     if limits.max_groups == 0 {
@@ -323,7 +325,7 @@ where
     // Check actual Vec capacities and mapped lengths before decoding any
     // fixed source. Vec may reserve slightly more than requested on some
     // allocators, so the authenticated optional quota must fit the real bank.
-    let actual_host_total = (std::mem::size_of::<Vec<FixedAggregate<E::Fr>>()>() as u128 + 4096)
+    let actual_host_total = (std::mem::size_of::<Vec<FixedAggregate<E::Fr>>>() as u128 + 4096)
         .checked_add(
             aggregates
                 .iter()
@@ -339,6 +341,7 @@ where
             total.checked_add(u128::from(cache_group_disk_bytes::<E::Fr>(n)?))
         })
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "native SHPLONK fixed-cache total disk bound overflow"))?;
+    let actual_bank_header = std::mem::size_of::<Vec<FixedAggregate<E::Fr>>>() as u64 + 4096;
     let actual_groups_fit = aggregates.iter().all(|aggregate| {
         cache_group_actual_host_bytes(aggregate)
             .map(|bytes| bytes <= limits.group_host_bytes)
@@ -348,6 +351,7 @@ where
                 .unwrap_or(false)
     });
     if !actual_groups_fit
+        || actual_bank_header > limits.bank_header_bytes
         || actual_host_total > u128::from(limits.host_bytes)
         || actual_disk_total > u128::from(limits.disk_bytes)
     {
@@ -373,6 +377,26 @@ where
             power_of_y *= y;
         }
     }
+    #[cfg(test)]
+    super::record_native_shplonk_test_selected_cache_groups(
+        aggregates
+            .iter()
+            .map(|aggregate| {
+                let rotation_set = &rotation_sets[aggregate.rotation_set_index];
+                let nonconstant_fixed = rotation_set
+                    .commitments
+                    .iter()
+                    .filter(|commitment| fixed_source_status(commitment) == Some(false))
+                    .count();
+                (
+                    aggregate.rotation_set_index,
+                    rotation_set.commitments.len(),
+                    nonconstant_fixed,
+                    aggregate.fixed_commitment_indices.clone(),
+                )
+            })
+            .collect(),
+    );
     Ok(aggregates)
 }
 

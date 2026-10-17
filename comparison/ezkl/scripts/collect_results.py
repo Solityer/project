@@ -455,6 +455,8 @@ def validate_cell(
         keygen_budget = load_json(artifact_manifest.parent / native_receipt_names[1], "native keygen budget")
         keygen_receipt = load_json(artifact_manifest.parent / native_receipt_names[2], "native keygen census receipt")
         prove_budget = load_json(artifact_manifest.parent / native_receipt_names[3], "native proving-key read budget")
+        admission_path = artifact_manifest.parent / "admission.json"
+        admission = load_json(admission_path, "formal native admission")
         if any(not isinstance(value, dict) for value in (setup_receipt, keygen_budget, keygen_receipt, prove_budget)):
             abort(f"{path} native resource receipts must be JSON objects")
         receipt_digests = {name: artifact_records[name]["sha256"] for name in native_receipt_names}
@@ -665,6 +667,38 @@ def validate_cell(
         }
         if any(prove_budget.get(name) != value for name, value in expected_prove.items()):
             abort(f"{path} native prove budget does not bind its setup, keygen, and binary identities")
+        if not isinstance(admission, dict) or sha256(admission_path) != prove_budget.get("admission_sha256"):
+            abort(f"{path} native prove budget does not bind the current source-derived admission")
+        memory = admission.get("native_memory_model")
+        if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v18":
+            abort(f"{path} admission has an incompatible SHPLONK cache memory model")
+        cache_domain = memory.get("proof_domain_size")
+        cache_scalar = memory.get("size_of_fr_bytes")
+        cache_group_layout = memory.get("size_of_shplonk_fixed_aggregate_cache_group_bytes")
+        cache_usize = memory.get("size_of_usize_bytes")
+        cache_vec_header = memory.get("size_of_vec_header_bytes")
+        cache_sets = memory.get("shplonk_rotation_set_count")
+        cache_fixed = memory.get("shplonk_max_commitments_per_rotation_set")
+        cache_points = memory.get("shplonk_max_rotation_count")
+        cache_source_values = (cache_domain, cache_scalar, cache_group_layout, cache_usize, cache_vec_header, cache_sets, cache_fixed, cache_points)
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > sys.maxsize for value in cache_source_values):
+            abort(f"{path} admission has malformed fixed-cache source bounds")
+        cache_group_host = cache_group_layout + cache_domain * cache_scalar + cache_fixed * cache_usize + cache_points * cache_scalar + 3 * 4096
+        cache_group_payload = cache_domain * cache_scalar
+        cache_group_disk = ((cache_group_payload + 4095) // 4096) * 4096 + 4096
+        cache_bank_header = cache_vec_header + 4096
+        cache_static = {
+            "shplonk_fixed_cache_group_host_bound_bytes": cache_group_host,
+            "shplonk_fixed_cache_group_disk_bound_bytes": cache_group_disk,
+            "shplonk_fixed_cache_bank_header_bytes": cache_bank_header,
+            "shplonk_fixed_cache_domain_size": cache_domain,
+            "shplonk_fixed_cache_scalar_bytes": cache_scalar,
+            "shplonk_fixed_cache_max_fixed_sources_per_group": cache_fixed,
+            "shplonk_fixed_cache_max_points_per_group": cache_points,
+            "shplonk_fixed_cache_rotation_set_count": cache_sets,
+        }
+        if any(prove_budget.get(name) != value for name, value in cache_static.items()):
+            abort(f"{path} native prove budget SHPLONK cache shape does not match its admitted source geometry")
         for name in (
             "disk_available_bytes",
             "disk_required_known_bytes",
@@ -683,6 +717,10 @@ def validate_cell(
             "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes",
             "native_pk_read_stream_buffer_upper_bytes",
+            "shplonk_fixed_cache_max_groups",
+            "shplonk_fixed_cache_host_limit_bytes",
+            "shplonk_fixed_cache_bank_header_limit_bytes",
+            "shplonk_fixed_cache_disk_limit_bytes",
         ):
             value = prove_budget.get(name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
@@ -696,6 +734,15 @@ def validate_cell(
             + prove_budget["native_pk_read_validation_buffers_upper_bytes"]
             + prove_budget["native_pk_read_stream_buffer_upper_bytes"]
         )
+        expected_cache_groups = min(
+            2,
+            cache_sets,
+            max(0, prove_budget["host_available_bytes"] - prove_budget["host_required_known_bytes"] - cache_bank_header) // cache_group_host,
+            max(0, prove_budget["disk_available_bytes"] - prove_budget["disk_required_known_bytes"]) // cache_group_disk,
+        )
+        expected_cache_host = cache_bank_header + expected_cache_groups * cache_group_host if expected_cache_groups else 0
+        expected_cache_bank_header = cache_bank_header if expected_cache_groups else 0
+        expected_cache_disk = expected_cache_groups * cache_group_disk
         if (
             prove_budget["disk_required_known_bytes"] > prove_budget["disk_available_bytes"]
             or prove_budget["permutation_grand_product_bank_mapped_bytes"]
@@ -717,6 +764,10 @@ def validate_cell(
             or prove_budget["native_pk_read_host_scratch_upper_bytes"] != expected_read_host_scratch
             or prove_budget["native_pk_read_host_scratch_upper_bytes"] > prove_budget["host_required_known_bytes"]
             or prove_budget["host_required_known_bytes"] > prove_budget["host_available_bytes"]
+            or prove_budget["shplonk_fixed_cache_max_groups"] != expected_cache_groups
+            or prove_budget["shplonk_fixed_cache_host_limit_bytes"] != expected_cache_host
+            or prove_budget["shplonk_fixed_cache_bank_header_limit_bytes"] != expected_cache_bank_header
+            or prove_budget["shplonk_fixed_cache_disk_limit_bytes"] != expected_cache_disk
         ):
             abort(f"{path} native PK reader resources do not fit the authenticated host/disk envelope")
     core_path = path.parent / "core_run_manifest.json"

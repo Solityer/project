@@ -19,6 +19,7 @@
 #include "lookup_table_index_bits.hpp"
 #include "signed_round_bounds.hpp"
 #include "gat_native_resources.cu"
+#include "hyrax_gpu_fold.cu"
 
 namespace zkdl_gat {
 namespace {

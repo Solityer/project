@@ -5446,11 +5446,18 @@ fn validate_native_cpu_proof_evidence(directory: &Path) -> Result<(), EZKLError>
     Ok(())
 }
 
+struct AuthenticatedNativeProveBudget {
+    max_backing_bytes: u64,
+    disk_required_bytes: u64,
+    native_pk_read_backing_required_bytes: u64,
+    fixed_aggregate_cache: halo2_proofs::poly::kzg::multiopen::NativeShplonkFixedAggregateCacheLimits,
+}
+
 fn authenticated_native_prove_backing_budget(
     output_dir: &Path,
     compiled_circuit_path: &Path,
     pk_path: &Path,
-) -> Result<u64, EZKLError> {
+) -> Result<AuthenticatedNativeProveBudget, EZKLError> {
     let regular = |path: &Path, label: &str| -> Result<(), EZKLError> {
         require_formal_regular_file(path, label)
     };
@@ -5494,7 +5501,7 @@ fn authenticated_native_prove_backing_budget(
     let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
         .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
     let expected_budget = [
-        ("schema", "ezkl.native-prove-budget.v2"),
+        ("schema", "ezkl.native-prove-budget.v3"),
         ("session_id", session_id.as_str()),
         ("setup_receipt_sha256", setup_sha256.as_str()),
         ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
@@ -5782,6 +5789,134 @@ fn authenticated_native_prove_backing_budget(
         .get("host_required_known_bytes")
         .and_then(JsonValue::as_u64)
         .ok_or("native prove budget lacks its known shared host-memory requirement")?;
+    let memory_u64 = |name: &str| -> Result<u64, EZKLError> {
+        memory_model
+            .get(name)
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| format!("formal admission lacks source-derived {}", name).into())
+    };
+    let cache_group_bytes = memory_u64("size_of_shplonk_fixed_aggregate_cache_group_bytes")?;
+    let cache_domain_size = memory_u64("proof_domain_size")?;
+    let cache_scalar_bytes = memory_u64("size_of_fr_bytes")?;
+    let cache_usize_bytes = memory_u64("size_of_usize_bytes")?;
+    let cache_vec_header_bytes = memory_u64("size_of_vec_header_bytes")?;
+    let cache_rotation_set_count = memory_u64("shplonk_rotation_set_count")?;
+    let cache_max_fixed_sources = memory_u64("shplonk_max_commitments_per_rotation_set")?;
+    let cache_max_points = memory_u64("shplonk_max_rotation_count")?;
+    if cache_domain_size != admission_domain_size
+        || cache_scalar_bytes != fr_bytes
+        || cache_group_bytes
+            != halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().2 as u64
+    {
+        return Err("native SHPLONK fixed-cache shape differs from the admitted source layout".into());
+    }
+    let cache_group_host = cache_group_bytes
+        .checked_add(cache_domain_size.checked_mul(cache_scalar_bytes).ok_or("native SHPLONK cache host bound overflow")?)
+        .and_then(|bytes| bytes.checked_add(cache_max_fixed_sources.checked_mul(cache_usize_bytes)?))
+        .and_then(|bytes| bytes.checked_add(cache_max_points.checked_mul(cache_scalar_bytes)?))
+        .and_then(|bytes| bytes.checked_add(3 * 4096))
+        .ok_or("native SHPLONK cache host bound overflow")?;
+    let cache_payload = cache_domain_size
+        .checked_mul(cache_scalar_bytes)
+        .ok_or("native SHPLONK cache disk bound overflow")?;
+    let cache_group_disk = cache_payload
+        .checked_add(4095)
+        .map(|bytes| (bytes / 4096) * 4096)
+        .and_then(|bytes| bytes.checked_add(4096))
+        .ok_or("native SHPLONK cache disk bound overflow")?;
+    let cache_bank_header = cache_vec_header_bytes
+        .checked_add(4096)
+        .ok_or("native SHPLONK cache bank-header bound overflow")?;
+    let budget_cache_group_host = prove_budget
+        .get("shplonk_fixed_cache_group_host_bound_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache host bound")?;
+    let budget_cache_group_disk = prove_budget
+        .get("shplonk_fixed_cache_group_disk_bound_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache disk bound")?;
+    let budget_cache_bank_header = prove_budget
+        .get("shplonk_fixed_cache_bank_header_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache bank-header bound")?;
+    let budget_cache_domain = prove_budget
+        .get("shplonk_fixed_cache_domain_size")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache domain")?;
+    let budget_cache_scalar = prove_budget
+        .get("shplonk_fixed_cache_scalar_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache scalar width")?;
+    let budget_cache_fixed_count = prove_budget
+        .get("shplonk_fixed_cache_max_fixed_sources_per_group")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK fixed-source bound")?;
+    let budget_cache_points = prove_budget
+        .get("shplonk_fixed_cache_max_points_per_group")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK point bound")?;
+    let budget_cache_set_count = prove_budget
+        .get("shplonk_fixed_cache_rotation_set_count")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK set count")?;
+    let cache_max_groups = prove_budget
+        .get("shplonk_fixed_cache_max_groups")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache group quota")?;
+    let cache_host_limit = prove_budget
+        .get("shplonk_fixed_cache_host_limit_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache host quota")?;
+    let cache_bank_header_limit = prove_budget
+        .get("shplonk_fixed_cache_bank_header_limit_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache bank-header quota")?;
+    let cache_disk_limit = prove_budget
+        .get("shplonk_fixed_cache_disk_limit_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its SHPLONK cache disk quota")?;
+    let host_cache_slack = host_available.saturating_sub(host_required.saturating_add(cache_bank_header));
+    let disk_cache_slack = disk_available.saturating_sub(required);
+    let expected_cache_groups = 2u64
+        .min(cache_rotation_set_count)
+        .min(host_cache_slack / cache_group_host)
+        .min(disk_cache_slack / cache_group_disk);
+    let expected_cache_host_limit = if expected_cache_groups == 0 {
+        0
+    } else {
+        cache_bank_header
+            .checked_add(expected_cache_groups.checked_mul(cache_group_host).ok_or("native SHPLONK cache host quota overflow")?)
+            .ok_or("native SHPLONK cache host quota overflow")?
+    };
+    let expected_cache_bank_header_limit = if expected_cache_groups == 0 { 0 } else { cache_bank_header };
+    let expected_cache_disk_limit = expected_cache_groups
+        .checked_mul(cache_group_disk)
+        .ok_or("native SHPLONK cache disk quota overflow")?;
+    if budget_cache_group_host != cache_group_host
+        || budget_cache_group_disk != cache_group_disk
+        || budget_cache_bank_header != cache_bank_header
+        || budget_cache_domain != cache_domain_size
+        || budget_cache_scalar != cache_scalar_bytes
+        || budget_cache_fixed_count != cache_max_fixed_sources
+        || budget_cache_points != cache_max_points
+        || budget_cache_set_count != cache_rotation_set_count
+        || cache_max_groups != expected_cache_groups
+        || cache_host_limit != expected_cache_host_limit
+        || cache_bank_header_limit != expected_cache_bank_header_limit
+        || cache_disk_limit != expected_cache_disk_limit
+    {
+        return Err("native SHPLONK optional cache quota is inconsistent with its source-bound host/disk budget".into());
+    }
+    let fixed_aggregate_cache = halo2_proofs::poly::kzg::multiopen::NativeShplonkFixedAggregateCacheLimits {
+        max_groups: usize::try_from(cache_max_groups).map_err(|_| "native SHPLONK cache group quota exceeds host size")?,
+        host_bytes: cache_host_limit,
+        disk_bytes: cache_disk_limit,
+        group_host_bytes: cache_group_host,
+        group_disk_bytes: cache_group_disk,
+        bank_header_bytes: cache_bank_header_limit,
+        domain_size: cache_domain_size,
+        scalar_bytes: cache_scalar_bytes,
+    };
     let successor_edges = native_census
         .get("permutation_successor_edges")
         .and_then(JsonValue::as_u64)
@@ -5889,7 +6024,12 @@ fn authenticated_native_prove_backing_budget(
     {
         return Err("native prove host/disk limits do not match the source-derived PK reader resource bounds".into());
     }
-    Ok(max_backing)
+    Ok(AuthenticatedNativeProveBudget {
+        max_backing_bytes: max_backing,
+        disk_required_bytes: required,
+        native_pk_read_backing_required_bytes: read_backing_required,
+        fixed_aggregate_cache,
+    })
 }
 
 fn write_native_pk_read_timing_receipt(
@@ -5927,7 +6067,7 @@ fn write_native_pk_read_timing_receipt(
     let settings_sha256 = required_string("settings_sha256")?;
     let compiled_circuit_sha256 = required_string("compiled_circuit_sha256")?;
     let vk_sha256 = required_string("vk_sha256")?;
-    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v2")
+    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v3")
         || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
         || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
         || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
@@ -6052,11 +6192,11 @@ pub(crate) fn prove(
         .ok_or_else(|| "proving key path has no parent directory for native scratch".to_string())?;
     let _native_spill = halo2_proofs::poly::native_spill_scope(spill_parent)?;
 
-    let (pk, native_pk_read_timing) = if let Some(max_backing) = native_prove_backing_budget {
+    let (pk, native_pk_read_timing) = if let Some(budget) = native_prove_backing_budget.as_ref() {
         let (pk, timing) = load_pk_with_native_backing_budget_and_timing::<KZGCommitmentScheme<Bn256>, GraphCircuit>(
             pk_path.clone(),
             circuit.params(),
-            max_backing,
+            budget.max_backing_bytes,
         )?;
         (pk, Some(timing))
     } else {
@@ -6081,6 +6221,39 @@ pub(crate) fn prove(
         (Some(digest), Some(path)) => load_formal_kzg_params(path, logrows, digest)?,
         (None, _) => load_params_prover::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?,
         _ => return Err("formal GAT proving lost its authenticated SRS path".into()),
+    };
+    let _native_fixed_cache_scope = if let Some(budget) = native_prove_backing_budget.as_ref() {
+        let mut limits = budget.fixed_aggregate_cache;
+        if limits.max_groups > 0 {
+            let remaining_mandatory_disk = budget
+                .disk_required_bytes
+                .saturating_sub(budget.native_pk_read_backing_required_bytes);
+            let live_optional_disk = _native_spill
+                .available_bytes()
+                .unwrap_or(0)
+                .saturating_sub(remaining_mandatory_disk);
+            let groups_by_live_disk = if limits.group_disk_bytes == 0 {
+                0
+            } else {
+                live_optional_disk / limits.group_disk_bytes
+            };
+            limits.max_groups = limits.max_groups.min(usize::try_from(groups_by_live_disk).unwrap_or(usize::MAX));
+            if limits.max_groups == 0 {
+                limits.host_bytes = 0;
+                limits.disk_bytes = 0;
+                limits.bank_header_bytes = 0;
+            } else {
+                limits.disk_bytes = limits
+                    .group_disk_bytes
+                    .saturating_mul(limits.max_groups as u64);
+                limits.host_bytes = limits
+                    .bank_header_bytes
+                    .saturating_add(limits.group_host_bytes.saturating_mul(limits.max_groups as u64));
+            }
+        }
+        Some(halo2_proofs::poly::kzg::multiopen::native_shplonk_fixed_aggregate_cache_scope(limits))
+    } else {
+        None
     };
     let mut snark = create_proof_circuit::<
         KZGCommitmentScheme<Bn256>,

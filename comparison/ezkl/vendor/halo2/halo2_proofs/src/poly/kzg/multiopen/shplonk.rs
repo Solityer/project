@@ -5,16 +5,28 @@ use crate::{poly::query::Query, transcript::ChallengeScalar};
 use ff::Field;
 use maybe_rayon::{iter::ParallelIterator, prelude::IntoParallelIterator};
 use std::cell::Cell;
+#[cfg(test)]
+use std::cell::RefCell;
 pub use prover::ProverSHPLONK;
 
 #[derive(Clone, Copy, Debug, Default)]
+/// Authenticated per-proof quota for the optional SHPLONK fixed-source cache.
 pub struct NativeShplonkFixedAggregateCacheLimits {
+    /// Maximum number of rotation sets that may be cached (at most two).
     pub max_groups: usize,
+    /// Total host-memory reservation for selected cache groups and bank metadata.
     pub host_bytes: u64,
+    /// Total spill-disk reservation for selected cache groups.
     pub disk_bytes: u64,
+    /// Per-group host-memory reservation, including its mapped polynomial.
     pub group_host_bytes: u64,
+    /// Per-group spill-disk reservation.
     pub group_disk_bytes: u64,
+    /// Host-memory reservation for the cache bank header.
+    pub bank_header_bytes: u64,
+    /// Evaluation-domain size for which these limits were authenticated.
     pub domain_size: u64,
+    /// Scalar width in bytes for which these limits were authenticated.
     pub scalar_bytes: u64,
 }
 
@@ -22,6 +34,13 @@ thread_local! {
     static NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS: Cell<Option<NativeShplonkFixedAggregateCacheLimits>> = Cell::new(None);
 }
 
+#[cfg(test)]
+thread_local! {
+    static NATIVE_SHPLONK_TEST_SELECTED_CACHE_GROUPS: RefCell<Vec<(usize, usize, usize, Vec<usize>)>> = RefCell::new(Vec::new());
+}
+
+/// Restores the previous native fixed-cache quota when dropped.
+#[derive(Debug)]
 pub struct NativeShplonkFixedAggregateCacheScope {
     previous: Option<NativeShplonkFixedAggregateCacheLimits>,
 }
@@ -32,10 +51,13 @@ impl Drop for NativeShplonkFixedAggregateCacheScope {
     }
 }
 
+/// Installs per-proof limits for the optional SHPLONK fixed-source cache.
 pub fn native_shplonk_fixed_aggregate_cache_scope(
     limits: NativeShplonkFixedAggregateCacheLimits,
 ) -> NativeShplonkFixedAggregateCacheScope {
     let previous = NATIVE_SHPLONK_FIXED_AGGREGATE_CACHE_LIMITS.with(|current| current.replace(Some(limits)));
+    #[cfg(test)]
+    NATIVE_SHPLONK_TEST_SELECTED_CACHE_GROUPS.with(|groups| groups.borrow_mut().clear());
     NativeShplonkFixedAggregateCacheScope { previous }
 }
 
@@ -47,6 +69,18 @@ pub(super) fn native_shplonk_fixed_aggregate_cache_limits() -> Option<NativeShpl
 /// rotation-set extension, and one optional fixed-aggregate cache group.
 pub fn native_shplonk_resource_layout<C: crate::arithmetic::CurveAffine>() -> (usize, usize, usize) {
     prover::native_shplonk_resource_layout::<C>()
+}
+
+#[cfg(test)]
+pub(crate) fn native_shplonk_test_selected_cache_groups() -> Vec<(usize, usize, usize, Vec<usize>)> {
+    NATIVE_SHPLONK_TEST_SELECTED_CACHE_GROUPS.with(|groups| groups.borrow().clone())
+}
+
+#[cfg(test)]
+pub(super) fn record_native_shplonk_test_selected_cache_groups(
+    groups: Vec<(usize, usize, usize, Vec<usize>)>,
+) {
+    NATIVE_SHPLONK_TEST_SELECTED_CACHE_GROUPS.with(|selected| *selected.borrow_mut() = groups);
 }
 use std::collections::BTreeSet;
 pub use verifier::VerifierSHPLONK;
