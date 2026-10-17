@@ -485,6 +485,165 @@ def run_session(session_dir: Path, state: dict[str, Any]) -> int:
         os.close(fd)
 
 
+
+def exact_signal(pid: Any, start_ticks: Any, expected_argv: list[str], expected_cwd: Path) -> bool:
+    """SIGTERM only an authenticated process identity; never signal a reused PID."""
+    if not alive(pid, start_ticks):
+        return False
+    if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+        raise UnsafeTransition("Linux/Python pidfd signaling is unavailable; refusing a PID-only stop")
+
+    def authenticate() -> bool:
+        if not alive(pid, start_ticks):
+            return False
+        try:
+            actual_argv = [os.fsdecode(part) for part in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if part]
+            actual_cwd = Path(os.readlink(f"/proc/{pid}/cwd"))
+        except OSError:
+            return False
+        if actual_argv != expected_argv or actual_cwd != expected_cwd:
+            raise UnsafeTransition(f"process {pid} does not match the recorded session/argv/cwd; no signal sent")
+        return True
+
+    if not authenticate():
+        return False
+    try:
+        pidfd = os.pidfd_open(pid, 0)
+    except ProcessLookupError:
+        return False
+    try:
+        if not authenticate():
+            return False
+        try:
+            signal.pidfd_send_signal(pidfd, signal.SIGTERM, None, 0)
+        except ProcessLookupError:
+            return False
+    finally:
+        os.close(pidfd)
+    return True
+
+
+def load_queue(sid: str) -> tuple[Path, dict[str, Any]]:
+    path = session_dir(sid)
+    doc = read_json(path / "status.json")
+    if not doc or doc.get("session_id") != sid or doc.get("schema") != "comparison.serial-formal.v1":
+        raise UnsafeTransition("serial controller state does not belong to the requested exact session")
+    return path, doc
+
+
+def _stop_controller(sid: str, deadline: float) -> dict[str, Any]:
+    script = str(Path(__file__).resolve())
+    argv = [sys.executable, script, "_run", "--session-id", sid]
+    signaled = False
+    while True:
+        _path, doc = load_queue(sid)
+        if doc["status"] in ("COMPLETE", "COMPLETE_WITH_FAILURES", "HALTED"):
+            break
+        ident = doc.get("supervisor")
+        if isinstance(ident, dict) and alive(ident.get("pid"), ident.get("start_ticks")):
+            if not signaled:
+                signaled = exact_signal(ident["pid"], ident["start_ticks"], argv, ROOT)
+                print(f"controller_stop_requested={signaled} pid={ident['pid']}", flush=True)
+        elif doc["status"] not in ("STARTING",):
+            raise UnsafeTransition("controller has no authenticated live PID and no terminal state")
+        if time.monotonic() >= deadline:
+            raise UnsafeTransition("controller did not reach a safe terminal state; native stop not yet attempted")
+        time.sleep(0.5)
+
+    ident = doc.get("supervisor")
+    if isinstance(ident, dict) and alive(ident.get("pid"), ident.get("start_ticks")):
+        if time.monotonic() >= deadline:
+            raise UnsafeTransition("controller still alive after terminal state; native stop deferred")
+        while alive(ident.get("pid"), ident.get("start_ticks")):
+            if time.monotonic() >= deadline:
+                raise UnsafeTransition("controller still alive after terminal state; native stop deferred")
+            time.sleep(0.5)
+    return doc
+
+
+def _native_job(name: str, launch_id: str) -> dict[str, Any]:
+    if name == "zkdl":
+        if not re.fullmatch(r"launch_\d{8}T\d{6}Z_[A-Za-z0-9]{8}", launch_id):
+            raise UnsafeTransition("zkDL native launch ID is invalid")
+        relative = Path("runs") / launch_id
+    else:
+        if not HEX32.fullmatch(launch_id):
+            raise UnsafeTransition(f"{name} native launch ID is invalid")
+        relative = (Path("runs/formal/.sessions") / launch_id if name == "ezkl"
+                    else Path("baseline-local/formal-detached") / launch_id)
+    return {"name": name, "launch_id": launch_id, "dir": root_for(name) / relative}
+
+
+def _run_native_stop(job: dict[str, Any]) -> None:
+    name, sid, directory = job["name"], job["launch_id"], job["dir"]
+    ensure_regular_dir(directory)
+    if name == "ezkl":
+        cmd = [sys.executable, "scripts/ezkl_formal_control.py", "stop", "--session-id", sid, "--wait-seconds", "30"]
+    elif name == "zkdl":
+        cmd = [sys.executable, "scripts/detached_control.py", "stop", "--launch-dir", str(directory)]
+    else:
+        status = read_json(directory / "status.json")
+        if status is None:
+            raise UnsafeTransition("zkGPT detached supervisor has no identity receipt; cannot stop safely")
+        if status.get("schema") != "zkgpt-gat-detached-launch-v2" or status.get("launch_id") != sid:
+            raise UnsafeTransition("zkGPT detached status identity mismatch")
+        if status.get("status") in ("COMPLETE", "FAILED", "INTERRUPTED"):
+            return
+        pid, ticks = status.get("supervisor_pid"), status.get("supervisor_start_ticks")
+        argv = status.get("supervisor_argv")
+        cwd = status.get("supervisor_cwd")
+        expected = str(root_for(name) / "scripts/formal_detached_supervisor.py")
+        if (not isinstance(argv, list) or len(argv) != 6 or
+                argv[1:] != [expected, "--root", str(root_for(name)), "--launch-id", sid] or
+                cwd != str(root_for(name))):
+            raise UnsafeTransition("zkGPT supervisor argv/root evidence is malformed")
+        if not exact_signal(pid, ticks, argv, root_for(name)):
+            raise UnsafeTransition("zkGPT supervisor disappeared without an authenticated terminal receipt")
+        print(f"zkgpt_stop_requested=True launch_id={sid}", flush=True)
+        return
+    result = subprocess.run(cmd, cwd=root_for(name), capture_output=True, text=True, timeout=45, check=False)
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", flush=True)
+    if result.stderr:
+        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr, flush=True)
+    # zkDL returns 1 if the supervisor has not stopped within its 20s window.
+    if result.returncode not in ((0, 1) if name == "zkdl" else (0,)):
+        raise UnsafeTransition(f"{name} official native stop failed with code {result.returncode}")
+
+
+def stop_session(sid: str, *, wait_seconds: int) -> int:
+    if wait_seconds < 5 or wait_seconds > 3600:
+        raise UnsafeTransition("--wait-seconds must be between 5 and 3600")
+    deadline = time.monotonic() + wait_seconds
+    doc = _stop_controller(sid, deadline)
+    if doc["status"] in ("COMPLETE", "COMPLETE_WITH_FAILURES"):
+        print(f"stop_status=ALREADY_FINISHED serial_session_id={sid}")
+        return 0
+    name = doc.get("active_baseline")
+    if name is None:
+        if not all_native_locks_idle():
+            raise UnsafeTransition("controller stopped but an original native formal lock is still held")
+        print(f"stop_status=QUEUE_STOPPED serial_session_id={sid}; no current native baseline")
+        return 0
+    if name not in BASELINES:
+        raise UnsafeTransition("unknown active baseline in exact controller state")
+    launch_id = doc["baselines"][name].get("launch_id")
+    if not isinstance(launch_id, str):
+        raise UnsafeTransition("controller halted during native launcher; exact launch ID unavailable, manual investigation required")
+    job = _native_job(name, launch_id)
+    _run_native_stop(job)
+    while True:
+        terminal, _code, _values = snapshot(job, {})
+        if terminal and safe_to_transition(job):
+            latest_path, latest = load_queue(sid)
+            latest["native_stop_confirmed_at_utc"] = now()
+            commit(latest_path, latest)
+            print(f"stop_status=CONFIRMED serial_session_id={sid} native={name} launch_id={launch_id}")
+            return 0
+        if time.monotonic() >= deadline:
+            raise UnsafeTransition(f"native stop not yet confirmed for {name}/{launch_id}; inspect exact native status/logs before restarting")
+        time.sleep(1)
+
 def session_dir(sid: str) -> Path:
     if not HEX32.fullmatch(sid):
         raise UnsafeTransition("session ID must be one exact 32-char lowercase hexadecimal token")
@@ -499,6 +658,9 @@ def cli() -> int:
     sub.add_parser("start", help="start the complete serial queue and detach from SSH")
     for cmd in ("status", "logs", "_run"):
         sub.add_parser(cmd).add_argument("--session-id", required=True)
+    stop_parser = sub.add_parser("stop", help="safely stop both the queue and its active native formal run")
+    stop_parser.add_argument("--session-id", required=True)
+    stop_parser.add_argument("--wait-seconds", type=int, default=180)
     args = parser.parse_args()
     try:
         if args.action == "start":
@@ -520,6 +682,8 @@ def cli() -> int:
             print(f"serial_log={log_file}")
             print(f"status_command=python3 scripts/serial_formal.py status --session-id {sid}")
             return 0
+        if args.action == "stop":
+            return stop_session(args.session_id, wait_seconds=args.wait_seconds)
         path = session_dir(args.session_id)
         if args.action == "logs":
             os.execvp("tail", ["tail", "-n", "80", "-F", str(path / "console.log")])

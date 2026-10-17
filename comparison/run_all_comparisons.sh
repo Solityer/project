@@ -177,6 +177,129 @@ class SerialFormalTests(unittest.TestCase):
                              'dir': self.root / 'zkdl/runs' / launch}, {})
 
 
+    def test_stop_queue_already_finished_does_not_signal(self):
+        self.state['status'] = 'COMPLETE_WITH_FAILURES'
+        serial.write_json(self.session_dir / 'status.json', self.state)
+        with mock.patch.object(serial, 'exact_signal', side_effect=AssertionError('must not signal')):
+            self.assertEqual(serial.stop_session(self.sid, wait_seconds=5), 0)
+
+    def test_stop_halted_queue_no_native(self):
+        self.state['status'] = 'HALTED'
+        serial.write_json(self.session_dir / 'status.json', self.state)
+        with mock.patch.object(serial, 'exact_signal', side_effect=AssertionError('must not signal')):
+            self.assertEqual(serial.stop_session(self.sid, wait_seconds=5), 0)
+
+    def test_stop_halted_queue_requests_native_and_confirms_drain(self):
+        self.state['status'] = 'HALTED'
+        self.state['active_baseline'] = 'ezkl'
+        self.state['baselines']['ezkl']['launch_id'] = 'b' * 32
+        serial.write_json(self.session_dir / 'status.json', self.state)
+        calls = []
+        with mock.patch.object(serial, '_run_native_stop', side_effect=lambda job: calls.append(job)), \
+             mock.patch.object(serial, 'snapshot', return_value=(True, 143, {})), \
+             mock.patch.object(serial, 'safe_to_transition', return_value=True):
+            self.assertEqual(serial.stop_session(self.sid, wait_seconds=5), 0)
+        self.assertEqual(calls[0]['name'], 'ezkl')
+        self.assertEqual(calls[0]['launch_id'], 'b' * 32)
+        self.assertIsNotNone(serial.read_json(self.session_dir / 'status.json')['native_stop_confirmed_at_utc'])
+
+    def test_stop_uncertain_launch_does_not_kill_unrelated_processes(self):
+        self.state['status'] = 'HALTED'
+        self.state['active_baseline'] = 'zkgpt'
+        serial.write_json(self.session_dir / 'status.json', self.state)
+        with mock.patch.object(serial, '_run_native_stop', side_effect=AssertionError('must not signal')):
+            with self.assertRaisesRegex(serial.UnsafeTransition, 'launch ID unavailable'):
+                serial.stop_session(self.sid, wait_seconds=5)
+
+    def test_zkgpt_supervisor_command_receipt_must_be_exact(self):
+        sid = 'f' * 32
+        root = self.root / 'zkGPT'
+        path = f'zkGPT/baseline-local/formal-detached/{sid}/status.json'
+        self._write(path, {
+            'schema': 'zkgpt-gat-detached-launch-v2', 'launch_id': sid,
+            'status': 'RUNNING', 'supervisor_pid': 123, 'supervisor_start_ticks': 456,
+            'supervisor_cwd': str(root),
+            'supervisor_argv': ['/usr/bin/python3', str(root / 'scripts/formal_detached_supervisor.py'),
+                                '--root', str(root), '--launch-id', 'wrong-id'],
+        })
+        with mock.patch.object(serial, 'exact_signal', side_effect=AssertionError('must not signal')):
+            with self.assertRaisesRegex(serial.UnsafeTransition, 'argv/root evidence'):
+                serial._run_native_stop(serial._native_job('zkgpt', sid))
+
+    def test_zkgpt_authenticated_supervisor_receives_only_sigterm(self):
+        sid = 'f' * 32
+        root = self.root / 'zkGPT'
+        path = f'zkGPT/baseline-local/formal-detached/{sid}/status.json'
+        argv = ['/usr/bin/python3', str(root / 'scripts/formal_detached_supervisor.py'),
+                '--root', str(root), '--launch-id', sid]
+        self._write(path, {
+            'schema': 'zkgpt-gat-detached-launch-v2', 'launch_id': sid,
+            'status': 'RUNNING', 'supervisor_pid': 123, 'supervisor_start_ticks': 456,
+            'supervisor_cwd': str(root), 'supervisor_argv': argv,
+        })
+        with mock.patch.object(serial, 'exact_signal', return_value=True) as sender:
+            serial._run_native_stop(serial._native_job('zkgpt', sid))
+        sender.assert_called_once_with(123, 456, argv, root)
+
+    def test_zkdl_native_stop_uses_official_control_by_exact_launch_dir(self):
+        sid = 'launch_20261017T090000Z_ABCDEFGH'
+        job = serial._native_job('zkdl', sid)
+        job['dir'].mkdir(parents=True)
+        import subprocess
+        with mock.patch.object(serial.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, 'stop_status=STILL_STOPPING', '')) as run:
+            serial._run_native_stop(job)
+        self.assertEqual(run.call_args.args[0][-2:], ['--launch-dir', str(job['dir'])])
+
+    def test_stop_rejects_invalid_launch_id_and_wait_seconds(self):
+        with self.assertRaises(serial.UnsafeTransition):
+            serial._native_job('zkdl', 'bad-id')
+        with self.assertRaises(serial.UnsafeTransition):
+            serial.stop_session(self.sid, wait_seconds=0)
+
+    def test_exact_pidfd_stop_real_owned_process(self):
+        import signal
+        import subprocess
+        import sys
+        import time
+        if not hasattr(os, 'pidfd_open') or not hasattr(signal, 'pidfd_send_signal'):
+            self.skipTest('Linux pidfd signals unavailable')
+        runner = self.root / 'sleep_fixture.py'
+        runner.write_text('import time\ntime.sleep(120)\n')
+        argv = [sys.executable, str(runner)]
+        process = subprocess.Popen(argv, cwd=self.root, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            identity = None
+            for _ in range(100):
+                identity = serial.proc(process.pid)
+                if identity and Path(f'/proc/{process.pid}/cmdline').read_bytes().find(str(runner).encode()) >= 0:
+                    break
+                time.sleep(0.01)
+            self.assertIsNotNone(identity)
+            with self.assertRaises(serial.UnsafeTransition):
+                serial.exact_signal(process.pid, identity[0], [sys.executable, '/unrelated/program.py'], self.root)
+            self.assertIsNone(process.poll(), 'a mismatched argv must never be signaled')
+            self.assertTrue(serial.exact_signal(process.pid, identity[0], argv, self.root))
+            process.wait(timeout=5)
+            self.assertFalse(serial.alive(process.pid, identity[0]))
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=5)
+
+    def test_controller_stop_is_completed_before_native_stop(self):
+        self.state['status'] = 'HALTED'
+        self.state['active_baseline'] = 'ezkl'
+        self.state['baselines']['ezkl']['launch_id'] = 'b' * 32
+        events = []
+        with mock.patch.object(serial, '_stop_controller', side_effect=lambda sid, deadline: events.append('controller') or self.state), \
+             mock.patch.object(serial, '_run_native_stop', side_effect=lambda job: events.append('native')), \
+             mock.patch.object(serial, 'snapshot', return_value=(True, 0, {})), \
+             mock.patch.object(serial, 'safe_to_transition', return_value=True):
+            serial.stop_session(self.sid, wait_seconds=5)
+        self.assertEqual(events, ['controller', 'native'])
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
 
