@@ -1,6 +1,6 @@
 {
-  "active_dataset": "ppi",
-  "active_stage": "cell",
+  "active_dataset": null,
+  "active_stage": "owner-interrupted",
   "baseline": "zkgpt",
   "completed_stages": [
     "prepare",
@@ -8,6 +8,7 @@
     "cell:citeseer",
     "cell:pubmed"
   ],
+  "failure": "official zkGPT owner received an interrupt",
   "lock_device": 66306,
   "lock_inode": 24906071,
   "owner_pid": 268746,
@@ -16,8 +17,8 @@
   "recovered_previous_session_id": "a4ab97b1fb98c1fcaaf4aae9082f09cd",
   "schema": "zkgpt-local-formal-owner-v1",
   "session_id": "73ea69b3ad00ee5f137415d32654147e",
-  "stage_nonce": "fd01f68ffe643485c99ef9b6ae32a48c",
+  "stage_nonce": "",
   "started_unix_ns": 1792196446153545334,
-  "status": "RUNNING",
-  "updated_unix_ns": 1792217434128463480
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792225081039654497
 }

@@ -1,12 +1,12 @@
 {
-  "active_stage": "cell:ppi",
+  "active_stage": "owner-death",
   "completed_stages": [
     "prepare",
     "cell:cora",
     "cell:citeseer",
     "cell:pubmed"
   ],
-  "failure": "",
+  "failure": "official zkGPT owner received an interrupt",
   "local_capacity_rechecks": [
     {
       "checked_unix_ns": 1792197036067043231,
@@ -75,6 +75,6 @@
     "prepare": "PASS"
   },
   "started_unix_ns": 1792196446189971326,
-  "status": "RUNNING",
-  "updated_unix_ns": 1792217434404366215
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792225081031800668
 }
