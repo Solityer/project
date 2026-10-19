@@ -1,2 +1,0 @@
-PIDFD_PRECHECK_OK launch_id=7d55548fc8c647e48f12cfd536750b4f owner_pid=1777764 start_ticks=35773738 wchan=futex_do_wait lock_fd=3 original_native=gone
-PIDFD_SIGKILL_SENT pid=1777764 start_ticks=35773738 signal=SIGKILL

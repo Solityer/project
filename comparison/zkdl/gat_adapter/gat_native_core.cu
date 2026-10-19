@@ -3881,10 +3881,18 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         sumcheck_shape_counts;
     const auto record_segmented_sumcheck_peak = [&](std::uint64_t tensor_count,
                                                      std::uint64_t domain,
-                                                     std::uint64_t segment_size) -> bool {
-        std::uint64_t peak = 0U;
+                                                     std::uint64_t segment_size,
+                                                     std::uint64_t montgomery_term_count,
+                                                     std::uint64_t extra_live_bytes = 0U) -> bool {
+        std::uint64_t peak = 0U, montgomery_plan_peak = 0U;
+        if (!relation::zksc_montgomery_constraint_plan_peak_bytes(
+                montgomery_term_count, true, montgomery_plan_peak)) {
+            if (error) *error = "native Sumcheck Montgomery plan memory bound overflows";
+            return false;
+        }
         if (!relation::zksc_selected_sumcheck_peak_bytes(
-                tensor_count, domain, segment_size, peak)) {
+                tensor_count, domain, segment_size, montgomery_plan_peak, peak,
+                extra_live_bytes)) {
             if (error) *error = "native segmented Sumcheck selected live shape overflows";
             return false;
         }
@@ -3897,7 +3905,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     const auto record_sumcheck_shape = [&](std::uint64_t provider_count,
                                             std::uint64_t domain,
                                             std::uint64_t segment_size,
-                                            bool force_cached_state) -> bool {
+                                            bool force_cached_state,
+                                            std::uint64_t montgomery_term_count,
+                                            std::uint64_t extra_live_bytes = 0U) -> bool {
         if (provider_count == 0U || domain < 2U || !native_power_of_two(domain) ||
             segment_size == 0U || !native_power_of_two(segment_size) ||
             segment_size > domain || domain % segment_size != 0U ||
@@ -3913,8 +3923,16 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             if (error) *error = "native Sumcheck work profile overflows its checked source formula";
             return false;
         }
+        std::uint64_t montgomery_plan_peak = 0U, cached_peak = 0U;
+        if (!relation::zksc_montgomery_constraint_plan_peak_bytes(
+                montgomery_term_count, true, montgomery_plan_peak) ||
+            !checked_add_u64(folded_peak, montgomery_plan_peak, cached_peak) ||
+            !checked_add_u64(cached_peak, extra_live_bytes, cached_peak)) {
+            if (error) *error = "native Sumcheck Montgomery plan/folded peak overflows";
+            return false;
+        }
         const bool cached = force_cached_state ||
-            folded_peak <= relation::kZkSumcheckFoldedStateBudgetBytes;
+            cached_peak <= relation::kZkSumcheckFoldedStateBudgetBytes;
         std::uint32_t bits = 0U;
         if (!log2_domain(domain, bits)) {
             if (error) *error = "native Sumcheck work profile could not derive logical rounds";
@@ -3941,6 +3959,16 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                  SortedLookupScratchLayout::kRecordBytes, spill_source_bytes,
                  "Sumcheck spill provider source bytes"))) {
             if (error) *error = "native Sumcheck spill source envelope overflows";
+            return false;
+        }
+        std::uint64_t spill_and_auxiliary_peak = 0U;
+        if (!cached && extra_live_bytes != 0U &&
+            (!checked_add_u64(montgomery_plan_peak, extra_live_bytes,
+                              spill_and_auxiliary_peak) ||
+             spill_and_auxiliary_peak > relation::kZkSumcheckSpillRamBudgetBytes ||
+             spill_ram_peak > relation::kZkSumcheckSpillRamBudgetBytes -
+                                  spill_and_auxiliary_peak)) {
+            if (error) *error = "native Sumcheck spill/auxiliary live set exceeds its RAM budget";
             return false;
         }
         if (cached) {
@@ -3973,9 +4001,18 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         metrics->sumcheck_max_streaming_peak_bytes_upper_bound =
             std::max(metrics->sumcheck_max_streaming_peak_bytes_upper_bound,
                      streaming_peak);
+        std::uint64_t selected_peak = cached
+            ? folded_peak : std::max(streaming_peak, spill_ram_peak);
+        if (!checked_add_u64(selected_peak, montgomery_plan_peak, selected_peak)) {
+            if (error) *error = "native Sumcheck selected Montgomery live peak overflows";
+            return false;
+        }
+        if (!checked_add_u64(selected_peak, extra_live_bytes, selected_peak)) {
+            if (error) *error = "native Sumcheck selected auxiliary live peak overflows";
+            return false;
+        }
         ordinary_segmented_sumcheck_peak = std::max(
-            ordinary_segmented_sumcheck_peak,
-            cached ? folded_peak : std::max(streaming_peak, spill_ram_peak));
+            ordinary_segmented_sumcheck_peak, selected_peak);
         const SumcheckShapeKey key{domain, segment_size, provider_count};
         auto [entry, inserted] = sumcheck_shape_counts.emplace(key,
             NativeRelationPlanMetrics::SumcheckShapeBucket{});
@@ -4500,7 +4537,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                      route_input_segments, "sparse route aggregate input segments") ||
                 !record_sumcheck_shape(4U, std::max<std::uint64_t>(2U, route_source_domain),
                     std::min<std::uint64_t>(std::max<std::uint64_t>(2U, route_source_domain),
-                                            kSegmentSize), true)) return false;
+                                            kSegmentSize), true, 2U)) return false;
         }
         for (const auto &binding : operation.fac_bindings) {
             std::uint64_t source_domain = 0U, output_domain = 0U;
@@ -4543,9 +4580,18 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                      route_input_segments, "FAC aggregate input segments") ||
                 !record_sumcheck_shape(4U, std::max<std::uint64_t>(2U, source_domain),
                     std::min<std::uint64_t>(std::max<std::uint64_t>(2U, source_domain),
-                                            kSegmentSize), true)) return false;
+                                            kSegmentSize), true, 2U)) return false;
         }
         for (const auto &primitive : operation.primitives) {
+            if (primitive.kind == 2U) {
+                const std::uint64_t hidden_sumcheck_domain =
+                    primitive.matmul_shape.n;
+                const std::uint64_t hidden_sumcheck_segment =
+                    std::min<std::uint64_t>(hidden_sumcheck_domain, kSegmentSize);
+                if (!record_sumcheck_shape(
+                        3U, hidden_sumcheck_domain,
+                        hidden_sumcheck_segment, true, 2U)) return false;
+            }
             for (const auto &tensor_id : primitive.tensor_refs) {
                 const auto found = domains.find(tensor_id);
                 if (found == domains.end()) {
@@ -4644,15 +4690,37 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 if (error) *error = "native batch relation tensors do not share a supported domain: " + operation.id;
                 return false;
             }
-            std::uint64_t batched_tensor_count = 0U;
+            std::uint64_t batched_tensor_count = 0U, batched_term_count = 0U;
+            bool batched_has_constant = false;
+            for (const auto &constraint : operation.constraints) {
+                if (!checked_add_u64(batched_term_count,
+                                     static_cast<std::uint64_t>(constraint.terms.size()),
+                                     batched_term_count)) {
+                    if (error) *error = "native batched Sumcheck term count overflows: " + operation.id;
+                    return false;
+                }
+                batched_has_constant = batched_has_constant ||
+                                       constraint.constant != FrWire{};
+            }
+            if (batched_has_constant &&
+                !checked_add_u64(batched_term_count, 1U, batched_term_count)) {
+                if (error) *error = "native batched Sumcheck constant term count overflows: " + operation.id;
+                return false;
+            }
+            std::uint32_t relation_bits = 0U;
+            std::uint64_t eqmask_table_peak_bytes = 0U;
+            if (!log2_domain(relation_domain, relation_bits) ||
+                !relation::pointwise_eqmask_weight_table_peak_bytes(
+                    relation_bits, eqmask_table_peak_bytes)) {
+                if (error) *error = "native batched constraint eqmask table live-memory bound overflows: " + operation.id;
+                return false;
+            }
             if (!checked_add_u64(operation.tensor_refs.size(), 2U,
                                  batched_tensor_count) ||
                 !record_segmented_sumcheck_peak(
                     batched_tensor_count, relation_domain,
-                    std::min<std::uint64_t>(relation_domain, kSegmentSize)) ||
-                !record_sumcheck_shape(
-                    batched_tensor_count, relation_domain,
-                    std::min<std::uint64_t>(relation_domain, kSegmentSize), false)) {
+                    std::min<std::uint64_t>(relation_domain, kSegmentSize),
+                    batched_term_count, eqmask_table_peak_bytes)) {
                 if (error && error->empty())
                     *error = "native batched Sumcheck tensor count overflows: " + operation.id;
                 return false;
@@ -4669,6 +4737,10 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 batched.terms.insert(batched.terms.end(), constraint.terms.begin(),
                                      constraint.terms.end());
             }
+            if (!record_sumcheck_shape(
+                    batched_tensor_count, relation_domain,
+                    std::min<std::uint64_t>(relation_domain, kSegmentSize), false,
+                    batched_term_count, eqmask_table_peak_bytes)) return false;
             std::uint64_t constraint_bytes = 0U;
             if (!constraint_wire_bytes(batched, relation_domain,
                                        operation.tensor_refs.size(),
@@ -4694,19 +4766,50 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             }
             if (!operation.constraints.empty()) {
                 std::uint64_t tensor_count = 0U;
+                std::uint64_t maximum_constraint_montgomery_terms = 0U;
+                std::uint32_t relation_bits = 0U;
+                std::uint64_t eqmask_table_peak_bytes = 0U;
+                if (!log2_domain(relation_domain, relation_bits) ||
+                    !relation::pointwise_eqmask_weight_table_peak_bytes(
+                        relation_bits, eqmask_table_peak_bytes)) {
+                    if (error) *error = "native constraint eqmask table live-memory bound overflows: " + operation.id;
+                    return false;
+                }
+                for (const auto &constraint : operation.constraints) {
+                    std::uint64_t montgomery_terms =
+                        static_cast<std::uint64_t>(constraint.terms.size());
+                    if (constraint.constant != FrWire{} &&
+                        !checked_add_u64(montgomery_terms, 1U, montgomery_terms)) {
+                        if (error) *error = "native constraint Sumcheck term count overflows: " + operation.id;
+                        return false;
+                    }
+                    maximum_constraint_montgomery_terms = std::max(
+                        maximum_constraint_montgomery_terms, montgomery_terms);
+                }
                 if (!checked_add_u64(operation.tensor_refs.size(), 2U, tensor_count) ||
                     !record_segmented_sumcheck_peak(
                         tensor_count, relation_domain,
-                        std::min<std::uint64_t>(relation_domain, kSegmentSize))) {
+                        std::min<std::uint64_t>(relation_domain, kSegmentSize),
+                        maximum_constraint_montgomery_terms,
+                        eqmask_table_peak_bytes)) {
                     if (error && error->empty())
                         *error = "native constraint Sumcheck tensor count overflows: " + operation.id;
                     return false;
                 }
-                for (std::size_t index = 0U; index < operation.constraints.size(); ++index)
+                for (std::size_t index = 0U; index < operation.constraints.size(); ++index) {
+                    std::uint64_t montgomery_terms = static_cast<std::uint64_t>(
+                        operation.constraints[index].terms.size());
+                    if (operation.constraints[index].constant != FrWire{} &&
+                        !checked_add_u64(montgomery_terms, 1U, montgomery_terms)) {
+                        if (error) *error = "native constraint Sumcheck term count overflows: " + operation.id;
+                        return false;
+                    }
                     if (!record_sumcheck_shape(
                             tensor_count, relation_domain,
-                            std::min<std::uint64_t>(relation_domain, kSegmentSize), false))
+                            std::min<std::uint64_t>(relation_domain, kSegmentSize), false,
+                            montgomery_terms, eqmask_table_peak_bytes))
                         return false;
+                }
                 const std::uint64_t segment_size =
                     std::min<std::uint64_t>(relation_domain, kSegmentSize);
                 std::uint64_t terminal_provider_count = 0U;
@@ -4815,15 +4918,17 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         const auto tags_for_kind = [&](std::uint32_t kind,
                                        std::vector<std::string> &tags,
                                        std::uint64_t &products,
+                                       std::uint64_t &montgomery_terms,
                                        std::uint64_t &domain) -> bool {
             products = 0U;
+            montgomery_terms = 0U;
             if (kind == 1U) {
                 tags = {"query_x", "query_y", "query_key", "query_active", "query_prefix",
                         "query_prefix_next", "query_first", "query_last", "query_endpoint"};
-                products = 7U; domain = query.query_domain;
+                products = 7U; montgomery_terms = 18U; domain = query.query_domain;
             } else if (kind == 2U) {
                 tags = {"merge_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
-                products = 4U; domain = query.merge_domain;
+                products = 4U; montgomery_terms = 9U; domain = query.merge_domain;
             } else if (kind == 3U) {
                 tags = {"merge_key", "merge_previous_key", "merge_delta", "merge_active"};
                 for (std::uint64_t bit = 0U; bit < bit_count; ++bit) {
@@ -4831,27 +4936,41 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                     tags.push_back("merge_delta_bit_" + std::to_string(bit));
                 }
                 tags.insert(tags.end(), {"merge_inverse", "merge_nonzero", "merge_marker", "merge_first"});
-                products = 2U * bit_count + 9U; domain = query.merge_domain;
+                products = 2U * bit_count + 9U;
+                if (!checked_mul_u64(bit_count, 6U, montgomery_terms) ||
+                    !checked_add_u64(montgomery_terms, 25U, montgomery_terms)) {
+                    if (error) *error = "native sorted-lookup Sumcheck terms overflow: " + query.operation_id;
+                    return false;
+                }
+                domain = query.merge_domain;
             } else if (kind == 4U) {
                 tags = {"merge_marker", "merge_active"};
-                products = 1U; domain = query.merge_domain;
+                products = 1U; montgomery_terms = 3U; domain = query.merge_domain;
             } else if (kind == 5U) {
                 tags = {"merge_prefix_next", "merge_last", "merge_endpoint"};
-                products = 2U; domain = query.merge_domain;
+                products = 2U; montgomery_terms = 2U; domain = query.merge_domain;
             } else return false;
             return true;
         };
         std::uint64_t relation_section_bytes = 8U;
         for (std::uint32_t kind = 1U; kind <= 5U; ++kind) {
             std::vector<std::string> tags;
-            std::uint64_t products = 0U, domain = 0U, body = 0U, framed = 0U;
+            std::uint64_t products = 0U, montgomery_terms = 0U;
+            std::uint64_t domain = 0U, body = 0U, framed = 0U;
             std::uint64_t weighted_tensor_count = 0U;
-            if (!tags_for_kind(kind, tags, products, domain) ||
+            std::uint32_t relation_bits = 0U;
+            std::uint64_t eqmask_table_peak_bytes = 0U;
+            if (!tags_for_kind(kind, tags, products, montgomery_terms, domain) ||
                 !checked_add_u64(tags.size(), 2U, weighted_tensor_count) ||
+                !log2_domain(domain, relation_bits) ||
+                !relation::pointwise_eqmask_weight_table_peak_bytes(
+                    relation_bits, eqmask_table_peak_bytes) ||
                 !record_segmented_sumcheck_peak(
-                    weighted_tensor_count, domain, query.segment_size) ||
+                    weighted_tensor_count, domain, query.segment_size,
+                    montgomery_terms, eqmask_table_peak_bytes) ||
                 !record_sumcheck_shape(
-                    weighted_tensor_count, domain, query.segment_size, false) ||
+                    weighted_tensor_count, domain, query.segment_size, false,
+                    montgomery_terms, eqmask_table_peak_bytes) ||
                 !record_terminal_hyrax_openings(
                     domain, query.segment_size, tags.size(),
                     &metrics->sorted_lookup_opening_segment_count,
@@ -4929,9 +5048,18 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         const std::uint64_t domain = domains.at(family.id);
         const std::uint64_t segment_size =
             std::min<std::uint64_t>(domain, kSegmentSize);
+        std::uint32_t qpad_bits = 0U;
+        std::uint64_t eqmask_table_peak_bytes = 0U;
+        if (!log2_domain(domain, qpad_bits) ||
+            !relation::pointwise_eqmask_weight_table_peak_bytes(
+                qpad_bits, eqmask_table_peak_bytes)) {
+            if (error) *error = "native Qpad eqmask table live-memory bound overflows: " + family.id;
+            return false;
+        }
         if (!record_segmented_sumcheck_peak(
-                4U, domain, segment_size) ||
-            !record_sumcheck_shape(4U, domain, segment_size, false) ||
+                4U, domain, segment_size, 1U, eqmask_table_peak_bytes) ||
+            !record_sumcheck_shape(4U, domain, segment_size, false, 1U,
+                                   eqmask_table_peak_bytes) ||
             !record_terminal_hyrax_openings(
                 domain, segment_size, 2U,
                 &metrics->padding_opening_segment_count,

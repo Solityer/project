@@ -67,6 +67,9 @@ class ResourceCapacityPrecheckFixtureTest(unittest.TestCase):
         missing = dict(document["setup_files"])
         missing.pop("producer_context.json")
         self.assertFalse(_setup_files_match(missing))
+        missing_admission = dict(document["setup_files"])
+        missing_admission.pop("admission.json")
+        self.assertFalse(_setup_files_match(missing_admission))
         extra = {**document["setup_files"], "unanchored.extra": "a" * 64}
         self.assertFalse(_setup_files_match(extra))
 

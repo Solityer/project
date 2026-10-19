@@ -746,6 +746,10 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     json_bool(out, "gkr_point_domain_upper_bound_valid", report.gkr_point_domain_upper_bound_valid);
     number("lasso_logical_domain_entries", report.lasso_logical_domain_entries);
     number("lasso_private_selected_row_workspace_peak_bytes", report.lasso_private_selected_row_workspace_peak_bytes);
+    number("lasso_selected_row_cache_bytes_upper_bound", report.lasso_selected_row_cache_bytes_upper_bound);
+    number("lasso_selected_row_cache_heap_bytes_upper_bound", report.lasso_selected_row_cache_heap_bytes_upper_bound);
+    number("lasso_selected_row_cache_mapped_bytes_upper_bound", report.lasso_selected_row_cache_mapped_bytes_upper_bound);
+    number("lasso_sparse_matrix_workspace_bytes_upper_bound", report.lasso_sparse_matrix_workspace_bytes_upper_bound);
     number("lasso_heap_workspace_peak_bytes", report.lasso_heap_workspace_peak_bytes);
     number("hyrax_active_domain_workspace_entries", report.hyrax_active_domain_workspace_entries);
     number("hyrax_active_domain_workspace_bytes", report.hyrax_active_domain_workspace_bytes);

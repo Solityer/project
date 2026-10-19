@@ -1,0 +1,122 @@
+[native-build] bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
+[native-build] base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
+[native-build] /home/pzh/project/comparison/zkGPT/src/hyrax.cpp: In function ‘std::pair<double, double> hyrax::open(mcl::Fr*, mcl::Fr*, mcl::Fr, mcl::G1&, mcl::G1*, mcl::Fr*, mcl::Fr*, mcl::G1*, int)’:
+[native-build] /home/pzh/project/comparison/zkGPT/src/hyrax.cpp:609:91: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
+[native-build]   609 | pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
+[native-build]       |                                                                                           ^
+[requested-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=ppi backend=cpu
+[requested-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=ppi stdout=results/formal/328d6d0a22e19ed78a41b4727b0ce1c8/capacity_logs/ppi-cpu.stdout.log stderr=results/formal/328d6d0a22e19ed78a41b4727b0ce1c8/capacity_logs/ppi-cpu.stderr.log
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=121418076160 shared_disk_available_bytes=1681397972992 same_filesystem=true
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9062842368 layer_unary=6018495696 layer_binary=2983929088 current_layer=112 elapsed_ms=15005
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24226299904 layer_unary=16040715614 layer_binary=8125166706 current_layer=112 elapsed_ms=30008
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=shape_estimate host_peak_upper_bytes=24165001025 disk_peak_upper_bytes=0 artifact_bytes_upper=732794034
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=gkr_point_shape
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=4461765168 touched_index_bytes_upper=4461765168
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_forward_inputs
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_forward_inputs feature_rows=56944 feature_cols=50 model_layers=3 hidden_heads=8 output_heads=2
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_all_value_forward
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ppi stage=canonical_all_value_forward status=PASS
+[requested-dataset-preflight] CAPACITY_ADMISSION_END dataset=ppi status=READY point_shape=True all_value=True host_peak_bytes=24165001025 disk_peak_bytes=854650503724 artifact_bytes=732794034
+[requested-dataset-preflight] CAPACITY_ADMISSION_BEGIN dataset=ogbn_arxiv backend=cpu
+[requested-dataset-preflight] CAPACITY_NATIVE_LOGS dataset=ogbn_arxiv stdout=results/formal/328d6d0a22e19ed78a41b4727b0ce1c8/capacity_logs/ogbn_arxiv-cpu.stdout.log stderr=results/formal/328d6d0a22e19ed78a41b4727b0ce1c8/capacity_logs/ogbn_arxiv-cpu.stderr.log
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=resource_snapshot
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=resource_snapshot host_headroom_bytes=122415636480 shared_disk_available_bytes=1681397612544 same_filesystem=true
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_graph_load
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_graph_load nodes=169343 edges=1335586 features=128 graphs=1
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=shape_estimate
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=8283750433 layer_unary=5480269673 layer_binary=2692391752 current_layer=112 elapsed_ms=15000
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=19508756480 layer_unary=12991242478 layer_binary=6406424994 current_layer=112 elapsed_ms=30011
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=36436967424 layer_unary=24275499658 layer_binary=12050378758 current_layer=112 elapsed_ms=45015
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=40173043712 layer_unary=26959856698 layer_binary=13102098006 current_layer=112 elapsed_ms=60029
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=41191211008 layer_unary=27978023994 layer_binary=13102098006 current_layer=112 elapsed_ms=75035
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=42208329728 layer_unary=28995142714 layer_binary=13102098006 current_layer=112 elapsed_ms=90049
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=43225448448 layer_unary=30012261434 layer_binary=13102098006 current_layer=112 elapsed_ms=105055
+[requested-dataset-preflight] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=44243615744 layer_unary=31030428730 layer_binary=13102098006 current_layer=112 elapsed_ms=120056
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=shape_estimate host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=0 artifact_bytes_upper=1123976246
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=gkr_point_shape
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=8837424656 touched_index_bytes_upper=8837424656
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_forward_inputs
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_forward_inputs feature_rows=169343 feature_cols=128 model_layers=3 hidden_heads=8 output_heads=2
+[requested-dataset-preflight] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_all_value_forward
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+[requested-dataset-preflight] CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+[requested-dataset-preflight] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_all_value_forward status=PASS
+[requested-dataset-preflight] CAPACITY_ADMISSION_END dataset=ogbn_arxiv status=READY point_shape=True all_value=True host_peak_bytes=37690001048 disk_peak_bytes=1450210498748 artifact_bytes=1123976246

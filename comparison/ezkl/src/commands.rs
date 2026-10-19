@@ -544,6 +544,9 @@ pub enum Commands {
         /// Output path for formal_cli.json.
         #[arg(long, default_value = DEFAULT_FORMAL_CONTRACT, value_hint = clap::ValueHint::FilePath)]
         output: PathBuf,
+        /// Optional baseline-local path for the native runtime source-tree SHA-256.
+        #[arg(long, value_hint = clap::ValueHint::FilePath)]
+        source_tree_sha256_output: Option<PathBuf>,
     },
 
     /// Produces the proving hyperparameters, from run-args

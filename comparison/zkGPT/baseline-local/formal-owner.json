@@ -1,18 +1,25 @@
 {
   "active_dataset": null,
-  "active_stage": "prepare",
+  "active_stage": "owner-interrupted",
   "baseline": "zkgpt",
-  "completed_stages": [],
+  "completed_stages": [
+    "prepare"
+  ],
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "failure": "official zkGPT owner received an interrupt",
   "lock_device": 66306,
   "lock_inode": 24906385,
-  "owner_pid": 1410321,
-  "owner_start_ticks": 21819204,
-  "owner_token_sha256": "2beb7d331d8f66eb75c587e6b09fa71ab0a3c525a2eef67f9e17995285a6fa26",
-  "recovered_previous_session_id": null,
+  "owner_pid": 1846173,
+  "owner_start_ticks": 35494293,
+  "owner_token_sha256": "ec5193b573f800186c5a8256168aef4083b101436f99571d3c8b4f12d1561ff5",
+  "recovered_previous_session_id": "55e46d9b2096fd758d4ff0ad3f32ce5f",
   "schema": "zkgpt-local-formal-owner-v1",
-  "session_id": "b04bbd621360e7deeaaf5847762211f5",
-  "stage_nonce": "c0067ee05753ce5fa6790cba69c089fd",
-  "started_unix_ns": 1792242725016426705,
-  "status": "RUNNING",
-  "updated_unix_ns": 1792242725020420474
+  "session_id": "328d6d0a22e19ed78a41b4727b0ce1c8",
+  "stage_nonce": "",
+  "started_unix_ns": 1792379475916450998,
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792406657367005059
 }

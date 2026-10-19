@@ -1241,7 +1241,6 @@ fn native_gat_fixture_proof_verifies_independently() {
     use std::time::Instant;
 
     let _ = env_logger::try_init();
-    report_current_five_dataset_geometry();
     let (known, witness, compiled_logrows) = source_built_tiny_gat_fixture(TINY_GAT_TEST_LOGROWS);
     let k = known.settings().run_args.logrows;
     report_gat_fixture_shape(&known, &witness, compiled_logrows);

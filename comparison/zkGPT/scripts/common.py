@@ -34,6 +34,7 @@ RESULT_SCHEMA = "zkgpt-gat-result-v2"
 REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v4"
 EXECUTION_SCHEMA = "zkgpt-gat-execution-v3"
 RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-resource-manifest-v1"
+SCOPED_RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-formal-scoped-resource-manifest-v1"
 PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v4"
 CAPACITY_PROOF_PATH = "formal_native_masked_lasso_hyrax+native_masked_layered_gkr"
 COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v3"
@@ -68,6 +69,19 @@ PRESERVED_REGISTRATION_FILES = frozenset({
 
 class ChainError(RuntimeError):
     """A formal-chain error; callers must fail closed."""
+
+
+def canonical_dataset_scope(values: Optional[Sequence[str]] = None) -> Tuple[str, ...]:
+    if values is None:
+        return DATASETS
+    if not isinstance(values, (list, tuple)) or not values:
+        raise ChainError("requested dataset scope must be a nonempty dataset list")
+    if any(type(value) is not str or value not in DATASETS for value in values):
+        raise ChainError("requested dataset scope contains an unknown dataset")
+    if len(set(values)) != len(values):
+        raise ChainError("requested dataset scope contains duplicates")
+    selected = set(values)
+    return tuple(dataset for dataset in DATASETS if dataset in selected)
 
 
 def formal_child_environment(extra_env: Optional[Mapping[str, str]] = None) -> Dict[str, str]:
@@ -145,7 +159,7 @@ def runtime_source_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def create_formal_session(root: Path, session_id: Optional[str] = None) -> Tuple[str, Dict[str, Any], str]:
+def create_formal_session(root: Path, session_id: Optional[str] = None, dataset_scope: Optional[Sequence[str]] = None) -> Tuple[str, Dict[str, Any], str]:
     """Create one immutable manifest binding all five formal cells to current code."""
     session_id = secrets.token_hex(16) if session_id is None else session_id
     if not HEX32_RE.fullmatch(session_id):
@@ -153,10 +167,12 @@ def create_formal_session(root: Path, session_id: Optional[str] = None) -> Tuple
     output_dir = formal_results_directory(root, session_id)
     if any(output_dir.iterdir()):
         raise ChainError(f"formal session directory must be fresh and empty: {output_dir}")
+    scope = canonical_dataset_scope(dataset_scope)
     manifest = {
         "schema": FORMAL_SESSION_SCHEMA,
         "session_id": session_id,
         "datasets": list(DATASETS),
+        "dataset_scope": list(scope),
         "run_nonces": {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS},
         "started_unix_ns": time.time_ns(),
         "runtime_source_sha256": runtime_source_sha256(root),
@@ -168,6 +184,7 @@ def create_formal_session(root: Path, session_id: Optional[str] = None) -> Tuple
     atomic_write_json(formal_session_status_path(root, session_id), {
         "schema": FORMAL_SESSION_SCHEMA, "session_id": session_id,
         "status": "RUNNING", "active_stage": "session-created", "completed_stages": [],
+        "dataset_scope": list(scope),
         "started_unix_ns": manifest["started_unix_ns"],
     }, root)
     return session_id, manifest, manifest_sha256
@@ -207,11 +224,95 @@ def require_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
     if not isinstance(manifest, dict) or manifest.get("schema") != FORMAL_SESSION_SCHEMA:
         raise ChainError("formal session manifest schema is invalid")
     expected_nonces = {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS}
+    if "dataset_scope" in manifest:
+        try:
+            scope = canonical_dataset_scope(manifest.get("dataset_scope"))
+        except ChainError as exc:
+            raise ChainError("formal session dataset scope is invalid") from exc
+        if manifest.get("dataset_scope") != list(scope):
+            raise ChainError("formal session dataset scope is not canonical")
+    else:
+        scope = DATASETS
     if manifest.get("session_id") != session_id or manifest.get("datasets") != list(DATASETS) or manifest.get("run_nonces") != expected_nonces:
         raise ChainError("formal session manifest does not bind exactly the five canonical datasets")
     if manifest.get("runtime_source_sha256") != runtime_source_sha256(root) or manifest.get("native_source_sha256") != source_tree_sha256(root):
         raise ChainError("formal session source fingerprint is stale")
     return session_id, manifest, sha256_file(path)
+
+
+def formal_resource_manifest_path(root: Path, session_id: str, session: Mapping[str, Any]) -> Path:
+    if (not HEX32_RE.fullmatch(session_id) or session.get("session_id") != session_id or
+            session.get("datasets") != list(DATASETS)):
+        raise ChainError("resource manifest path requires the canonical immutable formal session")
+    if "dataset_scope" in session:
+        try:
+            scope = canonical_dataset_scope(session.get("dataset_scope"))
+        except ChainError as exc:
+            raise ChainError("resource manifest path session scope is invalid") from exc
+        if session.get("dataset_scope") != list(scope):
+            raise ChainError("resource manifest path session scope is not canonical")
+    else:
+        scope = DATASETS
+    if scope == DATASETS:
+        return local_path(root, "results/resource_manifest.json", "formal resource manifest")
+    return local_path(root, f"results/formal/{session_id}/resource_manifest.json", "scoped formal resource manifest")
+
+
+def require_formal_resource_manifest(
+    root: Path,
+    session_id: str,
+    session: Mapping[str, Any],
+    session_manifest_sha256: str,
+) -> Tuple[Mapping[str, Any], Path, str]:
+    path = formal_resource_manifest_path(root, session_id, session)
+    scope = canonical_dataset_scope(session.get("dataset_scope")) if "dataset_scope" in session else DATASETS
+    if scope == DATASETS:
+        payload = require_manifest(root, "resource_manifest.json", RESOURCE_MANIFEST_SCHEMA)
+    else:
+        payload = load_json(path, "scoped formal resource manifest")
+        expected_fields = {
+            "schema", "status", "baseline", "resource_scope", "setup_mode",
+            "static_tables_source", "session_id", "session_manifest_sha256",
+            "dataset_scope", "quantization_scale_chain_sha256", "quantization_entries", "datasets",
+        }
+        if not isinstance(payload, dict) or set(payload) != expected_fields:
+            raise ChainError("scoped formal resource manifest fields are invalid")
+        if (
+            payload.get("schema") != SCOPED_RESOURCE_MANIFEST_SCHEMA
+            or payload.get("status") != "AUTHENTICATED"
+            or payload.get("baseline") != "zkGPT"
+            or payload.get("resource_scope") != "baseline-local"
+            or payload.get("setup_mode") != "hyrax_native_local"
+            or payload.get("static_tables_source") != "authenticated_quantization_scale_chain"
+            or payload.get("session_id") != session_id
+            or payload.get("session_manifest_sha256") != session_manifest_sha256
+            or payload.get("dataset_scope") != list(scope)
+        ):
+            raise ChainError("scoped formal resource manifest identity differs from its immutable session")
+        quant_digest = payload.get("quantization_scale_chain_sha256")
+        quant_entries = payload.get("quantization_entries")
+        datasets = payload.get("datasets")
+        if (not isinstance(quant_digest, str) or not HEX64_RE.fullmatch(quant_digest)
+                or not isinstance(quant_entries, dict) or not quant_entries
+                or not isinstance(datasets, dict) or set(datasets) != set(scope)
+                or any(not isinstance(value, dict) for value in datasets.values())):
+            raise ChainError("scoped formal resource manifest selected resources are malformed")
+    return payload, path, sha256_file(path)
+
+
+def validate_scoped_resource_manifest_observation(
+    payload: Mapping[str, Any],
+    observed_resource_entries: Mapping[str, Mapping[str, Any]],
+    observed_quantization_identity: Mapping[str, Any],
+) -> None:
+    if payload.get("datasets") != {dataset: dict(entry) for dataset, entry in observed_resource_entries.items()}:
+        raise ChainError("scoped resource manifest selected entries do not match current authenticated resources")
+    expected_quantization = {
+        "quantization_scale_chain_sha256": observed_quantization_identity.get("quantization_scale_chain_sha256"),
+        "quantization_entries": observed_quantization_identity.get("quantization_entries"),
+    }
+    if {key: payload.get(key) for key in expected_quantization} != expected_quantization:
+        raise ChainError("scoped resource manifest quantization identity is stale")
 
 
 def _reject_path_alias(path: Path, description: str) -> None:
@@ -730,19 +831,54 @@ def verify_cache(root: Path, dataset: str) -> Dict[str, str]:
     return expected
 
 
-def verify_local_resources(root: Path, datasets: Iterable[str] = DATASETS) -> List[str]:
+def resource_manifest_dataset_entry(
+    root: Path,
+    dataset: str,
+    config_path_value: Path,
+    cache_entries: Mapping[str, str],
+    checkpoint_entries: Mapping[str, str],
+) -> Dict[str, Any]:
+    cache = cache_dir(root, dataset)
+    checkpoint = checkpoint_dir(root, dataset)
+    return {
+        "config_sha256": sha256_file(config_path_value),
+        "cache_sidecar_sha256": sha256_file(cache / "integrity.sha256"),
+        "cache_entries": dict(cache_entries),
+        "checkpoint_sidecar_sha256": sha256_file(checkpoint / "integrity.sha256"),
+        "checkpoint_entries": dict(checkpoint_entries),
+        "checkpoint_manifest_sha256": checkpoint_entries["manifest.json"],
+    }
+
+
+def verify_local_resources(
+    root: Path,
+    datasets: Iterable[str] = DATASETS,
+    *,
+    resource_entries: Optional[Dict[str, Dict[str, Any]]] = None,
+    quantization_identity: Optional[Dict[str, Any]] = None,
+) -> List[str]:
     errors: List[str] = []
     quant = local_path(root, "baseline-local/configs/quantization_scale_chain.cfg", "quantization config")
     try:
-        verify_sidecar(quant.parent, quant.name, quant.with_name(quant.name + ".sha256"))
+        quant_entries = verify_sidecar(quant.parent, quant.name, quant.with_name(quant.name + ".sha256"))
         read_key_values(quant)
+        if quantization_identity is not None:
+            quantization_identity.clear()
+            quantization_identity.update({
+                "quantization_scale_chain_sha256": sha256_file(quant),
+                "quantization_entries": quant_entries,
+            })
     except ChainError as exc:
         errors.append(str(exc))
     for dataset in datasets:
         try:
-            _, config = config_with_auth(root, dataset)
+            config_path_value, config = config_with_auth(root, dataset)
             if config.get("dataset") != dataset:
                 raise ChainError(f"config dataset identity mismatch: {dataset}")
+            if config.get("setup_mode") != "hyrax_native_local" or config.get("setup_resource_scope") != "baseline-local":
+                raise ChainError(f"{dataset} does not declare baseline-local Hyrax setup")
+            if "srs_path" in config or "srs_id" in config or "srs_type" in config:
+                raise ChainError(f"{dataset} still declares an external SRS dependency")
             for key in ("privacy_policy", "input_privacy", "output_mode", "proof_task"):
                 if not config.get(key):
                     raise ChainError(f"config missing {key}: {dataset}")
@@ -751,8 +887,12 @@ def verify_local_resources(root: Path, datasets: Iterable[str] = DATASETS) -> Li
                     config["output_mode"] != "public_logits" or
                     config["proof_task"] != "node_classification_full_gat"):
                 raise ChainError(f"config does not declare strict full-GAT boundary: {dataset}")
-            verify_cache(root, dataset)
-            verify_checkpoint(root, dataset)
+            cache_entries = verify_cache(root, dataset)
+            checkpoint_entries = verify_checkpoint(root, dataset)
+            if resource_entries is not None:
+                resource_entries[dataset] = resource_manifest_dataset_entry(
+                    root, dataset, config_path_value, cache_entries, checkpoint_entries
+                )
         except ChainError as exc:
             errors.append(str(exc))
     return errors

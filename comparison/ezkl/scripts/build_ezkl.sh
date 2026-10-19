@@ -218,19 +218,25 @@ binary="$ROOT/target/$backend/release/ezkl"
 
 mkdir -p "$ROOT/artifacts/gat_adapter"
 echo "[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=$binary" >&2
-"$binary" gat-contract --output artifacts/gat_adapter/formal_cli.json
+source_tree_sidecar=$(mktemp "$ROOT/artifacts/gat_adapter/native_source_tree.XXXXXXXX")
+source_tree_sidecar_relative="artifacts/gat_adapter/${source_tree_sidecar##*/}"
+echo "[ezkl-formal] BUILD_STAGE=verify-native-source-identity sidecar=$source_tree_sidecar" >&2
+EZKL_WORKING_DIR="$ROOT" "$binary" gat-contract \
+  --output artifacts/gat_adapter/formal_cli.json \
+  --source-tree-sha256-output "$source_tree_sidecar_relative"
 
 if [[ "$backend" == gpu ]]; then
-  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$selected_device_json" "$build_environment_json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" <<'PY'
+"$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$selected_device_json" "$build_environment_json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" "$source_tree_sidecar" <<'PY'
 import json
 import sys
 from pathlib import Path
 
-from formal_common import CONTRACT, FORMAL_GPU_FEATURES, ROOT, canonical_json_digest, load_cli_contract, native_backend_identity, resource_manifest_hash, sha256, source_tree_hash
+from formal_common import CONTRACT, FORMAL_GPU_FEATURES, ROOT, canonical_json_digest, load_cli_contract, native_backend_identity, resource_manifest_hash, sha256, verify_native_source_tree_hash
 
-backend, binary_text, receipt_text, selected_text, environment_text, rustc_path, cargo_path, rustdoc_path = sys.argv[1:]
+backend, binary_text, receipt_text, selected_text, environment_text, rustc_path, cargo_path, rustdoc_path, source_tree_sidecar_text = sys.argv[1:]
 binary = Path(binary_text)
 receipt = Path(receipt_text)
+source_tree_sha256 = verify_native_source_tree_hash(Path(source_tree_sidecar_text))
 selected = json.loads(selected_text)
 environment = json.loads(environment_text)
 environment_digest = environment.get("build_environment_sha256")
@@ -251,7 +257,7 @@ payload = {
     "features": list(FORMAL_GPU_FEATURES),
     "binary_path": binary.relative_to(ROOT).as_posix(),
     "binary_sha256": sha256(binary),
-    "source_tree_sha256": source_tree_hash(),
+    "source_tree_sha256": source_tree_sha256,
     "resource_manifest_sha256": resource_manifest_hash(),
     "adapter_contract_id": contract["contract_id"],
     "adapter_contract_sha256": sha256(CONTRACT),
@@ -271,17 +277,18 @@ receipt.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 print(f"[ezkl-formal] wrote current GPU build receipt {receipt}")
 PY
 else
-  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" <<'PY'
+  "$python_bin" -u - "$backend" "$binary" "$ROOT/artifacts/build/$backend/build_receipt.json" "$rustc_bin" "$cargo_bin" "$rustdoc_bin" "$source_tree_sidecar" <<'PY'
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-from formal_common import CONTRACT, ROOT, load_cli_contract, resource_manifest_hash, sha256, source_tree_hash
+from formal_common import CONTRACT, ROOT, load_cli_contract, resource_manifest_hash, sha256, verify_native_source_tree_hash
 
-backend, binary_text, receipt_text, rustc_path, cargo_path, rustdoc_path = sys.argv[1:]
+backend, binary_text, receipt_text, rustc_path, cargo_path, rustdoc_path, source_tree_sidecar_text = sys.argv[1:]
 binary = Path(binary_text)
 receipt = Path(receipt_text)
+source_tree_sha256 = verify_native_source_tree_hash(Path(source_tree_sidecar_text))
 contract = load_cli_contract()
 payload = {
     "schema_version": 2,
@@ -290,7 +297,7 @@ payload = {
     "features": ["ezkl"],
     "binary_path": binary.relative_to(ROOT).as_posix(),
     "binary_sha256": sha256(binary),
-    "source_tree_sha256": source_tree_hash(),
+    "source_tree_sha256": source_tree_sha256,
     "resource_manifest_sha256": resource_manifest_hash(),
     "adapter_contract_id": contract["contract_id"],
     "adapter_contract_sha256": sha256(CONTRACT),

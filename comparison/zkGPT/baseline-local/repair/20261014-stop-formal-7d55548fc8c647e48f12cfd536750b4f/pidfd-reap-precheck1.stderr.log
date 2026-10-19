@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/home/pzh/project/comparison/zkGPT/baseline-local/repair/20261014-stop-formal-7d55548fc8c647e48f12cfd536750b4f/pidfd_reap_owner.py", line 57, in <module>
-    child = proc_info(1785173)
-            ^^^^^^^^^^^^^^^^^^
-  File "/home/pzh/project/comparison/zkGPT/baseline-local/repair/20261014-stop-formal-7d55548fc8c647e48f12cfd536750b4f/pidfd_reap_owner.py", line 38, in proc_info
-    'cwd': os.readlink(base / 'cwd'),
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-FileNotFoundError: [Errno 2] No such file or directory: '/proc/1785173/cwd'

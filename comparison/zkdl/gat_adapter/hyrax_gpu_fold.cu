@@ -102,6 +102,12 @@ extern "C" __global__ void hyrax_g_fold_kernel(
     next_g[index] = G1Jacobian_add_safe(low, high);
 }
 
+extern "C" __global__ void hyrax_fill_identity_tail_kernel(
+    G1Jacobian_t* points, uint count, G1Jacobian_t identity) {
+    const uint index = blockIdx.x * blockDim.x + threadIdx.x;
+    if (index < count) points[index] = identity;
+}
+
 extern "C" __global__ void hyrax_safe_reduce_kernel(
     const G1Jacobian_t* input, G1Jacobian_t* output,
     uint input_count, uint output_count) {
@@ -184,21 +190,21 @@ public:
                               generator_count_ * sizeof(G1Jacobian_t),
                               cudaMemcpyDeviceToDevice),
                    "reset active G from authenticated basis");
+        pending_kernel_count_ = 0U;
         if (current_size_ > generator_count_) {
             const G1Jacobian_t native_identity =
                 cpu_g1_to_native(CpuG1Point::zero());
-            std::vector<G1Jacobian_t> identity_tail(
-                current_size_ - generator_count_, native_identity);
-            cuda_check(cudaMemcpy(current_g_.data() + generator_count_,
-                                  identity_tail.data(),
-                                  identity_tail.size() * sizeof(G1Jacobian_t),
-                                  cudaMemcpyHostToDevice),
-                       "pad active G with identity points");
+            const uint identity_tail_count = static_cast<uint>(
+                current_size_ - generator_count_);
+            const uint blocks =
+                1U + (identity_tail_count - 1U) / 128U;
+            hyrax_fill_identity_tail_kernel<<<blocks, 128U>>>(
+                current_g_.data() + generator_count_, identity_tail_count,
+                native_identity);
+            launch_checked("launch Hyrax G identity tail fill");
         }
         current_g_ptr_ = current_g_.data();
         next_g_ptr_ = next_g_.data();
-        pending_kernel_count_ = 0U;
-        cuda_check(cudaDeviceSynchronize(), "synchronize Hyrax G reset");
     }
 
     std::pair<CpuG1Point, CpuG1Point> compute_lr(

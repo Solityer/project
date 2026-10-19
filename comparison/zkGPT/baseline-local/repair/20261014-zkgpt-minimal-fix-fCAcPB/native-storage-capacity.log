@@ -1,2 +1,0 @@
-NATIVE_STORAGE_RECLAIM blocks_before_bytes=16777216 blocks_after_bytes=8388608 mapping_bytes=16777216 live_bytes=8388608
-NATIVE_STORAGE_CAPACITY_OK high_index=4294967303 scalar_bytes=32 linear_poly_bytes=64 uni_gate_bytes=12 bin_gate_bytes=17 generator_bytes=144

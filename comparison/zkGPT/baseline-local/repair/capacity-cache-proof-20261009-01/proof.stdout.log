@@ -1,4 +1,0 @@
-native_gate_negative_checks: PASS tuple/range/inverse/division/max/fixed-denominator
-native_division_boundary_checks: PASS both modes positive/negative/zero/exact/ties
-FORMAL_CAPACITY_CENSUS exact_census_calls=1 cached_restore_rebuilds=1 report_owner_plan_identity=PASS
-gat_adapter_formal_fixture: GENERATED for independent verification and mutants

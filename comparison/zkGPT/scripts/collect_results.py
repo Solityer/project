@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Sequence
 
 from common import (
     DATASETS,
+    canonical_dataset_scope,
     CAPACITY_PROOF_PATH,
     PREFLIGHT_SCHEMA,
     RESOURCE_MANIFEST_SCHEMA,
@@ -53,6 +54,13 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
             preflight.get("runtime_source_sha256") != runtime_source_sha256(root) or
             preflight.get("native_source_sha256") != native_source_sha256):
         raise ChainError("formal preflight session/runtime/native source binding is stale")
+    try:
+        dataset_scope = canonical_dataset_scope(preflight.get("dataset_scope"))
+        _scope_session_id, session, _scope_manifest_sha256 = require_formal_session(root)
+    except ChainError as exc:
+        raise ChainError("formal preflight dataset scope is invalid") from exc
+    if canonical_dataset_scope(session.get("dataset_scope")) != dataset_scope:
+        raise ChainError("formal preflight dataset scope differs from its immutable session")
     capacities = preflight.get("capacity")
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")
@@ -61,6 +69,11 @@ def _validate_preflight(root: Path, backend: str, preflight: Dict[str, Any], res
         item = capacities[dataset]
         if not isinstance(item, dict) or item.get("dataset") != dataset or item.get("backend") != "cpu":
             raise ChainError(f"formal preflight capacity identity is invalid for {dataset}")
+        if dataset not in dataset_scope:
+            if (item.get("status") != "BLOCKED" or item.get("stage") != "scope" or
+                    item.get("reason") != "OUT_OF_SCOPE:dataset_not_requested"):
+                raise ChainError(f"formal preflight out-of-scope capacity marker is invalid for {dataset}")
+            continue
         if item.get("status") == "READY":
             if item.get("proof_path") != CAPACITY_PROOF_PATH or item.get("full_relation_bound") is not True or item.get("reason") != "":
                 raise ChainError(f"formal preflight capacity is not a complete full-relation admission for {dataset}")

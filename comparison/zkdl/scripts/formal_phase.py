@@ -689,7 +689,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         admission = native[dataset]
         gpu = gpu_plan.get(dataset) if gpu_plan is not None else None
         if hybrid and (not isinstance(gpu, dict) or gpu.get("schema") != "zkdl_analysis_only_resource_plan_v1" or
-                       gpu.get("status") != "PASS" or gpu.get("dataset") != dataset or
+                       gpu.get("status") != "ANALYSIS_ONLY" or gpu.get("dataset") != dataset or
                        gpu.get("gpu_offload_stage") != GPU_OFFLOAD_STAGE):
             raise PhaseError(f"native GPU offload plan identity/schema mismatch for {dataset}")
         srs_bytes = int(audit["srs_plan"]["estimated_materialized_bytes"])
@@ -705,12 +705,28 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             gpu_padded = gpu.get("gpu_max_opening_padded_generator_size")
             gpu_workspace = gpu.get("gpu_workspace_required_bytes")
             histogram = admission.get("native_hyrax_opening_segment_domain_histogram")
+            valid_histogram = (
+                isinstance(histogram, list) and bool(histogram) and
+                all(isinstance(bucket, dict) and
+                    type(bucket.get("segment_size")) is int and 0 < bucket["segment_size"] <= (1 << 64) - 1 and
+                    type(bucket.get("padded_generator_size")) is int and
+                    0 < bucket["padded_generator_size"] <= (1 << 64) - 1 and
+                    bucket["padded_generator_size"] == (1 << bucket["segment_size"].bit_length())
+                    for bucket in histogram)
+            )
+            max_segment_generators = (max(bucket["segment_size"] for bucket in histogram)
+                                      if valid_histogram else 0)
+            max_histogram_padded = (max(bucket["padded_generator_size"] for bucket in histogram)
+                                    if valid_histogram else 0)
+            # IPA rounds pad to the next power of two strictly above the real
+            # generator count. Identity padding can therefore make P exceed
+            # the authenticated real basis B; only each real segment S must
+            # fit B, while P must match the admission histogram exactly.
+            max_basis_padded = 1 << gpu_basis.bit_length() if type(gpu_basis) is int and gpu_basis > 0 else 0
             if (type(gpu_basis) is not int or gpu_basis != basis_domain or type(gpu_padded) is not int or
-                    gpu_padded < 1 or gpu_padded > basis_domain or gpu_padded & (gpu_padded - 1) or
-                    not isinstance(histogram, list) or not histogram or
-                    any(not isinstance(bucket, dict) or type(bucket.get("padded_generator_size")) is not int
-                        for bucket in histogram) or
-                    gpu_padded != max(bucket["padded_generator_size"] for bucket in histogram) or
+                    gpu_padded < 1 or gpu_padded > max_basis_padded or gpu_padded & (gpu_padded - 1) or
+                    not valid_histogram or max_segment_generators > gpu_basis or
+                    gpu_padded != max_histogram_padded or
                     type(gpu_workspace) is not int or gpu_workspace != 144 * gpu_basis + 608 * gpu_padded or
                     gpu_workspace > (1 << 64) - 1):
                 raise PhaseError(f"native GPU workspace is not bound to the authenticated maximum opening for {dataset}")

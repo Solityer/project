@@ -18,6 +18,7 @@ using namespace mcl::bn;
 
 bool native_lasso_t2_booleanity_dense_reference_smoke();
 bool native_lasso_sparse_booleanity_dense_reference_smoke(std::string* failure_reason);
+bool native_lasso_padding_row_commitment_smoke(std::string* failure_reason);
 std::size_t native_lasso_sparse_entry_bytes_for_smoke();
 
 namespace {
@@ -269,6 +270,12 @@ bool balanced_row_fold_matches_dense(const NativeLassoFamilyPublic::MatrixDescri
 
 int main() {
     initPairing(mcl::BN254);
+    std::string padding_commitment_reason;
+    if (!native_lasso_padding_row_commitment_smoke(&padding_commitment_reason)) {
+        std::cerr << "native Lasso padding row commitment aggregation differs from reference: "
+                  << padding_commitment_reason << '\n';
+        return 9;
+    }
     G1 G;
     hashAndMapToG1(G, "native-lasso/G");
 
@@ -276,6 +283,7 @@ int main() {
 
     std::vector<NativeLassoFamilyProver> families(1);
     const std::vector<std::vector<F>> tables = {{Fr(5), Fr(7), Fr(11), Fr(13)}};
+    const std::vector<F> query_values = {Fr(13), Fr(5)};
     for (std::size_t family_index = 0; family_index < families.size(); ++family_index) {
         NativeLassoFamilyProver& family = families[family_index];
         family.family_id = "a";
@@ -291,7 +299,8 @@ int main() {
         family.padded_queries = 2;
         family.padding_index = 0;
         family.padding_value = family.table[0];
-        const auto selected_rows = std::make_shared<std::vector<std::uint64_t>>(std::initializer_list<std::uint64_t>{0, 3});
+        const auto selected_rows = std::make_shared<std::vector<std::uint64_t>>(2, 0);
+        (*selected_rows)[0] = 3;
         family.selected_table_row_at = [selected_rows](std::uint64_t row) { return selected_rows->at(static_cast<std::size_t>(row)); };
     }
     if (!weighted_booleanity_regression()) {
@@ -333,7 +342,7 @@ int main() {
     NativeLassoQueryProver query;
     query.G = G;
     query.generators = l_generators;
-    query.values = {Fr(5), Fr(13)};
+    query.values = query_values;
     query.basis_id = "0000000000000000000000000000000000000000000000000000000000000001";
     const hyrax::PedersenMleCommitment query_commitment = hyrax::pedersen_commit_mle(query.generators, query.values, query.basis_id);
     query.commitment = query_commitment.commitment;
@@ -398,6 +407,74 @@ int main() {
         return 2;
     }
 
+    std::vector<NativeLassoFamilyProver> padding_families(1);
+    NativeLassoFamilyProver& padding_family = padding_families.front();
+    padding_family.family_id = "padding";
+    padding_family.table_id = "t_padding";
+    padding_family.resource_id = "resource-padding-v1";
+    padding_family.registration_id = "registration-padding-v1";
+    padding_family.table = {Fr(5), Fr(13)};
+    padding_family.matrix_layout = native_lasso_balanced_matrix_layout(32, padding_family.table.size());
+    padding_family.matrix_layout.trusted_generator_id = "native-lasso/M/padding/column-v2";
+    padding_family.matrix_layout.column_generators = generators(padding_family.matrix_layout.trusted_generator_id,
+                                                                 padding_family.matrix_layout.columns);
+    padding_family.logical_queries = 1;
+    padding_family.padded_queries = 32;
+    padding_family.padding_index = 0;
+    padding_family.padding_value = padding_family.table[0];
+    const auto padding_selected_rows = std::make_shared<std::vector<std::uint64_t>>(32, 0);
+    (*padding_selected_rows)[0] = 1;
+    padding_family.selected_table_row_at = [padding_selected_rows](std::uint64_t row) {
+        return padding_selected_rows->at(static_cast<std::size_t>(row));
+    };
+    std::vector<G1> padding_l_generators = generators("native-lasso/padding-L", 32);
+    std::vector<F> padding_query_values(32, Fr(5));
+    padding_query_values[0] = Fr(13);
+    NativeLassoQueryProver padding_query;
+    padding_query.G = G;
+    padding_query.generators = padding_l_generators;
+    padding_query.values = padding_query_values;
+    padding_query.basis_id = "0000000000000000000000000000000000000000000000000000000000000003";
+    const hyrax::PedersenMleCommitment padding_query_commitment =
+        hyrax::pedersen_commit_mle(padding_query.generators, padding_query.values, padding_query.basis_id);
+    padding_query.commitment = padding_query_commitment.commitment;
+    padding_query.blinding_generator = padding_query_commitment.blinding_generator;
+    padding_query.commitment_blinding = padding_query_commitment.blinding;
+    padding_query.has_commitment_blinding = true;
+    TensorFixture padding_l_tensor = make_tensor_fixture("canonical/L_qry", padding_query.basis_id,
+                                                         "native-lasso/padding-L-tensor", 32, padding_query.values);
+    padding_query.tensor_view = padding_l_tensor.view;
+    padding_query.tensor_commitment = padding_l_tensor.commitment;
+    padding_query.tensor_state = padding_l_tensor.state;
+    padding_query.value_provider = padding_l_tensor.provider;
+    padding_query.statement_l_digest = native_lasso_tensor_query_digest(padding_query.tensor_view, padding_query.tensor_commitment);
+    std::vector<NativeLassoFamilyPublic> padding_public_families;
+    padding_public_families.push_back(padding_family);
+    const std::string padding_tables_digest = native_lasso_tables_digest(padding_public_families);
+    const std::string padding_resources_digest = native_lasso_resources_digest(padding_public_families);
+    padding_family.statement_tables_digest = padding_tables_digest;
+    padding_family.statement_resources_digest = padding_resources_digest;
+    padding_public_families.clear();
+    padding_public_families.push_back(padding_family);
+    const NativeProofStatement padding_statement = typed_statement_for(
+        G, padding_l_generators, padding_public_families, padding_l_tensor, aux_tensor,
+        padding_query.commitment, padding_query.blinding_generator);
+    NativeProofSession padding_produced("native-lasso-range-v1", padding_statement);
+    NativeLassoBundleResult padding_proved;
+    if (!native_lasso_prove_bundle(padding_produced, padding_families, padding_query, &padding_proved,
+                                   &reason, prove_tensor_tail_stage)) {
+        std::cerr << "native Lasso padding proof failed: " << reason << '\n';
+        return 22;
+    }
+    NativeLassoQueryPublic padding_public_query{G, padding_l_generators, padding_query.commitment,
+                                               padding_query.basis_id, padding_query.statement_l_digest};
+    padding_public_query.tensor_view = padding_query.tensor_view;
+    padding_public_query.tensor_commitment = padding_query.tensor_commitment;
+    if (!verify_lasso_bundle(padding_produced, padding_public_families, padding_public_query, nullptr, &reason)) {
+        std::cerr << "native Lasso padding independent verify failed: " << reason << '\n';
+        return 22;
+    }
+
     bool saw_masked_terminal = false;
     for (const NativeProofMessage& message : produced.messages()) {
         if (message.label.find("/terminal/values") != std::string::npos) {
@@ -460,7 +537,8 @@ int main() {
     std::size_t last_booleanity_weight = 0;
     std::size_t first_query_round = produced.messages().size();
     bool have_booleanity_weight = false;
-    for (std::size_t round = 0; round < 2; ++round) {
+    const std::size_t booleanity_rounds = families.front().matrix_layout.row_bits + families.front().matrix_layout.column_bits;
+    for (std::size_t round = 0; round < booleanity_rounds; ++round) {
         const std::string label = "challenge/lasso/a/booleanity/weight/" + std::to_string(round);
         bool found = false;
         std::size_t weight_index = 0;

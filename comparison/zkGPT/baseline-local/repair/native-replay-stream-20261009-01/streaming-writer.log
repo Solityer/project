@@ -1,9 +1,0 @@
-artifact_io_profile: source-bytes begin
-artifact_io_profile: source-bytes complete elapsed_ms=3.74161
-artifact_io_profile: wire-parse begin
-artifact_io_profile: wire-parse complete elapsed_ms=11.7193
-artifact_io_profile: public-write begin
-artifact_io_profile: public-write complete elapsed_ms=21930.1
-artifact_io_profile: readback begin
-artifact_io_profile: readback complete elapsed_ms=21956.8
-artifact_io_profile: PASS source_bytes=8244255 source_read_ms=3.74161 parse_ms=11.7193 native_messages=17407 challenge_messages=3725 encoded_message_body_bytes=4117929 challenge_prior_message_bytes_per_replay=7686198801 public_write_including_wire_validation_ms=21930.1 public_write_readback_and_validation_ms=21956.8 byte_identical=true

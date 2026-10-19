@@ -608,6 +608,43 @@ private:
 constexpr std::uint64_t kZkSumcheckFoldedStateBudgetBytes =
     std::uint64_t{32U} << 30U;
 
+inline bool zksc_montgomery_row_scratch_peak_bytes(
+    std::uint64_t tensor_count, std::uint64_t row_count,
+    std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (tensor_count == 0U || tensor_count >
+            (std::numeric_limits<std::uint64_t>::max() - 9U) / 3U)
+        return false;
+    row_count = std::max<std::uint64_t>(1U, row_count);
+    const std::uint64_t worker_chunks =
+        static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U;
+    const std::uint64_t chunks = row_count < 4096U
+        ? 1U : std::min(row_count, worker_chunks);
+    const std::uint64_t fields_per_chunk = tensor_count * 3U + 9U;
+    if (fields_per_chunk > std::numeric_limits<std::uint64_t>::max() /
+                               sizeof(zkdl_blst::blst_fr))
+        return false;
+    const std::uint64_t fields_bytes =
+        fields_per_chunk * sizeof(zkdl_blst::blst_fr);
+    const std::uint64_t vector_headers_per_chunk =
+        2U * sizeof(std::vector<zkdl_blst::blst_fr>) + sizeof(unsigned char);
+    if (chunks > std::numeric_limits<std::uint64_t>::max() / fields_bytes ||
+        chunks > std::numeric_limits<std::uint64_t>::max() /
+                     vector_headers_per_chunk)
+        return false;
+    const std::uint64_t payload_bytes = chunks * fields_bytes;
+    const std::uint64_t metadata_bytes = chunks * vector_headers_per_chunk;
+    if (payload_bytes > std::numeric_limits<std::uint64_t>::max() - metadata_bytes)
+        return false;
+    peak_bytes = payload_bytes + metadata_bytes;
+#else
+    (void)tensor_count;
+    (void)row_count;
+#endif
+    return true;
+}
+
 inline bool zksc_segmented_streaming_peak_bytes(
     std::uint64_t tensor_count, std::uint64_t segment_size,
     std::uint64_t& peak_bytes) noexcept {
@@ -642,6 +679,17 @@ inline bool zksc_segmented_streaming_peak_bytes(
         peak_bytes = 0U;
         return false;
     }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::uint64_t montgomery_scratch_bytes = 0U;
+    if (!zksc_montgomery_row_scratch_peak_bytes(
+            tensor_count, segment_size / 2U, montgomery_scratch_bytes) ||
+        montgomery_scratch_bytes >
+            std::numeric_limits<std::uint64_t>::max() - peak_bytes) {
+        peak_bytes = 0U;
+        return false;
+    }
+    peak_bytes += montgomery_scratch_bytes;
+#endif
     return true;
 }
 
@@ -651,6 +699,7 @@ inline bool zksc_folded_state_peak_bytes(
     peak_bytes = 0U;
     if (tensor_count == 0U || logical_domain < 2U) return false;
     std::uint64_t streaming_bytes = 0U, cached_values = 0U, cached_bytes = 0U;
+    std::uint64_t cached_round_scratch_bytes = 0U;
     if (!zksc_segmented_streaming_peak_bytes(
             tensor_count, segment_size, streaming_bytes) ||
         tensor_count > std::numeric_limits<std::uint64_t>::max() /
@@ -660,9 +709,16 @@ inline bool zksc_folded_state_peak_bytes(
     if (cached_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
         return false;
     cached_bytes = cached_values * sizeof(FrWire);
-    if (streaming_bytes > std::numeric_limits<std::uint64_t>::max() - cached_bytes)
+    if (logical_domain > 2U &&
+        !zksc_montgomery_row_scratch_peak_bytes(
+            tensor_count, logical_domain / 4U, cached_round_scratch_bytes))
         return false;
-    peak_bytes = cached_bytes + streaming_bytes;
+    const std::uint64_t phase_scratch_bytes =
+        std::max(streaming_bytes, cached_round_scratch_bytes);
+    if (phase_scratch_bytes >
+        std::numeric_limits<std::uint64_t>::max() - cached_bytes)
+        return false;
+    peak_bytes = cached_bytes + phase_scratch_bytes;
     return true;
 }
 
@@ -672,28 +728,50 @@ inline bool zksc_spilled_state_ram_peak_bytes(
 
 inline bool zksc_selected_sumcheck_peak_bytes(
     std::uint64_t tensor_count, std::uint64_t logical_domain,
-    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
+    std::uint64_t segment_size, std::uint64_t montgomery_plan_peak_bytes,
+    std::uint64_t& peak_bytes,
+    std::uint64_t extra_live_bytes = 0U) noexcept {
     if (!zksc_folded_state_peak_bytes(
             tensor_count, logical_domain, segment_size, peak_bytes))
         return false;
-    if (peak_bytes <= kZkSumcheckFoldedStateBudgetBytes) return true;
+    if (montgomery_plan_peak_bytes >
+        std::numeric_limits<std::uint64_t>::max() - peak_bytes ||
+        extra_live_bytes > std::numeric_limits<std::uint64_t>::max() -
+                               peak_bytes - montgomery_plan_peak_bytes) return false;
+    if (peak_bytes + montgomery_plan_peak_bytes + extra_live_bytes <=
+        kZkSumcheckFoldedStateBudgetBytes) {
+        peak_bytes += montgomery_plan_peak_bytes + extra_live_bytes;
+        return true;
+    }
     std::uint64_t provider_peak = 0U, spill_peak = 0U;
     if (!zksc_segmented_streaming_peak_bytes(
             tensor_count, segment_size, provider_peak) ||
         !zksc_spilled_state_ram_peak_bytes(
             tensor_count, logical_domain, segment_size, spill_peak)) return false;
     peak_bytes = std::max(provider_peak, spill_peak);
+    if (montgomery_plan_peak_bytes >
+            std::numeric_limits<std::uint64_t>::max() - peak_bytes ||
+        extra_live_bytes > std::numeric_limits<std::uint64_t>::max() -
+                               peak_bytes - montgomery_plan_peak_bytes) return false;
+    peak_bytes += montgomery_plan_peak_bytes + extra_live_bytes;
     return true;
 }
 
 inline bool zksc_folded_state_within_budget(
-    const std::vector<SegmentedTensorProvider>& providers) noexcept {
+    const std::vector<SegmentedTensorProvider>& providers,
+    std::uint64_t montgomery_plan_peak_bytes = 0U,
+    std::uint64_t extra_live_bytes = 0U) noexcept {
     if (providers.empty()) return false;
     std::uint64_t peak_bytes = 0U;
     return zksc_folded_state_peak_bytes(
                providers.size(), providers.front().logical_domain(),
                providers.front().segment_size(), peak_bytes) &&
-           peak_bytes <= kZkSumcheckFoldedStateBudgetBytes;
+           montgomery_plan_peak_bytes <=
+               std::numeric_limits<std::uint64_t>::max() - peak_bytes &&
+           extra_live_bytes <= std::numeric_limits<std::uint64_t>::max() -
+                                   peak_bytes - montgomery_plan_peak_bytes &&
+           peak_bytes + montgomery_plan_peak_bytes + extra_live_bytes <=
+               kZkSumcheckFoldedStateBudgetBytes;
 }
 
 constexpr std::uint64_t kZkSumcheckSpillIoAlignment = 4096U;
@@ -839,6 +917,15 @@ inline bool zksc_spilled_state_ram_peak_bytes(
                       2U * kZkSumcheckSpillIoAlignment)
         return false;
     io_peak += output_bytes + 2U * kZkSumcheckSpillIoAlignment;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::uint64_t montgomery_scratch_bytes = 0U;
+    if (!zksc_montgomery_row_scratch_peak_bytes(
+            tensor_count, max_io_rows, montgomery_scratch_bytes) ||
+        montgomery_scratch_bytes >
+            std::numeric_limits<std::uint64_t>::max() - io_peak)
+        return false;
+    io_peak += montgomery_scratch_bytes;
+#endif
     peak_bytes = std::max(initialize_peak, io_peak);
     return peak_bytes <= kZkSumcheckSpillRamBudgetBytes;
 }
@@ -4083,6 +4170,24 @@ inline std::array<byte, 32U> relation_commitment_vector_digest(
     return zkdl::sha256(encoded);
 }
 
+inline bool relation_segment_commitment_valid(const RelationStatement& statement, const CommitmentWire& commitment, std::string* error = nullptr) {
+    if (statement.segment_binding_version != RelationStatement::kSegmentBindingVersion || !segment_commitment_wire_shape_valid(commitment, error) || segment_commitment_digest(commitment) != commitment.segment_commitment_digest) {
+        if (error && error->empty()) *error = "segment commitment digest mismatch";
+        return false;
+    }
+    if (commitment.srs_manifest_digest != statement.srs_digest) {
+        if (error) *error = "segment commitment SRS manifest mismatch";
+        return false;
+    }
+    zkdl::CpuG1Point segment_sum = zkdl::CpuG1Point::zero();
+    for (const auto& segment : commitment.segment_commitments) segment_sum = zkdl::cpu_g1_add(segment_sum, zkdl::cpu_g1_from_native(segment.commitment));
+    if (!zkdl::cpu_g1_equal(segment_sum, zkdl::cpu_g1_from_native(commitment.commitment))) {
+        if (error) *error = "segment commitment aggregate is not the ordered segment sum";
+        return false;
+    }
+    return true;
+}
+
 inline bool relation_segment_commitments_valid(
     const RelationStatement& statement,
     const std::vector<CommitmentWire>& commitments,
@@ -4095,17 +4200,8 @@ inline bool relation_segment_commitments_valid(
         if (error) *error = "relation statement lacks segment commitment digest";
         return false;
     }
-    for (const auto& commitment : commitments) {
-        if (!segment_commitment_wire_shape_valid(commitment, error) ||
-            segment_commitment_digest(commitment) != commitment.segment_commitment_digest) {
-            if (error && error->empty()) *error = "segment commitment digest mismatch";
-            return false;
-        }
-        if (commitment.srs_manifest_digest != statement.srs_digest) {
-            if (error) *error = "segment commitment SRS manifest mismatch";
-            return false;
-        }
-    }
+    for (const auto& commitment : commitments)
+        if (!relation_segment_commitment_valid(statement, commitment, error)) return false;
     if (relation_commitment_vector_digest(statement, commitments) !=
         statement.segment_commitments_digest) {
         if (error) *error = "relation segment commitment vector digest mismatch";
@@ -5317,14 +5413,156 @@ struct RelationSegmentProgressReporter {
 struct ZkSumcheckRoundEvaluationScratch {
     std::vector<std::vector<FrWire>> row_values;
     std::vector<std::vector<FrWire>> chunk_evaluations;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    std::vector<std::vector<zkdl_blst::blst_fr>> montgomery_row_state;
+    std::vector<std::vector<zkdl_blst::blst_fr>> montgomery_chunk_evaluations;
+    std::vector<unsigned char> montgomery_chunk_valid;
+#endif
 
     ZkSumcheckRoundEvaluationScratch(std::size_t chunk_count,
                                      std::size_t tensor_count,
-                                     std::size_t evaluation_count)
-        : row_values(chunk_count, std::vector<FrWire>(tensor_count)),
-          chunk_evaluations(
-              chunk_count, std::vector<FrWire>(evaluation_count)) {}
+                                     std::size_t evaluation_count,
+                                     bool use_montgomery = false) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (use_montgomery) {
+            if (tensor_count > std::numeric_limits<std::size_t>::max() / 3U)
+                throw std::length_error("Sumcheck Montgomery row scratch shape overflows");
+            montgomery_row_state.assign(
+                chunk_count,
+                std::vector<zkdl_blst::blst_fr>(tensor_count * 3U));
+            montgomery_chunk_evaluations.assign(
+                chunk_count,
+                std::vector<zkdl_blst::blst_fr>(evaluation_count));
+            montgomery_chunk_valid.assign(chunk_count, 1U);
+            return;
+        }
+#else
+        (void)use_montgomery;
+#endif
+        row_values.assign(chunk_count, std::vector<FrWire>(tensor_count));
+        chunk_evaluations.assign(
+            chunk_count, std::vector<FrWire>(evaluation_count));
+    }
 };
+
+struct ZkSumcheckMontgomeryConstraintPlan {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    struct Term {
+        zkdl_blst::blst_fr coefficient{};
+        const std::vector<std::uint32_t>* refs = nullptr;
+    };
+    zkdl_blst::blst_fr constant{};
+    std::array<zkdl_blst::blst_fr, 9U> evaluation_points{};
+    std::vector<Term> terms;
+    std::size_t tensor_count = 0U;
+    std::uint32_t degree = 0U;
+    bool enabled = false;
+#else
+    bool enabled = false;
+#endif
+};
+
+inline bool zksc_montgomery_constraint_plan_peak_bytes(
+    std::uint64_t term_count, bool enabled,
+    std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (!enabled) return true;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    constexpr std::uint64_t fixed_construction_scratch =
+        sizeof(ZkSumcheckMontgomeryConstraintPlan::Term) +
+        sizeof(zkdl::CpuIpaPreparedScalar) + sizeof(zkdl_blst::blst_scalar) +
+        sizeof(std::array<byte, 32U>);
+    const std::uint64_t fixed_plan_bytes =
+        sizeof(ZkSumcheckMontgomeryConstraintPlan);
+    if (term_count > (std::numeric_limits<std::uint64_t>::max() -
+                      fixed_plan_bytes) /
+                         sizeof(ZkSumcheckMontgomeryConstraintPlan::Term))
+        return false;
+    const std::uint64_t resident_bytes = fixed_plan_bytes + term_count *
+        sizeof(ZkSumcheckMontgomeryConstraintPlan::Term);
+    if (fixed_construction_scratch >
+        std::numeric_limits<std::uint64_t>::max() - resident_bytes)
+        return false;
+    peak_bytes = resident_bytes + fixed_construction_scratch;
+#else
+    (void)term_count;
+#endif
+    return true;
+}
+
+inline bool zksc_folded_state_within_budget(
+    const std::vector<SegmentedTensorProvider>& providers,
+    const ConstraintDescriptor& descriptor,
+    std::uint64_t extra_live_bytes = 0U) noexcept {
+    std::uint64_t plan_peak_bytes = 0U;
+    return zksc_montgomery_constraint_plan_peak_bytes(
+               static_cast<std::uint64_t>(descriptor.terms.size()), true,
+               plan_peak_bytes) &&
+           zksc_folded_state_within_budget(
+               providers, plan_peak_bytes, extra_live_bytes);
+}
+
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+inline bool zksc_compile_montgomery_constraint_plan(
+    const ConstraintDescriptor& descriptor, std::size_t tensor_count,
+    std::uint32_t degree, ZkSumcheckMontgomeryConstraintPlan& plan,
+    std::string* error = nullptr) {
+    plan = ZkSumcheckMontgomeryConstraintPlan{};
+    if (!descriptor.valid(error) || descriptor.degree != degree ||
+        tensor_count == 0U || degree > 8U) {
+        if (error && error->empty())
+            *error = "Sumcheck Montgomery descriptor plan shape is invalid";
+        return false;
+    }
+    for (const auto& term : descriptor.terms)
+        for (const std::uint32_t ref : term.refs)
+            if (ref >= tensor_count) {
+                if (error) *error = "Sumcheck descriptor tensor reference is out of bounds";
+                return false;
+            }
+    try {
+        plan.constant = zkdl::cpu_ipa_frwire_to_montgomery_checked(
+            descriptor.constant);
+        for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+            plan.evaluation_points[evaluation] =
+                zkdl::cpu_ipa_frwire_to_montgomery_checked(
+                    zkdl::fr_from_u32(evaluation));
+        plan.terms.reserve(descriptor.terms.size());
+        for (const auto& term : descriptor.terms) {
+            ZkSumcheckMontgomeryConstraintPlan::Term compiled;
+            compiled.coefficient = zkdl::cpu_ipa_frwire_to_montgomery_checked(
+                term.coefficient);
+            compiled.refs = &term.refs;
+            plan.terms.push_back(compiled);
+        }
+    } catch (const std::exception& exception) {
+        if (error) *error = exception.what();
+        return false;
+    }
+    plan.tensor_count = tensor_count;
+    plan.degree = degree;
+    plan.enabled = true;
+    return true;
+}
+
+inline zkdl_blst::blst_fr zksc_eval_constraint_montgomery(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    const zkdl_blst::blst_fr* values) {
+    zkdl_blst::blst_fr result = plan.constant;
+    for (const auto& term : plan.terms) {
+        zkdl_blst::blst_fr product = term.coefficient;
+        for (const std::uint32_t ref : *term.refs) {
+            zkdl_blst::blst_fr next{};
+            zkdl_blst::blst_fr_mul(&next, &product, &values[ref]);
+            product = next;
+        }
+        zkdl_blst::blst_fr next{};
+        zkdl_blst::blst_fr_add(&next, &result, &product);
+        result = next;
+    }
+    return result;
+}
+#endif
 
 inline bool zksc_accumulate_round_evaluation_rows(
     const ConstraintDescriptor& descriptor,
@@ -5332,7 +5570,8 @@ inline bool zksc_accumulate_round_evaluation_rows(
     std::uint32_t degree, std::size_t row_begin, std::size_t row_end,
     std::vector<FrWire>& evaluations,
     ZkSumcheckRoundEvaluationScratch& scratch,
-    std::string* error = nullptr) {
+    std::string* error = nullptr,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
     if (row_begin > row_end || current.empty() || current.front().size() < 2U ||
         (current.front().size() & 1U) != 0U || degree > 8U ||
         evaluations.size() != degree + 1U ||
@@ -5358,11 +5597,92 @@ inline bool zksc_accumulate_round_evaluation_rows(
                               (row_count % chunk_limit != 0U ? 1U : 0U);
     const std::size_t active_chunks = row_count / grain +
                                       (row_count % grain != 0U ? 1U : 0U);
-    if (active_chunks == 0U || active_chunks > scratch.row_values.size() ||
-        active_chunks > scratch.chunk_evaluations.size()) {
+    if (active_chunks == 0U ||
+        (montgomery_plan == nullptr &&
+         (active_chunks > scratch.row_values.size() ||
+          active_chunks > scratch.chunk_evaluations.size()))) {
         if (error) *error = "segmented ZkSumcheck row scratch shape is invalid";
         return false;
     }
+
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if (montgomery_plan != nullptr) {
+        if (!montgomery_plan->enabled || montgomery_plan->degree != degree ||
+            montgomery_plan->tensor_count != current.size() ||
+            active_chunks > scratch.montgomery_row_state.size() ||
+            active_chunks > scratch.montgomery_chunk_evaluations.size() ||
+            active_chunks > scratch.montgomery_chunk_valid.size()) {
+            if (error) *error = "segmented ZkSumcheck Montgomery scratch/plan shape is invalid";
+            return false;
+        }
+        const std::size_t row_state_size = current.size() * 3U;
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+            if (scratch.montgomery_row_state[chunk].size() != row_state_size ||
+                scratch.montgomery_chunk_evaluations[chunk].size() != evaluations.size()) {
+                if (error) *error = "segmented ZkSumcheck Montgomery scratch shape is invalid";
+                return false;
+            }
+            std::fill(scratch.montgomery_chunk_evaluations[chunk].begin(),
+                      scratch.montgomery_chunk_evaluations[chunk].end(),
+                      zkdl_blst::blst_fr{});
+            scratch.montgomery_chunk_valid[chunk] = 1U;
+        }
+        zkdl::cpu_parallel_for(row_count, grain, [&](std::size_t local_row) {
+            const std::size_t chunk = local_row / grain;
+            if (scratch.montgomery_chunk_valid[chunk] == 0U) return;
+            const std::size_t row = row_begin + local_row;
+            auto& row_state = scratch.montgomery_row_state[chunk];
+            auto& partial = scratch.montgomery_chunk_evaluations[chunk];
+            for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                const FrWire& left_wire = current[tensor][2U * row];
+                const FrWire& right_wire = current[tensor][2U * row + 1U];
+                if (!zkdl::fr_canonical(left_wire) ||
+                    !zkdl::fr_canonical(right_wire)) {
+                    scratch.montgomery_chunk_valid[chunk] = 0U;
+                    return;
+                }
+                const auto left = zkdl::cpu_ipa_frwire_to_montgomery_unchecked(left_wire);
+                const auto right = zkdl::cpu_ipa_frwire_to_montgomery_unchecked(right_wire);
+                row_state[tensor] = left;
+                zkdl_blst::blst_fr_sub(
+                    &row_state[current.size() + tensor], &right, &left);
+            }
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                const auto& x = montgomery_plan->evaluation_points[evaluation];
+                for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                    zkdl_blst::blst_fr scaled{};
+                    zkdl_blst::blst_fr_mul(
+                        &scaled, &x, &row_state[current.size() + tensor]);
+                    zkdl_blst::blst_fr_add(
+                        &row_state[2U * current.size() + tensor],
+                        &row_state[tensor], &scaled);
+                }
+                const auto value = zksc_eval_constraint_montgomery(
+                    *montgomery_plan, row_state.data() + 2U * current.size());
+                zkdl_blst::blst_fr next{};
+                zkdl_blst::blst_fr_add(
+                    &next, &partial[evaluation], &value);
+                partial[evaluation] = next;
+            }
+        });
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+            if (scratch.montgomery_chunk_valid[chunk] == 0U) {
+                if (error) *error = "ZkSumcheck tensor value is not canonical";
+                return false;
+            }
+        }
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+                evaluations[evaluation] = zkdl::fr_add(
+                    evaluations[evaluation],
+                    zkdl::cpu_ipa_montgomery_to_frwire(
+                        scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        return true;
+    }
+#else
+    (void)montgomery_plan;
+#endif
+
     for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
         if (scratch.row_values[chunk].size() != current.size() ||
             scratch.chunk_evaluations[chunk].size() != evaluations.size()) {
@@ -5409,7 +5729,8 @@ inline bool zksc_accumulate_round_evaluations(
     std::string* error = nullptr,
     std::uint32_t round_index = 0U,
     const ZkSumcheckProgressCallback* progress = nullptr,
-    const char* progress_phase = "sumcheck_cached_rows") {
+    const char* progress_phase = "sumcheck_cached_rows",
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
     if (current.empty() || current.front().size() < 2U ||
         (current.front().size() & 1U) != 0U || degree > 8U ||
         evaluations.size() != degree + 1U) {
@@ -5429,13 +5750,14 @@ inline bool zksc_accumulate_round_evaluations(
         std::min(scratch_rows,
                  static_cast<std::size_t>(zkdl::cpu_parallel_worker_count()) + 1U);
     ZkSumcheckRoundEvaluationScratch scratch(
-        scratch_chunks, current.size(), evaluations.size());
+        scratch_chunks, current.size(), evaluations.size(),
+        montgomery_plan != nullptr);
     for (std::size_t row_begin = 0U; row_begin < row_count;) {
         const std::size_t row_end = row_begin + std::min(
             row_count - row_begin, progress == nullptr ? row_count : kProgressRows);
         if (!zksc_accumulate_round_evaluation_rows(
                 descriptor, current, degree, row_begin, row_end,
-                evaluations, scratch, error)) return false;
+                evaluations, scratch, error, montgomery_plan)) return false;
         row_begin = row_end;
         if (progress != nullptr)
             (*progress)(progress_phase, round_index,
@@ -5451,7 +5773,8 @@ inline bool zksc_segmented_round_evaluations(
     std::uint32_t degree, std::uint32_t round_index,
     const std::vector<FrWire>& prior_challenges,
     std::vector<FrWire>& evaluations, std::string* error = nullptr,
-    const ZkSumcheckProgressCallback* progress = nullptr) {
+    const ZkSumcheckProgressCallback* progress = nullptr,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
     if (providers.empty() || prior_challenges.size() != round_index ||
         providers.front().logical_domain() == 0U) {
         if (error) *error = "segmented ZkSumcheck round state is invalid";
@@ -5481,7 +5804,7 @@ inline bool zksc_segmented_round_evaluations(
                 if (!zksc_accumulate_round_evaluations(
                         descriptor, current, degree, evaluations, error,
                         round_index, progress,
-                        "sumcheck_provider_rows")) return false;
+                        "sumcheck_provider_rows", montgomery_plan)) return false;
                 if (progress != nullptr)
                     (*progress)("sumcheck_provider_segments", round_index,
                                 std::numeric_limits<std::uint32_t>::max(),
@@ -5508,7 +5831,8 @@ inline bool zksc_segmented_round_evaluations(
                     fold_values(tensor, prior_challenges[previous]);
             if (!zksc_accumulate_round_evaluations(
                     descriptor, current, degree, evaluations, error,
-                    round_index, nullptr)) return false;
+                    round_index, nullptr, "sumcheck_cached_rows",
+                    montgomery_plan)) return false;
         }
     } catch (const std::exception& exception) {
         if (error) *error = exception.what();
@@ -5612,7 +5936,8 @@ inline bool zksc_spilled_round_evaluations(
     std::uint32_t degree, std::vector<FrWire>& evaluations,
     std::string* error = nullptr,
     std::uint32_t round_index = 0U,
-    const ZkSumcheckProgressCallback* progress = nullptr) {
+    const ZkSumcheckProgressCallback* progress = nullptr,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
     const std::uint64_t tensor_count = state.tensor_count();
     const std::uint64_t state_rows = state.logical_rows();
     if (tensor_count == 0U || state_rows < 2U || (state_rows & 1U) != 0U ||
@@ -5642,7 +5967,8 @@ inline bool zksc_spilled_round_evaluations(
         std::min<std::uint64_t>(row_count,
             static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U);
     ZkSumcheckRoundEvaluationScratch scratch(
-        scratch_chunks, static_cast<std::size_t>(tensor_count), degree + 1U);
+        scratch_chunks, static_cast<std::size_t>(tensor_count), degree + 1U,
+        montgomery_plan != nullptr);
     evaluations.assign(degree + 1U, FrWire{});
     for (std::uint64_t row_begin = 0U; row_begin < row_count;) {
         const std::uint64_t rows = std::min<std::uint64_t>(
@@ -5659,40 +5985,125 @@ inline bool zksc_spilled_round_evaluations(
             (rows % chunk_limit != 0U ? 1U : 0U));
         const std::size_t active_chunks = static_cast<std::size_t>(rows / grain +
             (rows % grain != 0U ? 1U : 0U));
-        if (active_chunks == 0U || active_chunks > scratch.row_values.size() ||
-            active_chunks > scratch.chunk_evaluations.size()) {
+        if (active_chunks == 0U ||
+            (montgomery_plan == nullptr &&
+             (active_chunks > scratch.row_values.size() ||
+              active_chunks > scratch.chunk_evaluations.size()))) {
             if (error) *error = "Sumcheck spill row evaluation scratch shape is invalid";
             return false;
         }
-        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
-            std::fill(scratch.chunk_evaluations[chunk].begin(),
-                      scratch.chunk_evaluations[chunk].end(), FrWire{});
-        std::array<FrWire, 9U> evaluation_points{};
-        for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
-            evaluation_points[evaluation] = zkdl::fr_from_u32(evaluation);
         const FrWire* values = input.wires();
-        zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), grain,
-            [&](std::size_t local_row) {
-                const std::size_t chunk = local_row / grain;
-                auto& row_values = scratch.row_values[chunk];
-                auto& partial = scratch.chunk_evaluations[chunk];
-                const std::size_t base = 2U * local_row * static_cast<std::size_t>(tensor_count);
-                for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
-                    const FrWire x = evaluation_points[evaluation];
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (montgomery_plan != nullptr) {
+            if (!montgomery_plan->enabled || montgomery_plan->degree != degree ||
+                montgomery_plan->tensor_count != tensor_count ||
+                active_chunks > scratch.montgomery_row_state.size() ||
+                active_chunks > scratch.montgomery_chunk_evaluations.size() ||
+                active_chunks > scratch.montgomery_chunk_valid.size()) {
+                if (error) *error = "Sumcheck spill Montgomery scratch/plan shape is invalid";
+                return false;
+            }
+            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+                std::fill(scratch.montgomery_chunk_evaluations[chunk].begin(),
+                          scratch.montgomery_chunk_evaluations[chunk].end(),
+                          zkdl_blst::blst_fr{});
+                scratch.montgomery_chunk_valid[chunk] = 1U;
+            }
+            zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), grain,
+                [&](std::size_t local_row) {
+                    const std::size_t chunk = local_row / grain;
+                    if (scratch.montgomery_chunk_valid[chunk] == 0U) return;
+                    auto& row_state = scratch.montgomery_row_state[chunk];
+                    auto& partial = scratch.montgomery_chunk_evaluations[chunk];
+                    const std::size_t base =
+                        2U * local_row * static_cast<std::size_t>(tensor_count);
                     for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
-                        const FrWire& left = values[base + tensor];
-                        const FrWire& right = values[base + tensor_count + tensor];
-                        row_values[tensor] = zkdl::fr_add(
-                            left, zkdl::fr_mul(x, zkdl::fr_sub(right, left)));
+                        const FrWire& left_wire = values[base + tensor];
+                        const FrWire& right_wire = values[base + tensor_count + tensor];
+                        if (!zkdl::fr_canonical(left_wire) ||
+                            !zkdl::fr_canonical(right_wire)) {
+                            scratch.montgomery_chunk_valid[chunk] = 0U;
+                            return;
+                        }
+                        const auto left = zkdl::cpu_ipa_frwire_to_montgomery_unchecked(
+                            left_wire);
+                        const auto right = zkdl::cpu_ipa_frwire_to_montgomery_unchecked(
+                            right_wire);
+                        row_state[tensor] = left;
+                        zkdl_blst::blst_fr_sub(
+                            &row_state[static_cast<std::size_t>(tensor_count) + tensor],
+                            &right, &left);
                     }
-                    partial[evaluation] = zkdl::fr_add(
-                        partial[evaluation], eval_constraint(descriptor, row_values));
+                    for (std::uint32_t evaluation = 0U;
+                         evaluation <= degree; ++evaluation) {
+                        const auto& x = montgomery_plan->evaluation_points[evaluation];
+                        for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
+                            zkdl_blst::blst_fr scaled{};
+                            zkdl_blst::blst_fr_mul(
+                                &scaled, &x,
+                                &row_state[static_cast<std::size_t>(tensor_count) + tensor]);
+                            zkdl_blst::blst_fr_add(
+                                &row_state[2U * static_cast<std::size_t>(tensor_count) + tensor],
+                                &row_state[tensor], &scaled);
+                        }
+                        const auto value = zksc_eval_constraint_montgomery(
+                            *montgomery_plan,
+                            row_state.data() + 2U * static_cast<std::size_t>(tensor_count));
+                        zkdl_blst::blst_fr next{};
+                        zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
+                        partial[evaluation] = next;
+                    }
+                });
+            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+                if (scratch.montgomery_chunk_valid[chunk] == 0U) {
+                    if (error) *error = "ZkSumcheck tensor value is not canonical";
+                    return false;
                 }
-            });
-        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            }
+            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+                for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+                    evaluations[evaluation] = zkdl::fr_add(
+                        evaluations[evaluation],
+                        zkdl::cpu_ipa_montgomery_to_frwire(
+                            scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        } else
+#endif
+        {
+            if (active_chunks > scratch.row_values.size() ||
+                active_chunks > scratch.chunk_evaluations.size()) {
+                if (error) *error = "Sumcheck spill row evaluation scratch shape is invalid";
+                return false;
+            }
+            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+                std::fill(scratch.chunk_evaluations[chunk].begin(),
+                          scratch.chunk_evaluations[chunk].end(), FrWire{});
+            std::array<FrWire, 9U> evaluation_points{};
             for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
-                evaluations[evaluation] = zkdl::fr_add(
-                    evaluations[evaluation], scratch.chunk_evaluations[chunk][evaluation]);
+                evaluation_points[evaluation] = zkdl::fr_from_u32(evaluation);
+            zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), grain,
+                [&](std::size_t local_row) {
+                    const std::size_t chunk = local_row / grain;
+                    auto& row_values = scratch.row_values[chunk];
+                    auto& partial = scratch.chunk_evaluations[chunk];
+                    const std::size_t base =
+                        2U * local_row * static_cast<std::size_t>(tensor_count);
+                    for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                        const FrWire x = evaluation_points[evaluation];
+                        for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
+                            const FrWire& left = values[base + tensor];
+                            const FrWire& right = values[base + tensor_count + tensor];
+                            row_values[tensor] = zkdl::fr_add(
+                                left, zkdl::fr_mul(x, zkdl::fr_sub(right, left)));
+                        }
+                        partial[evaluation] = zkdl::fr_add(
+                            partial[evaluation], eval_constraint(descriptor, row_values));
+                    }
+                });
+            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+                for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+                    evaluations[evaluation] = zkdl::fr_add(
+                        evaluations[evaluation], scratch.chunk_evaluations[chunk][evaluation]);
+        }
         row_begin += rows;
         if (progress != nullptr)
             (*progress)("sumcheck_spill_eval_rows", round_index,
@@ -5877,7 +6288,8 @@ inline bool zksc_folded_round_evaluations(
     std::uint32_t degree, std::vector<FrWire>& evaluations,
     std::string* error = nullptr,
     std::uint32_t round_index = 0U,
-    const ZkSumcheckProgressCallback* progress = nullptr) {
+    const ZkSumcheckProgressCallback* progress = nullptr,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
     if (state.empty() || state.front().size() < 2U ||
         (state.front().size() & 1U) != 0U) {
         if (error) *error = "segmented ZkSumcheck cached round state is invalid";
@@ -5885,7 +6297,8 @@ inline bool zksc_folded_round_evaluations(
     }
     evaluations.assign(degree + 1U, FrWire{});
     return zksc_accumulate_round_evaluations(
-        descriptor, state, degree, evaluations, error, round_index, progress);
+        descriptor, state, degree, evaluations, error, round_index, progress,
+        "sumcheck_cached_rows", montgomery_plan);
 }
 
 inline bool zksc_segmented_terminal_values(
@@ -5947,7 +6360,9 @@ inline bool prove_zk_sumcheck_segmented(
     bool reuse_folded_state = false,
     const char* progress_phase = nullptr,
     const char* progress_operation_id = nullptr,
-    const std::string* spill_directory = nullptr) {
+    const std::string* spill_directory = nullptr,
+    bool use_montgomery_evaluator = true,
+    std::uint64_t extra_live_bytes = 0U) {
     try {
         if (!zksc_validate_provider_inputs(
                 descriptor, tensor_providers, degree, domain_size, generators,
@@ -5959,6 +6374,33 @@ inline bool prove_zk_sumcheck_segmented(
             if (error) *error = "ZkSumcheck domain has no supported round decomposition";
             return false;
         }
+        ZkSumcheckMontgomeryConstraintPlan montgomery_plan;
+        const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan_ptr = nullptr;
+        std::uint64_t montgomery_plan_peak_bytes = 0U;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        if (use_montgomery_evaluator) {
+            if (!zksc_compile_montgomery_constraint_plan(
+                    descriptor, tensor_providers.size(), degree,
+                    montgomery_plan, error)) return false;
+            montgomery_plan_ptr = &montgomery_plan;
+        }
+#else
+        (void)use_montgomery_evaluator;
+#endif
+        if (!zksc_montgomery_constraint_plan_peak_bytes(
+                static_cast<std::uint64_t>(descriptor.terms.size()),
+                use_montgomery_evaluator, montgomery_plan_peak_bytes)) {
+            if (error) *error = "Sumcheck Montgomery descriptor plan memory bound overflows";
+            return false;
+        }
+        std::uint64_t montgomery_and_extra_peak_bytes = 0U;
+        if (montgomery_plan_peak_bytes >
+                std::numeric_limits<std::uint64_t>::max() - extra_live_bytes) {
+            if (error) *error = "Sumcheck extra live-memory bound overflows";
+            return false;
+        }
+        montgomery_and_extra_peak_bytes =
+            montgomery_plan_peak_bytes + extra_live_bytes;
         RouteSumcheckProgressReporter route_progress_reporter{
             operation_context, bits};
         NativeOperationProgressReporter native_progress(
@@ -5998,7 +6440,13 @@ inline bool prove_zk_sumcheck_segmented(
                 if (error) *error = "Sumcheck spill context or folded-state capacity is invalid";
                 return false;
             }
-            if (folded_peak_bytes > kZkSumcheckFoldedStateBudgetBytes) {
+            if (montgomery_and_extra_peak_bytes >
+                    std::numeric_limits<std::uint64_t>::max() - folded_peak_bytes) {
+                if (error) *error = "Sumcheck Montgomery folded-state capacity overflows";
+                return false;
+            }
+            if (folded_peak_bytes + montgomery_and_extra_peak_bytes >
+                kZkSumcheckFoldedStateBudgetBytes) {
                 std::uint64_t spill_disk_bytes = 0U, spill_ram_bytes = 0U;
                 if (!zksc_spilled_state_disk_peak_bytes(
                         tensor_providers.size(), tensor_providers.front().logical_domain(),
@@ -6008,6 +6456,12 @@ inline bool prove_zk_sumcheck_segmented(
                         tensor_providers.front().segment_size(), spill_ram_bytes) ||
                     spill_ram_bytes > kZkSumcheckSpillRamBudgetBytes) {
                     if (error) *error = "Sumcheck spill resource envelope is invalid";
+                    return false;
+                }
+                if (montgomery_and_extra_peak_bytes > kZkSumcheckSpillRamBudgetBytes ||
+                    spill_ram_bytes > kZkSumcheckSpillRamBudgetBytes -
+                                          montgomery_and_extra_peak_bytes) {
+                    if (error) *error = "Sumcheck spill plan exceeds its RAM budget";
                     return false;
                 }
                 use_spilled_folded_state = true;
@@ -6051,14 +6505,15 @@ inline bool prove_zk_sumcheck_segmented(
             const bool evaluated = reuse_folded_state && round_index != 0U
                 ? zksc_folded_round_evaluations(
                       descriptor, folded_state, degree, evaluations, error,
-                      round_index, progress)
+                      round_index, progress, montgomery_plan_ptr)
                 : use_spilled_folded_state && round_index != 0U
                 ? zksc_spilled_round_evaluations(
                       descriptor, spilled_folded_state, degree, evaluations, error,
-                      round_index, progress)
+                      round_index, progress, montgomery_plan_ptr)
                 : zksc_segmented_round_evaluations(
                       descriptor, tensor_providers, degree, round_index,
-                      prior_challenges, evaluations, error, progress);
+                      prior_challenges, evaluations, error, progress,
+                      montgomery_plan_ptr);
             if (!evaluated) return false;
             std::vector<FrWire> coefficients;
             if (!zksc_interpolate_coefficients(evaluations, coefficients, error)) return false;
@@ -6218,15 +6673,19 @@ inline bool prove_zk_sumcheck(
     const std::string& operation_context, zkdl::Transcript& parent_transcript,
     ZkSumcheckProverResult& result, std::string* error = nullptr,
     const char* progress_phase = nullptr,
-    const char* progress_operation_id = nullptr) {
+    const char* progress_operation_id = nullptr,
+    bool reuse_folded_state = false,
+    bool use_montgomery_evaluator = true,
+    std::uint64_t extra_live_bytes = 0U) {
     std::vector<SegmentedTensorProvider> providers;
     if (!make_segmented_tensor_providers(tensor_values, generators.size(), providers, error))
         return false;
     return prove_zk_sumcheck_segmented(
         descriptor, providers, degree, domain_size, generators,
         blinding_generator, u_generator, initial_claim, statement,
-        operation_context, parent_transcript, result, error, 0U, false,
-        progress_phase, progress_operation_id);
+        operation_context, parent_transcript, result, error, 0U,
+        reuse_folded_state, progress_phase, progress_operation_id, nullptr,
+        use_montgomery_evaluator, extra_live_bytes);
 }
 
 inline bool verify_zk_sumcheck(
@@ -8361,18 +8820,199 @@ inline ConstraintDescriptor pointwise_sumcheck_descriptor(const ConstraintDescri
     return expanded;
 }
 
-inline bool pointwise_providers(const ConstraintDescriptor& descriptor, const std::vector<SegmentedTensorProvider>& input, const std::vector<FrWire>& rho, std::vector<SegmentedTensorProvider>& output, std::string* error = nullptr) {
-    if (input.empty() || !pointwise_shape_domain(descriptor, input.front().logical_domain(), error) || rho.size() != log2_exact(input.front().logical_domain())) return false;
-    output = input;
-    const std::uint32_t domain = input.front().logical_domain(), segment_size = input.front().segment_size();
-    output.emplace_back(domain, segment_size, [rho](std::uint64_t offset, std::uint32_t count, std::vector<FrWire>& values, std::string*) {
-        values.assign(count, zkdl::fr_from_u32(1U));
-        for (std::uint32_t slot = 0U; slot < count; ++slot) {
-            const std::uint64_t index = offset + slot;
-            for (std::size_t bit = 0U; bit < rho.size(); ++bit) values[slot] = zkdl::fr_mul(values[slot], ((index >> bit) & 1U) ? rho[bit] : zkdl::fr_sub(zkdl::fr_from_u32(1U), rho[bit]));
+inline bool pointwise_eqmask_weight_table_peak_bytes(
+    std::uint32_t bit_count, std::uint64_t& peak_bytes) noexcept;
+
+struct PointwiseEqmaskWeightTable {
+    static constexpr std::uint32_t kChunkBits = 8U;
+    static constexpr std::uint32_t kMaxBits = kMaxRelationPointBits;
+    static constexpr std::size_t kMaxChunks =
+        (kMaxBits + kChunkBits - 1U) / kChunkBits;
+    struct Chunk {
+        std::uint32_t bit_offset = 0U;
+        std::uint32_t bit_count = 0U;
+        std::uint32_t entry_count = 0U;
+        std::uint64_t entry_offset = 0U;
+    };
+
+    std::array<Chunk, kMaxChunks> chunks{};
+    std::unique_ptr<FrWire[]> weights;
+    std::uint32_t bits = 0U;
+    std::uint32_t chunk_count = 0U;
+    std::uint64_t entry_count = 0U;
+    std::uint64_t peak_live_bytes = 0U;
+
+    bool build(const std::vector<FrWire>& rho, std::string* error = nullptr) {
+        clear();
+        if (rho.size() > kMaxBits) {
+            if (error) *error = "pointwise eqmask challenge count exceeds the native point cap";
+            return false;
+        }
+        for (const auto& challenge : rho) {
+            if (!zkdl::fr_canonical(challenge)) {
+                if (error) *error = "pointwise eqmask challenge is not canonical";
+                return false;
+            }
+        }
+        bits = static_cast<std::uint32_t>(rho.size());
+        std::uint64_t payload_entries = 0U;
+        for (std::uint32_t offset = 0U; offset < bits; offset += kChunkBits) {
+            const std::uint32_t chunk_bits =
+                std::min<std::uint32_t>(kChunkBits, bits - offset);
+            const std::uint32_t entries = 1U << chunk_bits;
+            if (payload_entries > std::numeric_limits<std::uint64_t>::max() - entries) {
+                if (error) *error = "pointwise eqmask weight-table entry count overflows";
+                clear();
+                return false;
+            }
+            chunks[chunk_count++] = Chunk{offset, chunk_bits, entries, payload_entries};
+            payload_entries += entries;
+        }
+        std::uint64_t checked_peak_bytes = 0U;
+        if (!pointwise_eqmask_weight_table_peak_bytes(bits, checked_peak_bytes) ||
+            payload_entries > std::numeric_limits<std::size_t>::max() / sizeof(FrWire)) {
+            if (error) *error = "pointwise eqmask weight-table memory bound overflows";
+            clear();
+            return false;
+        }
+        try {
+            if (payload_entries != 0U)
+                weights.reset(new FrWire[static_cast<std::size_t>(payload_entries)]);
+        } catch (const std::exception& exception) {
+            if (error) *error = std::string("pointwise eqmask weight-table allocation failed: ") +
+                                exception.what();
+            clear();
+            return false;
+        }
+        entry_count = payload_entries;
+        peak_live_bytes = checked_peak_bytes;
+        const FrWire one = zkdl::fr_from_u32(1U);
+        for (std::uint32_t chunk_index = 0U;
+             chunk_index < chunk_count; ++chunk_index) {
+            const Chunk& chunk = chunks[chunk_index];
+            FrWire* table = weights.get() + chunk.entry_offset;
+            table[0U] = one;
+            for (std::uint32_t local_bit = 0U;
+                 local_bit < chunk.bit_count; ++local_bit) {
+                const FrWire& challenge = rho[chunk.bit_offset + local_bit];
+                const FrWire zero_weight = zkdl::fr_sub(one, challenge);
+                const std::uint32_t half = 1U << local_bit;
+                for (std::uint32_t prefix = 0U; prefix < half; ++prefix) {
+                    const FrWire prior = table[prefix];
+                    table[prefix] = zkdl::fr_mul(prior, zero_weight);
+                    table[half + prefix] = zkdl::fr_mul(prior, challenge);
+                }
+            }
         }
         return true;
-    });
+    }
+
+    FrWire evaluate(std::uint64_t index) const {
+        if (bits >= 64U || index >= (std::uint64_t{1U} << bits))
+            throw std::out_of_range("pointwise eqmask lookup index exceeds its domain");
+        FrWire value = zkdl::fr_from_u32(1U);
+        for (std::uint32_t chunk_index = 0U;
+             chunk_index < chunk_count; ++chunk_index) {
+            const Chunk& chunk = chunks[chunk_index];
+            const std::uint64_t mask = chunk.entry_count - 1U;
+            const std::uint64_t entry = (index >> chunk.bit_offset) & mask;
+            value = zkdl::fr_mul(
+                value, weights[chunk.entry_offset + entry]);
+        }
+        return value;
+    }
+
+    void clear() noexcept {
+        weights.reset();
+        chunks = {};
+        bits = 0U;
+        chunk_count = 0U;
+        entry_count = 0U;
+        peak_live_bytes = 0U;
+    }
+};
+
+inline bool pointwise_eqmask_weight_table_peak_bytes(
+    std::uint32_t bit_count, std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (bit_count > PointwiseEqmaskWeightTable::kMaxBits) return false;
+    std::uint64_t entries = 0U;
+    for (std::uint32_t offset = 0U; offset < bit_count;
+         offset += PointwiseEqmaskWeightTable::kChunkBits) {
+        const std::uint32_t chunk_bits = std::min<std::uint32_t>(
+            PointwiseEqmaskWeightTable::kChunkBits, bit_count - offset);
+        const std::uint64_t chunk_entries = std::uint64_t{1U} << chunk_bits;
+        if (entries > std::numeric_limits<std::uint64_t>::max() - chunk_entries)
+            return false;
+        entries += chunk_entries;
+    }
+    constexpr std::uint64_t allocator_reserve = 64U;
+    constexpr std::uint64_t construction_scratch = 4U * sizeof(FrWire);
+    const std::uint64_t metadata_bytes = sizeof(PointwiseEqmaskWeightTable) +
+        2U * sizeof(void*) + sizeof(SegmentedTensorProvider::RangeReader) +
+        allocator_reserve;
+    if (entries > (std::numeric_limits<std::uint64_t>::max() - metadata_bytes -
+                   construction_scratch) / sizeof(FrWire))
+        return false;
+    peak_bytes = metadata_bytes + entries * sizeof(FrWire) + construction_scratch;
+    return true;
+}
+
+inline bool pointwise_providers(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<SegmentedTensorProvider>& input,
+    const std::vector<FrWire>& rho,
+    std::vector<SegmentedTensorProvider>& output,
+    std::string* error = nullptr,
+    const PointwiseEqmaskWeightTable* eqmask_table = nullptr,
+    NativeOperationProgressReporter* progress = nullptr) {
+    if (input.empty() || !pointwise_shape_domain(descriptor, input.front().logical_domain(), error) || rho.size() != log2_exact(input.front().logical_domain())) return false;
+    if (eqmask_table != nullptr && eqmask_table->bits != rho.size()) {
+        if (error) *error = "pointwise eqmask table challenge count mismatch";
+        return false;
+    }
+    output = input;
+    const std::uint32_t domain = input.front().logical_domain(), segment_size = input.front().segment_size();
+    if (eqmask_table != nullptr) {
+        output.emplace_back(domain, segment_size,
+            [domain, eqmask_table, progress](
+                std::uint64_t offset, std::uint32_t count,
+                std::vector<FrWire>& values, std::string* read_error) {
+                if (offset > domain || count > domain - offset) {
+                    if (read_error) *read_error = "pointwise eqmask range is out of bounds";
+                    return false;
+                }
+                values.resize(count);
+                for (std::uint32_t slot = 0U; slot < count; ++slot) {
+                    const std::uint64_t index = offset + slot;
+                    values[slot] = eqmask_table->evaluate(index);
+                    if (progress != nullptr &&
+                        ((slot & 4095U) == 4095U || slot + 1U == count))
+                        progress->update("eqmask_8bit_weight_table", index + 1U,
+                                         domain);
+                }
+                return true;
+            });
+    } else {
+        output.emplace_back(domain, segment_size,
+            [rho, domain](std::uint64_t offset, std::uint32_t count,
+                          std::vector<FrWire>& values, std::string* read_error) {
+                if (offset > domain || count > domain - offset) {
+                    if (read_error) *read_error = "pointwise eqmask range is out of bounds";
+                    return false;
+                }
+                values.assign(count, zkdl::fr_from_u32(1U));
+                for (std::uint32_t slot = 0U; slot < count; ++slot) {
+                    const std::uint64_t index = offset + slot;
+                    for (std::size_t bit = 0U; bit < rho.size(); ++bit)
+                        values[slot] = zkdl::fr_mul(
+                            values[slot], ((index >> bit) & 1U)
+                                ? rho[bit]
+                                : zkdl::fr_sub(zkdl::fr_from_u32(1U), rho[bit]));
+                }
+                return true;
+            });
+    }
     output.emplace_back(domain, segment_size, [descriptor](std::uint64_t offset, std::uint32_t count, std::vector<FrWire>& values, std::string*) {
         values.resize(count);
         for (std::uint32_t slot = 0U; slot < count; ++slot) values[slot] = zkdl::fr_from_u32(pointwise_active_slot(descriptor, offset + slot) ? 1U : 0U);
@@ -8698,15 +9338,21 @@ inline bool fill_constraint_openings(
         NativeOperationProgressReporter constraint_progress("constraint_proof", descriptor.id);
         const auto rho = pointwise_challenges(descriptor, domain, operation_refs.size(), operation_context, transcript);
         const ConstraintDescriptor weighted = pointwise_sumcheck_descriptor(descriptor, operation_refs.size());
+        PointwiseEqmaskWeightTable eqmask_table;
+        if (!eqmask_table.build(rho, error)) return false;
         std::vector<SegmentedTensorProvider> weighted_providers;
-        if (!pointwise_providers(descriptor, tensor_providers, rho, weighted_providers, error)) return false;
+        if (!pointwise_providers(descriptor, tensor_providers, rho, weighted_providers,
+                                 error, &eqmask_table, &constraint_progress)) return false;
         if (!prove_zk_sumcheck_segmented(
                 weighted, weighted_providers, weighted.degree, domain, terminal_generators,
                 ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
                 operation_context, transcript, sumcheck_result, error, 0U,
-                zksc_folded_state_within_budget(weighted_providers),
+                zksc_folded_state_within_budget(
+                    weighted_providers, weighted, eqmask_table.peak_live_bytes),
                 "constraint_sumcheck", descriptor.id.c_str(),
-                spill_directory)) return false;
+                spill_directory, true, eqmask_table.peak_live_bytes)) return false;
+        weighted_providers.clear();
+        eqmask_table.clear();
         proof.zk_sumcheck = std::move(sumcheck_result.proof);
         std::vector<FrWire> terminal_point;
         terminal_point.reserve(sumcheck_result.challenges.size());
@@ -9876,7 +10522,8 @@ inline bool prove_hidden_matmul(
                                primitive.matmul_shape.n, inner_generators,
                                ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
                                operation_context, transcript, sumcheck, error,
-                               "hidden_matmul_sumcheck", progress_operation_id.c_str())) return false;
+                               "hidden_matmul_sumcheck", progress_operation_id.c_str(),
+                               true, true)) return false;
         std::vector<FrWire> inner_point;
         for (const auto& challenge : sumcheck.challenges)
             inner_point.push_back(zkdl::fr_wire(challenge));
@@ -10749,16 +11396,25 @@ inline bool prove_padding_record(
             tensor_provider, selector_provider};
         const auto rho = pointwise_challenges(constraint, descriptor.domain_size, providers.size(), operation_context, transcript);
         const ConstraintDescriptor weighted = pointwise_sumcheck_descriptor(constraint, providers.size());
+        PointwiseEqmaskWeightTable eqmask_table;
+        if (!eqmask_table.build(rho, error)) return false;
+        NativeOperationProgressReporter qpad_record_progress(
+            "qpad_record", descriptor.id);
         std::vector<SegmentedTensorProvider> weighted_providers;
-        if (!pointwise_providers(constraint, providers, rho, weighted_providers, error)) return false;
+        if (!pointwise_providers(constraint, providers, rho, weighted_providers,
+                                 error, &eqmask_table, &qpad_record_progress)) return false;
         ZkSumcheckProverResult sumcheck;
         if (!prove_zk_sumcheck_segmented(
                 weighted, weighted_providers, weighted.degree, descriptor.domain_size, generators,
                 ipa_blinding_generator,
                 ipa_u_generator, FrWire{}, statement, operation_context,
                 transcript, sumcheck, error, 0U,
-                zksc_folded_state_within_budget(weighted_providers),
-                nullptr, nullptr, spill_directory)) return false;
+                zksc_folded_state_within_budget(
+                    weighted_providers, weighted, eqmask_table.peak_live_bytes),
+                "qpad_sumcheck", descriptor.id.c_str(), spill_directory, true,
+                eqmask_table.peak_live_bytes)) return false;
+        weighted_providers.clear();
+        eqmask_table.clear();
         std::vector<FrWire> point;
         for (const auto& challenge : sumcheck.challenges)
             point.push_back(zkdl::fr_wire(challenge));
@@ -10814,7 +11470,7 @@ inline bool prove_padding_record(
                 sumcheck.final_q_blinder, FrWire{}, operation_context,
                 transcript, terminal, error,
                 segment_blinding_scalars != nullptr ? &terminal_materials : nullptr,
-                0U, nullptr, authenticated_basis, msm_session,
+                0U, &qpad_record_progress, authenticated_basis, msm_session,
                 validation_receipts != nullptr ? &terminal_receipts : nullptr)) return false;
         record = PaddingProofRecord{};
         record.tensor_id = descriptor.id;
@@ -10859,15 +11515,41 @@ inline bool verify_padding_record(
             if (error) *error = "Qpad proof commitment index mismatch";
             return false;
         }
+        const CommitmentWire& input_wire = commitments[record.commitment_index];
+        if (!relation_segment_commitment_valid(statement, input_wire, error)) return false;
         if (record.relation.opening_tensor_indices != std::vector<std::uint32_t>{0U, 1U} ||
             record.relation.opening_commitment_indices != std::vector<std::uint32_t>{
                 record.commitment_index, qpad_selector_index(record_index)}) {
             if (error) *error = "Qpad proof terminal commitment map is not canonical";
             return false;
         }
-        const zkdl::CpuG1Point selector_commitment = zktr_segmented_commitment(
-            selector_provider, generators, ipa_blinding_generator, FrWire{}, error);
+        CommitmentWire selector_wire;
+        SegmentCommitmentMaterial selector_material;
+        if (!zktr_build_segment_commitment_material("qpad/" + descriptor.id, 1U, selector_provider, generators, ipa_blinding_generator, ipa_u_generator, FrWire{}, statement, selector_wire, selector_material, error, nullptr, 0U, nullptr, authenticated_basis, authenticated_basis != nullptr ? msm_session : nullptr, nullptr)) return false;
+        const zkdl::CpuG1Point selector_commitment = zkdl::cpu_g1_from_native(selector_wire.commitment);
         if (selector_commitment.is_zero()) return false;
+        const auto& terminal_proof = record.relation.terminal_relation;
+        if (terminal_proof.terminal_segment_openings.size() != 2U) {
+            if (error) *error = "Qpad terminal opening groups do not match its two canonical tensors";
+            return false;
+        }
+        const auto opening_group_matches_wire = [&](std::size_t tensor_index, const CommitmentWire& wire, std::uint32_t commitment_index) {
+            const auto& openings = terminal_proof.terminal_segment_openings[tensor_index];
+            if (openings.size() != wire.segment_commitments.size()) {
+                if (error) *error = "Qpad terminal opening count differs from segment commitment layout";
+                return false;
+            }
+            for (std::size_t segment_index = 0U; segment_index < openings.size(); ++segment_index) {
+                const auto& opening = openings[segment_index];
+                const auto& segment = wire.segment_commitments[segment_index];
+                if (opening.commitment_index != commitment_index || opening.evaluation_commitment_index != zktr_terminal_evaluation_index(tensor_index) || opening.generator_size != wire.segment_size || opening.segment_index != segment.segment_index || opening.logical_domain != wire.domain_size || opening.logical_offset != segment.logical_offset || opening.actual_length != segment.actual_length || opening.padded_length != segment.padded_length || !zkdl::cpu_g1_equal(zkdl::cpu_g1_from_native(opening.xi), zkdl::cpu_g1_from_native(segment.commitment))) {
+                    if (error) *error = "Qpad terminal opening does not match its segment commitment wire";
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!opening_group_matches_wire(0U, input_wire, record.commitment_index) || !opening_group_matches_wire(1U, selector_wire, qpad_selector_index(record_index))) return false;
         const std::vector<zkdl::CpuG1Point> canonical_commitments = {
             zkdl::cpu_g1_from_native(commitments[record.commitment_index].commitment),
             selector_commitment};
@@ -10915,8 +11597,17 @@ inline bool prove_padding_records(
     const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr,
     zkdl::CpuG1MsmSession* msm_session = nullptr,
     const std::map<std::string, SegmentCommitmentValidationReceipt>*
-        validation_receipts = nullptr) {
+        validation_receipts = nullptr,
+    std::size_t total_records = std::numeric_limits<std::size_t>::max()) {
     records.clear();
+    if (total_records == std::numeric_limits<std::size_t>::max()) {
+        total_records = 0U;
+        for (const auto& descriptor : context.tensor_descriptors)
+            if (qpad_record_required(descriptor.logical_shape,
+                                     descriptor.padded_shape,
+                                     descriptor.visibility == 1U)) ++total_records;
+    }
+    NativeOperationProgressReporter record_progress("qpad_records", "padding_records");
     std::size_t index = 0U;
     for (const auto& descriptor : context.tensor_descriptors) {
         if (!qpad_record_required(descriptor.logical_shape,
@@ -10936,6 +11627,7 @@ inline bool prove_padding_records(
         transcript.absorb("gat.relation.padding", encoded);
         records.push_back(std::move(record));
         ++index;
+        record_progress.update("records", index, total_records);
     }
     return true;
 }
@@ -11292,10 +11984,22 @@ inline bool prove_impl(const ProverContext& context, Proof& proof, std::string* 
         zkdl::Transcript transcript("zkdl-gat-relation-v1");
         absorb_statement(transcript, proof.statement, proof.commitments);
         absorb_hiding_records(transcript, proof.hiding_commitment_records);
+        std::size_t qpad_record_count = 0U;
+        for (const auto& descriptor : context.tensor_descriptors)
+            if (qpad_record_required(descriptor.logical_shape,
+                                     descriptor.padded_shape,
+                                     descriptor.visibility == 1U)) ++qpad_record_count;
+        const auto qpad_phase_start = std::chrono::steady_clock::now();
+        progress.set_phase("qpad_records");
+        emit_progress("qpad_records", "START", qpad_phase_start,
+                      "total=" + std::to_string(qpad_record_count));
         if (!prove_padding_records(context, tensor_map, proof.commitments,
                                    transcript, proof.padding_records, error,
                                    &segment_blinding_scalars, &msm_session,
-                                   &segment_commitment_receipts)) return false;
+                                   &segment_commitment_receipts,
+                                   qpad_record_count)) return false;
+        emit_progress("qpad_records", "PASS", qpad_phase_start,
+                      "records=" + std::to_string(proof.padding_records.size()));
         const auto operation_phase_start = std::chrono::steady_clock::now();
         auto last_operation_progress = operation_phase_start;
         progress.set_phase("operation_proofs");
@@ -12338,9 +13042,13 @@ inline bool prove_authenticated_sorted_lookup(
             const FrWire initial_claim = marker_membership
                 ? zkdl::fr_mul(piece_rhos[0U], zkdl::fr_from_u32(descriptor.table_unique_rows))
                 : FrWire{};
+            PointwiseEqmaskWeightTable eqmask_table;
+            if (!eqmask_table.build(rho, error)) return false;
             std::vector<SegmentedTensorProvider> weighted_providers;
             failure_phase = "sumcheck_provider";
-            if (!pointwise_providers(relation, relation_providers, rho, weighted_providers, error)) return false;
+            if (!pointwise_providers(relation, relation_providers, rho,
+                                     weighted_providers, error, &eqmask_table,
+                                     &lookup_progress)) return false;
             ZkSumcheckProverResult sumcheck;
             failure_phase = "sumcheck";
             if (!prove_zk_sumcheck_segmented(
@@ -12348,11 +13056,14 @@ inline bool prove_authenticated_sorted_lookup(
                     relation_providers.front().logical_domain(), generators,
                     blinding_generator, u_generator, initial_claim, statement, context,
                     transcript, sumcheck, error, descriptor.segment_size,
-                    zksc_folded_state_within_budget(weighted_providers),
+                    zksc_folded_state_within_budget(
+                        weighted_providers, weighted, eqmask_table.peak_live_bytes),
                     "sorted_lookup_sumcheck", descriptor.operation_id.c_str(),
-                    spill_directory)) {
+                    spill_directory, true, eqmask_table.peak_live_bytes)) {
                 return false;
             }
+            weighted_providers.clear();
+            eqmask_table.clear();
             std::vector<FrWire> point;
             for (const auto& challenge : sumcheck.challenges)
                 point.push_back(zkdl::fr_wire(challenge));

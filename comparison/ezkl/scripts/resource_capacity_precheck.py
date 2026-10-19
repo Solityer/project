@@ -30,7 +30,7 @@ _FORMAT_SOURCES = (
     "vendor/halo2/halo2_proofs/src/helpers.rs",
 )
 _SETUP_FILES = (
-    "setup_timing.json", "settings.json", "compiled.circuit", "pk.key", "vk.key",
+    "setup_timing.json", "admission.json", "settings.json", "compiled.circuit", "pk.key", "vk.key",
     "native_keygen_budget.json", "native_keygen_receipt.json", "gat_static_tables.json",
     "gat_integer_ledger.json", "circuit_ref.json", "producer_context.json",
 )

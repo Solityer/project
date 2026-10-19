@@ -812,7 +812,7 @@ impl<C: CurveAffine> VerifyingKey<C> {
     where
         C: SerdeCurveAffine,
     {
-        10 + (self.fixed_commitments.len() * C::byte_length(format))
+        7 + (self.fixed_commitments.len() * C::byte_length(format))
             + self.permutation.bytes_length(format)
             + if self.compress_selectors {
                 self.selectors.encoded_byte_len()

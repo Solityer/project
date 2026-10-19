@@ -1,0 +1,10 @@
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9111076864 layer_unary=6036402775 layer_binary=3014256505 current_layer=112 elapsed_ms=15010
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24313331712 layer_unary=16095018363 layer_binary=8157895765 current_layer=112 elapsed_ms=30020
+[ppi/prover] gat_adapter_prover_stage: native-initSubset begin
+[ppi/prover] gat_adapter_prover_stage: native-initSubset complete elapsed_ms=2.42251e+06
+[ppi/prover] [zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms=451596
+[ppi/prover] gat_adapter_prover_stage: begin
+[ppi/prover] gat_adapter_prover_stage: lasso-build
+[ppi/prover] gat_adapter_prover_stage: witness
+[ppi/prover] gat_adapter_prover_stage: generators
+[ppi/prover] gat_adapter_prover_stage: lasso-prove

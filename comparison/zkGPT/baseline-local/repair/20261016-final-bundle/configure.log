@@ -1,9 +1,0 @@
--- Found OpenMP_C: -fopenmp (found version "4.5") 
--- Found OpenMP_CXX: -fopenmp (found version "4.5") 
--- Found OpenMP: TRUE (found version "4.5")  
-bint_obj=/tmp/zkgpt-maskedeqlookup-build.EHoP0d/3rd/mcl/bint64.o
-base_obj=/tmp/zkgpt-maskedeqlookup-build.EHoP0d/3rd/mcl/base64.o
--- Configuring done (0.4s)
--- Generating done (0.0s)
--- Build files have been written to: /tmp/zkgpt-maskedeqlookup-build.EHoP0d
-configure_elapsed=0.42 exit=0

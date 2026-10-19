@@ -152,6 +152,25 @@ impl FormalCliContract {
     }
 }
 
+/// Write the native runtime source identity through the same baseline-local
+/// path checks used for the generated formal CLI contract.
+pub fn write_source_tree_sha256(path: &Path, digest: &str) -> Result<(), String> {
+    validate_contract_path(path)?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("native source-tree SHA-256 must be exactly 64 lowercase hexadecimal characters".into());
+    }
+    let resolved_path = resolve_contract_path(path)?;
+    if let Some(parent) = resolved_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| format!("create {}: {}", parent.display(), error))?;
+    }
+    fs::write(&resolved_path, digest.as_bytes())
+        .map_err(|error| format!("write native source-tree SHA-256 {}: {}", resolved_path.display(), error))
+}
+
 fn validate_contract_path(path: &Path) -> Result<(), String> {
     if path.is_absolute() || path.components().any(|component| { matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) }){
         return Err(format!("formal CLI contract path must be baseline-local and must not contain '..': {}", path.display()));

@@ -1,1 +1,0 @@
-STOP_TOOL_EXIT=2

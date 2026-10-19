@@ -57,6 +57,7 @@ from formal_common import (
     validate_public_output,
     validate_public_statement,
     require_authenticated_formal_context,
+    native_pk_v4_read_backing_geometry,
 )
 
 REQUIRED_RESULT_KEYS = {
@@ -200,6 +201,148 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
     if expected["native_binding"] is not True:
         abort("proof instances lack native public-instance binding")
     return expected
+
+
+def _validate_shplonk_fixed_cache_budget(
+    path: Path,
+    admission: dict[str, Any],
+    prove_budget: dict[str, Any],
+) -> dict[str, int]:
+    memory = admission.get("native_memory_model")
+    if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v18":
+        abort(f"{path} admission has an incompatible SHPLONK cache memory model")
+    cache_domain = admission.get("domain_size")
+    cache_extended_domain = memory.get("proof_domain_size")
+    cache_scalar = memory.get("size_of_fr_bytes")
+    cache_group_layout = memory.get("size_of_shplonk_fixed_aggregate_cache_group_bytes")
+    cache_usize = memory.get("size_of_usize_bytes")
+    cache_vec_header = memory.get("size_of_vec_header_bytes")
+    cache_sets = memory.get("shplonk_rotation_set_count")
+    cache_fixed = memory.get("shplonk_max_commitments_per_rotation_set")
+    cache_points = memory.get("shplonk_max_rotation_count")
+    cache_source_values = (
+        cache_domain,
+        cache_extended_domain,
+        cache_scalar,
+        cache_group_layout,
+        cache_usize,
+        cache_vec_header,
+        cache_sets,
+        cache_fixed,
+        cache_points,
+    )
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value <= 0
+        or value > sys.maxsize
+        for value in cache_source_values
+    ):
+        abort(
+            f"{path} admission has malformed fixed-cache source bounds: "
+            f"base_domain={cache_domain!r}, extended_proof_domain={cache_extended_domain!r}, "
+            f"Fr_bytes={cache_scalar!r}, aggregate_group_bytes={cache_group_layout!r}"
+        )
+
+    cache_group_host = (
+        cache_group_layout
+        + cache_domain * cache_scalar
+        + cache_fixed * cache_usize
+        + cache_points * cache_scalar
+        + 3 * 4096
+    )
+    cache_group_payload = cache_domain * cache_scalar
+    cache_group_disk = ((cache_group_payload + 4095) // 4096) * 4096 + 4096
+    cache_bank_header = cache_vec_header + 4096
+    cache_static = {
+        "shplonk_fixed_cache_group_host_bound_bytes": cache_group_host,
+        "shplonk_fixed_cache_group_disk_bound_bytes": cache_group_disk,
+        "shplonk_fixed_cache_bank_header_bytes": cache_bank_header,
+        "shplonk_fixed_cache_domain_size": cache_domain,
+        "shplonk_fixed_cache_scalar_bytes": cache_scalar,
+        "shplonk_fixed_cache_max_fixed_sources_per_group": cache_fixed,
+        "shplonk_fixed_cache_max_points_per_group": cache_points,
+        "shplonk_fixed_cache_rotation_set_count": cache_sets,
+    }
+    cache_static_mismatches = {
+        name: {"actual": prove_budget.get(name), "expected": value}
+        for name, value in cache_static.items()
+        if prove_budget.get(name) != value
+    }
+    if cache_static_mismatches:
+        abort(
+            f"{path} native prove budget SHPLONK cache shape does not match its admitted source geometry: "
+            f"base_domain_expected={cache_domain}, extended_proof_domain={cache_extended_domain}, "
+            f"Fr_bytes={cache_scalar}, aggregate_group_bytes={cache_group_layout}, "
+            f"group_host_bytes_budget={prove_budget.get('shplonk_fixed_cache_group_host_bound_bytes')!r} "
+            f"expected={cache_group_host}, "
+            f"group_disk_bytes_budget={prove_budget.get('shplonk_fixed_cache_group_disk_bound_bytes')!r} "
+            f"expected={cache_group_disk}, mismatches={cache_static_mismatches!r}"
+        )
+
+    for name in (
+        "disk_available_bytes",
+        "disk_required_known_bytes",
+        "host_available_bytes",
+        "host_required_known_bytes",
+        "shplonk_fixed_cache_max_groups",
+        "shplonk_fixed_cache_host_limit_bytes",
+        "shplonk_fixed_cache_bank_header_limit_bytes",
+        "shplonk_fixed_cache_disk_limit_bytes",
+    ):
+        value = prove_budget.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
+            abort(f"{path} native prove budget has invalid {name}")
+
+    expected_cache_groups = min(
+        2,
+        cache_sets,
+        max(
+            0,
+            prove_budget["host_available_bytes"]
+            - prove_budget["host_required_known_bytes"]
+            - cache_bank_header,
+        )
+        // cache_group_host,
+        max(
+            0,
+            prove_budget["disk_available_bytes"]
+            - prove_budget["disk_required_known_bytes"],
+        )
+        // cache_group_disk,
+    )
+    expected_cache_host = cache_bank_header + expected_cache_groups * cache_group_host if expected_cache_groups else 0
+    expected_cache_bank_header = cache_bank_header if expected_cache_groups else 0
+    expected_cache_disk = expected_cache_groups * cache_group_disk
+    cache_limit_expected = {
+        "shplonk_fixed_cache_max_groups": expected_cache_groups,
+        "shplonk_fixed_cache_host_limit_bytes": expected_cache_host,
+        "shplonk_fixed_cache_bank_header_limit_bytes": expected_cache_bank_header,
+        "shplonk_fixed_cache_disk_limit_bytes": expected_cache_disk,
+    }
+    cache_limit_mismatches = {
+        name: {"actual": prove_budget.get(name), "expected": value}
+        for name, value in cache_limit_expected.items()
+        if prove_budget.get(name) != value
+    }
+    if cache_limit_mismatches:
+        abort(
+            f"{path} native prove budget SHPLONK cache limits do not match the admitted resource envelope: "
+            f"base_domain={cache_domain}, extended_proof_domain={cache_extended_domain}, "
+            f"Fr_bytes={cache_scalar}, aggregate_group_bytes={cache_group_layout}, "
+            f"group_host_bytes={cache_group_host}, group_disk_bytes={cache_group_disk}, "
+            f"host_available={prove_budget['host_available_bytes']}, "
+            f"host_required={prove_budget['host_required_known_bytes']}, "
+            f"disk_available={prove_budget['disk_available_bytes']}, "
+            f"disk_required={prove_budget['disk_required_known_bytes']}, "
+            f"mismatches={cache_limit_mismatches!r}"
+        )
+    return {
+        "rotation_set_count": cache_sets,
+        "group_host_bytes": cache_group_host,
+        "group_disk_bytes": cache_group_disk,
+        "bank_header_bytes": cache_bank_header,
+    }
 
 
 def validate_cell(
@@ -448,7 +591,13 @@ def validate_cell(
         if name not in artifact_records or artifact_records[name]["sha256"] != digest:
             abort(f"{path} artifact file {name} is not bound to the public boundary")
     if formal:
-        native_receipt_names = ("setup_receipt.json", "native_keygen_budget.json", "native_keygen_receipt.json", "native_prove_budget.json")
+        native_receipt_names = (
+            "setup_receipt.json",
+            "native_keygen_budget.json",
+            "native_keygen_receipt.json",
+            "native_prove_budget.json",
+            "admission.json",
+        )
         if any(name not in artifact_records for name in native_receipt_names):
             abort(f"{path} artifact manifest omits native setup/prove resource receipts")
         setup_receipt = load_json(artifact_manifest.parent / native_receipt_names[0], "formal setup resource receipt")
@@ -529,6 +678,7 @@ def validate_cell(
         if not isinstance(setup_files, dict) or any(
             setup_files.get(name) != digest
             for name, digest in (
+                ("admission.json", current_admission_sha256),
                 ("settings.json", result["settings_sha256"]),
                 ("compiled.circuit", result["compiled_circuit_sha256"]),
                 ("vk.key", result["vk_sha256"]),
@@ -628,11 +778,26 @@ def validate_cell(
         permutation_values = [native_census.get(name) for name in ("permutation_data_allocated_bytes", "permutation_directory_allocated_bytes", "permutation_successor_edges")]
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in permutation_values):
             abort(f"{path} native permutation census byte counts are invalid")
+        constraint_system = admission.get("constraint_system")
+        permutation_domain = admission.get("domain_size")
+        permutation_columns = constraint_system.get("num_permutation_columns") if isinstance(constraint_system, dict) else None
+        if (
+            isinstance(permutation_domain, bool) or not isinstance(permutation_domain, int) or permutation_domain <= 0
+            or isinstance(permutation_columns, bool) or not isinstance(permutation_columns, int) or permutation_columns <= 0
+        ):
+            abort(f"{path} native admission has invalid permutation bitmap geometry")
+        permutation_cells = permutation_domain * permutation_columns
+        if permutation_cells > sys.maxsize or permutation_values[2] > permutation_cells:
+            abort(f"{path} native permutation census exceeds its admitted bitmap domain")
         successor_logical_bytes = 16 * permutation_values[2]
         successor_reserved_bytes = ((successor_logical_bytes + 4095) // 4096) * 4096
-        target_bitmap_virtual_bytes = (permutation_values[2] + 7) // 8
-        target_bitmap_reserved_bytes = ((target_bitmap_virtual_bytes + 4095) // 4096) * 4096
-        exact_pk_read_backing_bytes = successor_reserved_bytes + target_bitmap_reserved_bytes
+        target_bitmap_geometry = _validate_native_pk_v4_read_backing_budget(
+            admission, permutation_values[2], prove_budget
+        )
+        target_bitmap_virtual_bytes = target_bitmap_geometry["target_bitmap_virtual_bytes"]
+        target_bitmap_page_count = target_bitmap_geometry["target_bitmap_page_count"]
+        target_bitmap_reserved_bytes = target_bitmap_geometry["target_bitmap_backing_bytes"]
+        exact_pk_read_backing_bytes = target_bitmap_reserved_bytes
         permutation_backing = permutation_values[0] + permutation_values[1] + successor_reserved_bytes
         if (
             successor_reserved_bytes > sys.maxsize
@@ -667,41 +832,17 @@ def validate_cell(
         }
         if any(prove_budget.get(name) != value for name, value in expected_prove.items()):
             abort(f"{path} native prove budget does not bind its setup, keygen, and binary identities")
-        if not isinstance(admission, dict) or sha256(admission_path) != prove_budget.get("admission_sha256"):
-            abort(f"{path} native prove budget does not bind the current source-derived admission")
-        memory = admission.get("native_memory_model")
-        if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v18":
-            abort(f"{path} admission has an incompatible SHPLONK cache memory model")
-        cache_domain = memory.get("proof_domain_size")
-        cache_scalar = memory.get("size_of_fr_bytes")
-        cache_group_layout = memory.get("size_of_shplonk_fixed_aggregate_cache_group_bytes")
-        cache_usize = memory.get("size_of_usize_bytes")
-        cache_vec_header = memory.get("size_of_vec_header_bytes")
-        cache_sets = memory.get("shplonk_rotation_set_count")
-        cache_fixed = memory.get("shplonk_max_commitments_per_rotation_set")
-        cache_points = memory.get("shplonk_max_rotation_count")
-        cache_source_values = (cache_domain, cache_scalar, cache_group_layout, cache_usize, cache_vec_header, cache_sets, cache_fixed, cache_points)
-        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > sys.maxsize for value in cache_source_values):
-            abort(f"{path} admission has malformed fixed-cache source bounds")
-        cache_group_host = cache_group_layout + cache_domain * cache_scalar + cache_fixed * cache_usize + cache_points * cache_scalar + 3 * 4096
-        cache_group_payload = cache_domain * cache_scalar
-        cache_group_disk = ((cache_group_payload + 4095) // 4096) * 4096 + 4096
-        cache_bank_header = cache_vec_header + 4096
-        cache_static = {
-            "shplonk_fixed_cache_group_host_bound_bytes": cache_group_host,
-            "shplonk_fixed_cache_group_disk_bound_bytes": cache_group_disk,
-            "shplonk_fixed_cache_bank_header_bytes": cache_bank_header,
-            "shplonk_fixed_cache_domain_size": cache_domain,
-            "shplonk_fixed_cache_scalar_bytes": cache_scalar,
-            "shplonk_fixed_cache_max_fixed_sources_per_group": cache_fixed,
-            "shplonk_fixed_cache_max_points_per_group": cache_points,
-            "shplonk_fixed_cache_rotation_set_count": cache_sets,
-        }
-        if any(prove_budget.get(name) != value for name, value in cache_static.items()):
-            abort(f"{path} native prove budget SHPLONK cache shape does not match its admitted source geometry")
+        current_admission_sha256 = sha256(admission_path)
+        if (
+            not isinstance(admission, dict)
+            or receipt_digests["admission.json"] != current_admission_sha256
+            or current_admission_sha256 != prove_budget.get("admission_sha256")
+            or current_admission_sha256 != keygen_budget.get("admission_sha256")
+            or current_admission_sha256 != setup_receipt.get("admission_sha256")
+        ):
+            abort(f"{path} formal setup/prove budgets do not bind the current Admission bytes")
+        _validate_shplonk_fixed_cache_budget(path, admission, prove_budget)
         for name in (
-            "disk_available_bytes",
-            "disk_required_known_bytes",
             "permutation_grand_product_set_count",
             "permutation_grand_product_bank_mapped_bytes",
             "permutation_grand_product_window_mapped_bytes",
@@ -717,16 +858,11 @@ def validate_cell(
             "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes",
             "native_pk_read_stream_buffer_upper_bytes",
-            "shplonk_fixed_cache_max_groups",
-            "shplonk_fixed_cache_host_limit_bytes",
-            "shplonk_fixed_cache_bank_header_limit_bytes",
-            "shplonk_fixed_cache_disk_limit_bytes",
         ):
             value = prove_budget.get(name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
                 abort(f"{path} native prove budget has invalid {name}")
-        target_bitmap_page_count = (target_bitmap_reserved_bytes // 4096)
-        target_bitmap_allocation_upper = (target_bitmap_page_count + 7) // 8
+        target_bitmap_allocation_upper = target_bitmap_geometry["target_bitmap_allocation_bitmap_bytes"]
         expected_read_host_scratch = (
             prove_budget["native_pk_read_successor_cache_upper_bytes"]
             + prove_budget["native_pk_read_target_bitmap_fixed_cache_upper_bytes"]
@@ -734,15 +870,6 @@ def validate_cell(
             + prove_budget["native_pk_read_validation_buffers_upper_bytes"]
             + prove_budget["native_pk_read_stream_buffer_upper_bytes"]
         )
-        expected_cache_groups = min(
-            2,
-            cache_sets,
-            max(0, prove_budget["host_available_bytes"] - prove_budget["host_required_known_bytes"] - cache_bank_header) // cache_group_host,
-            max(0, prove_budget["disk_available_bytes"] - prove_budget["disk_required_known_bytes"]) // cache_group_disk,
-        )
-        expected_cache_host = cache_bank_header + expected_cache_groups * cache_group_host if expected_cache_groups else 0
-        expected_cache_bank_header = cache_bank_header if expected_cache_groups else 0
-        expected_cache_disk = expected_cache_groups * cache_group_disk
         if (
             prove_budget["disk_required_known_bytes"] > prove_budget["disk_available_bytes"]
             or prove_budget["permutation_grand_product_bank_mapped_bytes"]
@@ -764,10 +891,6 @@ def validate_cell(
             or prove_budget["native_pk_read_host_scratch_upper_bytes"] != expected_read_host_scratch
             or prove_budget["native_pk_read_host_scratch_upper_bytes"] > prove_budget["host_required_known_bytes"]
             or prove_budget["host_required_known_bytes"] > prove_budget["host_available_bytes"]
-            or prove_budget["shplonk_fixed_cache_max_groups"] != expected_cache_groups
-            or prove_budget["shplonk_fixed_cache_host_limit_bytes"] != expected_cache_host
-            or prove_budget["shplonk_fixed_cache_bank_header_limit_bytes"] != expected_cache_bank_header
-            or prove_budget["shplonk_fixed_cache_disk_limit_bytes"] != expected_cache_disk
         ):
             abort(f"{path} native PK reader resources do not fit the authenticated host/disk envelope")
     core_path = path.parent / "core_run_manifest.json"
@@ -867,6 +990,40 @@ def build_matrix_document(cells: list[dict[str, Any]], *, datasets: tuple[str, .
         document["backends"] = list(backends)
         document["pair_consistency_checked"] = set(backends) == set(BACKENDS)
     return document
+
+
+def _validate_native_pk_v4_read_backing_budget(
+    admission: dict[str, Any], successor_edges: int, prove_budget: dict[str, Any]
+) -> dict[str, int]:
+    constraint_system = admission.get("constraint_system")
+    permutation_domain = admission.get("domain_size")
+    permutation_columns = constraint_system.get("num_permutation_columns") if isinstance(constraint_system, dict) else None
+    if (
+        isinstance(permutation_domain, bool)
+        or not isinstance(permutation_domain, int)
+        or permutation_domain <= 0
+        or isinstance(permutation_columns, bool)
+        or not isinstance(permutation_columns, int)
+        or permutation_columns <= 0
+    ):
+        abort("formal native admission has invalid permutation bitmap geometry")
+    permutation_cells = permutation_domain * permutation_columns
+    geometry = native_pk_v4_read_backing_geometry(permutation_cells, successor_edges)
+    expected = {
+        "native_pk_read_backing_required_bytes": geometry["target_bitmap_backing_bytes"],
+        "max_total_backing_bytes": geometry["target_bitmap_backing_bytes"],
+        "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": geometry[
+            "target_bitmap_allocation_bitmap_bytes"
+        ],
+    }
+    if any(
+        isinstance(prove_budget.get(name), bool)
+        or not isinstance(prove_budget.get(name), int)
+        or prove_budget.get(name) != value
+        for name, value in expected.items()
+    ):
+        abort("native prove budget does not match the v4 PK reader's target-bitmap backing")
+    return geometry
 
 
 def _pending_formal_cell(

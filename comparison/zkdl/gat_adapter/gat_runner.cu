@@ -6900,7 +6900,8 @@ int main(int argc, char **argv) {
         const auto options = zkdl_gat::parse_cli(argc, argv);
         const bool planned_shape_mode = options.command == "resource-plan" && !options.planned_shape.empty();
         const auto config = zkdl_gat::load_config(options.config,
-                                                  options.command == "admit" || options.command == "resource-plan",
+                                                  options.command == "admit" || options.command == "resource-plan" ||
+                                                      options.command == "gpu-offload-device-info",
                                                   planned_shape_mode);
         if (options.command == "inspect") {
             std::cout << "dataset=" << config.dataset << " baseline_root=" << config.baseline_root.string()

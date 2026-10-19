@@ -13,12 +13,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from common import DATASETS, ChainError, canonical_dataset_scope
+
 
 LAUNCH_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 STATUS_SCHEMA = "zkgpt-gat-detached-launch-v2"
 POINTER_SCHEMA = "zkgpt-gat-detached-launch-v1"
 ACTIVE_STATES = ("STARTING", "RUNNING")
-TERMINAL_STATES = ("COMPLETE", "FAILED", "INTERRUPTED")
+TERMINAL_STATES = ("COMPLETE", "SUBSET_COMPLETE", "SUBSET_FAILED", "FAILED", "INTERRUPTED")
 
 
 class StopError(Exception):
@@ -89,17 +91,40 @@ def validate_status(state: Dict[str, Any], root: Path, launch_id: str,
     status = state.get("status")
     if status not in ACTIVE_STATES + TERMINAL_STATES:
         raise StopError("detached launch status is invalid")
+    legacy_scope_metadata = "requested_datasets" not in state and "datasets_selector_explicit" not in state
+    if legacy_scope_metadata:
+        dataset_scope = DATASETS
+        selector_explicit = False
+    else:
+        selector_explicit = state.get("datasets_selector_explicit")
+        if type(selector_explicit) is not bool:
+            raise StopError("detached launch dataset selector metadata is invalid")
+        try:
+            raw_scope = state.get("requested_datasets")
+            dataset_scope = canonical_dataset_scope(raw_scope)
+        except ChainError as exc:
+            raise StopError("detached launch requested dataset scope is invalid") from exc
+        if not isinstance(raw_scope, list) or raw_scope != list(dataset_scope):
+            raise StopError("detached launch requested dataset scope is not canonical")
+        if not selector_explicit and dataset_scope != DATASETS:
+            raise StopError("default detached launch does not cover all five datasets")
+    selector_suffix = ["--datasets", *dataset_scope] if selector_explicit else []
     supervisor_pid = state.get("supervisor_pid")
     supervisor_ticks = state.get("supervisor_start_ticks")
     supervisor_argv = state.get("supervisor_argv")
+    expected_supervisor_interpreter = sys.executable
+    if legacy_scope_metadata and isinstance(supervisor_argv, list) and supervisor_argv:
+        legacy_interpreter = supervisor_argv[0]
+        if isinstance(legacy_interpreter, str) and Path(legacy_interpreter).name in ("python", "python3"):
+            expected_supervisor_interpreter = legacy_interpreter
     if (type(supervisor_pid) is not int or supervisor_pid <= 0 or
             type(supervisor_ticks) is not int or supervisor_ticks <= 0 or
             state.get("supervisor_process_group") != supervisor_pid or
             state.get("supervisor_cwd") != str(root) or
             not isinstance(state.get("supervisor_executable"), str) or
             not state["supervisor_executable"].startswith("/") or
-            not isinstance(supervisor_argv, list) or len(supervisor_argv) < 2 or
-            supervisor_argv[1:] != [str(supervisor_script), "--root", str(root), "--launch-id", launch_id]):
+            not isinstance(supervisor_argv, list) or
+            supervisor_argv != [expected_supervisor_interpreter, str(supervisor_script), "--root", str(root), "--launch-id", launch_id, *selector_suffix]):
         raise StopError("detached launch supervisor identity metadata is invalid")
     child_pid = state.get("child_pid")
     if child_pid is not None:
@@ -110,7 +135,8 @@ def validate_status(state: Dict[str, Any], root: Path, launch_id: str,
                 state.get("child_cwd") != str(root) or
                 not isinstance(state.get("child_executable"), str) or
                 not state["child_executable"].startswith("/") or
-                not isinstance(child_argv, list) or len(child_argv) != 2 or child_argv[1] != str(runner)):
+                not isinstance(child_argv, list) or
+                child_argv != [sys.executable, str(runner), *selector_suffix]):
             raise StopError("detached launch child identity metadata is invalid")
     elif status == "RUNNING":
         raise StopError("running detached launch has no child identity")

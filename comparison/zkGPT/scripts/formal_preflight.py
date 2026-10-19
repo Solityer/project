@@ -21,6 +21,7 @@ from common import (
     CAPACITY_PROOF_PATH,
     PREFLIGHT_SCHEMA,
     ChainError,
+    canonical_dataset_scope,
     atomic_write_json,
     baseline_root,
     binary_fingerprint,
@@ -35,21 +36,22 @@ from common import (
     relative_path,
     require_bool,
     require_regular,
-    require_manifest,
+    require_formal_resource_manifest,
     sha256_file,
     verifier_binary,
     verify_build_provenance,
     verify_local_resources,
+    validate_scoped_resource_manifest_observation,
     formal_preflight_path,
     require_formal_session,
     runtime_source_sha256,
     atomic_write_text,
 )
 
-CAPACITY_SCHEMA = "zkgpt-gat-capacity-v8"
+CAPACITY_SCHEMA = "zkgpt-gat-capacity-v9"
 CAPACITY_U64_MAX = (1 << 64) - 1
 CAPACITY_SHAPE_FIELDS = ("num_nodes", "num_edges", "num_features", "num_classes", "graph_count", "model_layers", "model_output_heads", "model_classes", "model_input_dim", "model_hidden_dim", "n_raw", "n_in")
-CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
+CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "lasso_selected_row_cache_bytes_upper_bound", "lasso_selected_row_cache_heap_bytes_upper_bound", "lasso_selected_row_cache_mapped_bytes_upper_bound", "lasso_sparse_matrix_workspace_bytes_upper_bound", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
 CAPACITY_INTEGER_FIELDS += ("gkr_point_shape_bitmap_scratch_bytes", "gkr_point_shape_touched_index_scratch_bytes_upper_bound", "gkr_point_shape_layer_count", "gkr_point_shape_fconn_count")
 CAPACITY_INTEGER_FIELDS += ("forward_admission_peak_host_memory_bytes_upper_bound",)
 CAPACITY_INTEGER_FIELDS += ("explicit_unary_gate_buffer_entry_bytes",)
@@ -194,8 +196,9 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     if source_support_entries > payload["flattened_input_domain_entries"]:
         raise ChainError(f"capacity logical source support exceeds the full source domain for {dataset}")
     source_words = source_support_entries // 64 + (1 if source_support_entries % 64 else 0)
-    expected_bitmap_bytes = capacity_mul(source_words, 8, "GKR source-map bitmap", dataset)
-    expected_rank_bytes = capacity_mul(source_words, 8, "GKR source-map rank prefix", dataset)
+    expected_bitmap_bytes_per_lane = capacity_mul(source_words, 8, "GKR source-map lane bitmap", dataset)
+    expected_bitmap_bytes = capacity_mul(expected_bitmap_bytes_per_lane, 2, "GKR U/V source-map bitmaps", dataset)
+    expected_rank_bytes = expected_bitmap_bytes_per_lane
     if (payload["gkr_subset_bitmap_scratch_bytes_upper_bound"] != expected_bitmap_bytes or
             payload["gkr_subset_rank_scratch_bytes_upper_bound"] != expected_rank_bytes or
             payload["gkr_subset_sort_scratch_bytes_upper_bound"] != 0):
@@ -268,13 +271,15 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         raise ChainError(f"capacity source-map bound exceeds logical source support for {dataset}")
     breakdown = payload.get("native_mapped_phase_breakdown")
     phase_keys = ("gate_plan", "plan_restore", "gkr_validation", "gkr_proving", "lasso_tensor", "input_opening", "shape_admission")
-    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:input_fold_cache", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:source_rank", "component:explicit_unary_gate_buffer", "component:shape_admission_bitmap", "component:shape_admission_touched_indices")
+    component_keys = ("component:proof_persistent", "component:gate_arrays", "component:source_maps", "component:residual_targets", "component:layer_values", "component:input_segments", "component:input_oracle_fold", "component:input_fold_cache", "component:fconn_fold", "component:fconn_source_weights", "component:gkr_prefix", "component:lasso_persistent", "component:lasso_selected_rows", "component:tensor_retained", "component:lasso_transient", "component:tensor_opening", "component:w_mle", "component:source_bitmap", "component:source_rank", "component:explicit_unary_gate_buffer", "component:shape_admission_bitmap", "component:shape_admission_touched_indices")
     if not isinstance(breakdown, dict) or set(breakdown) != set(phase_keys + component_keys):
         raise ChainError(f"capacity native mapped phase breakdown is incomplete for {dataset}")
     phase_bytes = {key: capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset) for key in phase_keys}
     for key in component_keys:
         capacity_u64(breakdown.get(key), f"native_mapped_phase_breakdown.{key}", dataset)
-    expected_subset_bitmap_mapped = expected_bitmap_bytes if expected_bitmap_bytes > (8 << 20) else 0
+    expected_subset_bitmap_mapped = capacity_mul(
+        expected_bitmap_bytes_per_lane if expected_bitmap_bytes_per_lane > (8 << 20) else 0,
+        2, "mapped GKR U/V source-map bitmaps", dataset)
     expected_subset_rank_mapped = expected_rank_bytes if expected_rank_bytes > (8 << 20) else 0
     if (breakdown["component:source_bitmap"] != expected_subset_bitmap_mapped or
             breakdown["component:source_rank"] != expected_subset_rank_mapped):
@@ -303,6 +308,10 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     logical_entries = 0
     lasso_retained_bytes = 0
     largest_lasso_family_transient_bytes = 0
+    selected_row_cache_bytes = 0
+    selected_row_cache_heap_bytes = 0
+    selected_row_cache_mapped_bytes = 0
+    sparse_matrix_workspace_bytes = 0
     for index, profile in enumerate(profiles):
         if not isinstance(profile, dict) or profile.get("family_id") != LASSO_FAMILY_IDS[index] or not isinstance(profile.get("workspace"), dict):
             raise ChainError(f"capacity has invalid Lasso profile {index} for {dataset}")
@@ -330,6 +339,30 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
             raise ChainError(f"capacity Lasso selected-row count mismatch for {dataset}")
         if values["private_witness_bytes"] != capacity_mul(values["private_witness_entries"], values["private_witness_element_bytes"], "Lasso private witness bytes", dataset):
             raise ChainError(f"capacity Lasso private workspace size mismatch for {dataset}")
+        cache_width = 1 if values["table_domain"] <= 256 else 2 if values["table_domain"] <= 65536 else 0
+        family_cache_bytes = capacity_mul(values["padded_queries"], cache_width,
+                                          "compact Lasso selected-row cache", dataset)
+        selected_row_cache_bytes = capacity_add(
+            (selected_row_cache_bytes, family_cache_bytes),
+            "compact Lasso selected-row cache total", dataset)
+        if family_cache_bytes > (8 << 20):
+            selected_row_cache_mapped_bytes = capacity_add(
+                (selected_row_cache_mapped_bytes, family_cache_bytes),
+                "mapped compact Lasso selected-row cache", dataset)
+        else:
+            selected_row_cache_heap_bytes = capacity_add(
+                (selected_row_cache_heap_bytes, family_cache_bytes),
+                "heap compact Lasso selected-row cache", dataset)
+        if values["table_domain"] <= 65536:
+            bucket_extent = capacity_add(
+                (capacity_mul(2, values["table_domain"], "Lasso sparse bucket arrays", dataset), 1),
+                "Lasso sparse bucket prefix extent", dataset)
+            family_sparse_workspace = capacity_add(
+                (3 << 20, capacity_mul(bucket_extent, 8,
+                                       "Lasso sparse bucket arrays", dataset)),
+                "bounded Lasso sparse factor and bucket workspace", dataset)
+            sparse_matrix_workspace_bytes = max(sparse_matrix_workspace_bytes,
+                                                family_sparse_workspace)
         expected_ledger = capacity_add((values["row_blinding_bytes"], values["column_generator_bytes"]), "Lasso retained row ledger", dataset)
         expected_commit_peak = capacity_add((expected_ledger, values["row_commitment_bytes"]), "Lasso commit peak", dataset)
         expected_booleanity_peak = capacity_add((expected_ledger, max(values["private_witness_bytes"], values["t2_column_one_bytes"])), "Lasso booleanity peak", dataset)
@@ -358,7 +391,26 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         largest_lasso_family_transient_bytes = max(largest_lasso_family_transient_bytes, values["family_peak_bytes"] - values["row_ledger_retained_bytes"])
     if payload["lasso_logical_domain_entries"] != logical_entries:
         raise ChainError(f"capacity Lasso logical-domain total mismatch for {dataset}")
-    expected_lasso_workspace_peak = capacity_add((lasso_retained_bytes, largest_lasso_family_transient_bytes), "Lasso private workspace peak", dataset)
+    if (payload["lasso_selected_row_cache_bytes_upper_bound"] != selected_row_cache_bytes or
+            payload["lasso_selected_row_cache_heap_bytes_upper_bound"] != selected_row_cache_heap_bytes or
+            payload["lasso_selected_row_cache_mapped_bytes_upper_bound"] != selected_row_cache_mapped_bytes or
+            payload["lasso_sparse_matrix_workspace_bytes_upper_bound"] != sparse_matrix_workspace_bytes):
+        raise ChainError(f"capacity compact selected-row cache or sparse-matrix workspace is inconsistent for {dataset}")
+    expected_proof_persistent = capacity_add(
+        (breakdown["component:gate_arrays"], breakdown["component:source_maps"],
+         breakdown["component:residual_targets"], breakdown["component:layer_values"],
+         breakdown["component:input_segments"], selected_row_cache_mapped_bytes),
+        "mapped proof-persistent backing including selected-row cache", dataset)
+    if (breakdown["component:lasso_selected_rows"] != selected_row_cache_mapped_bytes or
+            breakdown["component:proof_persistent"] != expected_proof_persistent or
+            any(phase_bytes[phase] < selected_row_cache_mapped_bytes
+                for phase in ("gkr_validation", "gkr_proving", "lasso_tensor", "input_opening")) or
+            (phase_bytes["plan_restore"] != 0 and
+             phase_bytes["plan_restore"] < selected_row_cache_mapped_bytes)):
+        raise ChainError(f"capacity selected-row cache is absent from its mapped lifetime phases for {dataset}")
+    expected_lasso_workspace_peak = capacity_add(
+        (lasso_retained_bytes, selected_row_cache_bytes,
+         largest_lasso_family_transient_bytes), "Lasso private workspace peak", dataset)
     if payload["lasso_private_selected_row_workspace_peak_bytes"] != expected_lasso_workspace_peak:
         raise ChainError(f"capacity Lasso private workspace peak mismatch for {dataset}")
     lasso_heap_persistent = capacity_add(
@@ -385,32 +437,30 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         dataset,
     )
     lasso_heap_transient = max(
-        capacity_add(
-            (
-                capacity_add(
-                    (
-                        profile["workspace"]["row_fold_weights_bytes"],
-                        profile["workspace"]["row_fold_values_bytes"],
-                        profile["workspace"]["onehot_query_bytes"],
-                    ),
-                    "Lasso standard-heap row-fold transient",
-                    dataset,
+        max(
+            capacity_add(
+                (
+                    profile["workspace"]["row_fold_weights_bytes"],
+                    profile["workspace"]["row_fold_values_bytes"],
+                    profile["workspace"]["onehot_query_bytes"],
                 ),
-                profile["workspace"]["onehot_heap_peak_bytes"],
+                "Lasso standard-heap row-fold transient",
+                dataset,
             ),
-            "Lasso onehot/fold transient peak",
-            dataset,
+            profile["workspace"]["onehot_heap_peak_bytes"],
         )
         for profile in profiles
     )
     expected_lasso_heap_workspace = capacity_add(
         (
             lasso_heap_persistent,
+            selected_row_cache_heap_bytes,
             lasso_heap_generator_copies,
             max(
                 lasso_row_commitment_transient,
                 lasso_heap_transient,
             ),
+            sparse_matrix_workspace_bytes,
         ),
         "Lasso standard-heap workspace peak",
         dataset,
@@ -796,6 +846,7 @@ def main(argv: Sequence[str]) -> int:
     root = baseline_root()
     try:
         session_id, session, session_manifest_sha256 = require_formal_session(root)
+        dataset_scope = canonical_dataset_scope(session.get("dataset_scope"))
         selected = FORMAL_BACKENDS
         preflight_path = formal_preflight_path(root, session_id)
         if preflight_path.exists():
@@ -806,17 +857,32 @@ def main(argv: Sequence[str]) -> int:
     blockers: List[str] = []
     source_errors = check_source(root)
     blockers.extend(source_errors)
-    resource_errors = verify_local_resources(root)
+    observed_resource_entries: Dict[str, Dict[str, Any]] = {}
+    observed_quantization_identity: Dict[str, Any] = {}
+    if dataset_scope == DATASETS:
+        resource_errors = verify_local_resources(root, dataset_scope)
+    else:
+        resource_errors = verify_local_resources(
+            root, dataset_scope,
+            resource_entries=observed_resource_entries,
+            quantization_identity=observed_quantization_identity,
+        )
     blockers.extend(resource_errors)
     backend_report: Dict[str, Any] = {}
     capacity: Dict[str, Any] = {}
     resource_manifest_digest: Optional[str] = None
     resource_manifest_fp: Optional[Dict[str, Any]] = None
+    resource_manifest_path_value: Optional[str] = None
     try:
-        resource_manifest = require_manifest(root, "resource_manifest.json", "zkgpt-gat-resource-manifest-v1")
-        del resource_manifest
-        resource_manifest_path = root / "results" / "resource_manifest.json"
-        resource_manifest_digest = sha256_file(resource_manifest_path)
+        resource_manifest, resource_manifest_path, resource_manifest_digest_value = require_formal_resource_manifest(
+            root, session_id, session, session_manifest_sha256
+        )
+        if dataset_scope != DATASETS:
+            validate_scoped_resource_manifest_observation(
+                resource_manifest, observed_resource_entries, observed_quantization_identity
+            )
+        resource_manifest_path_value = relative_path(root, resource_manifest_path, "resource manifest")
+        resource_manifest_digest = resource_manifest_digest_value
         resource_manifest_fp = file_fingerprint(resource_manifest_path, "resource manifest")
     except ChainError as exc:
         blockers.append(str(exc))
@@ -847,6 +913,9 @@ def main(argv: Sequence[str]) -> int:
     capacity_log_dir = preflight_path.parent / "capacity_logs"
     if not blockers and "cpu" in selected:
         for dataset in DATASETS:
+            if dataset not in dataset_scope:
+                capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "stage": "scope", "reason": "OUT_OF_SCOPE:dataset_not_requested"}
+                continue
             try:
                 capacity[dataset] = run_capacity(root, dataset, "cpu", capacity_log_dir)
             except (ChainError, OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -872,6 +941,7 @@ def main(argv: Sequence[str]) -> int:
         "runtime_source_sha256": runtime_source_sha256(root),
         "native_source_sha256": session.get("native_source_sha256"),
         "status": preflight_status,
+        "dataset_scope": list(dataset_scope),
         "formal_experiment_eligible": preflight_status == "READY",
         "shared_preconditions_ready": not blockers,
         "source_ready": not source_errors,
@@ -883,6 +953,7 @@ def main(argv: Sequence[str]) -> int:
         "development_e2e_checked": False,
         "development_e2e_check": "tests/check_formal_closure.py (separate development evidence)",
         "formal_results_complete": False,
+        "resource_manifest_path": resource_manifest_path_value,
         "resource_manifest_sha256": resource_manifest_digest,
         "resource_manifest_fingerprint": resource_manifest_fp,
         "blockers": blockers,

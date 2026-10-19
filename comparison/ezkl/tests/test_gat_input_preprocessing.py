@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -179,30 +180,62 @@ class GatInputPreprocessingTest(unittest.TestCase):
             output.mkdir()
             session_file = root / "session.json"
             session_file.write_text('{"session_id":"session"}\n', encoding="utf-8")
+            admission_source = root / "session-admission.json"
+            admission_payload = b'{"dataset":"cora","schema_version":8}\n'
+            admission_source.write_bytes(admission_payload)
+            admission_sha256 = formal_runner.sha256(admission_source)
             for name in formal_runner._SETUP_REUSE_FILES:
-                (output / name).write_text(name, encoding="utf-8")
+                if name != "admission.json":
+                    (output / name).write_text(name, encoding="utf-8")
+            formal_runner._install_authenticated_admission_snapshot(
+                output, admission_source, admission_sha256, "cora"
+            )
             admission = {
                 "settings_sha256": formal_runner.sha256(output / "settings.json"),
                 "compiled_circuit_sha256": formal_runner.sha256(output / "compiled.circuit"),
-                "sha256": "a" * 64,
+                "sha256": admission_sha256,
             }
             identity = {"schema": "ezkl-formal-resume-identity-v1", "identity": "stable"}
-            receipt_digest = formal_runner.write_setup_reuse_receipt(output, "cora", "session", identity, admission)
-            formal_runner.anchor_setup_reuse_receipt(session_file, "cora", receipt_digest)
-            anchors = json.loads(session_file.read_text(encoding="utf-8"))["setup_reuse_receipts"]
-            self.assertTrue(
-                formal_runner.validate_setup_reuse_receipt(
-                    output, "cora", "session", identity, admission, anchors["cora"]
+            native_receipt = {
+                "compiled_circuit_sha256": formal_runner.sha256(output / "compiled.circuit"),
+            }
+            with mock.patch.object(
+                formal_runner,
+                "_load_native_keygen_receipt",
+                return_value=({}, native_receipt, "b" * 64),
+            ):
+                receipt_digest = formal_runner.write_setup_reuse_receipt(output, "cora", "session", identity, admission)
+                formal_runner.anchor_setup_reuse_receipt(session_file, "cora", receipt_digest)
+                anchors = json.loads(session_file.read_text(encoding="utf-8"))["setup_reuse_receipts"]
+                self.assertTrue(
+                    formal_runner.validate_setup_reuse_receipt(
+                        output, "cora", "session", identity, admission, anchors["cora"]
+                    )
                 )
-            )
+
+                (output / "admission.json").write_bytes(b'{"dataset":"other"}\n')
+                self.assertFalse(
+                    formal_runner.validate_setup_reuse_receipt(
+                        output, "cora", "session", identity, admission, anchors["cora"]
+                    )
+                )
+                with self.assertRaises(formal_runner.ContractError):
+                    formal_runner._install_authenticated_admission_snapshot(
+                        output, admission_source, admission_sha256, "cora"
+                    )
 
             with (output / "setup_receipt.json").open("a", encoding="utf-8") as stream:
                 stream.write(" ")
-            self.assertFalse(
-                formal_runner.validate_setup_reuse_receipt(
-                    output, "cora", "session", identity, admission, anchors["cora"]
+            with mock.patch.object(
+                formal_runner,
+                "_load_native_keygen_receipt",
+                return_value=({}, native_receipt, "b" * 64),
+            ):
+                self.assertFalse(
+                    formal_runner.validate_setup_reuse_receipt(
+                        output, "cora", "session", identity, admission, anchors["cora"]
+                    )
                 )
-            )
 
 
 if __name__ == "__main__":

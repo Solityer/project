@@ -1,4 +1,0 @@
-ZKGPT_FORMAL_CELL_FAILED dataset=cora error=ChainError: preflight capacity BLOCKED for cora: synthetic preflight capacity block
-ZKGPT_FORMAL_CELL_FAILED dataset=citeseer error=ChainError: synthetic live capacity gate failure
-{"checks": ["signed GKR sentinel and negative uint64 rejection", "capacity stdout/stderr retained for malformed output and native BLOCKED exit", "PARTIAL reader gate, strict collector default, per-cell READY-only, final READY-only", "source/resources/shared gates fail closed", "serial blocked/failing cells continue, preserve errors/receipts/prior result, skip finalization", "safe stop rejects PID start-tick mismatch and signals only exact synthetic supervisor"], "mode": "resume-from-preflight-gates", "scope": "synthetic runner contracts only; no dataset/resource/prover execution", "status": "PASS"}
-FUNCTIONAL_FIXTURE_LOG=/home/pzh/project/comparison/zkGPT/baseline-local/repair/runner-contract-fixture-20261013-01/functional-fixture.log

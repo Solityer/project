@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Mapping, Sequence
 from common import (
     ChainError,
     DATASETS,
-    RESOURCE_MANIFEST_SCHEMA,
+    canonical_dataset_scope,
     atomic_write_json,
     atomic_write_text,
     baseline_root,
@@ -48,11 +48,12 @@ from common import (
     build_binary,
     verifier_binary,
     require_formal_session,
+    require_formal_resource_manifest,
 )
 
 from collect_results import _validate_preflight
 from gat_zkgpt_experiment import run_cell
-from validate_final_results import _validate_final_results
+from validate_final_results import _reuse_owner_approved_cell, _validate_final_results
 
 LOCAL_CAPACITY_PROFILE_SCHEMA = "zkgpt-local-capacity-profile-v2"
 LOCAL_OWNER_SCHEMA = "zkgpt-local-formal-owner-v1"
@@ -71,6 +72,7 @@ _OWNER_STAGE_ENV = OWNER_ENV_PREFIX + "STAGE"
 _OWNER_DATASET_ENV = OWNER_ENV_PREFIX + "DATASET"
 _OWNER_STAGE_NONCE_ENV = OWNER_ENV_PREFIX + "STAGE_NONCE"
 _OWNER_SESSION_ENV = OWNER_ENV_PREFIX + "SESSION_ID"
+_OWNER_DATASET_SCOPE_ENV = OWNER_ENV_PREFIX + "DATASET_SCOPE"
 
 
 def _write_status(
@@ -172,6 +174,7 @@ def _capacity_profile(session_id: str, session_dir: Path, preflight: Mapping[str
     capacities = preflight.get("capacity")
     if not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("zkGPT capacity matrix does not contain the five canonical datasets")
+    dataset_scope = canonical_dataset_scope(preflight.get("dataset_scope"))
     datasets: Dict[str, Any] = {}
     for dataset in DATASETS:
         item = capacities[dataset]
@@ -222,6 +225,7 @@ def _capacity_profile(session_id: str, session_dir: Path, preflight: Mapping[str
         # Live statvfs admission happens after prepare, so existing session
         # files are already reflected in available bytes.
         "preexisting_baseline_artifact_bytes": 0,
+        "dataset_scope": list(dataset_scope),
         "finalization_disk_bytes_upper_bound": FINALIZATION_INTERNAL_DISK_RESERVE_BYTES,
         "finalization_host_bytes_upper_bound": finalization_host,
         "memory_accounting_kind": "host-only",
@@ -377,6 +381,10 @@ def _validate_owner_lease(root: Path, phase: str, session_id: str, dataset: str 
     token = os.environ.get(_OWNER_TOKEN_ENV, "")
     token_sha = hashlib.sha256(token.encode("ascii", errors="strict")).hexdigest() if token else ""
     expected_dataset = os.environ.get(_OWNER_DATASET_ENV) or None
+    try:
+        requested_scope = canonical_dataset_scope(json.loads(os.environ[_OWNER_DATASET_SCOPE_ENV]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, ChainError) as exc:
+        raise ChainError("private formal phase has no valid dataset scope lease") from exc
     if (
         record.get("status") != "RUNNING"
         or record.get("session_id") != session_id
@@ -389,6 +397,7 @@ def _validate_owner_lease(root: Path, phase: str, session_id: str, dataset: str 
         or os.environ.get(_OWNER_STAGE_ENV) != phase
         or os.environ.get(_OWNER_SESSION_ENV) != session_id
         or expected_dataset != dataset
+        or record.get("dataset_scope") != list(requested_scope)
     ):
         raise ChainError("private formal phase does not match the active zkGPT owner stage")
     if os.getppid() != owner_pid or _proc_start_ticks(owner_pid) != owner_start:
@@ -704,8 +713,14 @@ def _load_prepared(root: Path, session_id: str, session_dir: Path) -> tuple[Dict
     context = load_json(context_path, "local formal session context")
     if not isinstance(context, dict) or context.get("schema") != "zkgpt-gat-local-formal-context-v1" or context.get("root_session_id") != session_id:
         raise ChainError("zkGPT local formal context is missing or bound to another session")
+    try:
+        session_scope = canonical_dataset_scope(session.get("dataset_scope"))
+        context_scope = canonical_dataset_scope(context.get("dataset_scope"))
+    except ChainError as exc:
+        raise ChainError("zkGPT prepared local session scope is invalid") from exc
     if (
         context.get("session_manifest_sha256") != session_manifest_sha256
+        or context_scope != session_scope
         or context.get("runtime_source_sha256") != runtime_source_sha256(root)
         or context.get("native_source_sha256") != source_tree_sha256(root)
     ):
@@ -714,15 +729,23 @@ def _load_prepared(root: Path, session_id: str, session_dir: Path) -> tuple[Dict
     preflight = load_json(preflight_path, "formal preflight")
     if not isinstance(preflight, dict):
         raise ChainError("zkGPT formal preflight is malformed")
-    resource_manifest = load_json(root / "results" / "resource_manifest.json", "resource manifest")
+    try:
+        preflight_scope = canonical_dataset_scope(preflight.get("dataset_scope"))
+    except ChainError as exc:
+        raise ChainError("zkGPT formal preflight dataset scope is invalid") from exc
+    if preflight_scope != session_scope:
+        raise ChainError("zkGPT formal preflight dataset scope differs from its session")
+    _resource_manifest, resource_manifest_path, resource_digest = require_formal_resource_manifest(
+        root, session_id, session, session_manifest_sha256
+    )
+    resource_manifest_relative = relative_path(root, resource_manifest_path, "resource manifest")
     if (
-        not isinstance(resource_manifest, dict)
-        or resource_manifest.get("schema") != RESOURCE_MANIFEST_SCHEMA
-        or resource_manifest.get("status") not in ("AUTHENTICATED", "READY")
+        context.get("resource_manifest_path") != resource_manifest_relative
+        or preflight.get("resource_manifest_path") != resource_manifest_relative
+        or context.get("resource_manifest_sha256") != resource_digest
+        or preflight.get("resource_manifest_sha256") != resource_digest
+        or context.get("preflight_sha256") != sha256_file(preflight_path)
     ):
-        raise ChainError("zkGPT resource manifest is not authenticated")
-    resource_digest = sha256_file(root / "results" / "resource_manifest.json")
-    if context.get("resource_manifest_sha256") != resource_digest or context.get("preflight_sha256") != sha256_file(preflight_path):
         raise ChainError("zkGPT prepared resource/preflight digest is stale")
     _validate_preflight(root, "cpu", preflight, resource_digest, session_id, session_manifest_sha256, session["native_source_sha256"], allow_partial=True)
     local_profile = context.get("local_capacity_profile")
@@ -752,17 +775,20 @@ def _load_prepared(root: Path, session_id: str, session_dir: Path) -> tuple[Dict
     return session, preflight, resource_digest, context, preflight_path, session_manifest_sha256
 
 
-def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, Any]:
+def _prepare_phase(root: Path, session_id: str, session_dir: Path, dataset_scope: Sequence[str]) -> Dict[str, Any]:
     if session_dir.exists() and any(session_dir.iterdir()):
         raise ChainError("zkGPT local formal session directory must be fresh and empty")
-    sid, session, session_manifest_sha256 = create_formal_session(root, session_id)
+    sid, session, session_manifest_sha256 = create_formal_session(root, session_id, dataset_scope)
     os.environ["ZKGPT_FORMAL_SESSION_ID"] = sid
     _attach_owner_to_session_status(root, sid)
     _scratch_directory(root, session_dir)
     logs = session_dir / "logs"
     ensure_directory(logs, "formal session logs", root)
     _set_status(root, sid, "RUNNING", "resource-authentication")
-    _run_logged_stage(root, [sys.executable, str(root / "scripts" / "prepare_resources.py"), "--check"], logs, "resource-authentication")
+    resource_command = [sys.executable, str(root / "scripts" / "prepare_resources.py"), "--check"]
+    if tuple(dataset_scope) != DATASETS:
+        resource_command.extend(["--datasets", *dataset_scope])
+    _run_logged_stage(root, resource_command, logs, "resource-authentication")
 
     _set_status(root, sid, "RUNNING", "native-build")
     _run_logged_stage(root, [str(root / "build.sh"), "--cpu"], logs, "native-build")
@@ -782,21 +808,22 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
     verifier = verifier_binary(root, "cpu")
     build_fingerprints = {"prover": binary_fingerprint(prover, "zkGPT prover"), "verifier": binary_fingerprint(verifier, "zkGPT verifier")}
 
-    _set_status(root, sid, "RUNNING", "five-dataset-preflight")
-    _run_logged_stage(root, [sys.executable, str(root / "scripts" / "formal_preflight.py")], logs, "five-dataset-preflight")
+    preflight_stage = "five-dataset-preflight" if tuple(dataset_scope) == DATASETS else "requested-dataset-preflight"
+    _set_status(root, sid, "RUNNING", preflight_stage)
+    _run_logged_stage(root, [sys.executable, str(root / "scripts" / "formal_preflight.py")], logs, preflight_stage)
     preflight_path = formal_preflight_path(root, sid)
     preflight = load_json(preflight_path, "formal preflight")
     if (not isinstance(preflight, dict) or preflight.get("status") not in ("READY", "PARTIAL") or
+            preflight.get("dataset_scope") != list(dataset_scope) or
             preflight.get("shared_preconditions_ready") is not True):
         raise ChainError("zkGPT shared source/resource/backend/session preconditions did not pass")
-    resource_manifest = load_json(root / "results" / "resource_manifest.json", "resource manifest")
-    if (
-        not isinstance(resource_manifest, dict)
-        or resource_manifest.get("schema") != RESOURCE_MANIFEST_SCHEMA
-        or resource_manifest.get("status") not in ("AUTHENTICATED", "READY")
-    ):
-        raise ChainError("zkGPT resource manifest is not authenticated")
-    resource_digest = sha256_file(root / "results" / "resource_manifest.json")
+    _resource_manifest, resource_manifest_path, resource_digest = require_formal_resource_manifest(
+        root, sid, session, session_manifest_sha256
+    )
+    resource_manifest_relative = relative_path(root, resource_manifest_path, "resource manifest")
+    if (preflight.get("resource_manifest_path") != resource_manifest_relative
+            or preflight.get("resource_manifest_sha256") != resource_digest):
+        raise ChainError("zkGPT preflight resource manifest path/digest is stale")
     _validate_preflight(root, "cpu", preflight, resource_digest, sid, session_manifest_sha256, session["native_source_sha256"], allow_partial=True)
     profile = _capacity_profile(sid, session_dir, preflight)
     context = {
@@ -807,6 +834,7 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
         "runtime_source_sha256": session["runtime_source_sha256"],
         "native_source_sha256": session["native_source_sha256"],
         "source_tree_sha256": build_source_digest,
+        "resource_manifest_path": resource_manifest_relative,
         "resource_manifest_sha256": resource_digest,
         "preflight_sha256": sha256_file(preflight_path),
         "prover_fingerprint": build_fingerprints["prover"],
@@ -814,6 +842,7 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
         "build_log_path": relative_path(root, build_log, "build log"),
         "build_log_sha256": sha256_file(build_log),
         "datasets": list(DATASETS),
+        "dataset_scope": list(dataset_scope),
         "local_capacity_profile": profile,
         "local_capacity_profile_sha256": _canonical_sha256(profile),
         "created_unix_ns": time.time_ns(),
@@ -838,6 +867,7 @@ def _prepare_phase(root: Path, session_id: str, session_dir: Path) -> Dict[str, 
         "phase": "prepare",
         "status": "PASS",
         "session_id": sid,
+        "dataset_scope": list(dataset_scope),
         "session_dir": str(session_dir),
         "build_log_path": context["build_log_path"],
         "build_log_sha256": context["build_log_sha256"],
@@ -1000,6 +1030,79 @@ def _finalize_phase(root: Path, session_id: str, session_dir: Path, owner_approv
     }
 
 
+def _write_subset_validation(root: Path, session_id: str, session_dir: Path, dataset_scope: Sequence[str], owner_approved_cells: Mapping[str, Mapping[str, Any]], failed_datasets: Mapping[str, str]) -> Dict[str, Any]:
+    scope = canonical_dataset_scope(dataset_scope)
+    if (
+        scope == DATASETS
+        or set(owner_approved_cells) & set(failed_datasets)
+        or (set(owner_approved_cells) | set(failed_datasets)) != set(scope)
+    ):
+        raise ChainError("subset validation outcomes do not match a strict proper dataset scope")
+    session, preflight, resource_digest, context, preflight_path, session_manifest_sha256 = _load_prepared(root, session_id, session_dir)
+    if session.get("dataset_scope") != list(scope) or preflight.get("dataset_scope") != list(scope):
+        raise ChainError("subset validation scope differs from its prepared session")
+    seen_artifact_paths: set[str] = set()
+    seen_artifact_digests: set[str] = set()
+    cells: List[Dict[str, Any]] = []
+    for dataset in scope:
+        approved = owner_approved_cells.get(dataset)
+        if approved is None:
+            cells.append({"dataset": dataset, "status": "FAILED", "reason": failed_datasets[dataset]})
+            continue
+        audited = validate_formal_cell(root, dataset, "cpu", preflight, resource_digest, session_id,
+                                       session_manifest_sha256, session["native_source_sha256"], preflight_path,
+                                       seen_artifact_paths, seen_artifact_digests)
+        verification = _reuse_owner_approved_cell(root, session_id, session_manifest_sha256,
+                                                  dataset, approved, audited)
+        receipt_path = local_path(root, approved["receipt_path"], "subset cell receipt")
+        receipt = load_json(receipt_path, "subset cell receipt")
+        cells.append({
+            "dataset": dataset,
+            "status": "VERIFY_OK",
+            "receipt_path": approved["receipt_path"],
+            "receipt_sha256": approved["receipt_sha256"],
+            "result_path": approved["result_path"],
+            "result_sha256": approved["result_sha256"],
+            "execution_path": approved["execution_path"],
+            "execution_sha256": approved["execution_sha256"],
+            "proof_path": approved["proof_path"],
+            "proof_sha256": approved["proof_sha256"],
+            "proof_size_bytes": audited["proof_size_bytes"],
+            "verification_report_path": approved["verification_report_path"],
+            "verification_report_sha256": approved["verification_report_sha256"],
+            "independent_verification": receipt.get("independent_verification") is True,
+            "verification_source": verification["verification_source"],
+            "paper_metrics": audited["paper_metrics"],
+            "timing_ms": audited["timing_ms"],
+        })
+    status = "SUBSET_FAILED" if failed_datasets else "SUBSET_COMPLETE"
+    payload = {
+        "schema": "zkgpt-gat-subset-validation-v1",
+        "status": status,
+        "validation_scope": "requested_dataset_subset",
+        "dataset_scope": list(scope),
+        "formal_dataset_universe": list(DATASETS),
+        "full_five_complete": False,
+        "formal_results_complete": False,
+        "session_id": session_id,
+        "session_manifest_sha256": session_manifest_sha256,
+        "runtime_source_sha256": session["runtime_source_sha256"],
+        "native_source_sha256": session["native_source_sha256"],
+        "resource_manifest_path": context["resource_manifest_path"],
+        "resource_manifest_sha256": resource_digest,
+        "preflight_path": str(preflight_path.relative_to(root)),
+        "preflight_sha256": sha256_file(preflight_path),
+        "independent_verification": not failed_datasets and all(cell.get("independent_verification") is True for cell in cells),
+        "cells": cells,
+        "created_unix_ns": time.time_ns(),
+    }
+    subset_path = session_dir / "subset_validation.json"
+    if subset_path.exists() or subset_path.is_symlink():
+        raise ChainError("subset validation output already exists; refusing stale-result reuse")
+    atomic_write_json(subset_path, payload, root)
+    return {"path": str(subset_path.relative_to(root)), "sha256": sha256_file(subset_path), "status": status}
+
+
 def _phase_marker(payload: Mapping[str, Any]) -> None:
     print("ZKGPT_LOCAL_FORMAL_STATE=" + json.dumps(payload, sort_keys=True, separators=(",", ":")), flush=True)
 
@@ -1074,6 +1177,7 @@ def _launch_owner_child(root: Path, lock_stream: Any, command: Sequence[str], en
 def _run_owner_phase(
     root: Path, lock_stream: Any, session_id: str, session_dir: Path, phase: str, dataset: str | None, owner_token: str, owner_start_ticks: int, logs: Path, owner_approved_cells: Mapping[str, Mapping[str, Any]] | None = None
 ) -> Dict[str, Any]:
+    dataset_scope = canonical_dataset_scope(_current_owner_record(root).get("dataset_scope"))
     nonce = secrets.token_hex(16)
     _update_owner_record(root, active_stage=phase, active_dataset=dataset, stage_nonce=nonce, status="RUNNING")
     _set_session_stage(root, session_id, f"phase:{phase}" if dataset is None else f"phase:{phase}:{dataset}")
@@ -1086,6 +1190,7 @@ def _run_owner_phase(
         _OWNER_DATASET_ENV: dataset or "",
         _OWNER_STAGE_NONCE_ENV: nonce,
         _OWNER_SESSION_ENV: session_id,
+        _OWNER_DATASET_SCOPE_ENV: json.dumps(list(dataset_scope), separators=(",", ":")),
         "ZKGPT_FORMAL_SESSION_ID": session_id,
     }
     command = [sys.executable, str(Path(__file__).resolve()), "--internal-phase", phase, "--session-dir", str(session_dir)]
@@ -1136,7 +1241,8 @@ def _run_owner_phase(
     return marker
 
 
-def _run_official(root: Path) -> int:
+def _run_official(root: Path, dataset_scope: Sequence[str] = DATASETS) -> int:
+    dataset_scope = canonical_dataset_scope(dataset_scope)
     formal_child_environment()
     with formal_run_lock(root) as lock_stream:
         install_process_signal_cleanup()
@@ -1163,6 +1269,7 @@ def _run_official(root: Path) -> int:
             "active_stage": "starting",
             "active_dataset": None,
             "stage_nonce": "",
+            "dataset_scope": list(dataset_scope),
             "completed_stages": [],
             "recovered_previous_session_id": recovered_session or None,
             "started_unix_ns": time.time_ns(),
@@ -1173,6 +1280,8 @@ def _run_official(root: Path) -> int:
         try:
             ensure_directory(logs, "zkGPT local owner logs", root)
             prepare_marker = _run_owner_phase(root, lock_stream, session_id, session_dir, "prepare", None, owner_token, owner_start_ticks, logs)
+            if prepare_marker.get("dataset_scope") != list(dataset_scope):
+                raise ChainError("zkGPT prepare phase marker does not match the requested dataset scope")
             os.environ["ZKGPT_FORMAL_SESSION_ID"] = session_id
             _session, _preflight, _resource, context, _preflight_path, _manifest_sha = _load_prepared(root, session_id, session_dir)
             profile = context["local_capacity_profile"]
@@ -1182,7 +1291,7 @@ def _run_official(root: Path) -> int:
                 raise ChainError("zkGPT prepare phase marker does not match the source-bound local context")
             failed_datasets: Dict[str, str] = {}
             owner_approved_cells: Dict[str, Dict[str, str]] = {}
-            for dataset in DATASETS:
+            for dataset in dataset_scope:
                 try:
                     _set_owner_control_stage(root, session_id, f"capacity-admission:before-cell:{dataset}", dataset)
                     cell_capacity = profile["datasets"].get(dataset)
@@ -1247,10 +1356,44 @@ def _run_official(root: Path) -> int:
                     print(f"ZKGPT_FORMAL_CELL_FAILED dataset={dataset} error={reason}", file=sys.stderr, flush=True)
 
             if failed_datasets:
+                if dataset_scope != DATASETS:
+                    subset_report = _write_subset_validation(
+                        root, session_id, session_dir, dataset_scope, owner_approved_cells, failed_datasets
+                    )
+                    print(
+                        f"ZKGPT_FORMAL_SUBSET_FAILED session_id={session_id} "
+                        f"subset_validation={subset_report['path']} attempted={len(dataset_scope)}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 raise ChainError(
-                    f"zkGPT serial run attempted all {len(DATASETS)} datasets; "
+                    f"zkGPT serial run attempted all {len(dataset_scope)} requested datasets; "
                     f"failed={len(failed_datasets)}; " + "; ".join(f"{dataset}: {reason}" for dataset, reason in failed_datasets.items())
                 )
+            if dataset_scope != DATASETS:
+                subset_report = _write_subset_validation(
+                    root, session_id, session_dir, dataset_scope, owner_approved_cells, failed_datasets
+                )
+                if subset_report.get("status") != "SUBSET_COMPLETE":
+                    raise ChainError("zkGPT requested-scope validation did not complete successfully")
+                _set_status(root, session_id, "SUBSET_COMPLETE", "subset-complete")
+                _update_owner_record(
+                    root,
+                    status="SUBSET_COMPLETE",
+                    active_stage="subset-complete",
+                    active_dataset=None,
+                    stage_nonce="",
+                    failure="",
+                    subset_validation_path=subset_report["path"],
+                    subset_validation_sha256=subset_report["sha256"],
+                )
+                print(
+                    f"ZKGPT_FORMAL_SUBSET_COMPLETE session_id={session_id} "
+                    f"datasets={','.join(dataset_scope)} subset_validation={subset_report['path']} "
+                    "full_five_complete=false",
+                    flush=True,
+                )
+                return 0
             _set_owner_control_stage(root, session_id, "capacity-admission:before-finalization")
             _capacity_gate(root, session_id, session_dir, profile, [], "before-finalization")
             final_marker = _run_owner_phase(root, lock_stream, session_id, session_dir, "finalize", None, owner_token, owner_start_ticks, logs, owner_approved_cells=owner_approved_cells)
@@ -1293,13 +1436,15 @@ def _run_official(root: Path) -> int:
                 pass
             raise
         except Exception as exc:
+            subset_failed = dataset_scope != DATASETS and bool(locals().get("failed_datasets"))
+            terminal_status = "SUBSET_FAILED" if subset_failed else "FAILED"
             try:
                 failed_stage = str(_current_owner_record(root).get("active_stage") or "owner-failed")
             except Exception:
                 failed_stage = "owner-failed"
-            _mark_session_terminal(root, session_id, "FAILED", failed_stage, str(exc))
+            _mark_session_terminal(root, session_id, terminal_status, failed_stage, str(exc))
             try:
-                _update_owner_record(root, status="FAILED", active_stage="owner-failed", active_dataset=None, stage_nonce="", failure=str(exc))
+                _update_owner_record(root, status=terminal_status, active_stage="subset-failed" if subset_failed else "owner-failed", active_dataset=None, stage_nonce="", failure=str(exc))
             except Exception as status_exc:
                 print(f"ZKGPT_OWNER_STATUS_WRITE_FAILED: {status_exc}", file=sys.stderr, flush=True)
             raise
@@ -1307,8 +1452,11 @@ def _run_official(root: Path) -> int:
 
 def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: str | None, owner_lease: Mapping[str, Any], owner_approved_cells: Mapping[str, Mapping[str, Any]] | None = None) -> int:
     session_id, session_dir = _session_dir(root, session_dir_arg, allow_empty=(phase == "prepare"))
+    dataset_scope = canonical_dataset_scope(owner_lease.get("dataset_scope"))
     if phase == "cell" and dataset not in DATASETS:
         raise ChainError("cell phase requires one canonical --dataset")
+    if phase == "cell" and dataset not in dataset_scope:
+        raise ChainError("cell phase dataset is outside the immutable requested scope")
     if phase != "cell" and dataset is not None:
         raise ChainError("--dataset is only valid for a cell phase")
     if owner_lease.get("session_id") != session_id:
@@ -1318,7 +1466,7 @@ def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: s
     install_process_signal_cleanup()
     _install_parent_death_watch(root, session_id)
     if phase == "prepare":
-        payload = _prepare_phase(root, session_id, session_dir)
+        payload = _prepare_phase(root, session_id, session_dir, dataset_scope)
     elif phase == "cell":
         payload = _cell_phase(root, session_id, session_dir, dataset or "")
     elif phase == "finalize":
@@ -1331,6 +1479,7 @@ def _run_internal_phase(root: Path, phase: str, session_dir_arg: str, dataset: s
 
 def main(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--datasets", nargs="+", choices=DATASETS)
     parser.add_argument("--internal-phase", choices=("prepare", "cell", "finalize"), help=argparse.SUPPRESS)
     parser.add_argument("--session-dir", help=argparse.SUPPRESS)
     parser.add_argument("--dataset", choices=DATASETS, help=argparse.SUPPRESS)
@@ -1342,7 +1491,7 @@ def main(argv: Sequence[str]) -> int:
             print("private zkGPT phase arguments require --internal-phase", file=sys.stderr)
             return 2
         try:
-            return _run_official(root)
+            return _run_official(root, canonical_dataset_scope(args.datasets))
         except KeyboardInterrupt:
             print("ZKGPT_FORMAL_INTERRUPTED: local owner stopped its active stage group", file=sys.stderr, flush=True)
             return 130
@@ -1354,6 +1503,8 @@ def main(argv: Sequence[str]) -> int:
     try:
         if not args.session_dir:
             raise ChainError("internal formal phase requires --session-dir")
+        if args.datasets is not None:
+            raise ChainError("--datasets is only valid for the official owner phase")
         session_id, _session_dir_path = _session_dir(root, args.session_dir, allow_empty=(args.internal_phase == "prepare"))
         if args.internal_phase == "cell" and args.dataset not in DATASETS:
             raise ChainError("cell phase requires one canonical --dataset")

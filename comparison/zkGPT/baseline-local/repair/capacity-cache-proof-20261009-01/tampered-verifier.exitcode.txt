@@ -1,1 +1,0 @@
-expected_reject_exit_code=1

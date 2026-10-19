@@ -1,0 +1,20 @@
+..ZKGPT_FORMAL_CELL_FAILED dataset=ppi error=ChainError: simulated PPI failure
+E..
+======================================================================
+ERROR: test_runner_attempts_ogbn_after_ppi_failure_and_writes_subset_result (__main__.FormalDatasetScopeSmoke.test_runner_attempts_ogbn_after_ppi_failure_and_writes_subset_result)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/zkGPT/tests/test_formal_dataset_scope.py", line 371, in test_runner_attempts_ogbn_after_ppi_failure_and_writes_subset_result
+    run_formal._run_official(root, SCOPE)
+  File "/home/pzh/project/comparison/zkGPT/scripts/run_formal.py", line 1360, in _run_official
+    subset_report = _write_subset_validation(
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/zkGPT/scripts/run_formal.py", line 1091, in _write_subset_validation
+    "resource_manifest_path": context["resource_manifest_path"],
+                              ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'resource_manifest_path'
+
+----------------------------------------------------------------------
+Ran 5 tests in 0.087s
+
+FAILED (errors=1)

@@ -131,25 +131,54 @@ inline void run_prefix_challenge_workers(std::size_t worker_count, Worker&& work
 class EqualityWeightProvider {
     std::vector<F> point_;
     std::vector<F> low_weights_;
+    std::vector<F> high_weights_;
     unsigned bits_ = 0;
     unsigned low_bits_ = 0;
     std::uint64_t low_mask_ = 0;
     F scale_ = F_ONE;
+    bool split_lookup_enabled_ = false;
 
-    void initialize_low_weights() {
-        low_bits_ = std::min<unsigned>(12, bits_);
-        const std::size_t count = std::size_t(1) << low_bits_;
-        low_weights_.assign(count, F_ZERO);
-        low_weights_[0] = scale_;
-        for (unsigned bit = 0; bit < low_bits_; ++bit) {
+    void initialize_half_weights(std::vector<F>& weights, unsigned first_bit,
+                                 unsigned bit_count, const F& initial) {
+        const std::size_t count = std::size_t(1) << bit_count;
+        weights.assign(count, F_ZERO);
+        weights[0] = initial;
+        for (unsigned bit = 0; bit < bit_count; ++bit) {
             const std::size_t old_count = std::size_t(1) << bit;
+            const F zero_weight = F_ONE - point_[first_bit + bit];
+            const F one_weight = point_[first_bit + bit];
             for (std::size_t index = 0; index < old_count; ++index) {
-                const F weight = low_weights_[index];
-                low_weights_[index] = weight * (F_ONE - point_[bit]);
-                low_weights_[index + old_count] = weight * point_[bit];
+                const F weight = weights[index];
+                weights[index] = weight * zero_weight;
+                weights[index + old_count] = weight * one_weight;
             }
         }
-        low_mask_ = count - 1;
+    }
+
+    void initialize_weights() {
+        constexpr std::size_t kMaximumHalfTableBytes = std::size_t(64) << 20;
+        const unsigned split_low_bits = bits_ / 2U;
+        const unsigned split_high_bits = bits_ - split_low_bits;
+        const bool half_counts_fit = split_low_bits < std::numeric_limits<std::size_t>::digits &&
+            split_high_bits < std::numeric_limits<std::size_t>::digits;
+        if (half_counts_fit) {
+            const std::size_t low_count = std::size_t(1) << split_low_bits;
+            const std::size_t high_count = std::size_t(1) << split_high_bits;
+            const std::size_t maximum_entries = kMaximumHalfTableBytes / sizeof(F);
+            if (low_count <= maximum_entries && high_count <= maximum_entries - low_count) {
+                low_bits_ = split_low_bits;
+                low_mask_ = low_count - 1U;
+                initialize_half_weights(low_weights_, 0U, low_bits_, scale_);
+                initialize_half_weights(high_weights_, low_bits_, split_high_bits, F_ONE);
+                split_lookup_enabled_ = true;
+                return;
+            }
+        }
+
+        low_bits_ = std::min<unsigned>(12U, bits_);
+        const std::size_t count = std::size_t(1) << low_bits_;
+        low_mask_ = count - 1U;
+        initialize_half_weights(low_weights_, 0U, low_bits_, scale_);
     }
 
 public:
@@ -164,7 +193,7 @@ public:
         bits_ = static_cast<unsigned>(bits);
         if (point_.size() < bits_ && !scale_.isZero()) throw std::invalid_argument("native equality point is shorter than its domain");
         if (point_.size() < bits_) point_.resize(bits_, F_ZERO);
-        initialize_low_weights();
+        initialize_weights();
     }
 
     std::uint64_t domain_size() const {
@@ -173,6 +202,9 @@ public:
 
     F at(std::uint64_t coordinate) const {
         if (coordinate >= domain_size()) throw std::out_of_range("native equality coordinate exceeds its domain");
+        if (split_lookup_enabled_)
+            return low_weights_[static_cast<std::size_t>(coordinate & low_mask_)] *
+                high_weights_[static_cast<std::size_t>(coordinate >> low_bits_)];
         F result = low_weights_[static_cast<std::size_t>(coordinate & low_mask_)];
         for (unsigned bit = low_bits_; bit < bits_; ++bit) {
             result *= ((coordinate >> bit) & 1) ? point_[bit] : F_ONE - point_[bit];

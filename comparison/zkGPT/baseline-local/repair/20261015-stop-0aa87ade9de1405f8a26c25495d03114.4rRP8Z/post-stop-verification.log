@@ -1,6 +1,0 @@
-POST_STOP_BEGIN launch_id=0aa87ade9de1405f8a26c25495d03114 utc=2026-10-15T14:03:26Z
-POST_STOP_STATUS=INTERRUPTED
-SUPERVISOR_ORIGINAL_PROCESS_GONE pid=51996 recorded_start_ticks=4312043
-CHILD_PID=none
-POST_STOP_LOCK_AVAILABLE path=/home/pzh/project/comparison/zkGPT/baseline-local/formal-run.lock
-POST_STOP_END

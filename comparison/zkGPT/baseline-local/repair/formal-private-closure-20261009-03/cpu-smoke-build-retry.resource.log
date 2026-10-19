@@ -1,7 +1,0 @@
-elapsed_s=0.0 memavailable_kib=38131360 process_group_rss_kib=8900
-elapsed_s=1.0 memavailable_kib=37701312 process_group_rss_kib=334400
-elapsed_s=2.0 memavailable_kib=37580332 process_group_rss_kib=433412
-elapsed_s=3.0 memavailable_kib=39305772 process_group_rss_kib=473680
-elapsed_s=4.0 memavailable_kib=37339600 process_group_rss_kib=498928
-elapsed_s=5.1 memavailable_kib=38388856 process_group_rss_kib=516312
-reason=completed exit_code=0 max_process_group_rss_kib=516312 min_memavailable_kib=37339600

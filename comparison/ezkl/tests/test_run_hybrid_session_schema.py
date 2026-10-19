@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import formal_common  # noqa: E402
+import collect_results  # noqa: E402
 import run_formal_matrix  # noqa: E402
 from run_hybrid_formal import (  # noqa: E402
     DATASETS,
@@ -26,10 +27,13 @@ from run_hybrid_formal import (  # noqa: E402
     _disk_budget_components,
     _formal_dataset_command_plan,
     _native_capacity_requirements,
+    _native_json_output_bounds,
     _main,
     _native_prepare_budget,
+    _rescaled_f64_json_atom_upper,
     _require_formal_dataset_completion,
     _pending_srs_copy_disk_budget,
+    _pending_json_output_disk_budget,
     _recheck_local_phase_capacity,
     _remaining_setup_disk_bytes,
     _run_five_admission_preflight,
@@ -42,6 +46,162 @@ from run_hybrid_formal import (  # noqa: E402
 
 
 class LocalFormalEntryTest(unittest.TestCase):
+    def test_native_pk_v4_collector_accepts_producer_bitmap_budget_and_rejects_stale_budget(self) -> None:
+        domain_pages = 40
+        permutation_cells = domain_pages * 4096 * 8
+        admission = {
+            "domain_size": permutation_cells,
+            "constraint_system": {"num_permutation_columns": 1},
+        }
+        for successor_edges, expected_backing in ((3, 3 * 4096), (45, domain_pages * 4096)):
+            with self.subTest(successor_edges=successor_edges):
+                producer_geometry = formal_common.native_pk_v4_read_backing_geometry(
+                    permutation_cells, successor_edges
+                )
+                self.assertEqual(producer_geometry["target_bitmap_backing_bytes"], expected_backing)
+                self.assertEqual(producer_geometry["target_bitmap_allocation_bitmap_bytes"], 5)
+                producer_budget = {
+                    "native_pk_read_backing_required_bytes": expected_backing,
+                    "max_total_backing_bytes": expected_backing,
+                    "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes": 5,
+                }
+                self.assertEqual(
+                    collect_results._validate_native_pk_v4_read_backing_budget(
+                        admission, successor_edges, producer_budget
+                    ),
+                    producer_geometry,
+                )
+                legacy_backing = (
+                    (16 * successor_edges + 4095) // 4096
+                    + (successor_edges + 32767) // 32768
+                ) * 4096
+                legacy_budget = dict(producer_budget)
+                legacy_budget["native_pk_read_backing_required_bytes"] = legacy_backing
+                legacy_budget["max_total_backing_bytes"] = legacy_backing
+                with self.assertRaisesRegex(formal_common.ContractError, "v4 PK reader's target-bitmap backing"):
+                    collect_results._validate_native_pk_v4_read_backing_budget(
+                        admission, successor_edges, legacy_budget
+                    )
+                stale_budget = dict(producer_budget)
+                stale_budget["native_pk_read_backing_required_bytes"] = expected_backing + 4096
+                stale_budget["max_total_backing_bytes"] = expected_backing + 4096
+                with self.assertRaisesRegex(formal_common.ContractError, "v4 PK reader's target-bitmap backing"):
+                    collect_results._validate_native_pk_v4_read_backing_budget(
+                        admission, successor_edges, stale_budget
+                    )
+
+    def test_unknown_v4_payload_report_still_runs_actual_setup_capacity_gate(self) -> None:
+        session_id = "a" * 32
+        workspace_receipt = {
+            "session_id": session_id,
+            "query": {
+                "native_type_sizes": {"scalar_bytes": 32, "affine_bytes": 64},
+                "device_workspace_peak_bytes": 1,
+                "integrated_device": False,
+            },
+        }
+        capacity = {
+            "setup_key_artifact_upper_bytes": 10,
+            "setup_mapped_peak_bytes": 4,
+            "proof_spill_known_bytes": 2,
+            "host_known_bytes": 8,
+        }
+
+        def run_case(root: Path, available_bytes: int) -> tuple[dict[str, object], Path]:
+            output_root = root / "runs/formal"
+            session_dir = output_root / ".sessions" / session_id
+            session_dir.mkdir(parents=True)
+            session_file = output_root / ".sessions" / f"{session_id}.json"
+            session_file.write_text('{"capacity_checks": []}\n', encoding="utf-8")
+            output_root.parent.mkdir(parents=True, exist_ok=True)
+            prepared_dir = root.relative_to(ROOT).as_posix()
+
+            class CapacityApi:
+                @staticmethod
+                def audit_fresh_admission(_session_file: Path, dataset: str, *_args: object, **_kwargs: object):
+                    return {"dataset": dataset}
+
+                @staticmethod
+                def write_and_require_fresh_report(
+                    _session_file: Path,
+                    _records: list[dict[str, object]],
+                    report_path: Path,
+                    **_kwargs: object,
+                ):
+                    report = {
+                        "gate_status": "current_v4_pk_payload_lower_bound_unavailable",
+                        "readiness": "NOT_ESTABLISHED",
+                    }
+                    report_path.write_text(json.dumps(report) + "\n", encoding="utf-8")
+                    return report
+
+            def admit_one(_binary: Path, _srs: Path, _root: Path, _session: str, _device: dict[str, object], *, datasets: tuple[str, ...], **_kwargs: object):
+                dataset = datasets[0]
+                return {
+                    dataset: {
+                        "dataset": dataset,
+                        "prepared_dir": prepared_dir,
+                        "sha256": "d" * 64,
+                    }
+                }
+
+            with mock.patch("run_hybrid_formal._capacity_precheck_api", return_value=CapacityApi()), \
+                 mock.patch("run_hybrid_formal.native_admit_all_datasets", side_effect=admit_one), \
+                 mock.patch("run_hybrid_formal._build_native_cub_workspace_query", return_value=workspace_receipt), \
+                 mock.patch("run_hybrid_formal._admit_local_capacity", return_value=(workspace_receipt, {name: dict(capacity) for name in DATASETS})), \
+                 mock.patch("run_hybrid_formal._sample_native_cuda_memory", return_value={"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}), \
+                 mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
+                 mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
+                 mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(available_bytes, {"available_bytes": available_bytes, "device_id": "test-device"})), \
+                 mock.patch("run_hybrid_formal._filesystem_type", return_value="ext4"):
+                result = _run_five_native_capacity_preflight(
+                    binary=root / "ezkl",
+                    srs=root / "srs.kzg",
+                    output_root=output_root,
+                    session_id=session_id,
+                    session_file=session_file,
+                    session_dir=session_dir,
+                    authenticated_context=object(),
+                    selected_device={"uuid": "GPU-test"},
+                    saved_admissions={},
+                    runtime_identity={},
+                    build_environment={},
+                    gpu_identity={},
+                    resume_identity={},
+                    saved_setup_anchors={},
+                    archived_outputs=False,
+                    is_resume=False,
+                    completed_datasets=set(),
+                    workspace_receipt=None,
+                    srs_copy_size_bytes=5,
+                )
+            return {"result": result, "session_file": session_file}, session_dir
+
+        with tempfile.TemporaryDirectory(prefix="ezkl-unknown-pk-gate-", dir=ROOT / "tests") as temporary:
+            root = Path(temporary)
+            response, session_dir = run_case(root, 1000)
+            state = json.loads(response["session_file"].read_text(encoding="utf-8"))
+            self.assertEqual(
+                state["capacity_admission_attempts"]["gate_status"],
+                "current_v4_pk_payload_lower_bound_unavailable",
+            )
+            self.assertEqual(
+                [row["phase"] for row in state["capacity_checks"]],
+                ["setup"] * len(DATASETS),
+            )
+            self.assertTrue(all(dataset in response["result"][0] for dataset in DATASETS))
+            self.assertFalse(any((root / "runs/formal" / dataset / "pk.key").exists() for dataset in DATASETS))
+            self.assertTrue((session_dir / "capacity/resource_capacity_precheck.json").is_file())
+
+        with tempfile.TemporaryDirectory(prefix="ezkl-unknown-pk-gate-fail-", dir=ROOT / "tests") as temporary:
+            root = Path(temporary)
+            try:
+                run_case(root, 78)
+            except formal_common.ContractError as exc:
+                self.assertIn("mapped/key artifact gate", str(exc))
+            else:
+                self.fail("unknown PK payload report bypassed the mandatory native Setup capacity gate")
+
     @staticmethod
     def _capacity_admission() -> dict[str, object]:
         return {
@@ -316,6 +476,119 @@ class LocalFormalEntryTest(unittest.TestCase):
                                 phase="setup", device_sample=sample, workspace_query=query,
                                 disk_budget_components=components,
                             )
+
+    def test_pending_native_witness_and_proof_json_budget_is_cumulative_and_spill_exclusive(self) -> None:
+        self.assertEqual(_rescaled_f64_json_atom_upper(0, label="fixture scale"), 42)
+        self.assertEqual(_rescaled_f64_json_atom_upper(1000, label="fixture scale"), 324)
+        self.assertEqual(_rescaled_f64_json_atom_upper(-1000, label="fixture scale"), 312)
+        self.assertEqual(_rescaled_f64_json_atom_upper((1 << 31) - 1, label="fixture scale"), 329)
+        self.assertEqual(_rescaled_f64_json_atom_upper(-(1 << 31), label="fixture scale"), 312)
+        with tempfile.TemporaryDirectory(prefix="ezkl-json-budget-", dir=ROOT) as temporary:
+            prepared = Path(temporary) / "prepared"
+            prepared.mkdir()
+            settings = {
+                "run_args": {
+                    "input_visibility": "Public",
+                    "output_visibility": "Public",
+                    "param_visibility": {"Hashed": {"hash_is_public": True, "outlets": []}},
+                },
+                "model_instance_shapes": [[2], [1]],
+                "model_input_scales": [1000],
+                "model_output_scales": [-1000],
+                "module_sizes": {"poseidon": [0, [1]], "polycommit": []},
+            }
+            settings_path = prepared / "settings.json"
+            settings_path.write_text(json.dumps(settings, separators=(",", ":")), encoding="utf-8")
+            admission = {
+                "prepared_dir": prepared.relative_to(ROOT).as_posix(),
+                "settings_sha256": formal_common.sha256(settings_path),
+                "native_memory_model": {
+                    "graph_witness_scalar_element_count": 4,
+                    "advice_column_phase_ids": [0],
+                    "shplonk_query_polynomial_count": 2,
+                    "shplonk_max_rotation_count": 3,
+                    "shplonk_lookup_argument_count": 1,
+                    "shplonk_shuffle_argument_count": 1,
+                    "shplonk_permutation_product_set_count": 2,
+                    "shplonk_proof_instance_count": 4,
+                    "shplonk_quotient_piece_count": 5,
+                },
+            }
+            bounds = _native_json_output_bounds(admission, "cora")
+            self.assertEqual(bounds["public_input_scalar_count"], 2)
+            self.assertEqual(bounds["public_output_scalar_count"], 1)
+            self.assertEqual(bounds["runtime_parameter_scalar_count"], 1)
+            self.assertEqual(bounds["proof_instance_scalar_count"], 4)
+            self.assertEqual(bounds["proof_point_write_count_upper"], 21)
+            self.assertEqual(bounds["proof_scalar_write_count_upper"], 6)
+            self.assertEqual(bounds["proof_transcript_wire_upper_bytes"], 1536)
+
+            pending = _pending_json_output_disk_budget({"cora": bounds}, ("cora",))
+            self.assertEqual(pending["pending_json_datasets"], ["cora"])
+            witness_bytes = int(pending["pending_witness_json_upper_bytes"])
+            proof_bytes = int(pending["pending_proof_json_upper_bytes"])
+            self.assertGreater(witness_bytes, 0)
+            self.assertGreater(proof_bytes, 0)
+
+            srs_budget = {
+                "output_srs_copy_size_bytes": 7,
+                "pending_output_srs_copy_count": 1,
+                "pending_output_srs_copy_bytes": 7,
+                "pending_output_srs_copy_datasets": ["cora"],
+            }
+            setup_components = _disk_budget_components(
+                pending_srs=srs_budget,
+                setup_key_artifact_upper_bytes=10,
+                setup_mapped_peak_bytes=100,
+                pending_witness_json_upper_bytes=witness_bytes,
+                pending_proof_json_upper_bytes=proof_bytes,
+                pending_json_datasets=["cora"],
+            )
+            self.assertEqual(setup_components["pending_output_json_upper_bytes"], witness_bytes + proof_bytes)
+            self.assertEqual(setup_components["scratch_volume_required_bytes"], 100)
+
+            proof_spill = proof_bytes + 23
+            proof_components = _disk_budget_components(
+                pending_srs=srs_budget,
+                setup_key_artifact_upper_bytes=10,
+                proof_spill_known_bytes=proof_spill,
+                proof_spill_extra_bytes=23,
+                pending_witness_json_upper_bytes=witness_bytes,
+                pending_proof_json_upper_bytes=proof_bytes,
+                pending_json_datasets=["cora"],
+            )
+            expected_required = 10 + 7 + witness_bytes + proof_bytes + 23
+            self.assertEqual(proof_components["scratch_volume_required_bytes"], 23)
+            self.assertEqual(proof_components["total_required_bytes"], expected_required)
+
+            requirements = {"host_known_bytes": 1}
+            sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
+            query = {"device_workspace_peak_bytes": 1, "integrated_device": False}
+
+            def disk_available(available: int) -> tuple[int, dict[str, object]]:
+                return available, {"device_id": "fixture-fs", "available_bytes": available}
+
+            with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
+                 mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
+                 mock.patch("run_hybrid_formal._filesystem_available_bytes", side_effect=lambda _path: disk_available(expected_required)), \
+                 mock.patch("run_hybrid_formal._filesystem_type", return_value="ext4"):
+                check = _check_dataset_capacity(
+                    "cora", requirements, output_root=Path("/capacity/formal"),
+                    remaining_known_disk_bytes=expected_required, phase="witness_prove_verify",
+                    device_sample=sample, workspace_query=query, disk_budget_components=proof_components,
+                )
+                self.assertEqual(check["disk_required_known_bytes"], expected_required)
+
+            with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
+                 mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
+                 mock.patch("run_hybrid_formal._filesystem_available_bytes", side_effect=lambda _path: disk_available(expected_required - 1)), \
+                 mock.patch("run_hybrid_formal._filesystem_type", return_value="ext4"):
+                with self.assertRaisesRegex(formal_common.ContractError, "mapped/key artifact gate"):
+                    _check_dataset_capacity(
+                        "cora", requirements, output_root=Path("/capacity/formal"),
+                        remaining_known_disk_bytes=expected_required, phase="witness_prove_verify",
+                        device_sample=sample, workspace_query=query, disk_budget_components=proof_components,
+                    )
 
     def test_formal_initial_gate_consumes_pending_srs_copies_after_completed_cell_validation(self) -> None:
         with tempfile.TemporaryDirectory(prefix="ezkl-srs-initial-gate-") as temporary:

@@ -1,9 +1,0 @@
-CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=resource_snapshot
-CAPACITY_STAGE_END dataset=ogbn_arxiv stage=resource_snapshot host_headroom_bytes=28609249280 shared_disk_available_bytes=1642577719296 same_filesystem=true
-CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_graph_load
-CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_graph_load nodes=169343 edges=1335586 features=128 graphs=1
-CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=shape_estimate
-CAPACITY_STAGE_END dataset=ogbn_arxiv stage=shape_estimate host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=0 artifact_bytes_upper=1123976246
-CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=gkr_point_shape
-CAPACITY_STAGE_END dataset=ogbn_arxiv stage=gkr_point_shape status=ANALYSIS_UPPER_BOUND exact=false layers=113 fconn=54 bitmap_bytes=0 touched_index_bytes_upper=0 reason=analysis-only symbolic profile; per-gate point source census and point digest were intentionally omitted
-CAPACITY_PROFILE_ONLY dataset=ogbn_arxiv status=ANALYSIS_ONLY symbolic_profile_complete=true native_point_shape=NOT_ENUMERATED forward_admission=NOT_RUN host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=1955157962088

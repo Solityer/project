@@ -93,6 +93,15 @@ int main() {
         assert(zkgpt::native_storage::mappings.size() == initial_mappings + 1);
         fields.front() = F(17);
         fields.back() = F(-5);
+        const F* stable_address = fields.data();
+        const std::size_t stable_size = fields.size();
+        const std::size_t stable_capacity = fields.capacity();
+        const auto page_advice = zkgpt::native_storage::advise_vector_pages_cold(fields);
+        assert(page_advice.mapped_allocations == 1U && page_advice.madvise_failures == 0U &&
+               page_advice.fadvise_failures == 0U);
+        assert(fields.data() == stable_address && fields.size() == stable_size &&
+               fields.capacity() == stable_capacity && fields.front() == F(17) &&
+               fields.back() == F(-5));
         auto copied = fields;
         auto moved = std::move(copied);
         assert(moved.front() == F(17) && moved.back() == F(-5) && fields[1000].isZero());
@@ -160,9 +169,22 @@ int main() {
     std::size_t active = dense.size();
     for (const F& coordinate : point) { active >>= 1; for (std::size_t i = 0; i < active; ++i) dense[i] = dense[2 * i] * (F(1) - coordinate) + dense[2 * i + 1] * coordinate; }
     assert(zkgpt::native_mle_evaluate(values, point) == dense.front());
+    assert(zkgpt::native_mle_evaluate_zero_padded_prefix(values.size(), dense.size(), point, [&values](std::size_t index) { return values[index]; }) == dense.front());
     F direct(0);
     zkgpt::native_for_each_equality_weight(point, values.size(), [&](std::size_t index, const F& weight) { F reference(1); for (std::size_t bit = 0; bit < point.size(); ++bit) reference *= ((index >> bit) & 1) ? point[bit] : F(1) - point[bit]; assert(reference == weight); direct += values[index] * weight; });
     assert(direct == dense.front());
+    if (std::numeric_limits<std::size_t>::digits > 35) {
+        const std::size_t large_mle_domain = std::size_t(1) << 35;
+        const std::vector<F> large_mle_prefix{F(7), F(-2), F(5)};
+        const std::vector<F> large_mle_point(35, F(3));
+        F large_mle_expected(0);
+        for (std::size_t index = 0; index < large_mle_prefix.size(); ++index) {
+            F weight(1);
+            for (std::size_t bit = 0; bit < large_mle_point.size(); ++bit) weight *= ((index >> bit) & 1U) != 0 ? large_mle_point[bit] : F(1) - large_mle_point[bit];
+            large_mle_expected += large_mle_prefix[index] * weight;
+        }
+        assert(zkgpt::native_mle_evaluate_zero_padded_prefix(large_mle_prefix.size(), large_mle_domain, large_mle_point, [&large_mle_prefix](std::size_t index) { return large_mle_prefix[index]; }) == large_mle_expected);
+    }
     std::vector<F> beta_point(17, F(3));
     zkgpt::NativeFieldVector beta_table(std::size_t(1) << beta_point.size(), F(0));
     initBetaTable(beta_table, beta_point.size(), beta_point.begin(), F(1), 2);

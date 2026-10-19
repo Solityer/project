@@ -50,7 +50,6 @@ use halo2_proofs::SerdeFormat;
 #[cfg(all(feature = "eth", not(target_arch = "wasm32")))]
 use halo2_solidity_verifier;
 use halo2curves::bn256::{Bn256, Fr, G1Affine};
-#[cfg(any(feature = "gpu-accelerated", test))]
 use halo2curves::ff::Field;
 use halo2curves::ff::{FromUniformBytes, PrimeField, WithSmallOrderMulGroup};
 use halo2curves::serde::SerdeObject;
@@ -238,8 +237,20 @@ pub async fn run(command: Commands) -> Result<String, EZKLError> {
             output,
             gpu,
         ),
-        Commands::GatContract { output } => {
+        Commands::GatContract {
+            output,
+            source_tree_sha256_output,
+        } => {
+            let source_tree_sha256 = source_tree_sha256_output
+                .as_ref()
+                .map(|_| source_tree_hash(&std::env::current_dir()?))
+                .transpose()?;
             FormalCliContract::write(&output)?;
+            if let (Some(path), Some(digest)) =
+                (source_tree_sha256_output.as_ref(), source_tree_sha256.as_ref())
+            {
+                crate::gat_adapter::cli::write_source_tree_sha256(path, digest)?;
+            }
             Ok(output.display().to_string())
         }
         Commands::Mock { model, witness } => mock(
@@ -1861,55 +1872,249 @@ fn assert_native_gat_public_identity(
     Ok(())
 }
 
+const SOURCE_TREE_EXCLUDED_COMPONENTS: [&str; 4] = ["target", "build", ".git", "__pycache__"];
+const SOURCE_TREE_EXCLUDED_VENDOR_BINDINGS: &str =
+    "vendor/icicle/wrappers/rust/icicle-cuda-runtime/src/bindings.rs";
+
 fn source_tree_hash(root: &Path) -> Result<String, EZKLError> {
-    fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), EZKLError> {
-        let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
+    fn excluded_relative_path(path: &Path) -> bool {
+        path.components().any(|component| match component {
+            std::path::Component::Normal(name) => SOURCE_TREE_EXCLUDED_COMPONENTS
+                .iter()
+                .any(|excluded| name == std::ffi::OsStr::new(excluded)),
+            _ => false,
+        })
+    }
+
+    fn collect_directory(
+        directory: &Path,
+        source_root: &Path,
+        baseline_root: &Path,
+        files: &mut Vec<PathBuf>,
+    ) -> Result<(), EZKLError> {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            let relative = path.strip_prefix(source_root).map_err(|error| {
+                format!("source path is outside collection root: {}", error)
+            })?;
+            if excluded_relative_path(relative) {
+                continue;
+            }
             let metadata = std::fs::symlink_metadata(&path)?;
             if metadata.file_type().is_symlink() {
                 continue;
             }
             if metadata.is_dir() {
-                collect(&path, files)?;
-            } else if metadata.is_file() {
+                collect_directory(&path, source_root, baseline_root, files)?;
+            } else if metadata.is_file()
+                && path.strip_prefix(baseline_root).map_err(|error| {
+                    format!("source path is outside baseline: {}", error)
+                })? != Path::new(SOURCE_TREE_EXCLUDED_VENDOR_BINDINGS)
+            {
                 files.push(path);
             }
         }
         Ok(())
     }
 
-    let mut files = Vec::new();
-    for relative in ["src", "gat_adapter", ".cargo"] {
-        let path = root.join(relative);
-        if path.is_dir() {
-            collect(&path, &mut files)?;
+    fn add_if_regular_file(path: PathBuf, files: &mut Vec<PathBuf>) -> Result<(), EZKLError> {
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Ok(()),
+            Ok(metadata) if metadata.is_file() => {
+                files.push(path);
+                Ok(())
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn relative_parts(path: &Path, root: &Path) -> Result<Vec<String>, EZKLError> {
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("source path is outside baseline: {}", error))?;
+        relative
+            .components()
+            .map(|component| match component {
+                std::path::Component::Normal(part) => part
+                    .to_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        EZKLError::from(format!(
+                            "official source path is not valid UTF-8: {}",
+                            path.display()
+                        ))
+                    }),
+                _ => Err(EZKLError::from(format!(
+                    "official source path is not a normalized relative path: {}",
+                    path.display()
+                ))),
+            })
+            .collect()
+    }
+
+    let mut paths = Vec::new();
+    for relative in ["src", "gat_adapter", ".cargo", "vendor"] {
+        let directory = root.join(relative);
+        if directory.is_dir() {
+            collect_directory(&directory, &directory, root, &mut paths)?;
         }
     }
     for relative in ["Cargo.toml", "Cargo.lock", "build.rs", "rust-toolchain"] {
-        let path = root.join(relative);
-        if path.is_file() && !path.is_symlink() {
-            files.push(path);
+        add_if_regular_file(root.join(relative), &mut paths)?;
+    }
+    let scripts = root.join("scripts");
+    if scripts.is_dir() {
+        for entry in std::fs::read_dir(&scripts)? {
+            let path = entry?.path();
+            let metadata = std::fs::symlink_metadata(&path)?;
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                continue;
+            }
+            if matches!(
+                path.extension().and_then(|extension| extension.to_str()),
+                Some("py" | "sh")
+            ) {
+                paths.push(path);
+            }
         }
     }
-    files.sort_by_key(|path| path.strip_prefix(root).unwrap().to_owned());
+    add_if_regular_file(root.join("setup-gpu.sh"), &mut paths)?;
+
+    let mut files = paths
+        .into_iter()
+        .map(|path| Ok((relative_parts(&path, root)?, path)))
+        .collect::<Result<Vec<_>, EZKLError>>()?;
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    files.dedup_by(|left, right| left.0 == right.0);
     if files.is_empty() {
         return Err("official ezkl source tree is empty".into());
     }
+
     let mut canonical = Vec::new();
-    for path in files {
-        let relative = path
-            .strip_prefix(root)
-            .map_err(|e| format!("source path is outside baseline: {}", e))?
-            .to_string_lossy()
-            .replace('\\', "/");
-        let digest = get_file_hash(&path)?;
-        canonical.extend_from_slice(&(relative.len() as u64).to_be_bytes());
-        canonical.extend_from_slice(relative.as_bytes());
+    for (parts, path) in files {
+        let relative = parts.join("/");
+        let relative_bytes = relative.as_bytes();
+        let (_, digest) = stable_source_file_sha256(&path)?;
+        canonical.extend_from_slice(&(relative_bytes.len() as u64).to_be_bytes());
+        canonical.extend_from_slice(relative_bytes);
         canonical.extend_from_slice(digest.as_bytes());
     }
     crate::gat_adapter::schema::sha256_digest(&canonical).map_err(EZKLError::from)
+}
+
+#[cfg(feature = "ezkl")]
+fn stable_source_file_sha256(path: &Path) -> Result<(u64, String), EZKLError> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    #[derive(Debug, PartialEq)]
+    struct FileStamp {
+        len: u64,
+        #[cfg(unix)]
+        dev: u64,
+        #[cfg(unix)]
+        ino: u64,
+        #[cfg(unix)]
+        mtime: i64,
+        #[cfg(unix)]
+        mtime_nsec: i64,
+        #[cfg(unix)]
+        ctime: i64,
+        #[cfg(unix)]
+        ctime_nsec: i64,
+        #[cfg(not(unix))]
+        modified: std::time::SystemTime,
+    }
+
+    fn stamp(metadata: &std::fs::Metadata, path: &Path) -> Result<FileStamp, EZKLError> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let _ = path;
+            Ok(FileStamp {
+                len: metadata.len(),
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                mtime: metadata.mtime(),
+                mtime_nsec: metadata.mtime_nsec(),
+                ctime: metadata.ctime(),
+                ctime_nsec: metadata.ctime_nsec(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(FileStamp {
+                len: metadata.len(),
+                modified: metadata.modified().map_err(|error| {
+                    format!("read source modification time for {}: {}", path.display(), error)
+                })?,
+            })
+        }
+    }
+
+    let path_before = std::fs::symlink_metadata(path)?;
+    if path_before.file_type().is_symlink() || !path_before.is_file() {
+        return Err(format!(
+            "official source path is not a regular file: {}",
+            path.display()
+        )
+        .into());
+    }
+    let stamp_before = stamp(&path_before, path)?;
+    let mut file = File::open(path)?;
+    let file_before = file.metadata()?;
+    if !file_before.is_file() || stamp(&file_before, path)? != stamp_before {
+        return Err(format!(
+            "official source changed while opening: {}",
+            path.display()
+        )
+        .into());
+    }
+
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    let mut processed = 0_u64;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        processed = processed
+            .checked_add(count as u64)
+            .ok_or_else(|| format!("source size overflow while reading {}", path.display()))?;
+        if processed > stamp_before.len {
+            return Err(format!("official source grew while reading: {}", path.display()).into());
+        }
+        hasher.update(&buffer[..count]);
+    }
+
+    let file_after = file.metadata()?;
+    let path_after = std::fs::symlink_metadata(path)?;
+    if !file_after.is_file()
+        || path_after.file_type().is_symlink()
+        || !path_after.is_file()
+        || processed != stamp_before.len
+        || stamp(&file_after, path)? != stamp_before
+        || stamp(&path_after, path)? != stamp_before
+    {
+        return Err(format!(
+            "official source changed while hashing: {}",
+            path.display()
+        )
+        .into());
+    }
+    Ok((processed, hex::encode(hasher.finalize())))
+}
+
+#[cfg(not(feature = "ezkl"))]
+fn stable_source_file_sha256(path: &Path) -> Result<(u64, String), EZKLError> {
+    Err(format!(
+        "stable source hashing requires the official ezkl feature: {}",
+        path.display()
+    )
+    .into())
 }
 
 fn resolved_circuit_ref(
@@ -1980,12 +2185,260 @@ fn next_srs_temp_path(destination: &Path) -> Result<PathBuf, EZKLError> {
     Ok(parent.join(temporary_name))
 }
 
+fn parse_authenticated_native_settings_snapshot(
+    settings_bytes: &[u8],
+    expected_settings_sha256: &str,
+) -> Result<(GraphSettings, String), EZKLError> {
+    let settings_sha256 = crate::gat_adapter::schema::sha256_digest(settings_bytes).map_err(EZKLError::from)?;
+    if expected_settings_sha256 != settings_sha256 {
+        return Err("native admission settings digest mismatch".into());
+    }
+    let settings: GraphSettings = serde_json::from_slice(settings_bytes)?;
+    crate::check_version_string_matches(&settings.version);
+    Ok((settings, settings_sha256))
+}
+
+fn ensure_native_setup_settings_match(
+    circuit_settings: &GraphSettings,
+    admitted_settings: &GraphSettings,
+) -> Result<(), EZKLError> {
+    if circuit_settings != admitted_settings {
+        return Err("native setup circuit settings differ from the authenticated admission settings".into());
+    }
+    Ok(())
+}
+
+fn install_authenticated_native_settings_snapshot(
+    settings_path: &Path,
+    settings_bytes: &[u8],
+    settings_sha256: &str,
+) -> Result<(), EZKLError> {
+    let mut reserved = None;
+    for _ in 0..128 {
+        let candidate = next_srs_temp_path(settings_path)?;
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+            Ok(file) => {
+                reserved = Some((candidate, file));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let (temporary, mut settings_file) = reserved
+        .ok_or_else(|| "could not reserve a unique temporary native settings path".to_string())?;
+    let mut installed_identity = None;
+    let install_result = (|| -> Result<(), EZKLError> {
+        use std::io::Write as _;
+        settings_file.write_all(settings_bytes)?;
+        settings_file.sync_all()?;
+        drop(settings_file);
+        if get_file_hash(&temporary)? != settings_sha256 {
+            return Err("temporary native setup settings do not match the authenticated admission".into());
+        }
+        let temporary_metadata = std::fs::symlink_metadata(&temporary)?;
+        if temporary_metadata.file_type().is_symlink() || !temporary_metadata.is_file() {
+            return Err("temporary native setup settings are not a regular file".into());
+        }
+        #[cfg(unix)]
+        let temporary_identity = {
+            use std::os::unix::fs::MetadataExt;
+            (temporary_metadata.dev(), temporary_metadata.ino())
+        };
+        #[cfg(not(unix))]
+        let temporary_identity: (u64, u64) = return Err("formal settings installation requires Unix file identity".into());
+        match std::fs::symlink_metadata(settings_path) {
+            Ok(_) => return Err("native setup settings output appeared during installation".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        std::fs::hard_link(&temporary, settings_path)?;
+        installed_identity = Some(temporary_identity);
+        let output_metadata = std::fs::symlink_metadata(settings_path)?;
+        if output_metadata.file_type().is_symlink() || !output_metadata.is_file() {
+            return Err("native setup settings output is not a regular file".into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (output_metadata.dev(), output_metadata.ino()) != temporary_identity {
+                return Err("native setup settings output is not the authenticated temporary file".into());
+            }
+        }
+        if get_file_hash(settings_path)? != settings_sha256 {
+            return Err("native setup output settings digest does not match the authenticated admission".into());
+        }
+        std::fs::remove_file(&temporary)?;
+        sync_parent_directory(settings_path)?;
+        Ok(())
+    })();
+    if let Err(error) = install_result {
+        let _ = std::fs::remove_file(&temporary);
+        #[cfg(unix)]
+        if let (Some((device, inode)), Ok(metadata)) = (installed_identity, std::fs::symlink_metadata(settings_path)) {
+            use std::os::unix::fs::MetadataExt;
+            if !metadata.file_type().is_symlink()
+                && metadata.is_file()
+                && (metadata.dev(), metadata.ino()) == (device, inode)
+            {
+                let _ = std::fs::remove_file(settings_path);
+                let _ = sync_parent_directory(settings_path);
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn sync_parent_directory(path: &Path) -> Result<(), EZKLError> {
     let parent = path
         .parent()
         .ok_or_else(|| "bound SRS destination has no parent directory".to_string())?;
     File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod native_settings_snapshot_tests {
+    use super::*;
+
+    #[test]
+    fn authenticated_settings_snapshot_preserves_bytes_and_fails_closed() {
+        let directory = tempfile::tempdir().expect("temporary settings fixture");
+        // Keep this as a small, known-valid JSON settings fixture. The derived
+        // defaults include values that do not round-trip through this legacy
+        // flattened settings format, while real Admission settings do.
+        let settings_json = r#"{
+            "run_args": {
+                "input_scale": 4,
+                "param_scale": 2,
+                "rebase_scale": null,
+                "scale_rebase_multiplier": 1,
+                "lookup_range": [0, 0],
+                "logrows": 6,
+                "num_inner_cols": 1,
+                "variables": [],
+                "input_visibility": "Public",
+                "output_visibility": "Public",
+                "param_visibility": "Public",
+                "rebase_frac_zero_constants": false,
+                "check_mode": "UNSAFE",
+                "decomp_base": 2,
+                "decomp_legs": 1,
+                "bounded_log_lookup": false,
+                "ignore_range_check_inputs_outputs": false,
+                "epsilon": null,
+                "disable_freivalds": false
+            },
+            "num_rows": 17,
+            "total_assignments": 0,
+            "total_const_size": 0,
+            "total_dynamic_col_size": 0,
+            "max_dynamic_input_len": 0,
+            "num_dynamic_lookups": 0,
+            "num_shuffles": 0,
+            "total_shuffle_col_size": 0,
+            "einsum_params": {"equations": [], "total_einsum_col_size": 0},
+            "model_instance_shapes": [],
+            "model_output_scales": [],
+            "model_input_scales": [],
+            "module_sizes": {"polycommit": [], "poseidon": [0, []]},
+            "required_lookups": [],
+            "required_range_checks": [],
+            "check_mode": "UNSAFE",
+            "version": "source - no compatibility guaranteed",
+            "num_blinding_factors": null,
+            "timestamp": null,
+            "input_types": null,
+            "output_types": null,
+            "gat_range_gadget_version": null
+        }"#;
+        let settings: GraphSettings =
+            serde_json::from_str(settings_json).expect("parse known-valid settings fixture");
+        let settings_value = serde_json::to_value(&settings).expect("serialize settings fixture");
+        let mut entries: Vec<_> = settings_value
+            .as_object()
+            .expect("settings serialize as a JSON object")
+            .iter()
+            .collect();
+        entries.reverse();
+        let reordered_fields = entries
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}:{}",
+                    serde_json::to_string(key).expect("encode settings key"),
+                    serde_json::to_string(value).expect("encode settings value")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let reordered_bytes = format!("{{{reordered_fields}}}").into_bytes();
+        let canonical_bytes = serde_json::to_vec(&settings).expect("serialize canonical settings");
+        assert_ne!(reordered_bytes, canonical_bytes, "fixture must exercise a key-order change");
+
+        let reordered_sha256 = crate::gat_adapter::schema::sha256_digest(&reordered_bytes).unwrap();
+        let (decoded, decoded_sha256) =
+            parse_authenticated_native_settings_snapshot(&reordered_bytes, &reordered_sha256)
+                .expect("same-value reordered settings authenticate");
+        assert_eq!(decoded, settings);
+        assert_eq!(decoded_sha256, reordered_sha256);
+        ensure_native_setup_settings_match(&decoded, &settings).expect("same settings semantics accepted");
+
+        let mut semantic_change = decoded.clone();
+        semantic_change.num_rows += 1;
+        let semantic_bytes = serde_json::to_vec(&semantic_change).expect("serialize semantic change");
+        let semantic_sha256 = crate::gat_adapter::schema::sha256_digest(&semantic_bytes).unwrap();
+        let (decoded_change, _) =
+            parse_authenticated_native_settings_snapshot(&semantic_bytes, &semantic_sha256)
+                .expect("correctly hashed semantic variant is parseable");
+        assert!(ensure_native_setup_settings_match(&decoded_change, &settings).is_err());
+        assert!(parse_authenticated_native_settings_snapshot(&semantic_bytes, &reordered_sha256).is_err());
+
+        let output = directory.path().join("settings.json");
+        install_authenticated_native_settings_snapshot(&output, &reordered_bytes, &reordered_sha256)
+            .expect("install exact authenticated settings bytes");
+        assert_eq!(std::fs::read(&output).unwrap(), reordered_bytes);
+
+        let preexisting = directory.path().join("preexisting.json");
+        std::fs::write(&preexisting, b"preserve existing bytes").unwrap();
+        assert!(install_authenticated_native_settings_snapshot(
+            &preexisting,
+            &reordered_bytes,
+            &reordered_sha256
+        )
+        .is_err());
+        assert_eq!(std::fs::read(&preexisting).unwrap(), b"preserve existing bytes");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let symlink_target = directory.path().join("symlink-target.json");
+            let symlink_output = directory.path().join("symlink-output.json");
+            std::fs::write(&symlink_target, b"preserve symlink target").unwrap();
+            symlink(&symlink_target, &symlink_output).unwrap();
+            assert!(install_authenticated_native_settings_snapshot(
+                &symlink_output,
+                &reordered_bytes,
+                &reordered_sha256
+            )
+            .is_err());
+            assert_eq!(std::fs::read(&symlink_target).unwrap(), b"preserve symlink target");
+            assert!(std::fs::symlink_metadata(&symlink_output).unwrap().file_type().is_symlink());
+        }
+
+        let failure_dir = directory.path().join("failed-install");
+        std::fs::create_dir(&failure_dir).unwrap();
+        let failed_output = failure_dir.join("settings.json");
+        assert!(install_authenticated_native_settings_snapshot(
+            &failed_output,
+            &reordered_bytes,
+            &semantic_sha256
+        )
+        .is_err());
+        assert!(!failed_output.exists());
+        assert_eq!(std::fs::read_dir(&failure_dir).unwrap().count(), 0);
+    }
 }
 
 fn materialize_authenticated_srs(
@@ -2519,10 +2972,12 @@ fn configure_canonical_constraint_system(circuit: &GraphCircuit) -> plonk::Const
     cs
 }
 
-#[cfg(any(feature = "gpu-accelerated", test))]
 struct NativeMvLookupShape {
     argument_count: u64,
+    // These counters are serialized into the GPU-only Admission document.
+    #[cfg_attr(not(feature = "gpu-accelerated"), allow(dead_code))]
     query_polynomial_count: u64,
+    #[cfg_attr(not(feature = "gpu-accelerated"), allow(dead_code))]
     max_query_polynomials_per_argument: u64,
     table_cardinality_upper_bounds: Vec<u64>,
     argument_table_group_indices: Vec<u64>,
@@ -2544,7 +2999,6 @@ fn shape_scalar_elements(shapes: &[Vec<usize>]) -> Result<u64, EZKLError> {
     })
 }
 
-#[cfg(any(feature = "gpu-accelerated", test))]
 fn selector_advice_product(
     expression: &plonk::Expression<Fr>,
 ) -> Option<usize> {
@@ -2560,7 +3014,6 @@ fn selector_advice_product(
     }
 }
 
-#[cfg(any(feature = "gpu-accelerated", test))]
 fn table_expression_cardinality_upper(
     table: &[plonk::Expression<Fr>],
     selector_activation_counts: &[u64],
@@ -2635,7 +3088,6 @@ fn table_expression_cardinality_upper(
     Ok(fixed_values_upper.saturating_add(implicit_zero).min(domain_size))
 }
 
-#[cfg(feature = "gpu-accelerated")]
 fn native_mv_lookup_shape_with_bounds(
     cs: &plonk::ConstraintSystem<Fr>,
     selector_activation_counts_upper: &[u64],
@@ -2694,7 +3146,6 @@ fn native_mv_lookup_shape_with_bounds(
     })
 }
 
-#[cfg(any(feature = "gpu-accelerated", test))]
 fn native_mv_lookup_argument_table_group_indices(
     cs: &plonk::ConstraintSystem<Fr>,
 ) -> Result<Vec<u64>, EZKLError> {
@@ -3270,7 +3721,7 @@ fn native_admission_relation_identity(loaded: &crate::gat_adapter::LoadedGat) ->
 fn load_native_admission_circuit(
     loaded: &crate::gat_adapter::LoadedGat,
     admission_dir: &Path,
-) -> Result<(GraphCircuit, usize), EZKLError> {
+) -> Result<(GraphCircuit, usize, Vec<u8>, String), EZKLError> {
     let admission_path = admission_dir.join("admission.json");
     let settings_path = admission_dir.join("settings.json");
     for (path, label) in [
@@ -3280,6 +3731,7 @@ fn load_native_admission_circuit(
         require_formal_regular_file(path, label)?;
     }
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
+    let settings_bytes = std::fs::read(&settings_path)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
     if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(8)
         || admission.get("shape_evidence_kind").and_then(JsonValue::as_str)
@@ -3292,13 +3744,11 @@ fn load_native_admission_circuit(
     {
         return Err("native admission relation/resource identity does not match the current canonical dataset".into());
     }
-    if admission.get("settings_sha256").and_then(JsonValue::as_str)
-        != Some(get_file_hash(&settings_path)?.as_str())
-    {
-        return Err("native admission settings digest mismatch".into());
-    }
-
-    let settings = GraphSettings::load(&settings_path)?;
+    let expected_settings_sha256 = admission
+        .get("settings_sha256")
+        .and_then(JsonValue::as_str)
+        .ok_or("native admission settings digest is missing")?;
+    let (settings, settings_sha256) = parse_authenticated_native_settings_snapshot(&settings_bytes, expected_settings_sha256)?;
     let model = build_model_for_run_args(
         loaded.spec.clone(),
         RoundingMode::NearestTiesAway,
@@ -3310,6 +3760,7 @@ fn load_native_admission_circuit(
         settings.clone(),
         CheckMode::UNSAFE,
     );
+    ensure_native_setup_settings_match(circuit.settings(), &settings)?;
     assert_native_gat_identity(&circuit, &loaded.spec)?;
     let current_cs = configure_canonical_constraint_system(&circuit);
     let admission_cs = admission
@@ -3982,7 +4433,7 @@ fn load_native_admission_circuit(
             return Err(format!("native admission {} disagrees with its authenticated settings", key).into());
         }
     }
-    Ok((circuit, fixed_post_compression))
+    Ok((circuit, fixed_post_compression, settings_bytes, settings_sha256))
 }
 
 fn native_mem_available_bytes() -> Result<u64, EZKLError> {
@@ -4397,16 +4848,20 @@ fn gat_prepare_setup(
     }
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");
-    let circuit = if let Some(admission_dir) = admission_dir.as_deref() {
-        let (circuit, _) = load_native_admission_circuit(&loaded, admission_dir)?;
-        circuit
+    let (circuit, admitted_settings_snapshot) = if let Some(admission_dir) = admission_dir.as_deref() {
+        let (circuit, _, settings_bytes, settings_sha256) = load_native_admission_circuit(&loaded, admission_dir)?;
+        (circuit, Some((settings_bytes, settings_sha256)))
     } else {
-        build_canonical_gat_circuit(&loaded)?
+        (build_canonical_gat_circuit(&loaded)?, None)
     };
     // The shape-only admission persists settings, not a second serialized
     // circuit. Construct the setup circuit once from those settings and keep
     // the compiled artifact's witness storage empty.
-    circuit.settings().save(&settings_path)?;
+    if let Some((settings_bytes, settings_sha256)) = admitted_settings_snapshot {
+        install_authenticated_native_settings_snapshot(&settings_path, &settings_bytes, &settings_sha256)?;
+    } else {
+        circuit.settings().save(&settings_path)?;
+    }
     circuit.save(compiled_path.clone())?;
     let (native_budget_receipt, native_budget_sha256) = native_keygen_budget_receipt(
         &loaded,
@@ -5176,6 +5631,12 @@ fn gat_prepare_final(
     })
     .collect::<Result<_, _>>()?;
     if std::env::var_os("EZKL_FORMAL_SESSION_ID").is_some() {
+        let admission_path = output_dir.join("admission.json");
+        require_formal_regular_file(&admission_path, "formal native admission")?;
+        files.push(
+            crate::gat_adapter::artifact_file(&admission_path, "admission.json".to_string())
+                .map_err(EZKLError::from)?,
+        );
         for name in [
             "setup_receipt.json",
             "native_keygen_budget.json",
@@ -5529,7 +5990,19 @@ fn authenticated_native_prove_backing_budget(
     let native_census = keygen_receipt
         .get("native_census")
         .ok_or("native keygen receipt lacks its exact native census")?;
-    if keygen_budget.get("admission_sha256") != admission.get("sha256") {
+    let admission_sha256 = get_file_hash(&admission_path)?;
+    let setup_admission_sha256 = setup_receipt
+        .get("setup_files")
+        .and_then(|files| files.get("admission.json"))
+        .and_then(JsonValue::as_str);
+    if keygen_budget.get("admission_sha256").and_then(JsonValue::as_str)
+        != Some(admission_sha256.as_str())
+        || prove_budget.get("admission_sha256").and_then(JsonValue::as_str)
+            != Some(admission_sha256.as_str())
+        || setup_receipt.get("admission_sha256").and_then(JsonValue::as_str)
+            != Some(admission_sha256.as_str())
+        || setup_admission_sha256 != Some(admission_sha256.as_str())
+    {
         return Err("native keygen budget does not bind the current admission receipt".into());
     }
     let memory_model = admission
@@ -5796,19 +6269,32 @@ fn authenticated_native_prove_backing_budget(
             .ok_or_else(|| format!("formal admission lacks source-derived {}", name).into())
     };
     let cache_group_bytes = memory_u64("size_of_shplonk_fixed_aggregate_cache_group_bytes")?;
-    let cache_domain_size = memory_u64("proof_domain_size")?;
+    let cache_domain_size = admission_domain_size;
+    let extended_proof_domain_size = memory_u64("proof_domain_size")?;
     let cache_scalar_bytes = memory_u64("size_of_fr_bytes")?;
+    let runtime_cache_scalar_bytes = std::mem::size_of::<Fr>() as u64;
+    let runtime_cache_group_bytes =
+        halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().2 as u64;
     let cache_usize_bytes = memory_u64("size_of_usize_bytes")?;
     let cache_vec_header_bytes = memory_u64("size_of_vec_header_bytes")?;
     let cache_rotation_set_count = memory_u64("shplonk_rotation_set_count")?;
     let cache_max_fixed_sources = memory_u64("shplonk_max_commitments_per_rotation_set")?;
     let cache_max_points = memory_u64("shplonk_max_rotation_count")?;
-    if cache_domain_size != admission_domain_size
-        || cache_scalar_bytes != fr_bytes
-        || cache_group_bytes
-            != halo2_proofs::poly::kzg::multiopen::native_shplonk_resource_layout::<G1Affine>().2 as u64
-    {
-        return Err("native SHPLONK fixed-cache shape differs from the admitted source layout".into());
+    if cache_scalar_bytes != runtime_cache_scalar_bytes || cache_group_bytes != runtime_cache_group_bytes {
+        return Err(format!(
+            concat!(
+                "native SHPLONK fixed-cache shape differs from the admitted source layout: ",
+                "base_domain_expected={} (Admission), extended_proof_domain={} (FFT only), ",
+                "Fr_bytes_admission={} runtime={}, aggregate_group_bytes_admission={} runtime={}"
+            ),
+            cache_domain_size,
+            extended_proof_domain_size,
+            cache_scalar_bytes,
+            runtime_cache_scalar_bytes,
+            cache_group_bytes,
+            runtime_cache_group_bytes,
+        )
+        .into());
     }
     let cache_group_host = cache_group_bytes
         .checked_add(cache_domain_size.checked_mul(cache_scalar_bytes).ok_or("native SHPLONK cache host bound overflow")?)
@@ -5905,7 +6391,48 @@ fn authenticated_native_prove_backing_budget(
         || cache_bank_header_limit != expected_cache_bank_header_limit
         || cache_disk_limit != expected_cache_disk_limit
     {
-        return Err("native SHPLONK optional cache quota is inconsistent with its source-bound host/disk budget".into());
+        return Err(format!(
+            concat!(
+                "native SHPLONK optional cache quota is inconsistent with its source-bound host/disk budget: ",
+                "cache_domain_budget={} expected_base_domain={} (extended_proof_domain={}); ",
+                "Fr_bytes_budget={} admission={} runtime={}; ",
+                "aggregate_group_bytes_admission={} runtime={}; ",
+                "group_host_bytes_budget={} expected={}, group_disk_bytes_budget={} expected={}; ",
+                "bank_header_bytes_budget={} expected={}; fixed_sources_budget={} expected={}, ",
+                "max_points_budget={} expected={}, rotation_sets_budget={} expected={}; ",
+                "max_groups_budget={} expected={}, host_limit_budget={} expected={}, ",
+                "bank_header_limit_budget={} expected={}, disk_limit_budget={} expected={}"
+            ),
+            budget_cache_domain,
+            cache_domain_size,
+            extended_proof_domain_size,
+            budget_cache_scalar,
+            cache_scalar_bytes,
+            runtime_cache_scalar_bytes,
+            cache_group_bytes,
+            runtime_cache_group_bytes,
+            budget_cache_group_host,
+            cache_group_host,
+            budget_cache_group_disk,
+            cache_group_disk,
+            budget_cache_bank_header,
+            cache_bank_header,
+            budget_cache_fixed_count,
+            cache_max_fixed_sources,
+            budget_cache_points,
+            cache_max_points,
+            budget_cache_set_count,
+            cache_rotation_set_count,
+            cache_max_groups,
+            expected_cache_groups,
+            cache_host_limit,
+            expected_cache_host_limit,
+            cache_bank_header_limit,
+            expected_cache_bank_header_limit,
+            cache_disk_limit,
+            expected_cache_disk_limit,
+        )
+        .into());
     }
     let fixed_aggregate_cache = halo2_proofs::poly::kzg::multiopen::NativeShplonkFixedAggregateCacheLimits {
         max_groups: usize::try_from(cache_max_groups).map_err(|_| "native SHPLONK cache group quota exceeds host size")?,
@@ -5922,7 +6449,8 @@ fn authenticated_native_prove_backing_budget(
         .and_then(JsonValue::as_u64)
         .ok_or("native keygen census lacks its exact successor count for PK-read admission")?;
     let permutation_columns = admission
-        .get("num_permutation_columns")
+        .get("constraint_system")
+        .and_then(|constraint_system| constraint_system.get("num_permutation_columns"))
         .and_then(JsonValue::as_u64)
         .ok_or("formal admission lacks its permutation column count")?;
     let permutation_cells = admission_domain_size
@@ -6313,11 +6841,13 @@ pub(crate) fn prove(
             return Err(format!("unsupported formal backend: {}", backend).into());
         }
         if backend == "gpu" {
-            let directory = std::env::var("EZKL_GAT_RUN_DIR")
-                .map(PathBuf::from)
-                .map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
             #[cfg(feature = "gpu-accelerated")]
-            crate::gat_adapter::gpu::write_proof_record(&directory, &proof_path)?;
+            {
+                let directory = std::env::var("EZKL_GAT_RUN_DIR")
+                    .map(PathBuf::from)
+                    .map_err(|_| "GPU formal proof requires EZKL_GAT_RUN_DIR")?;
+                crate::gat_adapter::gpu::write_proof_record(&directory, &proof_path)?;
+            }
             #[cfg(not(feature = "gpu-accelerated"))]
             return Err("GPU formal proof requires the matching GPU-capable native binary".into());
         } else if formal_srs_sha256.is_some() {

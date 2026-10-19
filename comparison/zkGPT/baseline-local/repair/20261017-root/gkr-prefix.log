@@ -1,5 +1,0 @@
-NATIVE_GKR_CHALLENGE_COMPACTION_OK cases=5 rounds=6
-NATIVE_GKR_PARALLEL_CHALLENGE_OK extent=32769 challenges=zero,one
-NATIVE_GKR_PREFIX_MICROBENCH extent=300001 source_reads_new=600002 source_reads_old=300001 old_us=52283 compacted_us=25006
-NATIVE_GKR_PREFIX_OK rounds=37 logical=3 full_domain=2^37 Fr_bytes=32 linear_poly_bytes=64
-gkr_prefix_structure_elapsed=0.14 exit=0

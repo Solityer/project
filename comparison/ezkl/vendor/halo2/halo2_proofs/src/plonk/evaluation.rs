@@ -467,6 +467,8 @@ impl ColumnDependencies {
         self.instance.extend(other.instance.iter().copied());
     }
 
+    fn additional_column_count(&self, existing: &Self) -> usize { self.fixed.difference(&existing.fixed).count() + self.advice.difference(&existing.advice).count() + self.instance.difference(&existing.instance).count() }
+
     fn column_count(&self) -> usize {
         self.fixed.len() + self.advice.len() + self.instance.len()
     }
@@ -496,9 +498,7 @@ fn load_cosets<F: WithSmallOrderMulGroup<3>>(
     Ok(cosets)
 }
 
-/// Expand only the fixed columns used by the active constraint group. Compact
-/// fixed sources become one Lagrange column, then one coefficient column, and
-/// immediately become the required coset before either intermediate is dropped.
+/// Expand only fixed columns used by the active gate batch; compact singleton columns directly fill their coset, while other sources pass through Lagrange and coefficient form.
 fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
     domain: &EvaluationDomain<F>,
     sources: &[FixedColumnSource<F>],
@@ -515,6 +515,17 @@ fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
                 "constraint references an absent fixed source",
             )
         })?;
+        if let Some(value) = source.constant_value() {
+            let n = domain.get_n() as usize;
+            if source.len() != n {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "constant fixed source has inconsistent dimensions",
+                ));
+            }
+            cosets[column] = Polynomial::mapped_filled(n, value)?;
+            continue;
+        }
         let lagrange = source.materialize_lagrange()?;
         let coeff = domain.lagrange_to_coeff(lagrange).spill()?;
         cosets[column] = domain.coeff_to_extended_part(coeff, extended_omega_factor);
@@ -523,43 +534,7 @@ fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn evaluate_graph_group<C: CurveAffine>(
-    graph: &GraphEvaluator<C>,
-    pk: &ProvingKey<C>,
-    advice_polys: &[Polynomial<C::ScalarExt, Coeff>],
-    instance_polys: &[Polynomial<C::ScalarExt, Coeff>],
-    challenges: &[C::ScalarExt],
-    values: &mut Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>,
-    y: C::ScalarExt,
-    beta: C::ScalarExt,
-    gamma: C::ScalarExt,
-    theta: C::ScalarExt,
-    rot_scale: i32,
-    isize: i32,
-    extended_omega_factor: C::ScalarExt,
-    part_index: usize,
-    part_stride: usize,
-) -> io::Result<()> {
-    let dependencies = graph.column_dependencies();
-    let domain = &pk.vk.domain;
-    let fixed = load_fixed_cosets(
-        domain,
-        &pk.fixed_values,
-        &dependencies.fixed,
-        extended_omega_factor,
-    )?;
-    let advice = load_cosets(
-        domain,
-        advice_polys,
-        &dependencies.advice,
-        extended_omega_factor,
-    )?;
-    let instance = load_cosets(
-        domain,
-        instance_polys,
-        &dependencies.instance,
-        extended_omega_factor,
-    )?;
+fn evaluate_graph_group<C: CurveAffine>(graph: &GraphEvaluator<C>, fixed: &[Polynomial<C::ScalarExt, LagrangeCoeff>], advice: &[Polynomial<C::ScalarExt, LagrangeCoeff>], instance: &[Polynomial<C::ScalarExt, LagrangeCoeff>], challenges: &[C::ScalarExt], values: &mut Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>, y: C::ScalarExt, beta: C::ScalarExt, gamma: C::ScalarExt, theta: C::ScalarExt, rot_scale: i32, isize: i32, part_index: usize, part_stride: usize) {
     parallelize(&mut values[..], |h, start| {
         let mut data = graph.instance();
         for (offset, value) in h.iter_mut().enumerate() {
@@ -567,9 +542,9 @@ fn evaluate_graph_group<C: CurveAffine>(
             let idx = row * part_stride + part_index;
             let contribution = graph.evaluate_part(
                 &mut data,
-                &fixed,
-                &advice,
-                &instance,
+                fixed,
+                advice,
+                instance,
                 challenges,
                 &beta,
                 &gamma,
@@ -584,7 +559,6 @@ fn evaluate_graph_group<C: CurveAffine>(
             *value = *value * y + contribution;
         }
     });
-    Ok(())
 }
 
 impl<C: CurveAffine> Evaluator<C> {
@@ -810,6 +784,7 @@ impl<C: CurveAffine> Evaluator<C> {
         let part_stride = rot_scale as usize;
         assert_eq!(size % part_stride, 0);
         let part_size = size / part_stride;
+        let max_gate_dependencies = self.custom_gates.iter().map(|graph| graph.column_dependencies().column_count()).max().unwrap_or(0);
 
         for part_index in 0..part_stride {
             let extended_omega_factor = extended_omega.pow_vartime([part_index as u64]);
@@ -824,24 +799,27 @@ impl<C: CurveAffine> Evaluator<C> {
                 .zip(shuffles.iter().zip(permutations.iter()))
             {
                 // Custom gate polynomials are folded in their existing native order.
-                for graph in &self.custom_gates {
-                    evaluate_graph_group(
-                        graph,
-                        pk,
-                        advice,
-                        instance,
-                        challenges,
-                        &mut part_values,
-                        y,
-                        beta,
-                        gamma,
-                        theta,
-                        rot_scale,
-                        isize,
-                        extended_omega_factor,
-                        part_index,
-                        part_stride,
-                    )?;
+                let mut gate_start = 0;
+                while gate_start < self.custom_gates.len() {
+                    let mut dependencies = self.custom_gates[gate_start].column_dependencies();
+                    let mut gate_end = gate_start + 1;
+                    while gate_end < self.custom_gates.len() {
+                        let next = self.custom_gates[gate_end].column_dependencies();
+                        if dependencies.column_count().saturating_add(next.additional_column_count(&dependencies)) > max_gate_dependencies {
+                            break;
+                        }
+                        dependencies.extend(&next);
+                        gate_end += 1;
+                    }
+                    {
+                        let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed, extended_omega_factor).map_err(super::Error::NativeStorage)?;
+                        let advice_cosets = load_cosets(domain, advice, &dependencies.advice, extended_omega_factor).map_err(super::Error::NativeStorage)?;
+                        let instance_cosets = load_cosets(domain, instance, &dependencies.instance, extended_omega_factor).map_err(super::Error::NativeStorage)?;
+                        for graph in &self.custom_gates[gate_start..gate_end] {
+                            evaluate_graph_group(graph, &fixed, &advice_cosets, &instance_cosets, challenges, &mut part_values, y, beta, gamma, theta, rot_scale, isize, part_index, part_stride);
+                        }
+                    }
+                    gate_start = gate_end;
                 }
 
                 // Permutation boundary and copy constraints.

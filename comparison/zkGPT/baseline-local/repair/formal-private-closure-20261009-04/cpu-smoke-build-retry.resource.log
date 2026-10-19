@@ -1,3 +1,0 @@
-elapsed_s=0.0 memavailable_kib=121020004 process_group_rss_kib=16588
-elapsed_s=1.0 memavailable_kib=120714488 process_group_rss_kib=353404
-reason=completed exit_code=2 max_process_group_rss_kib=353404 min_memavailable_kib=120714488

@@ -307,12 +307,6 @@ bool validate_prover_family(const NativeLassoFamilyProver& family, std::string* 
     return true;
 }
 
-F selected_query_value(const NativeLassoFamilyProver& family, std::uint64_t row) {
-    if (row >= family.padded_queries) throw std::out_of_range("native Lasso selected query row is out of range");
-    const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(row) : family.selected_table_rows[static_cast<std::size_t>(row)];
-    return family.table[static_cast<std::size_t>(selected)];
-}
-
 bool validate_query(const NativeLassoQueryProver& query, std::string* reason) {
     if (query.tensor_view.full_domain != 0) {
         if (!tensor_query_shape_valid(query.tensor_view, query.tensor_commitment, &query.value_provider, reason) ||
@@ -1432,6 +1426,28 @@ using SparseMatrixValues = zkgpt::NativeVector<SparseValue>;
 
 F equality_boolean_factor(const F& beta, bool bit) { return bit ? beta : F_ONE - beta; }
 
+struct EqualityFactorPair {
+    F nonzero_product = F_ONE;
+    std::size_t zero_factors = 0;
+};
+
+EqualityFactorPair equality_factor_pair(const std::vector<F>& beta, std::size_t first_bit,
+                                        std::size_t bit_count, std::uint64_t assignment) {
+    EqualityFactorPair result;
+    for (std::size_t bit = 0; bit < bit_count; ++bit) {
+        const F factor = equality_boolean_factor(beta[first_bit + bit], ((assignment >> bit) & 1U) != 0);
+        if (factor.isZero()) ++result.zero_factors;
+        else result.nonzero_product *= factor;
+    }
+    return result;
+}
+
+EqualityFactorPair combine_equality_factor_pairs(const EqualityFactorPair& left,
+                                                  const EqualityFactorPair& right) {
+    return EqualityFactorPair{left.nonzero_product * right.nonzero_product,
+                              left.zero_factors + right.zero_factors};
+}
+
 void remove_equality_factor(const SparseValue& value, const F& factor, const F& factor_inverse, F& suffix_nonzero_product,
                             std::size_t& suffix_zero_factors) {
     suffix_nonzero_product = value.remaining_nonzero_product;
@@ -1453,6 +1469,92 @@ SparseMatrixValues sparse_matrix_values(const NativeLassoFamilyProver& family, c
     const std::size_t expected_values = static_cast<std::size_t>(sparse.nonzero_count);
     values.reserve(expected_values);
     if (values.capacity() != expected_values) throw std::length_error("native Lasso sparse M_f reservation is not exact");
+
+    const std::uint64_t query_count = family.padded_queries;
+    const std::uint64_t table_domain = family.table.size();
+    const bool bucket_path = query_count != 0 && table_domain != 0 && power_of_two(query_count) &&
+        power_of_two(table_domain) && table_domain <= 65536 && sparse.nonzero_count == query_count &&
+        sparse.full_domain / query_count == table_domain && sparse.full_domain % query_count == 0 && beta.size() == log2_power(static_cast<std::size_t>(query_count)) +
+            log2_power(static_cast<std::size_t>(table_domain));
+    if (bucket_path) {
+        constexpr std::size_t kEqualityFactorWorkspaceCapBytes = 3U * 1024U * 1024U;
+        constexpr std::size_t kLowQueryBitsCap = 12;
+        constexpr std::uint64_t kQueryBlockEntries = std::uint64_t(1) << kLowQueryBitsCap;
+        const std::size_t query_bits = log2_power(static_cast<std::size_t>(query_count));
+        const std::size_t table_bits = log2_power(static_cast<std::size_t>(table_domain));
+        const std::size_t low_query_bits = std::min(query_bits, kLowQueryBitsCap);
+        const std::size_t high_query_bits = query_bits - low_query_bits;
+        const std::uint64_t low_query_entries = std::uint64_t(1) << low_query_bits;
+        std::uint64_t factor_table_bytes_u64 = 0;
+        std::uint64_t low_table_bytes_u64 = 0;
+        std::uint64_t selected_table_bytes_u64 = 0;
+        const bool factor_tables_fit = checked_product(low_query_entries, sizeof(EqualityFactorPair), low_table_bytes_u64) &&
+            checked_product(table_domain, sizeof(EqualityFactorPair), selected_table_bytes_u64) &&
+            low_table_bytes_u64 <= std::numeric_limits<std::uint64_t>::max() - selected_table_bytes_u64 &&
+            ((factor_table_bytes_u64 = low_table_bytes_u64 + selected_table_bytes_u64) <= kEqualityFactorWorkspaceCapBytes);
+        if (factor_tables_fit) {
+            std::vector<EqualityFactorPair> low_query_factors(static_cast<std::size_t>(low_query_entries));
+            for (std::uint64_t low = 0; low < low_query_entries; ++low)
+                low_query_factors[static_cast<std::size_t>(low)] = equality_factor_pair(beta, 0, low_query_bits, low);
+            std::vector<EqualityFactorPair> selected_factors(static_cast<std::size_t>(table_domain));
+            for (std::uint64_t selected = 0; selected < table_domain; ++selected)
+                selected_factors[static_cast<std::size_t>(selected)] = equality_factor_pair(beta, query_bits, table_bits, selected);
+
+            std::vector<std::uint64_t> bucket_offsets(static_cast<std::size_t>(table_domain) + 1, 0);
+            for (std::uint64_t query = 0; query < query_count; ++query) {
+                const std::uint64_t selected = family.selected_table_row_at
+                    ? family.selected_table_row_at(query)
+                    : family.selected_table_rows[static_cast<std::size_t>(query)];
+                if (selected >= table_domain)
+                    throw std::out_of_range("native Lasso sparse M_f selected column is out of range");
+                if (bucket_offsets[static_cast<std::size_t>(selected) + 1] == std::numeric_limits<std::uint64_t>::max())
+                    throw std::overflow_error("native Lasso sparse M_f bucket count overflows");
+                ++bucket_offsets[static_cast<std::size_t>(selected) + 1];
+            }
+            for (std::size_t selected = 1; selected < bucket_offsets.size(); ++selected) {
+                if (bucket_offsets[selected] > std::numeric_limits<std::uint64_t>::max() - bucket_offsets[selected - 1])
+                    throw std::overflow_error("native Lasso sparse M_f bucket prefix overflows");
+                bucket_offsets[selected] += bucket_offsets[selected - 1];
+            }
+            if (bucket_offsets.back() != expected_values)
+                throw std::logic_error("native Lasso sparse M_f bucket count is inconsistent");
+            std::vector<std::uint64_t> bucket_cursors(bucket_offsets.begin(), bucket_offsets.end() - 1);
+            values.resize(expected_values);
+            for (std::uint64_t block_begin = 0; block_begin < query_count; block_begin += kQueryBlockEntries) {
+                const std::uint64_t block_number = block_begin >> low_query_bits;
+                const EqualityFactorPair high_query_factor = equality_factor_pair(beta, low_query_bits,
+                    high_query_bits, block_number);
+                const std::uint64_t block_end = std::min(query_count, block_begin + kQueryBlockEntries);
+                for (std::uint64_t query = block_begin; query < block_end; ++query) {
+                    const std::uint64_t selected = family.selected_table_row_at
+                        ? family.selected_table_row_at(query)
+                        : family.selected_table_rows[static_cast<std::size_t>(query)];
+                    if (selected >= table_domain)
+                        throw std::out_of_range("native Lasso sparse M_f selected column is out of range");
+                    if (selected > (std::numeric_limits<std::uint64_t>::max() - query) / query_count)
+                        throw std::overflow_error("native Lasso sparse M_f support index overflows");
+                    const std::uint64_t index = selected * query_count + query;
+                    const std::uint64_t output_index = bucket_cursors[static_cast<std::size_t>(selected)]++;
+                    if (output_index >= bucket_offsets[static_cast<std::size_t>(selected) + 1] || output_index >= expected_values)
+                        throw std::logic_error("native Lasso sparse M_f bucket write exceeds its counted extent");
+                    const EqualityFactorPair query_factor = combine_equality_factor_pairs(
+                        low_query_factors[static_cast<std::size_t>(query & (low_query_entries - 1))],
+                        high_query_factor);
+                    const EqualityFactorPair all_factor = combine_equality_factor_pairs(
+                        query_factor, selected_factors[static_cast<std::size_t>(selected)]);
+                    values[static_cast<std::size_t>(output_index)] = SparseValue{
+                        index, F_ONE, all_factor.nonzero_product, all_factor.zero_factors};
+                }
+            }
+            for (std::size_t selected = 0; selected < bucket_cursors.size(); ++selected)
+                if (bucket_cursors[selected] != bucket_offsets[selected + 1])
+                    throw std::logic_error("native Lasso sparse M_f bucket was not completely written");
+            for (std::size_t index = 1; index < values.size(); ++index)
+                if (values[index - 1].index >= values[index].index)
+                    throw std::invalid_argument("native Lasso sparse M_f support is not unique and sorted");
+            return values;
+        }
+    }
     sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
         if (values.size() >= expected_values) throw std::length_error("native Lasso sparse M_f support exceeds its counted entries");
         SparseValue entry;
@@ -1668,14 +1770,41 @@ hyrax::HyraxGeneratorProvider matrix_generators(const NativeLassoFamilyPublic& f
     return provider;
 }
 
+bool full_padding_block_aggregation_start(std::uint64_t queries,
+                                         std::uint64_t columns,
+                                         std::uint64_t logical_queries,
+                                         std::uint64_t& first_padding_query) {
+    first_padding_query = 0;
+    if (queries == 0 || columns == 0 || columns > queries || logical_queries > queries ||
+        (queries & (queries - 1U)) != 0 || (columns & (columns - 1U)) != 0 || queries % columns != 0)
+        return false;
+    const std::uint64_t first_block = logical_queries / columns + (logical_queries % columns != 0 ? 1U : 0U);
+    const std::uint64_t total_blocks = queries / columns;
+    if (first_block > total_blocks || total_blocks - first_block < 2U ||
+        !checked_product(first_block, columns, first_padding_query))
+        return false;
+    return true;
+}
+
 double commit_family_rows(const NativeLassoFamilyProver& family,
                           MaskedFamilyState& state,
                           double* selected_row_mapping_ms) {
     double mapping_ms = 0.0;
     const auto commitment_begin = std::chrono::steady_clock::now();
     const std::uint64_t rows = family.matrix_layout.rows;
+    const std::uint64_t queries = family.padded_queries;
+    const std::uint64_t columns = family.matrix_layout.columns;
     const NativeLassoSparseView sparse = native_lasso_sparse_view(family, &mapping_ms);
     const G1 H = hyrax::derive_pedersen_blinding_generator(state.basis_id);
+    std::uint64_t first_padding_query = 0;
+    const bool aggregate_padding_blocks = full_padding_block_aggregation_start(
+        queries, columns, family.logical_queries, first_padding_query);
+    G1 padding_column_generator_sum;
+    if (aggregate_padding_blocks) {
+        padding_column_generator_sum.clear();
+        for (const G1& generator : family.matrix_layout.column_generators)
+            padding_column_generator_sum += generator;
+    }
     state.row_commitments.reserve(static_cast<std::size_t>(rows));
     if (state.row_blindings.size() != rows)
         throw std::invalid_argument("native Lasso prepared row blinding count is invalid");
@@ -1684,10 +1813,20 @@ double commit_family_rows(const NativeLassoFamilyProver& family,
     }
     sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
         if (value != F_ONE) throw std::invalid_argument("native Lasso M_f is not one-hot");
+        const std::uint64_t query = index % queries;
+        const std::uint64_t selected = index / queries;
+        if (selected >= family.table.size()) throw std::out_of_range("native Lasso M_f selected row is out of range");
+        if (query >= family.logical_queries && selected != family.padding_index)
+            throw std::invalid_argument("native Lasso M_f padding row is not canonical");
         const std::uint64_t row = index >> family.matrix_layout.column_bits;
-        const std::uint64_t column = index & (family.matrix_layout.columns - 1);
+        const std::uint64_t column = index & (columns - 1);
         if (row >= rows) throw std::out_of_range("native Lasso M_f row is out of range");
-        state.row_commitments[static_cast<std::size_t>(row)] += family.matrix_layout.column_generators[static_cast<std::size_t>(column)];
+        if (aggregate_padding_blocks && query >= first_padding_query) {
+            if (query % columns == 0)
+                state.row_commitments[static_cast<std::size_t>(row)] += padding_column_generator_sum;
+        } else {
+            state.row_commitments[static_cast<std::size_t>(row)] += family.matrix_layout.column_generators[static_cast<std::size_t>(column)];
+        }
     });
     const double elapsed_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - commitment_begin).count();
@@ -1701,7 +1840,6 @@ struct MatrixRowFold {
     hyrax::HyraxScalarProvider values;
     std::shared_ptr<std::vector<F>> folded_values;
     F row_weight_sum = F_ZERO;
-    F raw_evaluation = F_ZERO;
 };
 
 MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const MaskedFamilyState& state, const std::vector<F>& point) {
@@ -1749,7 +1887,6 @@ MatrixRowFold fold_family_rows(const NativeLassoFamilyProver& family, const Mask
     result.view.basis_id = state.basis_id;
     result.view.point = column_point;
     result.view.generators = matrix_generators(family);
-    result.raw_evaluation = mle_eval(*folded_values, column_point);
     return result;
 }
 
@@ -1774,7 +1911,6 @@ MatrixRowFold complement_family_rows(const NativeLassoFamilyProver& family, cons
     result.commitment.commitment -= generator_sum * base.row_weight_sum;
     result.view = base.view;
     result.view.role = "native-lasso-M_f-minus-one-rowfold-v2";
-    result.raw_evaluation = base.raw_evaluation - base.row_weight_sum;
     return result;
 }
 
@@ -1871,13 +2007,29 @@ std::vector<F> row_mle(const std::vector<F>& matrix, std::size_t rows, std::size
     return result;
 }
 
-std::vector<F> selected_table_row_mle(const NativeLassoFamilyProver& family, const std::vector<F>& query_point) {
+struct SelectedTableRowMLE {
+    std::vector<F> table_weights;
+    F query_eval = F_ZERO;
+};
+
+SelectedTableRowMLE selected_table_row_mle(const NativeLassoFamilyProver& family,
+                                           const NativeLassoQueryProver& query,
+                                           const std::vector<F>& query_point) {
     if (query_point.size() != log2_power(family.padded_queries))
         throw std::invalid_argument("native Lasso selected-row point dimension is invalid");
-    std::vector<F> result(family.table.size(), F_ZERO);
+    SelectedTableRowMLE result;
+    result.table_weights.assign(family.table.size(), F_ZERO);
     zkgpt::native_for_each_equality_weight(query_point, static_cast<std::size_t>(family.padded_queries), [&](std::size_t row, const F& weight) {
         const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(row) : family.selected_table_rows[row];
-        result[static_cast<std::size_t>(selected)] += weight;
+        if (selected >= family.table.size())
+            throw std::runtime_error("native Lasso selected table row is out of range");
+        const std::uint64_t absolute = family.segment_offset + row;
+        const F value = family.table[static_cast<std::size_t>(selected)];
+        if (!query.value_provider.at || absolute >= query.value_provider.size ||
+            query.value_provider.at(absolute) != value)
+            throw std::runtime_error("native Lasso selected query differs from L_qry provider");
+        result.table_weights[static_cast<std::size_t>(selected)] += weight;
+        result.query_eval += weight * value;
     });
     return result;
 }
@@ -2497,6 +2649,149 @@ bool native_lasso_sparse_booleanity_dense_reference_smoke(std::string* failure_r
         NativeMaskedSumcheckResult verified;
         if (!native_masked_sumcheck_verify(session, "lasso/smoke/booleanity/sum", 3, beta.size(), initial_claim, verify_spec, &verified, nullptr) || verified.challenges != proved.challenges || verified.terminal_values != proved.terminal_values || !verified.external_binding_verified || !session.replay(nullptr))
             return fail("independent sumcheck verification mismatch");
+
+        // Exercise the optimized 12-bit query split across its boundary
+        // without constructing or proving a large Lasso relation.
+        constexpr std::uint64_t query_count = std::uint64_t(1) << 13;
+        constexpr std::uint64_t logical_queries = query_count - 5;
+        NativeLassoFamilyProver split_family;
+        split_family.table = {F(5), F(7), F(11), F(13)};
+        split_family.logical_queries = logical_queries;
+        split_family.padded_queries = query_count;
+        split_family.padding_index = 0;
+        split_family.selected_table_row_at = [](std::uint64_t query) {
+            return query >= logical_queries
+                ? std::uint64_t(0)
+                : ((query * 13U + (query >> 7U)) & 3U);
+        };
+        std::vector<F> split_beta(15, F(9));
+        split_beta[0] = F_ZERO;
+        split_beta[1] = F_ONE;
+        split_beta[11] = F_ZERO;
+        split_beta[12] = F_ONE;
+        split_beta[13] = F_ZERO;
+        split_beta[14] = F_ONE;
+        const SparseMatrixValues split_values = sparse_matrix_values(split_family, split_beta);
+        std::vector<SparseValue> split_reference;
+        split_reference.reserve(static_cast<std::size_t>(query_count));
+        for (std::uint64_t query = 0; query < query_count; ++query) {
+            const std::uint64_t selected = split_family.selected_table_row_at(query);
+            SparseValue expected;
+            expected.index = selected * query_count + query;
+            expected.value = F_ONE;
+            for (std::size_t bit = 0; bit < split_beta.size(); ++bit) {
+                const F factor = equality_boolean_factor(
+                    split_beta[bit], ((expected.index >> bit) & 1U) != 0);
+                if (factor.isZero()) ++expected.remaining_zero_factors;
+                else expected.remaining_nonzero_product *= factor;
+            }
+            split_reference.push_back(expected);
+        }
+        std::sort(split_reference.begin(), split_reference.end(),
+                  [](const SparseValue& left, const SparseValue& right) {
+                      return left.index < right.index;
+                  });
+        if (split_values.size() != split_reference.size())
+            return fail("13-bit sparse query split changed the support size");
+        for (std::size_t index = 0; index < split_reference.size(); ++index) {
+            const SparseValue& actual = split_values[index];
+            const SparseValue& expected = split_reference[index];
+            if (actual.index != expected.index || actual.value != expected.value ||
+                actual.remaining_nonzero_product != expected.remaining_nonzero_product ||
+                actual.remaining_zero_factors != expected.remaining_zero_factors)
+                return fail("13-bit sparse query split differs from direct zero-aware reference at entry=" +
+                            std::to_string(index));
+        }
+        if (split_family.selected_table_row_at(query_count - 1) != split_family.padding_index ||
+            split_values.front().index >= split_values.back().index)
+            return fail("13-bit sparse query split omitted padding or sorted support");
+        return true;
+    } catch (const std::exception& error) {
+        return fail(std::string("exception: ") + error.what());
+    } catch (...) {
+        return fail("unknown exception");
+    }
+}
+
+bool native_lasso_padding_row_commitment_smoke(std::string* failure_reason) {
+    const auto fail = [failure_reason](const std::string& message) {
+        if (failure_reason != nullptr) *failure_reason = message;
+        return false;
+    };
+    try {
+        auto make_family = [](std::uint64_t queries, std::uint64_t table_domain,
+                             std::uint64_t logical_queries, const std::string& id,
+                             bool malformed_padding) {
+            NativeLassoFamilyProver family;
+            family.family_id = id;
+            family.table_id = "table_" + id;
+            family.resource_id = "resource-" + id + "-v1";
+            family.registration_id = "registration-" + id + "-v1";
+            family.table.resize(static_cast<std::size_t>(table_domain));
+            for (std::uint64_t index = 0; index < table_domain; ++index)
+                family.table[static_cast<std::size_t>(index)] = F(static_cast<int>(index + 5));
+            family.logical_queries = logical_queries;
+            family.padded_queries = queries;
+            family.padding_index = 0;
+            family.padding_value = family.table.front();
+            family.matrix_layout = native_lasso_balanced_matrix_layout(queries, table_domain);
+            family.matrix_layout.trusted_generator_id = "native-lasso/M/" + id + "/column-v2";
+            family.matrix_layout.column_generators.resize(static_cast<std::size_t>(family.matrix_layout.columns));
+            for (std::uint64_t column = 0; column < family.matrix_layout.columns; ++column)
+                hashAndMapToG1(family.matrix_layout.column_generators[static_cast<std::size_t>(column)],
+                               family.matrix_layout.trusted_generator_id + "/" + std::to_string(column));
+            family.selected_table_row_at = [logical_queries, malformed_padding](std::uint64_t query) {
+                if (query < logical_queries) return std::uint64_t(1);
+                return malformed_padding ? std::uint64_t(1) : std::uint64_t(0);
+            };
+            return family;
+        };
+        std::uint64_t first_padding_query = 0;
+        if (!full_padding_block_aggregation_start(32, 8, 1, first_padding_query) || first_padding_query != 8)
+            return fail("eligible Q=32/C=8 padding blocks were not selected");
+        if (full_padding_block_aggregation_start(16, 8, 1, first_padding_query))
+            return fail("single complete padding block incorrectly enabled aggregation");
+        if (full_padding_block_aggregation_start(2, 4, 1, first_padding_query))
+            return fail("columns larger than Q incorrectly enabled padding aggregation");
+
+        const std::string basis_id(63, '0');
+        const auto compare_with_unaggregated_reference = [&](NativeLassoFamilyProver family,
+                                                              const std::string& label) {
+            MaskedFamilyState state;
+            state.basis_id = basis_id + "1";
+            state.row_blindings.resize(static_cast<std::size_t>(family.matrix_layout.rows));
+            for (std::size_t row = 0; row < state.row_blindings.size(); ++row)
+                state.row_blindings[row] = F(static_cast<int>(row + 2));
+            const G1 H = hyrax::derive_pedersen_blinding_generator(state.basis_id);
+            commit_family_rows(family, state, nullptr);
+            std::vector<G1> reference(static_cast<std::size_t>(family.matrix_layout.rows));
+            for (std::size_t row = 0; row < reference.size(); ++row)
+                reference[row] = H * state.row_blindings[row];
+            const NativeLassoSparseView sparse = native_lasso_sparse_view(family);
+            sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
+                if (value != F_ONE) throw std::logic_error("reference M_f entry is not one-hot");
+                const std::uint64_t row = index >> family.matrix_layout.column_bits;
+                const std::uint64_t column = index & (family.matrix_layout.columns - 1U);
+                reference.at(static_cast<std::size_t>(row)) +=
+                    family.matrix_layout.column_generators.at(static_cast<std::size_t>(column));
+            });
+            if (state.row_commitments.size() != reference.size()) return false;
+            for (std::size_t row = 0; row < reference.size(); ++row)
+                if (state.row_commitments[row] != reference[row] ||
+                    state.row_commitments[row].serializeToHexStr() != reference[row].serializeToHexStr())
+                    throw std::logic_error(label + " row commitment mismatch at row " + std::to_string(row));
+            return true;
+        };
+        if (!compare_with_unaggregated_reference(make_family(32, 2, 1, "eligible", false), "eligible"))
+            return fail("eligible row commitment count differs from reference");
+        if (!compare_with_unaggregated_reference(make_family(16, 2, 1, "one-block", false), "one-block"))
+            return fail("one-block fallback row commitment count differs from reference");
+        if (!compare_with_unaggregated_reference(make_family(2, 8, 1, "wide-columns", false), "wide-columns"))
+            return fail("wide-column fallback row commitment count differs from reference");
+        NativeLassoFamilyProver malformed = make_family(32, 2, 1, "bad-padding", true);
+        std::string validation_reason;
+        if (validate_prover_family(malformed, &validation_reason))
+            return fail("noncanonical padding row was accepted");
         return true;
     } catch (const std::exception& error) {
         return fail(std::string("exception: ") + error.what());
@@ -2567,15 +2862,20 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
         }
         std::vector<NativeLassoFamilyPublic> identities;
         identities.reserve(families.size());
+        std::string previous_family_id;
         for (NativeLassoFamilyProver& family : families) {
             if (!validate_prover_family(family, reason)) return false;
+            if (!previous_family_id.empty() && family.family_id <= previous_family_id) {
+                set_reason(reason, "native Lasso families are not canonically ordered");
+                return false;
+            }
+            previous_family_id = family.family_id;
             identities.push_back(public_identity(family));
         }
-        if (!check_family_order(identities, reason)) return false;
         const std::uint64_t query_size = query_domain(query);
         const std::string query_digest = native_lasso_tensor_query_digest(query.tensor_view, query.tensor_commitment);
         if (!check_statement_identity_with_l_digest(session, identities, query_digest, query.statement_l_digest, reason)) return false;
-        for (const NativeLassoFamilyPublic& family : identities) {
+        for (const NativeLassoFamilyProver& family : families) {
             if (family.segment_offset > query_size || family.padded_queries > query_size - family.segment_offset) {
                 set_reason(reason, "native Lasso family exceeds L_qry segment");
                 return false;
@@ -2693,7 +2993,9 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
                                                        reason, false, "", &scalar_basis, &boolean_result.terminal_openings[1], &complement_raw_opening)) return false;
             }
 
-            std::vector<F> onehot_left = selected_table_row_mle(family, row_point);
+            SelectedTableRowMLE onehot_values = selected_table_row_mle(family, query, row_point);
+            std::vector<F>& onehot_left = onehot_values.table_weights;
+            const F query_eval = onehot_values.query_eval;
             session.absorb_field(prefix + "/d-onehot/claim", F_ONE);
             NativeMaskedTerminalSpec onehot_spec;
             onehot_spec.kind = NativeMaskedTerminalKind::Scalar;
@@ -2785,14 +3087,6 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
                                                        &lookup_result.terminal_openings[0], &lookup_raw_opening)) return false;
             }
 
-            F query_eval = F_ZERO;
-            zkgpt::native_for_each_equality_weight(row_point, rows, [&](std::size_t row, const F& row_weight) {
-                const std::uint64_t absolute = family.segment_offset + row;
-                const F selected = selected_query_value(family, row);
-                if (!query.value_provider.at || absolute >= query.value_provider.size || query.value_provider.at(absolute) != selected)
-                    throw std::runtime_error("native Lasso selected query differs from L_qry provider");
-                query_eval += row_weight * selected;
-            });
             if (lookup_initial_opening.value != query_eval) throw std::runtime_error("native Lasso lookup/query claim mismatch");
             session.absorb_field(prefix + "/h-input/claim", lookup_result.final_claim);
             hyrax::MaskedMleOpening input_opening;
@@ -2803,7 +3097,6 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
                                                          input_opening, reason, "", &scalar_basis, &lookup_result.claim_opening,
                                                          &lookup_initial_opening))
                 return false;
-            (void)query_eval;
             std::vector<F>().swap(states[family_index].row_blindings);
         }
 

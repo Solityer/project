@@ -1,9 +1,0 @@
-CAPACITY_STAGE_BEGIN dataset=citeseer stage=resource_snapshot
-CAPACITY_STAGE_END dataset=citeseer stage=resource_snapshot host_headroom_bytes=104129007616 shared_disk_available_bytes=1713210159104 same_filesystem=true
-CAPACITY_STAGE_BEGIN dataset=citeseer stage=canonical_graph_load
-CAPACITY_STAGE_END dataset=citeseer stage=canonical_graph_load nodes=3327 edges=12431 features=3703 graphs=1
-CAPACITY_STAGE_BEGIN dataset=citeseer stage=shape_estimate
-CAPACITY_STAGE_END dataset=citeseer stage=shape_estimate host_peak_upper_bytes=10646077870 disk_peak_upper_bytes=0 artifact_bytes_upper=497819870
-CAPACITY_STAGE_BEGIN dataset=citeseer stage=gkr_point_shape
-CAPACITY_STAGE_END dataset=citeseer stage=gkr_point_shape status=PASS layers=113 fconn=54 bitmap_bytes=75767648 touched_index_bytes_upper=75767648
-CAPACITY_PROFILE_ONLY dataset=citeseer status=ANALYSIS_ONLY forward_admission=NOT_RUN host_peak_upper_bytes=10646077870 disk_peak_upper_bytes=19055327815

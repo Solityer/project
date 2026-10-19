@@ -2292,16 +2292,23 @@ bool verify_tensor_public_frame(const HyraxTensorMleView &view, const HyraxTenso
     return true;
 }
 
-bool open_hyrax_tensor_mle_impl(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr *forced_masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
+bool open_hyrax_tensor_mle_impl(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr *forced_masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening, const HyraxTensorFoldedColumn *prepared_fold) {
     const std::size_t checkpoint = session.checkpoint();
     try {
         const HyraxTensorShape shape = validate_tensor_view(view, &full_point);
         validate_tensor_commitment(view, commitment);
         if (!safe_open_text(label, 200) || !values.at || values.size != view.logical_length) throw std::invalid_argument("Hyrax tensor opening arguments are invalid");
-        HyraxTensorFoldedColumn folded = tensor_fold_prover(view, commitment, state, shape, values, full_point);
-        PedersenMleCommitment column_commitment{folded.commitment, derive_pedersen_blinding_generator(view.basis_id), folded.blinding, view.basis_id};
+        HyraxTensorFoldedColumn computed_fold;
+        const HyraxTensorFoldedColumn *folded = prepared_fold;
+        if (folded == nullptr) {
+            computed_fold = tensor_fold_prover(view, commitment, state, shape, values, full_point);
+            folded = &computed_fold;
+        } else if (folded->values.size() != view.columns) {
+            throw std::invalid_argument("prepared Hyrax tensor column fold has an invalid extent");
+        }
+        PedersenMleCommitment column_commitment{folded->commitment, derive_pedersen_blinding_generator(view.basis_id), folded->blinding, view.basis_id};
         const HyraxMleBasisView column_view = tensor_column_view(view, full_point, shape);
-        const HyraxScalarProvider column_values{view.columns, [&folded](std::uint64_t index) { return folded.values.at(static_cast<std::size_t>(index)); }};
+        const HyraxScalarProvider column_values{view.columns, [folded](std::uint64_t index) { return folded->values.at(static_cast<std::size_t>(index)); }};
         session.absorb(label + "/tensor/public", tensor_public_payload(view, commitment, full_point));
         const bool opened = forced_masked_evaluation == nullptr
             ? open_masked_mle_with_session(column_commitment, column_view, column_values, session, label + "/column", opening, reason, false, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening)
@@ -2391,11 +2398,11 @@ bool commit_hyrax_tensor_mle_with_blindings(const HyraxTensorMleView &view,
 }
 
 bool open_hyrax_tensor_mle_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
-    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, nullptr, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening);
+    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, nullptr, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening, nullptr);
 }
 
 bool open_hyrax_tensor_mle_with_claim(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const HyraxTensorMleProverState &state, const std::vector<Fr> &full_point, const HyraxScalarProvider &values, const Fr &masked_evaluation, NativeProofSession &session, const std::string &label, MaskedMleOpening &opening, std::string *reason, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarOpening *forced_masked_opening, const zkgpt::native_pedersen::ScalarOpening *forced_raw_opening) {
-    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, &masked_evaluation, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening);
+    return open_hyrax_tensor_mle_impl(view, commitment, state, full_point, values, &masked_evaluation, session, label, opening, reason, mask_identity, scalar_basis, forced_masked_opening, forced_raw_opening, nullptr);
 }
 
 bool verify_hyrax_tensor_mle_opening_with_session(const HyraxTensorMleView &view, const HyraxTensorMleCommitment &commitment, const std::vector<Fr> &full_point, const G1 &evaluation_mask_commitment, const Fr &masked_evaluation, const NativeProofSession &session, const std::string &label, std::string *reason, bool allow_trailing_unrelated, const std::string &mask_identity, const zkgpt::native_pedersen::PedersenBasis *scalar_basis, const zkgpt::native_pedersen::ScalarCommitment *expected_raw_evaluation_commitment, const zkgpt::native_pedersen::ScalarCommitment *expected_masked_evaluation_commitment) {
@@ -2487,10 +2494,21 @@ Fr tensor_tail_block_mle(const HyraxScalarProvider &values, std::uint64_t start,
     return evaluation;
 }
 
-Fr tensor_tail_full_mle(const HyraxScalarProvider &values, std::uint64_t logical_length, std::uint64_t active_domain, const std::vector<Fr> &point) {
-    if (!values.at || values.size != logical_length || active_domain != (std::uint64_t(1) << point.size())) throw std::invalid_argument("Hyrax tensor tail terminal dimensions are invalid");
+Fr tensor_folded_column_mle(const HyraxTensorFoldedColumn &folded,
+                            const std::vector<Fr> &full_point,
+                            const HyraxTensorShape &shape) {
+    const std::size_t column_count = std::size_t(1) << shape.column_bits;
+    if (folded.values.size() != column_count || full_point.size() != shape.full_bits ||
+        shape.column_bits > full_point.size())
+        throw std::invalid_argument("Hyrax tensor folded terminal dimensions are invalid");
+    std::vector<Fr> column_point(full_point.begin(),
+        full_point.begin() + static_cast<std::ptrdiff_t>(shape.column_bits));
     Fr evaluation(0);
-    zkgpt::native_for_each_equality_weight(point, static_cast<std::size_t>(active_domain), [&](std::size_t index, const Fr &weight) { if (static_cast<std::uint64_t>(index) < logical_length) evaluation += values.at(index) * weight; });
+    zkgpt::native_for_each_equality_weight(column_point,
+        column_count,
+        [&folded, &evaluation](std::size_t index, const Fr &weight) {
+            evaluation += folded.values.at(index) * weight;
+        });
     return evaluation;
 }
 
@@ -2730,14 +2748,23 @@ bool prove_hyrax_tensor_zero_tail_certificate_with_session(const HyraxTensorMleV
             }
             round_point.push_back(challenge);
         }
-        const Fr terminal_value = tensor_tail_full_mle(values, view.logical_length, view.active_domain, round_point);
+        std::vector<Fr> opening_point = round_point;
+        opening_point.resize(shape.full_bits, Fr(0));
+        HyraxTensorFoldedColumn folded = tensor_fold_prover(
+            view, commitment, state, shape, values, opening_point);
+        const Fr terminal_value = tensor_folded_column_mle(folded, opening_point, shape);
         terminal_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(scalar_basis, terminal_value)};
         if (!prover.set_terminal_spec(terminal_spec, reason) || !prover.finish({terminal_value}, &sumcheck_result, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail terminal relation failed");
         if (sumcheck_result.challenges != round_point || sumcheck_result.challenges.size() != shape.active_bits || sumcheck_result.unmasked_terminal_openings.size() != 1)
             throw std::logic_error("Hyrax tensor tail sumcheck result is incomplete");
         full_terminal_point = sumcheck_result.challenges;
         full_terminal_point.resize(shape.full_bits, Fr(0));
-        if (!open_hyrax_tensor_mle_with_session(view, commitment, state, full_terminal_point, values, session, tail_label + "/opening", terminal_opening, reason, "", &scalar_basis, nullptr, &sumcheck_result.unmasked_terminal_openings[0])) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail terminal opening failed");
+        if (full_terminal_point != opening_point)
+            throw std::logic_error("Hyrax tensor tail fold point differs from its sumcheck challenges");
+        if (!open_hyrax_tensor_mle_impl(view, commitment, state, full_terminal_point, values,
+                nullptr, session, tail_label + "/opening", terminal_opening, reason, "",
+                &scalar_basis, nullptr, &sumcheck_result.unmasked_terminal_openings[0], &folded))
+            throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor tail terminal opening failed");
         exact_position = session.checkpoint();
         return true;
     } catch (const std::exception &error) {
@@ -2862,7 +2889,11 @@ bool prove_hyrax_tensor_zero_interval_certificates_with_session(const HyraxTenso
                 if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor zero-interval sumcheck round failed");
                 round_point.push_back(challenge);
             }
-            const Fr terminal_value = tensor_tail_full_mle(values, view.logical_length, view.active_domain, round_point);
+            std::vector<Fr> opening_point = round_point;
+            opening_point.resize(shape.full_bits, Fr(0));
+            HyraxTensorFoldedColumn folded = tensor_fold_prover(
+                view, commitment, state, shape, values, opening_point);
+            const Fr terminal_value = tensor_folded_column_mle(folded, opening_point, shape);
             terminal_spec.unmasked_terminal_openings = {zkgpt::native_pedersen::commit_fresh(scalar_basis, terminal_value)};
             NativeMaskedSumcheckResult sumcheck_result;
             if (!prover.set_terminal_spec(terminal_spec, reason) || !prover.finish({terminal_value}, &sumcheck_result, reason)) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor zero-interval terminal relation failed");
@@ -2870,8 +2901,15 @@ bool prove_hyrax_tensor_zero_interval_certificates_with_session(const HyraxTenso
             certificate.sumcheck_challenges = sumcheck_result.challenges;
             certificate.full_terminal_point = sumcheck_result.challenges;
             certificate.full_terminal_point.resize(shape.full_bits, Fr(0));
+            if (certificate.full_terminal_point != opening_point)
+                throw std::logic_error("Hyrax tensor zero-interval fold point differs from its sumcheck challenges");
             MaskedMleOpening terminal_opening;
-            if (!open_hyrax_tensor_mle_with_session(view, commitment, state, certificate.full_terminal_point, values, session, interval_label + "/opening", terminal_opening, reason, "", &scalar_basis, nullptr, &sumcheck_result.unmasked_terminal_openings[0])) throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor zero-interval terminal opening failed");
+            if (!open_hyrax_tensor_mle_impl(view, commitment, state,
+                    certificate.full_terminal_point, values, nullptr, session,
+                    interval_label + "/opening", terminal_opening, reason, "",
+                    &scalar_basis, nullptr,
+                    &sumcheck_result.unmasked_terminal_openings[0], &folded))
+                throw std::runtime_error(reason != nullptr && !reason->empty() ? *reason : "Hyrax tensor zero-interval terminal opening failed");
             if (terminal_opening.raw_evaluation_opening.value != terminal_value) throw std::logic_error("Hyrax tensor zero-interval raw opening differs from its sumcheck terminal");
             pending_certificates.push_back(std::move(certificate));
         }

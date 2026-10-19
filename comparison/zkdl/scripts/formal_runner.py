@@ -446,8 +446,9 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
             basis = _checked_capacity_int(item.get("gpu_authenticated_basis_size"), f"{dataset} authenticated GPU basis")
             padded = _checked_capacity_int(item.get("gpu_max_opening_padded_generator_size"), f"{dataset} maximum GPU opening")
             workspace = _checked_capacity_int(item.get("gpu_workspace_required_bytes"), f"{dataset} GPU workspace")
+            maximum_padded = 1 << basis.bit_length()
             expected_workspace = 144 * basis + 608 * padded
-            if (basis != (1 << 18) or padded > basis or padded & (padded - 1) or
+            if (basis != (1 << 18) or padded > maximum_padded or padded & (padded - 1) or
                     expected_workspace > (1 << 64) - 1 or workspace != expected_workspace or
                     item.get("device_peak_bytes") != workspace):
                 raise RunnerError(f"zkDL GPU workspace bound is not source-derived for {dataset}")
@@ -610,16 +611,37 @@ def _prepare_capacity(marker: dict[str, Any], session: Path, session_id: str) ->
     _remaining_capacity_requirements(profile, (), ())
     return profile
 
+def _bounded_subprocess_text(value: Any, limit: int = 4096) -> str:
+    if isinstance(value, bytes):
+        value = value.decode("utf-8", errors="replace")
+    if not isinstance(value, str) or not value:
+        return ""
+    if len(value) > limit:
+        return f"{value[:limit]}...[truncated {len(value) - limit} characters]"
+    return value
+
+
 def _gpu_offload_device_info(session: Path, dataset: str, expected_device: dict[str, Any]) -> dict[str, int | str]:
     config = formal_phase.ROOT / "configs" / f"{session.name}_{dataset}.cfg"
     binary = session / "build" / "gat_runner"
+    result = None
     try:
         result = subprocess.run([str(binary), "gpu-offload-device-info", "--config", str(config)], cwd=ROOT,
-                                capture_output=True, text=True, timeout=15, check=True)
+                                capture_output=True, text=True, errors="replace", timeout=15, check=True)
         candidate = next((json.loads(line) for line in reversed(result.stdout.splitlines())
                           if line.lstrip().startswith("{")), None)
     except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
-        raise RunnerError(f"cannot refresh live zkDL CUDA device capacity: {exc}") from exc
+        stderr = _bounded_subprocess_text(getattr(exc, "stderr", None))
+        stdout = _bounded_subprocess_text(getattr(exc, "stdout", None))
+        if not stdout and result is not None:
+            stdout = _bounded_subprocess_text(result.stdout)
+        captured = []
+        if stderr:
+            captured.append(f"stderr={stderr}")
+        if stdout:
+            captured.append(f"stdout={stdout}")
+        detail = f"; captured {'; '.join(captured)}" if captured else ""
+        raise RunnerError(f"cannot refresh live zkDL CUDA device capacity: {exc}{detail}") from exc
     if (not isinstance(candidate, dict) or candidate.get("schema") != "zkdl_gpu_offload_device_info_v1" or
             candidate.get("status") != "PASS" or candidate.get("gpu_device_name") != expected_device["name"] or
             candidate.get("gpu_device_ordinal") != expected_device["ordinal"] or

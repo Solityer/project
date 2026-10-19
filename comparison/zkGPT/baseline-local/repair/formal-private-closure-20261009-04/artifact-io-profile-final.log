@@ -1,5 +1,0 @@
-artifact_io_profile: source-read-valid-wire begin
-artifact_io_profile: source-read-valid-wire complete elapsed_ms=22420.5
-artifact_io_profile: native-session-reconstruction begin
-artifact_io_profile: native-session-reconstruction complete elapsed_ms=22216.1
-artifact_io_profile: valid-wire begin

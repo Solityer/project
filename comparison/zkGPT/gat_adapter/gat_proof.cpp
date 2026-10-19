@@ -83,6 +83,8 @@ void append_int_vector(std::string& out, const std::vector<Int>& values);
 bool read_compact_plan_recipe(class ContextReader& reader, GatCircuitPlan& plan);
 bool materialize_compact_plan(const Graph& graph, const QuantConfig& quant, const GatCircuitPlan& recipe, GatCircuitPlan& materialized, std::string* reason);
 bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reason);
+bool context_layer_metadata_valid_impl(const GatCircuitPlan& plan, std::string* reason,
+                                      bool validate_virtual_plan);
 
 void ensure_field() {
     std::call_once(field_once, []() { mcl::bn::initPairing(mcl::BN254); });
@@ -4963,6 +4965,19 @@ struct LassoAdapterBundle {
     double family_generator_derive_ms = 0.0;
 };
 
+struct CompactSelectedRows {
+    std::uint64_t size = 0;
+    zkgpt::NativeVector<std::uint8_t> byte_rows;
+    zkgpt::NativeVector<std::uint16_t> short_rows;
+
+    std::uint64_t at(std::uint64_t row) const {
+        if (row >= size) throw std::out_of_range("canonical compact Lasso selected-row index is invalid");
+        if (!byte_rows.empty()) return byte_rows.at(static_cast<std::size_t>(row));
+        if (!short_rows.empty()) return short_rows.at(static_cast<std::size_t>(row));
+        throw std::logic_error("canonical compact Lasso selected-row cache is empty");
+    }
+};
+
 std::string native_family_id(const std::string& family) {
     if (family == "function/lrelu") return "function_lrelu";
     if (family == "function/exp") return "function_exp";
@@ -5088,6 +5103,25 @@ LassoAdapterBundle build_lasso_bundle(const GatCircuitPlan& plan, const ForwardR
                                                 real_queries, padded_queries,
                                                 padding_index, row);
             };
+        }
+        if (family.selected_table_row_at && family.padded_queries != 0 &&
+            family.table.size() <= 65536) {
+            const bool byte_rows = family.table.size() <= 256;
+            const std::size_t cache_entries = static_cast<std::size_t>(family.padded_queries);
+            auto cache = std::make_shared<CompactSelectedRows>();
+            cache->size = family.padded_queries;
+            if (byte_rows) cache->byte_rows.resize(cache_entries);
+            else cache->short_rows.resize(cache_entries);
+            for (std::uint64_t row = 0; row < family.padded_queries; ++row) {
+                const std::uint64_t selected = family.selected_table_row_at(row);
+                if (selected >= family.table.size())
+                    throw std::out_of_range("canonical Lasso selected table row exceeds its authenticated table");
+                if (row >= family.logical_queries && selected != family.padding_index)
+                    throw std::invalid_argument("canonical Lasso padded query does not select its authenticated padding row");
+                if (byte_rows) cache->byte_rows[static_cast<std::size_t>(row)] = static_cast<std::uint8_t>(selected);
+                else cache->short_rows[static_cast<std::size_t>(row)] = static_cast<std::uint16_t>(selected);
+            }
+            family.selected_table_row_at = [cache](std::uint64_t row) { return cache->at(row); };
         }
         if (!family.selected_table_rows.empty() || !family.queries.empty() ||
             !family.legacy_clear_matrix.empty() ||
@@ -5351,16 +5385,16 @@ std::vector<NativeLassoFamilyPublic> build_lasso_public_families(const GatCircui
             family.padded_queries, family.table.size());
         family.matrix_layout.trusted_generator_id =
             basis_label + "/lasso/" + family.family_id + "/matrix-column-v2";
-        family.matrix_layout.column_generators.resize(
-            static_cast<std::size_t>(family.matrix_layout.columns));
-        for (std::uint64_t column = 0; column < family.matrix_layout.columns; ++column)
-            hashAndMapToG1(
-                family.matrix_layout.column_generators[static_cast<std::size_t>(column)],
-                family.matrix_layout.trusted_generator_id + "/" +
-                    std::to_string(column));
         if (cached_families == nullptr) {
-            // The verifier reconstructs the same trusted column basis from this
-            // canonical descriptor; no per-coordinate matrix basis is carried.
+            // The independent verifier reconstructs and validates the trusted
+            // column basis from the canonical public descriptor.
+            family.matrix_layout.column_generators.resize(
+                static_cast<std::size_t>(family.matrix_layout.columns));
+            for (std::uint64_t column = 0; column < family.matrix_layout.columns; ++column)
+                hashAndMapToG1(
+                    family.matrix_layout.column_generators[static_cast<std::size_t>(column)],
+                    family.matrix_layout.trusted_generator_id + "/" +
+                        std::to_string(column));
         } else {
             const NativeLassoFamilyProver* cached = nullptr;
             for (const NativeLassoFamilyProver& candidate : *cached_families) {
@@ -5369,12 +5403,23 @@ std::vector<NativeLassoFamilyPublic> build_lasso_public_families(const GatCircui
                     break;
                 }
             }
+            const auto& expected_layout = family.matrix_layout;
             if (cached == nullptr || cached->table != family.table || cached->table_id != family.table_id || cached->resource_id != family.resource_id ||
                 cached->registration_id != family.registration_id || cached->segment_offset != family.segment_offset ||
                 cached->logical_queries != family.logical_queries || cached->padded_queries != family.padded_queries ||
                 cached->padding_index != family.padding_index || cached->padding_value != family.padding_value ||
-                native_lasso_matrix_layout_digest(cached->matrix_layout) !=
-                    native_lasso_matrix_layout_digest(family.matrix_layout)) {
+                cached->matrix_layout.version != expected_layout.version ||
+                cached->matrix_layout.padded_queries != expected_layout.padded_queries ||
+                cached->matrix_layout.table_domain != expected_layout.table_domain ||
+                cached->matrix_layout.vector_size != expected_layout.vector_size ||
+                cached->matrix_layout.rows != expected_layout.rows ||
+                cached->matrix_layout.columns != expected_layout.columns ||
+                cached->matrix_layout.row_bits != expected_layout.row_bits ||
+                cached->matrix_layout.column_bits != expected_layout.column_bits ||
+                cached->matrix_layout.flatten_order != expected_layout.flatten_order ||
+                cached->matrix_layout.generator_scheme != expected_layout.generator_scheme ||
+                cached->matrix_layout.trusted_generator_id != expected_layout.trusted_generator_id ||
+                cached->matrix_layout.column_generators.size() != expected_layout.columns) {
                 throw std::invalid_argument("cached Lasso matrix-generator domain or identity mismatch");
             }
             family.matrix_layout = cached->matrix_layout;
@@ -5434,27 +5479,10 @@ NativeFieldVector input_segment(const GatCircuitPlan& plan, const NativeFieldVec
     return NativeFieldVector(input.begin() + segment.offset, input.begin() + segment.offset + domain);
 }
 
-Fr adapter_mle_eval(const std::vector<Fr>& values, const std::vector<Fr>& point) {
-    if (values.empty() || point.size() >= sizeof(std::size_t) * 8 || values.size() > (std::size_t(1) << point.size()))
-        throw std::invalid_argument("adapter MLE dimensions are invalid");
-    std::vector<Fr> folded(std::size_t(1) << point.size(), Fr(0));
-    std::copy(values.begin(), values.end(), folded.begin());
-    std::size_t active = folded.size();
-    for (const Fr& coordinate : point) {
-        const std::size_t half = active / 2;
-        for (std::size_t index = 0; index < half; ++index) folded[index] = folded[2 * index] * (Fr(1) - coordinate) + folded[2 * index + 1] * coordinate;
-        active = half;
-    }
-    return folded.front();
-}
-
-std::vector<Fr> public_feature_segment(const GatCircuitPlan& plan, const Graph& graph, const Tensor2D& features) {
+Fr public_feature_mle_eval(const GatCircuitPlan& plan, const Tensor2D& features, const std::vector<Fr>& point) {
     if (plan.input_layout.segments.empty() || features.values.size() > plan.input_layout.segments.front().logical_length)
         throw std::invalid_argument("public feature segment exceeds X_pub");
-    std::vector<Fr> result(plan.input_layout.n_in, Fr(0));
-    for (std::size_t index = 0; index < features.values.size(); ++index) result[index] = Fr(features.values[index]);
-    (void)graph;
-    return result;
+    return zkgpt::native_mle_evaluate_zero_padded_prefix(features.values.size(), plan.input_layout.n_in, point, [&features](std::size_t index) { return Fr(features.values[index]); });
 }
 
 std::vector<Fr> canonical_l_query_values(const GatCircuitPlan& plan, const ForwardResult& forward, const StaticTables& tables) {
@@ -7022,7 +7050,11 @@ bool materialize_compact_plan(const Graph& graph, const QuantConfig& quant, cons
         if (plan_encoding(generated) != plan_encoding(recipe)) { return fail("compact plan recipe is not canonical for the shared materializer"); }
 
         std::string validation_reason;
-        if (!validate_gat_circuit_plan_impl(generated, &validation_reason) || !context_layer_metadata_valid(generated, &validation_reason)) {
+        // build_plan_impl/build_virtual_sparse_plan already ran the full
+        // canonical plan validator.  The encoding equality above binds this
+        // materialization to the authenticated recipe, so only the separate
+        // context metadata checks remain here.
+        if (!context_layer_metadata_valid_impl(generated, &validation_reason, false)) {
             return fail(validation_reason.empty() ? "materialized compact plan failed validation" : validation_reason);
         }
         materialized = std::move(generated);
@@ -7288,14 +7320,15 @@ bool registry_equal(const RelationRegistry& left, const RelationRegistry& right)
     return true;
 }
 
-bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reason) {
+bool context_layer_metadata_valid_impl(const GatCircuitPlan& plan, std::string* reason,
+                                       bool validate_virtual_plan) {
     const auto fail = [reason](const std::string& message) {
         if (reason != nullptr) *reason = message;
         return false;
     };
     if (!plan.native_proof_backing_is_resident()) return fail("native GAT proof backing is not resident");
     if (plan.virtual_sparse) {
-        if (!validate_gat_circuit_plan_impl(plan, reason)) return false;
+        if (validate_virtual_plan && !validate_gat_circuit_plan_impl(plan, reason)) return false;
         return true;
     }
     if (plan.circuit.circuit.size() != plan.circuit.size) return fail("layered circuit size field mismatch");
@@ -7369,7 +7402,11 @@ bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reaso
     return true;
 }
 
-bool validate_verifier_context_object(const VerifierContext& context, std::string* reason) {
+bool context_layer_metadata_valid(const GatCircuitPlan& plan, std::string* reason) {
+    return context_layer_metadata_valid_impl(plan, reason, true);
+}
+
+bool validate_verifier_context_nonplan_object(const VerifierContext& context, std::string* reason) {
     const auto fail = [reason](const std::string& message) {
         if (reason != nullptr) *reason = message;
         return false;
@@ -7381,8 +7418,6 @@ bool validate_verifier_context_object(const VerifierContext& context, std::strin
         if (!static_tables_equal(context.tables, canonical_tables) || !context.tables.authenticate())
             return fail("static tables do not match independently regenerated canonical tables");
         if (!registry_equal(context.plan_ref().registry, RelationRegistry::canonical())) return fail("relation registry is not the canonical zkGPT registry");
-        if (!validate_gat_circuit_plan(context.plan_ref(), reason)) return false;
-        if (!context_layer_metadata_valid(context.plan_ref(), reason)) return false;
         if (context.public_features.rows != context.graph.num_nodes || context.public_features.cols != context.graph.num_features ||
             context.public_features.cols == 0 ||
             context.public_features.values.size() != checked_mul(context.public_features.rows, context.public_features.cols, "verifier context feature tensor"))
@@ -7408,6 +7443,12 @@ bool validate_verifier_context_object(const VerifierContext& context, std::strin
             return fail("verifier context identity is not canonical");
         return true;
     } catch (const std::exception& error) { return fail(error.what()); }
+}
+
+bool validate_verifier_context_object(const VerifierContext& context, std::string* reason) {
+    if (!validate_verifier_context_nonplan_object(context, reason)) return false;
+    if (!validate_gat_circuit_plan(context.plan_ref(), reason)) return false;
+    return context_layer_metadata_valid(context.plan_ref(), reason);
 }
 
 void set_reason(std::string* reason, const std::string& value) {
@@ -7572,6 +7613,9 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         std::uint64_t family_persistent_bytes = 0;
         std::uint64_t family_column_generator_bytes = 0;
         std::uint64_t family_row_commitment_bytes = 0;
+        std::uint64_t selected_row_cache_bytes = 0;
+        std::uint64_t selected_row_cache_heap_bytes = 0;
+        std::uint64_t selected_row_cache_mapped_bytes = 0;
         std::uint64_t lasso_heap_transient_peak_bytes = 0;
         std::uint64_t largest_family_transient_bytes = 0;
         std::uint64_t family_wire_bytes_sum = 0;
@@ -7598,6 +7642,29 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                 "total Lasso family zero padding");
             const std::uint64_t table_domain = pow2(u64_from_size(table_sizes[family], "Lasso table size"));
             const NativeLassoCapacityProfile workspace = native_lasso_capacity_profile(padded_queries, table_domain);
+            const std::uint64_t selected_row_cache_width = table_domain <= 256 ? 1U : (table_domain <= 65536 ? 2U : 0U);
+            const std::uint64_t family_selected_row_cache_bytes = selected_row_cache_width == 0
+                ? 0
+                : ubytes(padded_queries, static_cast<std::size_t>(selected_row_cache_width), "compact Lasso selected-row cache");
+            selected_row_cache_bytes = uadd(selected_row_cache_bytes, family_selected_row_cache_bytes,
+                "compact Lasso selected-row cache total");
+            if (family_selected_row_cache_bytes > zkgpt::native_storage::heap_limit)
+                selected_row_cache_mapped_bytes = uadd(selected_row_cache_mapped_bytes, family_selected_row_cache_bytes,
+                    "mapped compact Lasso selected-row cache");
+            else
+                selected_row_cache_heap_bytes = uadd(selected_row_cache_heap_bytes, family_selected_row_cache_bytes,
+                    "heap compact Lasso selected-row cache");
+            if (table_domain <= 65536) {
+                constexpr std::uint64_t sparse_factor_table_cap_bytes = 3ULL << 20;
+                const std::uint64_t bucket_scratch_bytes = ubytes(
+                    uadd(umul(2, table_domain, "Lasso sparse bucket arrays"), 1,
+                         "Lasso sparse bucket prefix extent"),
+                    sizeof(std::uint64_t), "Lasso sparse bucket arrays");
+                report.lasso_sparse_matrix_workspace_bytes_upper_bound = std::max(
+                    report.lasso_sparse_matrix_workspace_bytes_upper_bound,
+                    uadd(sparse_factor_table_cap_bytes, bucket_scratch_bytes,
+                         "bounded Lasso sparse factor and bucket workspace"));
+            }
             const std::uint64_t logical_entries = workspace.full_domain;
             const std::uint64_t query_challenges = log2_pow2(padded_queries);
             const std::uint64_t row_chunks = workspace.row_commitment_chunk_count;
@@ -7683,12 +7750,20 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             report.lasso_padded_query_entries;
         report.gkr_layer0_lqry_zero_gap_entries =
             lqry_logical_length - report.lasso_padded_query_entries;
-        report.lasso_private_selected_row_workspace_peak_bytes = uadd(family_persistent_bytes,
+        report.lasso_selected_row_cache_bytes_upper_bound = selected_row_cache_bytes;
+        report.lasso_selected_row_cache_heap_bytes_upper_bound = selected_row_cache_heap_bytes;
+        report.lasso_selected_row_cache_mapped_bytes_upper_bound = selected_row_cache_mapped_bytes;
+        report.lasso_private_selected_row_workspace_peak_bytes = uadd(uadd(family_persistent_bytes,
+            selected_row_cache_bytes, "Lasso private and selected-row cache workspace"),
             std::max(family_row_commitment_bytes, largest_family_transient_bytes), "Lasso private workspace peak");
-        report.lasso_heap_workspace_peak_bytes = uadd(family_persistent_bytes,
-            uadd(umul(2, family_column_generator_bytes, "Lasso public identity generator copies"),
-                std::max(family_row_commitment_bytes, lasso_heap_transient_peak_bytes),
-                "Lasso ordinary vector workspace peak"), "Lasso ordinary vector workspace peak");
+        report.lasso_heap_workspace_peak_bytes = uadd(uadd(family_persistent_bytes,
+            uadd(selected_row_cache_heap_bytes,
+                uadd(umul(2, family_column_generator_bytes, "Lasso public identity generator copies"),
+                    std::max(family_row_commitment_bytes, lasso_heap_transient_peak_bytes),
+                    "Lasso ordinary vector workspace peak"),
+                "Lasso cache and ordinary vector workspace"), "Lasso heap workspace peak"),
+            report.lasso_sparse_matrix_workspace_bytes_upper_bound,
+            "Lasso heap plus sparse factor workspace");
         report.hyrax_active_domain_workspace_entries = maximum_family_columns;
         report.hyrax_active_domain_workspace_bytes = 0;
         report.hyrax_folded_columns_workspace_bytes = 0;
@@ -8745,11 +8820,11 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         if (origin_map_domain > report.flattened_input_domain_entries)
             throw std::logic_error("canonical logical source support exceeds its actual layer-0 domain");
         report.gkr_subset_source_support_entries_upper_bound = origin_map_domain;
-        // initSubset now builds each layer-0 source map from one packed bitmap,
-        // emits the exact sorted unique coordinates, and reserves that exact
-        // count. Bound each lane by both its source references and the actual
-        // source layer-0 domain; bound all retained map vectors by the same
-        // source-derived domain for every possible map lane.
+        // initSubset marks U and V references in one gate pass using one
+        // packed bitmap per lane, then emits each exact sorted unique map.
+        // Bound each lane by both its source references and the actual source
+        // layer-0 domain; bound retained map vectors by that source-derived
+        // domain for every possible map lane.
         const std::uint64_t max_unique_map_entries = std::max(max_input_u_entries, max_input_v_entries);
         if (max_unique_map_entries > origin_map_domain ||
             input_map_entries > umul(origin_map_count, origin_map_domain, "actual GKR input map domain bound"))
@@ -8786,9 +8861,12 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t subset_v_bytes = ubytes(subset_v_entries, sizeof(PackedU40), "GKR V exact unique source map capacity");
         report.gkr_subset_source_map_bytes_upper_bound = std::max(subset_u_bytes, subset_v_bytes);
         const std::uint64_t bitmap_word_count = origin_map_domain / 64 + (origin_map_domain % 64 != 0);
-        const std::uint64_t subset_bitmap_bytes = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map bitmap");
+        const std::uint64_t subset_bitmap_bytes_per_lane = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map lane bitmap");
+        const std::uint64_t subset_bitmap_bytes = umul(2, subset_bitmap_bytes_per_lane,
+            "packed U and V source-map bitmaps");
         const std::uint64_t subset_rank_bytes = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map rank prefix");
-        const std::uint64_t mapped_subset_bitmap = mapped_allocation(subset_bitmap_bytes);
+        const std::uint64_t mapped_subset_bitmap = uadd(mapped_allocation(subset_bitmap_bytes_per_lane),
+            mapped_allocation(subset_bitmap_bytes_per_lane), "mapped U and V source-map bitmaps");
         const std::uint64_t mapped_subset_rank = mapped_allocation(subset_rank_bytes);
         const std::uint64_t mapped_subset_scratch_peak = uadd(mapped_subset_bitmap, mapped_subset_rank,
             "mapped source-map bitmap and rank prefixes");
@@ -8892,16 +8970,25 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t proof_persistent_mapped = uadd(mapped_gate_arrays,
             uadd(mapped_origin_maps,
                 uadd(mapped_residual_targets,
-                    uadd(mapped_layer_values, mapped_input_segments, "mapped retained witness and input backing"), "mapped retained witness and input backing"),
+                    uadd(mapped_layer_values,
+                        uadd(mapped_input_segments, selected_row_cache_mapped_bytes,
+                             "mapped input segments and compact Lasso selected rows"),
+                        "mapped retained witness and input backing"), "mapped retained witness and input backing"),
                 "mapped proof plan backing"), "mapped proof plan backing");
-        const std::uint64_t lasso_phase_persistent_mapped = uadd(mapped_layer_values, mapped_input_segments,
-            "mapped retained witness/input backing during Lasso cache release");
-        const std::uint64_t plan_restore_mapped_peak = uadd(gate_plan_mapped_peak,
-            uadd(lasso_phase_persistent_mapped,
-                uadd(mapped_lasso_persistent, mapped_tensor_retained_bytes,
-                    "mapped retained Lasso/tensor backing during native plan restore"),
-                "mapped proof backing during native plan restore"),
-            "native plan restore live peak");
+        const std::uint64_t lasso_phase_persistent_mapped = symbolic_profile_only
+            ? uadd(mapped_layer_values,
+                uadd(mapped_input_segments, selected_row_cache_mapped_bytes,
+                     "mapped retained input and Lasso selected-row cache during plan restore"),
+                "mapped retained witness/input backing during Lasso cache release")
+            : proof_persistent_mapped;
+        const std::uint64_t plan_restore_mapped_peak = symbolic_profile_only
+            ? uadd(gate_plan_mapped_peak,
+                uadd(lasso_phase_persistent_mapped,
+                    uadd(mapped_lasso_persistent, mapped_tensor_retained_bytes,
+                        "mapped retained Lasso/tensor backing during native plan restore"),
+                    "mapped proof backing during native plan restore"),
+                "native plan restore live peak")
+            : 0;
         const std::uint64_t gkr_validation_mapped_peak = uadd(proof_persistent_mapped, mapped_stream_validation,
             "mapped GKR witness-validation live peak");
         const std::uint64_t gkr_proving_mapped_peak = uadd(proof_persistent_mapped,
@@ -8939,6 +9026,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             {"component:fconn_source_weights", mapped_fconn_source_weights},
             {"component:gkr_prefix", mapped_gkr_prefix},
             {"component:lasso_persistent", mapped_lasso_persistent},
+            {"component:lasso_selected_rows", selected_row_cache_mapped_bytes},
             {"component:tensor_retained", mapped_tensor_retained_bytes},
             {"component:lasso_transient", mapped_lasso_transient_peak},
             {"component:tensor_opening", mapped_tensor_opening_peak},
@@ -8957,7 +9045,47 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             "live native per-layer vector allocation count");
         const std::uint64_t native_live_allocation_count = uadd(live_layer_vector_count, 130,
             "live native vector allocation count");
-        report.estimated_native_heap_bytes_upper_bound = uadd(
+        // The GKR phase-two Combined provider retains two output tables while
+        // beta_u retains its input table; include their actual per-layer peak
+        // because these std::vector tables do not use NativeScratchAllocator.
+        constexpr std::uint64_t equality_half_table_maximum_bytes = std::uint64_t(64) << 20;
+        const std::uint64_t equality_half_table_maximum_entries = equality_half_table_maximum_bytes / sizeof(Fr);
+        const auto equality_weight_provider_table_bytes = [&ubytes, equality_half_table_maximum_entries](
+                std::uint64_t bits, const char* what) {
+            const std::uint64_t low_bits = bits / 2U;
+            const std::uint64_t high_bits = bits - low_bits;
+            if (low_bits < std::numeric_limits<std::uint64_t>::digits &&
+                high_bits < std::numeric_limits<std::uint64_t>::digits) {
+                const std::uint64_t low_count = std::uint64_t(1) << low_bits;
+                const std::uint64_t high_count = std::uint64_t(1) << high_bits;
+                if (low_count <= equality_half_table_maximum_entries &&
+                    high_count <= equality_half_table_maximum_entries - low_count)
+                    return ubytes(low_count + high_count, sizeof(Fr), what);
+            }
+            const std::uint64_t fallback_bits = std::min<std::uint64_t>(12U, bits);
+            return ubytes(std::uint64_t(1) << fallback_bits, sizeof(Fr), what);
+        };
+        std::uint64_t equality_weight_provider_heap_peak = 0;
+        for (const GatGkrLayerShapeProfile& shape : report.gkr_layer_work_profile) {
+            const std::uint64_t output_bits = static_cast<std::uint64_t>(std::max(0, shape.bit_length));
+            const std::uint64_t combined_output_tables = umul(2,
+                equality_weight_provider_table_bytes(output_bits, "native GKR combined equality tables"),
+                "native GKR combined equality tables");
+            std::uint64_t phase_workspace = combined_output_tables;
+            if (shape.need_phase2) {
+                const std::uint64_t input_bits_for_phase2 = static_cast<std::uint64_t>(std::max(0, shape.max_bl_u));
+                phase_workspace = uadd(combined_output_tables,
+                    equality_weight_provider_table_bytes(input_bits_for_phase2, "native GKR phase-two input equality table"),
+                    "native GKR phase-two equality tables");
+            }
+            const std::uint64_t lasso_init_bits = static_cast<std::uint64_t>(
+                std::max({0, shape.max_bl_u, shape.max_bl_v}));
+            const std::uint64_t lasso_init_workspace = equality_weight_provider_table_bytes(
+                lasso_init_bits, "native GKR Lasso-init equality table");
+            equality_weight_provider_heap_peak = std::max({equality_weight_provider_heap_peak,
+                phase_workspace, lasso_init_workspace});
+        }
+        const std::uint64_t native_heap_bytes_upper_bound = uadd(
             umul(native_live_allocation_count, heap_limit, "native heap allocation upper bound"),
             uadd(max_prefix_heap_bytes,
                 uadd(uadd(uadd(coefficient_pools_heap_bytes, input_fold_heap_bytes,
@@ -8971,8 +9099,13 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                     "native coefficient, input-fold, target-dictionary, and explicit unary builder heap"),
                 "GKR prefix and bounded native heap workspace"),
             "native heap and bounded GKR/helper workspaces upper bound");
+        report.estimated_native_heap_bytes_upper_bound = uadd(native_heap_bytes_upper_bound,
+            equality_weight_provider_heap_peak,
+            "native heap plus GKR equality half-table workspace");
         const std::uint64_t source_map_heap_scratch = uadd(
-            subset_bitmap_bytes <= heap_limit ? subset_bitmap_bytes : 0,
+            uadd(subset_bitmap_bytes_per_lane <= heap_limit ? subset_bitmap_bytes_per_lane : 0,
+                 subset_bitmap_bytes_per_lane <= heap_limit ? subset_bitmap_bytes_per_lane : 0,
+                 "heap-backed U and V source-map bitmaps"),
             subset_rank_bytes <= heap_limit ? subset_rank_bytes : 0,
             "heap-backed source-map bitmap and rank prefixes");
         report.estimated_native_heap_bytes_upper_bound = uadd(report.estimated_native_heap_bytes_upper_bound,
@@ -9169,7 +9302,7 @@ void finalize_gat_capacity_report(GatCapacityReport& report) {
                  report.gkr_point_shape_touched_index_scratch_bytes_upper_bound !=
                      2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t) ||
                  report.gkr_subset_bitmap_scratch_bytes_upper_bound !=
-                     ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
+                     2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
                  report.gkr_subset_rank_scratch_bytes_upper_bound !=
                      ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t))
             report.reason = "native GKR point-domain scratch does not match exact logical source support";
@@ -9268,6 +9401,31 @@ void GatCircuitPlan::release_native_proof_backing() const {
     for (layer& current : circuit.circuit) current.release_native_proof_backing();
     PackedResidualTargets().swap(residual_targets);
     native_proof_backing_resident = false;
+}
+
+zkgpt::native_storage::PageAdviceReport GatCircuitPlan::advise_native_proof_backing_cold() const {
+    if (!native_proof_backing_resident || virtual_sparse || circuit.circuit.empty() ||
+        circuit.size != circuit.circuit.size() || residual_targets.size() != residual_coordinates)
+        throw std::logic_error("native GAT proof backing is incomplete and cannot be retained");
+    zkgpt::native_storage::PageAdviceReport total;
+    const auto merge = [&total](const zkgpt::native_storage::PageAdviceReport& report) {
+        total.mapped_allocations += report.mapped_allocations;
+        total.madvise_failures += report.madvise_failures;
+        total.fadvise_failures += report.fadvise_failures;
+        if (report.last_madvise_error != 0) total.last_madvise_error = report.last_madvise_error;
+        if (report.last_fadvise_error != 0) total.last_fadvise_error = report.last_fadvise_error;
+    };
+    for (const layer& current : circuit.circuit) {
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.uni_gates));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.bin_gates));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.coefficient_pool));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.wide_uni_coefficient_ids));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.wide_bin_coefficient_ids));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.ori_id_u));
+        merge(zkgpt::native_storage::advise_vector_pages_cold(current.ori_id_v));
+    }
+    merge(residual_targets.advise_native_pages_cold());
+    return total;
 }
 
 void GatCircuitPlan::restore_native_proof_backing(GatCircuitPlan&& canonical_rebuilt) const {
@@ -9667,7 +9825,7 @@ bool detail::formal_capacity_report_matches_plan(
         const std::string quant_digest = canonical_quant_digest(quant);
         const std::string formal_path =
             "formal_native_masked_lasso_hyrax+native_masked_layered_gkr";
-        if (capacity.schema != "zkgpt-gat-capacity-v8" ||
+        if (capacity.schema != "zkgpt-gat-capacity-v9" ||
             capacity.symbolic_analysis_profile_complete ||
             !capacity.gkr_point_shape_ready || !capacity.gkr_point_shape_exact ||
             !is_lower_hex_digest(capacity.gkr_point_shape_digest) ||
@@ -10890,7 +11048,7 @@ bool read_verifier_context(const std::string& path, VerifierContext& context, st
         }
         parsed.plan = std::move(materialized_plan);
         std::string validation_reason;
-        if (!validate_verifier_context_object(parsed, &validation_reason)) {
+        if (!validate_verifier_context_nonplan_object(parsed, &validation_reason)) {
             set_reason(reason, validation_reason);
             return false;
         }
@@ -11357,7 +11515,18 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         const std::vector<NativeLassoFamilyPublic> lasso_public = build_lasso_public_families(plan, tables, basis_label, lasso.families.get());
         NativeLassoQueryPublic lasso_query_public = build_lasso_public_query(plan, lasso.com_L, basis_label, &lasso.query);
         const std::string lasso_tables_digest = native_lasso_tables_digest(lasso_public);
-        const std::string lasso_resources_digest = native_lasso_resources_digest(lasso_public);
+        std::string lasso_resources_digest;
+        if (lasso_public.empty()) {
+            lasso_resources_digest = native_lasso_resources_digest(lasso_public);
+        } else {
+            lasso_resources_digest = lasso_public.front().statement_resources_digest;
+            if (lasso_resources_digest.empty() ||
+                std::any_of(lasso_public.begin(), lasso_public.end(),
+                    [&lasso_resources_digest](const NativeLassoFamilyPublic& family) {
+                        return family.statement_resources_digest != lasso_resources_digest;
+                    }))
+                throw std::logic_error("canonical Lasso resource digest was not consistently prepared by its family builder");
+        }
         const std::string lasso_digest = native_lasso_tensor_query_digest(
             lasso.query.tensor_view, lasso.query.tensor_commitment);
         for (NativeLassoFamilyProver& family : *lasso.families) {
@@ -11441,8 +11610,19 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
                 : build_gat_circuit_plan(graph, model, quant, forward);
             plan.restore_native_proof_backing(std::move(rebuilt));
         };
-        plan.release_native_proof_backing();
         try {
+            if (validated_owner != nullptr) {
+                const auto advice = plan.advise_native_proof_backing_cold();
+                if (advice.madvise_failures != 0U || advice.fadvise_failures != 0U)
+                    std::cerr << "[zkGPT][native-storage] page_advice mapped_allocations="
+                              << advice.mapped_allocations << " madvise_failures="
+                              << advice.madvise_failures << " madvise_errno="
+                              << advice.last_madvise_error << " fadvise_failures="
+                              << advice.fadvise_failures << " fadvise_errno="
+                              << advice.last_fadvise_error << '\n';
+            } else {
+                plan.release_native_proof_backing();
+            }
             double family_initial_blinding_prepare_ms = 0.0;
             const bool lasso_ok = native_lasso_prove_bundle(
                 session, *lasso.families, lasso.query, &lasso_result, &reason,
@@ -12302,8 +12482,7 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             set_reason(reason, "masked GAT combine public claim binding failed");
             return false;
         }
-        const std::vector<Fr> x_values = public_feature_segment(context.plan_ref(), context.graph, context.public_features);
-        const Fr x_eval = adapter_mle_eval(x_values, r_minus);
+        const Fr x_eval = public_feature_mle_eval(context.plan_ref(), context.public_features, r_minus);
         if (encoded_x != x_eval) {
             set_reason(reason, "masked GAT public X terminal evaluation mismatch");
             return false;

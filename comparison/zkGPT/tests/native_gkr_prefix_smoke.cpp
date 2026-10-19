@@ -327,15 +327,49 @@ void virtual_37_bit_domain() {
 
     std::vector<F> point(bits);
     for (int bit = 0; bit < bits; ++bit) point[bit] = F(bit + 2);
-    const std::uint64_t absolute_coordinate = (std::uint64_t(1) << 35) + 5;
-    zkgpt::native_gkr::EqualityWeightProvider equality(point, bits);
-    F direct = F_ONE;
-    for (int bit = 0; bit < bits; ++bit) {
-        direct *= ((absolute_coordinate >> bit) & 1)
-            ? point[bit] : F_ONE - point[bit];
+    const auto direct_weight = [](const std::vector<F>& challenge,
+                                  std::uint64_t coordinate, const F& scale) {
+        F result = scale;
+        for (std::size_t bit = 0; bit < challenge.size(); ++bit)
+            result *= ((coordinate >> bit) & 1U) != 0U
+                ? challenge[bit] : F_ONE - challenge[bit];
+        return result;
+    };
+    {
+        const std::uint64_t split_boundary = std::uint64_t(1) << (bits / 2);
+        const std::uint64_t absolute_coordinate = (std::uint64_t(1) << 35) + 5;
+        zkgpt::native_gkr::EqualityWeightProvider equality(point, bits);
+        for (const std::uint64_t coordinate : {
+                 split_boundary - 1U, split_boundary, split_boundary + 5U,
+                 absolute_coordinate, original_domain - 1U})
+            require(equality.at(coordinate) == direct_weight(point, coordinate, F_ONE),
+                    "split-half equality weight differs from the dense LSB-first formula");
+        bool out_of_range_rejected = false;
+        try { (void)equality.at(original_domain); }
+        catch (const std::out_of_range&) { out_of_range_rejected = true; }
+        require(out_of_range_rejected,
+                "split-half equality provider accepted a coordinate outside its domain");
     }
-    require(equality.at(absolute_coordinate) == direct,
-            "on-demand equality weight differs from the dense LSB-first formula");
+    {
+        zkgpt::native_gkr::EqualityWeightProvider scaled(point, bits, F(7));
+        const std::uint64_t coordinate = (std::uint64_t(1) << 35) + 5U;
+        require(scaled.at(coordinate) == direct_weight(point, coordinate, F(7)),
+                "split-half equality lookup changed its initial scale");
+    }
+    for (const F challenge : {F_ZERO, F_ONE}) {
+        std::vector<F> endpoint_point(5, challenge);
+        zkgpt::native_gkr::EqualityWeightProvider endpoint(endpoint_point, 5, F(7));
+        require(endpoint.at(0U) == direct_weight(endpoint_point, 0U, F(7)) &&
+                    endpoint.at(31U) == direct_weight(endpoint_point, 31U, F(7)),
+                "split-half equality lookup changed a zero/one challenge endpoint");
+    }
+    {
+        std::vector<F> fallback_point(41, F(3));
+        const std::uint64_t coordinate = (std::uint64_t(1) << 40) + 9U;
+        zkgpt::native_gkr::EqualityWeightProvider fallback(fallback_point, 41);
+        require(fallback.at(coordinate) == direct_weight(fallback_point, coordinate, F_ONE),
+                "over-budget equality lookup fallback differs from its LSB-first formula");
+    }
 
     constexpr std::uint64_t logical = 3;
     zkgpt::NativeVector<linear_poly> mult(logical), values(logical), folded_mult,

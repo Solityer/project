@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import importlib
 import math
 import json
@@ -80,6 +81,7 @@ from formal_common import (
     normalize_formal_execution_environment,
     select_formal_cuda_device,
     resource_file_identities,
+    native_pk_v4_read_backing_geometry,
 )
 from process_guardian import (
     ProcessGuardian,
@@ -2524,10 +2526,11 @@ def _native_capacity_requirements(
     native_successor_backing_reserved_bytes = ((native_successor_file_bytes + 4095) // 4096) * 4096
     if native_successor_backing_reserved_bytes > sys.maxsize:
         abort("native proving-key page-rounded successor backing exceeds the native address range")
-    target_bitmap_virtual_bytes = (permutation_cells + 7) // 8
-    target_bitmap_page_count = (target_bitmap_virtual_bytes + 4095) // 4096
-    target_bitmap_page_bytes = min(successor_entries_for_files, target_bitmap_page_count) * 4096
-    target_bitmap_allocation_bitmap_bytes = (target_bitmap_page_count + 7) // 8
+    target_bitmap_geometry = native_pk_v4_read_backing_geometry(permutation_cells, successor_entries_for_files)
+    target_bitmap_virtual_bytes = target_bitmap_geometry["target_bitmap_virtual_bytes"]
+    target_bitmap_page_count = target_bitmap_geometry["target_bitmap_page_count"]
+    target_bitmap_page_bytes = target_bitmap_geometry["target_bitmap_backing_bytes"]
+    target_bitmap_allocation_bitmap_bytes = target_bitmap_geometry["target_bitmap_allocation_bitmap_bytes"]
     fixed_source_runtime_bytes = (
         fixed_uncompressed * n * fr
         + (int(cs["num_selectors"]) * n + 7) // 8
@@ -3703,7 +3706,7 @@ def _native_shplonk_fixed_cache_static_bounds(admission: dict[str, object]) -> d
     if not isinstance(memory, dict):
         abort("native SHPLONK fixed-cache budget lacks its admitted memory model")
     fields = {
-        "domain_size": memory.get("proof_domain_size"),
+        "domain_size": admission.get("domain_size"),
         "scalar_bytes": memory.get("size_of_fr_bytes"),
         "aggregate_group_bytes": memory.get("size_of_shplonk_fixed_aggregate_cache_group_bytes"),
         "usize_bytes": memory.get("size_of_usize_bytes"),
@@ -3712,8 +3715,14 @@ def _native_shplonk_fixed_cache_static_bounds(admission: dict[str, object]) -> d
         "max_fixed_sources_per_group": memory.get("shplonk_max_commitments_per_rotation_set"),
         "max_points_per_group": memory.get("shplonk_max_rotation_count"),
     }
+    shape_context = (
+        f"base_domain={admission.get('domain_size')!r}, "
+        f"extended_proof_domain={memory.get('proof_domain_size')!r}, "
+        f"Fr_bytes={memory.get('size_of_fr_bytes')!r}, "
+        f"aggregate_group_bytes={memory.get('size_of_shplonk_fixed_aggregate_cache_group_bytes')!r}"
+    )
     if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 or value > sys.maxsize for value in fields.values()):
-        abort("native SHPLONK fixed-cache source bounds are malformed")
+        abort(f"native SHPLONK fixed-cache source bounds are malformed: {shape_context}")
     domain_size = int(fields["domain_size"])
     scalar_bytes = int(fields["scalar_bytes"])
     group_host = (
@@ -3737,7 +3746,10 @@ def _native_shplonk_fixed_cache_static_bounds(admission: dict[str, object]) -> d
         "shplonk_fixed_cache_rotation_set_count": int(fields["rotation_set_count"]),
     }
     if any(value <= 0 or value > sys.maxsize for value in values.values()):
-        abort("native SHPLONK fixed-cache source-derived bound exceeds the native address range")
+        abort(
+            "native SHPLONK fixed-cache source-derived bound exceeds the native address range: "
+            f"{shape_context}, group_host_bytes={group_host}, group_disk_bytes={group_disk}"
+        )
     return values
 
 
@@ -4083,11 +4095,24 @@ def _disk_budget_components(
     setup_key_artifact_upper_bytes: int = 0,
     setup_mapped_peak_bytes: int = 0,
     proof_spill_known_bytes: int = 0,
+    proof_spill_extra_bytes: int | None = None,
+    pending_witness_json_upper_bytes: int = 0,
+    pending_proof_json_upper_bytes: int = 0,
+    pending_json_datasets: tuple[str, ...] | list[str] = (),
 ) -> dict[str, object]:
+    if (
+        not isinstance(pending_json_datasets, (tuple, list))
+        or any(not isinstance(dataset, str) for dataset in pending_json_datasets)
+        or len(set(pending_json_datasets)) != len(pending_json_datasets)
+        or any(dataset not in DATASETS for dataset in pending_json_datasets)
+    ):
+        abort("disk capacity component pending_json_datasets is malformed")
     numeric = {
         "future_setup_key_artifact_upper_bytes": setup_key_artifact_upper_bytes,
         "setup_mapped_peak_bytes": setup_mapped_peak_bytes,
         "proof_spill_known_bytes": proof_spill_known_bytes,
+        "pending_witness_json_upper_bytes": pending_witness_json_upper_bytes,
+        "pending_proof_json_upper_bytes": pending_proof_json_upper_bytes,
         "output_srs_copy_size_bytes": pending_srs["output_srs_copy_size_bytes"],
         "pending_output_srs_copy_count": pending_srs["pending_output_srs_copy_count"],
         "pending_output_srs_copy_bytes": pending_srs["pending_output_srs_copy_bytes"],
@@ -4096,10 +4121,22 @@ def _disk_budget_components(
         value = numeric[name]
         if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
             abort(f"disk capacity component {name} is invalid/unrepresentable")
+    if proof_spill_extra_bytes is None:
+        proof_spill_extra_bytes = proof_spill_known_bytes
+    if (
+        isinstance(proof_spill_extra_bytes, bool)
+        or not isinstance(proof_spill_extra_bytes, int)
+        or proof_spill_extra_bytes < 0
+        or proof_spill_extra_bytes > proof_spill_known_bytes
+    ):
+        abort("disk capacity component proof_spill_extra_bytes is invalid/unrepresentable")
+    pending_json_bytes = pending_witness_json_upper_bytes + pending_proof_json_upper_bytes
     output_required = (
-        setup_key_artifact_upper_bytes + int(pending_srs["pending_output_srs_copy_bytes"])
+        setup_key_artifact_upper_bytes
+        + int(pending_srs["pending_output_srs_copy_bytes"])
+        + pending_json_bytes
     )
-    scratch_required = max(setup_mapped_peak_bytes, proof_spill_known_bytes)
+    scratch_required = max(setup_mapped_peak_bytes, proof_spill_extra_bytes)
     total = output_required + scratch_required
     if any(value > sys.maxsize for value in (output_required, scratch_required, total)):
         abort("known disk capacity budget exceeds the representable byte range")
@@ -4109,10 +4146,339 @@ def _disk_budget_components(
             abort(f"disk capacity component {name} is invalid/unrepresentable")
     return {
         **numeric,
+        "proof_spill_extra_bytes": proof_spill_extra_bytes,
+        "pending_output_json_upper_bytes": pending_json_bytes,
         "output_volume_required_bytes": output_required,
         "scratch_volume_required_bytes": scratch_required,
         "pending_output_srs_copy_datasets": list(pending_srs["pending_output_srs_copy_datasets"]),
+        "pending_output_json_datasets": list(pending_json_datasets),
+        "output_json_budget_kind": "source_derived_future_persistent_json_upper_bound",
         "total_required_bytes": total,
+    }
+
+
+def _checked_output_budget_add(*values: int, label: str) -> int:
+    total = 0
+    for value in values:
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize - total:
+            abort(f"{label} exceeds the representable byte range")
+        total += value
+    return total
+
+
+def _checked_output_budget_mul(left: int, right: int, *, label: str) -> int:
+    if (
+        isinstance(left, bool)
+        or not isinstance(left, int)
+        or left < 0
+        or isinstance(right, bool)
+        or not isinstance(right, int)
+        or right < 0
+        or (left and right > sys.maxsize // left)
+    ):
+        abort(f"{label} exceeds the representable byte range")
+    return left * right
+
+
+def _rescaled_f64_json_atom_upper(scale: int, *, label: str) -> int:
+    """Bound a quoted Rust f64 Display atom for i128::MAX / 2**scale."""
+    if isinstance(scale, bool) or not isinstance(scale, int):
+        abort(f"{label} has a malformed rescale exponent")
+    if scale >= 0:
+        numerator = _checked_output_budget_mul(scale, 30103, label=label)
+        decimal_digits = _checked_output_budget_add(numerator, 99999, label=label) // 100000
+        mantissa_digits = min(324, decimal_digits + 17)
+        return 3 + max(39, 2 + mantissa_digits)
+    exponent = 127 - scale
+    decimal_digits = _checked_output_budget_mul(exponent, 30103, label=label)
+    decimal_digits = _checked_output_budget_add(decimal_digits, 99999, label=label) // 100000
+    return max(6, 3 + min(309, decimal_digits))
+
+
+def _json_bytes_upper(value: object) -> int:
+    return len(json.dumps(value, ensure_ascii=True, separators=(",", ":")).encode("ascii"))
+
+
+def _nested_array_payload_upper(element_counts: list[int], atom_bytes: int | list[int], *, label: str) -> int:
+    """Payload added to a JSON ``[[], ...]`` skeleton, including each tensor's commas."""
+    if isinstance(atom_bytes, list):
+        if len(atom_bytes) != len(element_counts):
+            abort(f"{label} has mismatched tensor geometry and atom bounds")
+        atom_bounds = atom_bytes
+    else:
+        atom_bounds = [atom_bytes] * len(element_counts)
+    total = 0
+    for count, atom_bound in zip(element_counts, atom_bounds):
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or isinstance(atom_bound, bool)
+            or not isinstance(atom_bound, int)
+            or atom_bound < 0
+        ):
+            abort(f"{label} has malformed tensor geometry")
+        commas = max(count - 1, 0)
+        total = _checked_output_budget_add(
+            total,
+            _checked_output_budget_mul(count, atom_bound, label=label),
+            commas,
+            label=label,
+        )
+    return total
+
+
+def _native_json_output_bounds(admission: dict[str, object], dataset: str) -> dict[str, int]:
+    """Bound formal witness/proof JSON from authenticated settings and Admission geometry."""
+    prepared = local_path(str(admission.get("prepared_dir")), f"{dataset} authenticated Admission directory")
+    settings_path = prepared / "settings.json"
+    settings_sha256 = admission.get("settings_sha256")
+    if (
+        prepared.is_symlink()
+        or not prepared.is_dir()
+        or settings_path.is_symlink()
+        or not settings_path.is_file()
+        or not isinstance(settings_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", settings_sha256) is None
+        or sha256(settings_path) != settings_sha256
+    ):
+        abort(f"{dataset} output JSON bound requires the authenticated regular settings snapshot")
+    settings = load_json(settings_path, f"{dataset} authenticated settings for JSON output bounds")
+    if not isinstance(settings, dict):
+        abort(f"{dataset} authenticated settings for JSON output bounds are malformed")
+
+    run_args = settings.get("run_args")
+    input_visibility = run_args.get("input_visibility") if isinstance(run_args, dict) else None
+    output_visibility = run_args.get("output_visibility") if isinstance(run_args, dict) else None
+    param_visibility = run_args.get("param_visibility") if isinstance(run_args, dict) else None
+    if (
+        input_visibility != "Public"
+        or output_visibility != "Public"
+        or param_visibility != {"Hashed": {"hash_is_public": True, "outlets": []}}
+    ):
+        abort(f"{dataset} formal JSON output bound requires public inputs/outputs and one public parameter hash")
+
+    shapes = settings.get("model_instance_shapes")
+    input_scales = settings.get("model_input_scales")
+    output_scales = settings.get("model_output_scales")
+    if (
+        not isinstance(shapes, list)
+        or not isinstance(input_scales, list)
+        or not isinstance(output_scales, list)
+        or len(shapes) != len(input_scales) + len(output_scales)
+        or any(isinstance(scale, bool) or not isinstance(scale, int) or not -(1 << 31) <= scale < (1 << 31) for scale in input_scales + output_scales)
+    ):
+        abort(f"{dataset} authenticated settings have malformed public instance shapes or scales")
+
+    tensor_counts: list[int] = []
+    for shape in shapes:
+        if not isinstance(shape, list) or any(
+            isinstance(dimension, bool)
+            or not isinstance(dimension, int)
+            or dimension < 0
+            or dimension > sys.maxsize
+            for dimension in shape
+        ):
+            abort(f"{dataset} authenticated settings contain a malformed public tensor shape")
+        count = 1
+        for dimension in shape:
+            if dimension and count > sys.maxsize // dimension:
+                abort(f"{dataset} public tensor element count exceeds the representable byte range")
+            count *= dimension
+        tensor_counts.append(count)
+    input_tensor_count = len(input_scales)
+    input_counts = tensor_counts[:input_tensor_count]
+    output_counts = tensor_counts[input_tensor_count:]
+    input_elements = _checked_output_budget_add(*input_counts, label=f"{dataset} public input elements")
+    output_elements = _checked_output_budget_add(*output_counts, label=f"{dataset} public output elements")
+
+    memory = admission.get("native_memory_model")
+    if not isinstance(memory, dict):
+        abort(f"{dataset} Admission lacks witness geometry for JSON output bounds")
+    witness_elements = memory.get("graph_witness_scalar_element_count")
+    if isinstance(witness_elements, bool) or not isinstance(witness_elements, int) or witness_elements < 0 or witness_elements > sys.maxsize:
+        abort(f"{dataset} Admission has malformed graph-witness geometry for JSON output bounds")
+    public_elements = _checked_output_budget_add(input_elements, output_elements, label=f"{dataset} public instance elements")
+    if witness_elements <= public_elements:
+        abort(f"{dataset} Admission does not leave a positive runtime-parameter witness after public tensors")
+    parameter_elements = witness_elements - public_elements
+
+    module_sizes = settings.get("module_sizes")
+    poseidon = module_sizes.get("poseidon") if isinstance(module_sizes, dict) else None
+    polycommit = module_sizes.get("polycommit") if isinstance(module_sizes, dict) else None
+    if (
+        not isinstance(poseidon, list)
+        or len(poseidon) != 2
+        or isinstance(poseidon[0], bool)
+        or not isinstance(poseidon[0], int)
+        or poseidon[0] < 0
+        or not isinstance(poseidon[1], list)
+        or any(isinstance(count, bool) or not isinstance(count, int) or count < 0 for count in poseidon[1])
+        or _checked_output_budget_add(*poseidon[1], label=f"{dataset} public Poseidon instances") != 1
+        or polycommit != []
+    ):
+        abort(f"{dataset} formal settings do not describe the single-hash, no-commitment witness shape")
+    instance_elements = _checked_output_budget_add(public_elements, 1, label=f"{dataset} proof instances")
+
+    package_manifest = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+    package = re.search(r"(?ms)^\[package\]\s*(.*?)(?=^\[|\Z)", package_manifest)
+    version_match = re.search(r'(?m)^\s*version\s*=\s*"([^"\n]+)"\s*$', package.group(1)) if package else None
+    if version_match is None:
+        abort("cannot derive the serialized EZKL version width from the current Cargo package manifest")
+    crate_version = version_match.group(1)
+    if crate_version == "0.0.0":
+        crate_version = "source - no compatibility guaranteed"
+
+    # Every rescaled f64 Display value, including fixed-format subnormals,
+    # signs, and non-finite spellings, fits within this quoted JSON atom bound.
+    rescaled_input_atom_bytes = [
+        _rescaled_f64_json_atom_upper(scale, label=f"{dataset} input scale") for scale in input_scales
+    ]
+    rescaled_output_atom_bytes = [
+        _rescaled_f64_json_atom_upper(scale, label=f"{dataset} output scale") for scale in output_scales
+    ]
+    fr_string_atom_bytes = 68  # 0x + 64 hex digits, including JSON quotes.
+    pretty = {
+        "rescaled_inputs": [[] for _ in input_counts],
+        "inputs": [[] for _ in input_counts],
+        "processed_inputs": [],
+        "processed_params": [[]],
+        "processed_outputs": [],
+        "rescaled_outputs": [[] for _ in output_counts],
+        "outputs": [[] for _ in output_counts],
+    }
+    witness_skeleton = {
+        "inputs": [[] for _ in input_counts],
+        "pretty_elements": pretty,
+        "outputs": [[] for _ in output_counts],
+        "processed_inputs": None,
+        "processed_params": {"poseidon_hash": [], "polycommit": None},
+        "processed_outputs": None,
+        "max_lookup_inputs": -(1 << 127),
+        "min_lookup_inputs": -(1 << 127),
+        "max_range_size": -(1 << 127),
+        "version": crate_version,
+        "params": [[]],
+    }
+    witness_json_upper = _json_bytes_upper(witness_skeleton)
+    witness_json_upper = _checked_output_budget_add(
+        witness_json_upper,
+        _nested_array_payload_upper(input_counts, fr_string_atom_bytes, label=f"{dataset} witness input JSON"),
+        _nested_array_payload_upper([parameter_elements], fr_string_atom_bytes, label=f"{dataset} witness parameter JSON"),
+        _nested_array_payload_upper(output_counts, fr_string_atom_bytes, label=f"{dataset} witness output JSON"),
+        _nested_array_payload_upper(input_counts, fr_string_atom_bytes, label=f"{dataset} pretty input JSON"),
+        _nested_array_payload_upper(output_counts, fr_string_atom_bytes, label=f"{dataset} pretty output JSON"),
+        _nested_array_payload_upper(input_counts, rescaled_input_atom_bytes, label=f"{dataset} rescaled input JSON"),
+        _nested_array_payload_upper(output_counts, rescaled_output_atom_bytes, label=f"{dataset} rescaled output JSON"),
+        _nested_array_payload_upper([1], fr_string_atom_bytes, label=f"{dataset} raw public parameter hash JSON"),
+        _nested_array_payload_upper([1], fr_string_atom_bytes, label=f"{dataset} pretty public parameter hash JSON"),
+        label=f"{dataset} witness JSON upper bound",
+    )
+
+    advice_columns = memory.get("advice_column_phase_ids")
+    query_polynomials = memory.get("shplonk_query_polynomial_count")
+    max_rotations = memory.get("shplonk_max_rotation_count")
+    lookup_arguments = memory.get("shplonk_lookup_argument_count")
+    shuffle_arguments = memory.get("shplonk_shuffle_argument_count")
+    permutation_sets = memory.get("shplonk_permutation_product_set_count")
+    proof_instances = memory.get("shplonk_proof_instance_count")
+    quotient_pieces = memory.get("shplonk_quotient_piece_count")
+    point_counts = (lookup_arguments, shuffle_arguments, permutation_sets, proof_instances, query_polynomials, max_rotations, quotient_pieces)
+    if (
+        not isinstance(advice_columns, list)
+        or not advice_columns
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in advice_columns)
+        or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize for value in point_counts)
+        or query_polynomials <= 0
+        or max_rotations <= 0
+        or proof_instances <= 0
+    ):
+        abort(f"{dataset} Admission lacks valid native SHPLONK JSON proof geometry")
+    permutation_points = _checked_output_budget_mul(permutation_sets, proof_instances, label=f"{dataset} permutation proof points")
+    point_writes = _checked_output_budget_add(
+        len(advice_columns),
+        _checked_output_budget_mul(3, lookup_arguments, label=f"{dataset} lookup proof points"),
+        shuffle_arguments,
+        permutation_points,
+        quotient_pieces,
+        1,  # vanishing random-polynomial commitment
+        2,  # SHPLONK h commitments
+        label=f"{dataset} transcript point writes",
+    )
+    scalar_writes = _checked_output_budget_mul(query_polynomials, max_rotations, label=f"{dataset} transcript scalar writes")
+    proof_wire_upper = _checked_output_budget_add(
+        _checked_output_budget_mul(64, point_writes, label=f"{dataset} transcript point bytes"),
+        _checked_output_budget_mul(32, scalar_writes, label=f"{dataset} transcript scalar bytes"),
+        label=f"{dataset} transcript proof bytes",
+    )
+    if proof_wire_upper <= 0:
+        abort(f"{dataset} Admission produces an empty proof-wire bound")
+
+    proof_skeleton = {
+        "protocol": None,
+        "instances": [[]],
+        "proof": [],
+        "hex_proof": "",
+        "split": {"start": sys.maxsize, "end": sys.maxsize},
+        "pretty_public_inputs": pretty,
+        "timestamp": (1 << 128) - 1,
+        "version": crate_version,
+    }
+    proof_json_upper = _json_bytes_upper(proof_skeleton)
+    instance_payload = _nested_array_payload_upper([instance_elements], fr_string_atom_bytes, label=f"{dataset} public instance JSON")
+    raw_proof_array_bytes = 4 * proof_wire_upper + 1
+    proof_array_skeleton_bytes = 2
+    hex_proof_string_bytes = 2 * proof_wire_upper + 4
+    hex_proof_skeleton_bytes = 2
+    proof_json_upper = _checked_output_budget_add(
+        proof_json_upper,
+        instance_payload,
+        raw_proof_array_bytes - proof_array_skeleton_bytes,
+        hex_proof_string_bytes - hex_proof_skeleton_bytes,
+        _nested_array_payload_upper(input_counts, fr_string_atom_bytes, label=f"{dataset} pretty proof input JSON"),
+        _nested_array_payload_upper(output_counts, fr_string_atom_bytes, label=f"{dataset} pretty proof output JSON"),
+        _nested_array_payload_upper(input_counts, rescaled_input_atom_bytes, label=f"{dataset} rescaled proof input JSON"),
+        _nested_array_payload_upper(output_counts, rescaled_output_atom_bytes, label=f"{dataset} rescaled proof output JSON"),
+        _nested_array_payload_upper([1], fr_string_atom_bytes, label=f"{dataset} pretty proof parameter hash JSON"),
+        label=f"{dataset} proof JSON upper bound",
+    )
+    return {
+        "public_input_scalar_count": input_elements,
+        "public_output_scalar_count": output_elements,
+        "runtime_parameter_scalar_count": parameter_elements,
+        "proof_instance_scalar_count": instance_elements,
+        "proof_point_write_count_upper": point_writes,
+        "proof_scalar_write_count_upper": scalar_writes,
+        "proof_transcript_wire_upper_bytes": proof_wire_upper,
+        "witness_json_upper_bytes": witness_json_upper,
+        "proof_json_upper_bytes": proof_json_upper,
+    }
+
+
+def _pending_json_output_disk_budget(
+    bounds_by_dataset: dict[str, dict[str, int]],
+    pending_datasets: tuple[str, ...] | list[str],
+) -> dict[str, object]:
+    if (
+        not isinstance(pending_datasets, (tuple, list))
+        or any(not isinstance(dataset, str) for dataset in pending_datasets)
+        or len(set(pending_datasets)) != len(pending_datasets)
+        or any(dataset not in DATASETS for dataset in pending_datasets)
+        or any(dataset not in bounds_by_dataset for dataset in pending_datasets)
+    ):
+        abort("pending witness/proof JSON budget dataset selection is malformed")
+    witness = _checked_output_budget_add(
+        *(bounds_by_dataset[dataset]["witness_json_upper_bytes"] for dataset in pending_datasets),
+        label="pending witness JSON upper bound",
+    )
+    proof = _checked_output_budget_add(
+        *(bounds_by_dataset[dataset]["proof_json_upper_bytes"] for dataset in pending_datasets),
+        label="pending proof JSON upper bound",
+    )
+    return {
+        "pending_witness_json_upper_bytes": witness,
+        "pending_proof_json_upper_bytes": proof,
+        "pending_json_datasets": list(pending_datasets),
     }
 
 
@@ -5045,6 +5411,7 @@ def prepare_output_dir(output_root: Path, dataset: str) -> Path:
 
 _SETUP_REUSE_FILES = (
     "setup_timing.json",
+    "admission.json",
     "settings.json",
     "compiled.circuit",
     "pk.key",
@@ -5312,7 +5679,11 @@ def _setup_reuse_receipt(output: Path, dataset: str, session_id: str, resume_ide
     _, native_receipt, native_receipt_sha256 = _load_native_keygen_receipt(
         output, dataset, session_id, resume_identity, admission
     )
-    if setup_files["settings.json"] != admission.get("settings_sha256") or setup_files["compiled.circuit"] != native_receipt.get("compiled_circuit_sha256"):
+    if (
+        setup_files["admission.json"] != admission.get("sha256")
+        or setup_files["settings.json"] != admission.get("settings_sha256")
+        or setup_files["compiled.circuit"] != native_receipt.get("compiled_circuit_sha256")
+    ):
         abort(f"{dataset} setup artifacts do not match the exact native admission")
     return {
         "schema": "ezkl.setup-reuse-receipt.v1",
@@ -5389,6 +5760,57 @@ def _fsync_regular_file(path: Path, label: str) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _install_authenticated_admission_snapshot(
+    output: Path, source: Path, expected_sha256: object, dataset: str
+) -> None:
+    """Install the exact session Admission bytes where native Prove/collector require them."""
+    destination = output / "admission.json"
+    if (
+        not isinstance(expected_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+        or source.is_symlink()
+        or not source.is_file()
+    ):
+        abort(f"{dataset} authenticated session admission source or digest is invalid")
+    payload = source.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        abort(f"{dataset} session admission changed before its output snapshot was installed")
+
+    def require_exact_existing() -> None:
+        if destination.is_symlink() or not destination.is_file():
+            abort(f"{dataset} admission snapshot destination is not a regular file")
+        existing = destination.read_bytes()
+        if existing != payload or hashlib.sha256(existing).hexdigest() != expected_sha256:
+            abort(f"{dataset} existing admission snapshot does not match the current session")
+
+    if destination.exists() or destination.is_symlink():
+        require_exact_existing()
+        return
+
+    temporary = output / f".admission.json.{os.getpid()}.{time.time_ns()}.tmp"
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        try:
+            descriptor = os.open(temporary, flags, 0o600)
+        except FileExistsError:
+            abort(f"{dataset} admission snapshot temporary path unexpectedly exists")
+        try:
+            with os.fdopen(descriptor, "wb", closefd=False) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(descriptor)
+        try:
+            os.link(temporary, destination, follow_symlinks=False)
+        except FileExistsError:
+            require_exact_existing()
+    finally:
+        temporary.unlink(missing_ok=True)
+    _fsync_directory(output)
+    require_exact_existing()
 
 
 def _completed_cell_checkpoint(
@@ -5812,6 +6234,11 @@ def _run_five_native_capacity_preflight(
     pending_datasets = tuple(dataset for dataset in DATASETS if dataset not in completed_datasets)
     if not pending_datasets:
         return admissions, workspace_receipt, {}, set(), set()
+    json_output_bounds = {
+        dataset: _native_json_output_bounds(admissions[dataset], dataset)
+        for dataset in pending_datasets
+    }
+    pending_json_budget = _pending_json_output_disk_budget(json_output_bounds, pending_datasets)
 
     if workspace_receipt is None:
         query_session_dir = session_dir / "native_capacity_query"
@@ -5893,6 +6320,9 @@ def _run_five_native_capacity_preflight(
             pending_srs=pending_srs,
             setup_key_artifact_upper_bytes=setup_key_bytes,
             setup_mapped_peak_bytes=setup_mapped_peak_bytes,
+            pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+            pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+            pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
         )
         for dataset in DATASETS:
             if dataset not in setup_required_datasets:
@@ -5946,6 +6376,14 @@ def _run_five_native_capacity_preflight(
         proof_spill_peak_bytes = max(
             requirements["proof_spill_known_bytes"] for requirements in reusable_proof_capacities.values()
         )
+        proof_spill_extra_peak_bytes = max(
+            max(
+                0,
+                int(requirements["proof_spill_known_bytes"])
+                - json_output_bounds[dataset]["proof_json_upper_bytes"],
+            )
+            for dataset, requirements in reusable_proof_capacities.items()
+        )
         pending_srs = _pending_srs_copy_disk_budget(
             srs_copy_size_bytes,
             pending_finalize_datasets,
@@ -5953,6 +6391,10 @@ def _run_five_native_capacity_preflight(
         proof_disk_components = _disk_budget_components(
             pending_srs=pending_srs,
             proof_spill_known_bytes=proof_spill_peak_bytes,
+            proof_spill_extra_bytes=proof_spill_extra_peak_bytes,
+            pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+            pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+            pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
         )
         for dataset in DATASETS:
             requirements = reusable_proof_capacities.get(dataset)
@@ -6204,6 +6646,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     for name in (
         "ENABLE_ICICLE_GPU",
         "EZKL_GAT_BACKEND",
+        "EZKL_WORKING_DIR",
         "ICICLE_SMALL_K",
         "ICICLE_SMALL_K_FFT",
         "ICICLE_BACKEND_INSTALL_DIR",
@@ -6551,6 +6994,17 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     def execute_cell(dataset_index: int, dataset: str) -> None:
         dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
+        pending_json_datasets = tuple(
+            name for name in DATASETS[dataset_index:] if name not in completed_datasets
+        )
+        pending_json_bounds = {
+            name: _native_json_output_bounds(admissions[name], name)
+            for name in pending_json_datasets
+        }
+        pending_json_budget = _pending_json_output_disk_budget(
+            pending_json_bounds,
+            pending_json_datasets,
+        )
         _set_stage(session_file, f"{dataset}_configured_admission", active_dataset=dataset)
         admission = admissions.get(dataset)
         if not isinstance(admission, dict):
@@ -6597,6 +7051,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 ),
                 setup_key_artifact_upper_bytes=setup_key_bytes,
                 setup_mapped_peak_bytes=setup_disk_required - setup_key_bytes,
+                pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+                pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+                pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
             )
             setup_check = _recheck_local_phase_capacity(
                 dataset,
@@ -6631,6 +7088,12 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 f"{dataset} native setup",
                 gpu=NATIVE_FORMAL_BACKEND == "gpu",
                 log_path=dataset_log_dir / "native_setup.log",
+            )
+            _install_authenticated_admission_snapshot(
+                output,
+                session_dir / "admission" / dataset / "admission.json",
+                admission.get("sha256"),
+                dataset,
             )
             (output / "setup_timing.json").write_text(json.dumps({"duration_ms": setup_ms}) + "\n")
             setup_receipt_sha256 = write_setup_reuse_receipt(output, dataset, session_id, resume_identity, admission)
@@ -6673,6 +7136,14 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 pending_finalize_datasets={dataset} if dataset in pending_finalize_datasets else set(),
             ),
             proof_spill_known_bytes=capacity_requirements[dataset]["proof_spill_known_bytes"],
+            proof_spill_extra_bytes=max(
+                0,
+                int(capacity_requirements[dataset]["proof_spill_known_bytes"])
+                - pending_json_bounds[dataset]["proof_json_upper_bytes"],
+            ),
+            pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+            pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+            pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
         )
         prove_check = _recheck_local_phase_capacity(
             dataset,

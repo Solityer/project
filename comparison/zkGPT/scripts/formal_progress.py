@@ -68,6 +68,13 @@ def main() -> int:
         active_stage = (owner or {}).get("active_stage") or (session_status or {}).get("active_stage")
         active_dataset = (owner or {}).get("active_dataset")
         formal_state = (owner or {}).get("status") or (session_status or {}).get("status")
+        dataset_scope = ((status or {}).get("requested_datasets") or
+                         (session_status or {}).get("dataset_scope") or
+                         (owner or {}).get("dataset_scope"))
+        if isinstance(dataset_scope, list) and all(isinstance(item, str) for item in dataset_scope):
+            scope_text = ",".join(dataset_scope)
+        else:
+            scope_text = "all5"
         log_dir = (root / "baseline-local" / "formal-owner-logs" / session_id
                    if isinstance(session_id, str) else None)
         active_logs: list[Path] = []
@@ -85,6 +92,7 @@ def main() -> int:
             formal_state,
             active_stage,
             active_dataset,
+            scope_text,
             str(selected_log) if selected_log else None,
             selected_tail[-1] if selected_tail else None,
             console_tail[-1] if console_tail else None,
@@ -94,6 +102,7 @@ def main() -> int:
                 "ZKGPT_PROGRESS "
                 f"launch_id={launch_id} launch_status={(status or {}).get('status', 'STARTING')} "
                 f"exit_code={(status or {}).get('exit_code')} "
+                f"datasets={scope_text} "
                 f"formal_session={session_id or 'pending'} formal_status={formal_state or 'pending'} "
                 f"stage={active_stage or 'pending'} dataset={active_dataset or '-'}",
                 flush=True,
@@ -106,7 +115,7 @@ def main() -> int:
                 print(f"CONSOLE {line}", flush=True)
             previous = snapshot
         if args.once or (status is not None and status.get("status") in
-                         ("COMPLETE", "FAILED", "INTERRUPTED")):
+                         ("COMPLETE", "SUBSET_COMPLETE", "SUBSET_FAILED", "FAILED", "INTERRUPTED")):
             return 0
         time.sleep(args.interval)
 

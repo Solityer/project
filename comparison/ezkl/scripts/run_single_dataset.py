@@ -526,6 +526,7 @@ def main(
     generated_artifact_manifest = output / "artifact_manifest.json"
     if artifact_manifest != generated_artifact_manifest:
         abort("artifact-manifest must be the native gat-prepare artifact_manifest.json")
+    admission_snapshot = output / "admission.json"
     witness = output / "witness.json"
     proof = output / "proof.json"
     env = os.environ.copy()
@@ -632,6 +633,8 @@ def main(
         "srs": output / "srs.kzg",
         "final_log": final_log,
     }
+    if formal_session_id is not None:
+        final_stage_inputs["admission"] = admission_snapshot
     final_ms = reuse_stage("final", final_stage_inputs, final_stage_outputs)
     if final_ms is None:
         invalidate_from("final", "final-binding receipt or its input/output identities are missing or stale")
@@ -675,10 +678,13 @@ def main(
     for name, digest in (("statement.json", sha256(statement)), ("public_output.json", sha256(public_output))):
         if name not in artifact_file_records or artifact_file_records[name]["sha256"] != digest:
             abort(f"artifact file {name} does not bind the selected external public boundary")
-    for name, digest in (
+    producer_files = [
         ("producer_context.json", sha256(output / "producer_context.json")),
         ("producer_manifest.json", sha256(producer_manifest)),
-    ):
+    ]
+    if formal_session_id is not None:
+        producer_files.append(("admission.json", sha256(admission_snapshot)))
+    for name, digest in producer_files:
         if name not in artifact_file_records or artifact_file_records[name]["sha256"] != digest:
             abort(f"artifact file {name} does not bind the independent producer chain")
 

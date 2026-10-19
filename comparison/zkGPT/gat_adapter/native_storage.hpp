@@ -183,6 +183,14 @@ inline void* allocate(std::size_t bytes, std::size_t alignment) {
 
 struct ReclaimReport { std::uint64_t before_bytes; std::uint64_t after_bytes; std::size_t mapping_bytes; std::size_t live_bytes; bool mapped; };
 
+struct PageAdviceReport {
+    std::size_t mapped_allocations = 0;
+    std::size_t madvise_failures = 0;
+    std::size_t fadvise_failures = 0;
+    int last_madvise_error = 0;
+    int last_fadvise_error = 0;
+};
+
 inline std::uint64_t physical_bytes(const void* pointer, std::size_t virtual_bytes) {
     if (pointer == nullptr || virtual_bytes == 0U) return 0U;
     std::lock_guard<std::mutex> lock(mapping_mutex);
@@ -258,6 +266,47 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     mapping.live_bytes = active_bytes;
     mapping.allocated_bytes = after;
     return {before, after, mapping.bytes, mapping.live_bytes, true};
+}
+
+inline PageAdviceReport advise_mapped_pages_cold(void* pointer, std::size_t bytes) {
+    if (pointer == nullptr || bytes == 0U) {
+        if (bytes != 0U) throw std::invalid_argument("native scratch page advice has no allocation");
+        return {};
+    }
+    std::lock_guard<std::mutex> lock(mapping_mutex);
+    const auto found = mappings.find(pointer);
+    if (found == mappings.end()) return {};
+    Mapping& mapping = found->second;
+    if (mapping.bytes != bytes || mapping.file_bytes != bytes)
+        throw std::logic_error("native scratch page advice changed its original mapping length");
+    if (mapping.file_bytes > static_cast<std::size_t>(std::numeric_limits<off_t>::max()))
+        throw std::length_error("native scratch page advice exceeds file offset capacity");
+
+    int sync_result;
+    do { sync_result = ::msync(pointer, mapping.bytes, MS_SYNC); }
+    while (sync_result != 0 && errno == EINTR);
+    if (sync_result != 0)
+        throw std::runtime_error("native scratch backing sync failed before page eviction: " + std::to_string(errno));
+
+    PageAdviceReport report;
+    report.mapped_allocations = 1U;
+    if (::madvise(pointer, mapping.bytes, MADV_DONTNEED) != 0) {
+        report.last_madvise_error = errno;
+        report.madvise_failures = 1U;
+    }
+    const int advice_result = ::posix_fadvise(mapping.fd, 0, static_cast<off_t>(mapping.file_bytes), POSIX_FADV_DONTNEED);
+    if (advice_result != 0) {
+        report.last_fadvise_error = advice_result;
+        report.fadvise_failures = 1U;
+    }
+    return report;
+}
+
+template<class T, class Allocator>
+inline PageAdviceReport advise_vector_pages_cold(const std::vector<T, Allocator>& values) {
+    if (values.capacity() > std::numeric_limits<std::size_t>::max() / sizeof(T))
+        throw std::length_error("native vector page-advice byte size overflows");
+    return advise_mapped_pages_cold(const_cast<T*>(values.data()), values.capacity() * sizeof(T));
 }
 
 inline void deallocate(void* pointer, std::size_t alignment) noexcept {
@@ -371,6 +420,14 @@ template<class Callback> void native_for_each_equality_weight(const std::vector<
         for (std::size_t bit = low_bits; bit < point.size(); ++bit) high *= ((offset >> bit) & 1) ? point[bit] : F(1) - point[bit];
         for (std::size_t index = 0; index < width && offset + index < count; ++index) callback(offset + index, high * low[index]);
     }
+}
+
+template<class ValueAt> F native_mle_evaluate_zero_padded_prefix(std::size_t value_count, std::size_t domain, const std::vector<F>& point, ValueAt value_at) {
+    if (point.size() >= std::numeric_limits<std::size_t>::digits || domain == 0 || domain != (std::size_t(1) << point.size()) || value_count > domain)
+        throw std::length_error("native zero-padded MLE domain is invalid");
+    F evaluation(0);
+    native_for_each_equality_weight(point, value_count, [&](std::size_t index, const F& weight) { evaluation += value_at(index) * weight; });
+    return evaluation;
 }
 
 template<class Vector> F native_mle_evaluate(const Vector& values, const std::vector<F>& point) {

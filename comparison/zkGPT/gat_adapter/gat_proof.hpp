@@ -101,6 +101,9 @@ class PackedResidualTargets {
     bool empty() const noexcept { return codes_.empty(); }
     std::size_t dictionary_size() const noexcept { return dictionary_.size(); }
     std::size_t mapped_bytes() const noexcept { return codes_.capacity() * sizeof(u8); }
+    zkgpt::native_storage::PageAdviceReport advise_native_pages_cold() const {
+        return zkgpt::native_storage::advise_vector_pages_cold(codes_);
+    }
     std::uint64_t dictionary_heap_bytes() const noexcept {
         const std::uint64_t vector_bytes = dictionary_.capacity() * sizeof(Int);
         const std::uint64_t bucket_bytes = index_.bucket_count() * sizeof(void*);
@@ -392,7 +395,7 @@ struct GatGkrLayerShapeProfile {
 };
 
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v8";
+    std::string schema = "zkgpt-gat-capacity-v9";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;
@@ -433,6 +436,10 @@ struct GatCapacityReport {
     std::uint64_t max_materialized_g1_bytes = 0;
     std::uint64_t lasso_logical_domain_entries = 0;
     std::uint64_t lasso_private_selected_row_workspace_peak_bytes = 0;
+    std::uint64_t lasso_selected_row_cache_bytes_upper_bound = 0;
+    std::uint64_t lasso_selected_row_cache_heap_bytes_upper_bound = 0;
+    std::uint64_t lasso_selected_row_cache_mapped_bytes_upper_bound = 0;
+    std::uint64_t lasso_sparse_matrix_workspace_bytes_upper_bound = 0;
     std::uint64_t hyrax_active_domain_workspace_entries = 0;
     std::uint64_t hyrax_active_domain_workspace_bytes = 0;
     std::uint64_t hyrax_folded_columns_workspace_bytes = 0;
@@ -651,6 +658,7 @@ struct GatCircuitPlan {
     bool has_placeholder = false;
 
     bool native_proof_backing_is_resident() const noexcept { return native_proof_backing_resident; }
+    zkgpt::native_storage::PageAdviceReport advise_native_proof_backing_cold() const;
     void release_native_proof_backing() const;
     void restore_native_proof_backing(GatCircuitPlan&& canonical_rebuilt) const;
 };

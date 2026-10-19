@@ -177,6 +177,31 @@ def sha256(path: Path) -> str:
     return _sha256_stable(path, label=str(path))
 
 
+def native_pk_v4_read_backing_geometry(permutation_cells: int, successor_edges: int) -> dict[str, int]:
+    """Return the v4 PK reader's target-bitmap geometry for an admitted domain."""
+    if (
+        isinstance(permutation_cells, bool)
+        or not isinstance(permutation_cells, int)
+        or permutation_cells <= 0
+        or permutation_cells > sys.maxsize
+        or isinstance(successor_edges, bool)
+        or not isinstance(successor_edges, int)
+        or successor_edges < 0
+        or successor_edges > permutation_cells
+    ):
+        raise ContractError("native PK v4 read-backing geometry is invalid")
+    target_bitmap_virtual_bytes = (permutation_cells + 7) // 8
+    target_bitmap_page_count = (target_bitmap_virtual_bytes + 4095) // 4096
+    target_bitmap_backing_bytes = min(successor_edges, target_bitmap_page_count) * 4096
+    target_bitmap_allocation_bitmap_bytes = (target_bitmap_page_count + 7) // 8
+    return {
+        "target_bitmap_virtual_bytes": target_bitmap_virtual_bytes,
+        "target_bitmap_page_count": target_bitmap_page_count,
+        "target_bitmap_backing_bytes": target_bitmap_backing_bytes,
+        "target_bitmap_allocation_bitmap_bytes": target_bitmap_allocation_bitmap_bytes,
+    }
+
+
 def sha256_with_progress(path: Path, label: str, *, timeout_seconds: int = 1800) -> str:
     """Authenticate a large formal prerequisite and reuse only stable local digests."""
     require_file(path, label)
@@ -710,6 +735,25 @@ def source_tree_hash() -> str:
         h.update(relative)
         h.update(file_hash)
     return h.hexdigest()
+
+
+def verify_native_source_tree_hash(sidecar: Path) -> str:
+    if sidecar.is_symlink() or not sidecar.is_file():
+        abort(f"native source-tree hash sidecar is missing or unsafe: {sidecar}")
+    try:
+        raw = sidecar.read_bytes()
+    except OSError as exc:
+        abort(f"cannot read native source-tree hash sidecar {sidecar}: {exc}")
+    if len(raw) != 64 or any(byte not in b"0123456789abcdef" for byte in raw):
+        abort(f"native source-tree hash sidecar must contain exactly 64 lowercase hexadecimal bytes: {sidecar}")
+    native_hash = raw.decode("ascii")
+    python_hash = source_tree_hash()
+    if native_hash != python_hash:
+        abort(
+            "native and Python source-tree identities disagree: "
+            f"native={native_hash} python={python_hash}"
+        )
+    return native_hash
 
 
 def parse_cfg(path: Path) -> dict[str, str]:

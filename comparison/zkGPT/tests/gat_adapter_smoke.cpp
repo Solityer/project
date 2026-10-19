@@ -499,8 +499,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     }
     if (owned_formal_inputs &&
         (owned_formal_inputs->capacity_census_calls() != 1U ||
-         owned_formal_inputs->capacity_restore_rebuild_calls() != 1U)) {
-        std::cerr << "private formal proof did not reuse its single capacity census during native-plan restoration\n";
+         owned_formal_inputs->capacity_restore_rebuild_calls() != 0U ||
+         !formal_plan_owner->native_proof_backing_is_resident())) {
+        std::cerr << "private formal proof did not retain its resident native-plan backing after Lasso\n";
         return 1;
     }
     if (owned_formal_inputs)
@@ -508,6 +509,8 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
                   << owned_formal_inputs->capacity_census_calls()
                   << " cached_restore_rebuilds="
                   << owned_formal_inputs->capacity_restore_rebuild_calls()
+                  << " retained_plan_backing="
+                  << (formal_plan_owner->native_proof_backing_is_resident() ? "PASS" : "FAIL")
                   << " report_owner_plan_identity=PASS\n";
     if (formal.artifact.has_private_payload()) {
         std::cerr << "masked_full fixture serialized private witness payload\n";

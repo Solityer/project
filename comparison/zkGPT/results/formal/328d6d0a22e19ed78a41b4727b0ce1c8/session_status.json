@@ -1,0 +1,42 @@
+{
+  "active_stage": "owner-death",
+  "completed_stages": [
+    "prepare"
+  ],
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "failure": "official zkGPT owner received an interrupt",
+  "local_capacity_rechecks": [
+    {
+      "checked_unix_ns": 1792379964056245761,
+      "disk_available_bytes": 1681396441088,
+      "disk_required_bytes": 854734389804,
+      "fs_device_id": "66306",
+      "host_available_bytes": 122456621056,
+      "host_required_bytes": 24959661043,
+      "pending_datasets": [
+        "ppi"
+      ],
+      "stage": "before-cell:ppi"
+    }
+  ],
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906385,
+    "owner_pid": 1846173,
+    "owner_start_ticks": 35494293,
+    "owner_token_sha256": "ec5193b573f800186c5a8256168aef4083b101436f99571d3c8b4f12d1561ff5",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "328d6d0a22e19ed78a41b4727b0ce1c8"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "328d6d0a22e19ed78a41b4727b0ce1c8",
+  "stage_status": {
+    "prepare": "PASS"
+  },
+  "started_unix_ns": 1792379475969142338,
+  "status": "INTERRUPTED",
+  "updated_unix_ns": 1792406657334688020
+}

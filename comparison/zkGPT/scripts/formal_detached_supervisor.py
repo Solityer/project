@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict
 
+from common import DATASETS, ChainError, canonical_dataset_scope
+
 
 LAUNCH_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 SIGNAL_NAMES = {
@@ -93,9 +95,17 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", required=True)
     parser.add_argument("--launch-id", required=True)
+    parser.add_argument("--datasets", nargs="+", choices=DATASETS)
     args = parser.parse_args()
     if not LAUNCH_ID_RE.fullmatch(args.launch_id):
         raise SystemExit("invalid zkGPT detached launch ID")
+    try:
+        dataset_scope = canonical_dataset_scope(args.datasets)
+    except ChainError as exc:
+        raise SystemExit(str(exc)) from exc
+    selector_explicit = args.datasets is not None
+    if selector_explicit and list(args.datasets) != list(dataset_scope):
+        raise SystemExit("detached supervisor dataset selector is not in canonical order")
 
     root = Path(args.root).resolve(strict=True)
     launch_root = root / "baseline-local" / "formal-detached"
@@ -119,6 +129,8 @@ def main() -> int:
         "supervisor_argv": supervisor["argv"],
         "root_path": str(root),
         "runner_path": str(runner),
+        "requested_datasets": list(dataset_scope),
+        "datasets_selector_explicit": selector_explicit,
         "console_path": str(launch_dir / "console.log"),
         "status_path": str(status_path),
         "started_unix_ns": time.time_ns(),
@@ -138,8 +150,11 @@ def main() -> int:
     atomic_json(status_path, state)
 
     global child
+    child_command = [sys.executable, str(runner)]
+    if selector_explicit:
+        child_command.extend(["--datasets", *dataset_scope])
     child = subprocess.Popen(
-        [sys.executable, str(runner)], cwd=root, stdin=subprocess.DEVNULL,
+        child_command, cwd=root, stdin=subprocess.DEVNULL,
         close_fds=True, start_new_session=True,
     )
     if received_signal is not None:
@@ -151,7 +166,10 @@ def main() -> int:
         child_info = process_identity(child.pid)
     except (OSError, RuntimeError, ValueError):
         exit_code = child.wait()
-        terminal = "INTERRUPTED" if received_signal is not None else ("COMPLETE" if exit_code == 0 else "FAILED")
+        terminal = "INTERRUPTED" if received_signal is not None else (
+            ("COMPLETE" if dataset_scope == DATASETS else "SUBSET_COMPLETE")
+            if exit_code == 0 else ("FAILED" if dataset_scope == DATASETS else "SUBSET_FAILED")
+        )
         update_status(status_path, state, terminal, exit_code=exit_code,
                       received_signal=(SIGNAL_NAMES.get(received_signal)
                                        if received_signal is not None else None),
@@ -171,9 +189,9 @@ def main() -> int:
     if received_signal is not None:
         terminal = "INTERRUPTED"
     elif exit_code == 0:
-        terminal = "COMPLETE"
+        terminal = "COMPLETE" if dataset_scope == DATASETS else "SUBSET_COMPLETE"
     else:
-        terminal = "FAILED"
+        terminal = "FAILED" if dataset_scope == DATASETS else "SUBSET_FAILED"
     update_status(
         status_path, state, terminal, exit_code=exit_code,
         received_signal=(SIGNAL_NAMES.get(received_signal)
