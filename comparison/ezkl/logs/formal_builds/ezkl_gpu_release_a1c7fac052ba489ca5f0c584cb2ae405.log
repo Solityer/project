@@ -1,5 +1,5 @@
 
---- 2026-10-19T10:44:44.375748+00:00 build source-matched official ezkl native binary ---
+--- 2026-10-21T12:28:14.431538+00:00 build source-matched official ezkl native binary ---
 [ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
 [ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
 warning: unused manifest key: target.wasm32-unknown-unknown.runner
@@ -21,6 +21,12 @@ warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
    |
 21 | use maybe_rayon::prelude::IntoParallelIterator;
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> vendor/halo2/halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
 
 warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
   --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
@@ -351,6 +357,12 @@ warning: function `polynomial_slice_byte_length` is never used
 179 | pub(crate) fn polynomial_slice_byte_length<F: PrimeField, B>(slice: &[Polynomial<F, B>]) -> usize {
     |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+warning: function `synchronized_operation` is never used
+   --> vendor/halo2/halo2_proofs/src/icicle.rs:257:4
+    |
+257 | fn synchronized_operation(counter: &AtomicU64) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
 warning: hiding a lifetime that's elided elsewhere is confusing
    --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
     |
@@ -381,7 +393,7 @@ help: consistently use `'params`
 81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
    |                                           ++++++++
 
-warning: `halo2_proofs` (lib) generated 42 warnings (run `cargo fix --lib -p halo2_proofs` to apply 13 suggestions)
+warning: `halo2_proofs` (lib) generated 44 warnings (run `cargo fix --lib -p halo2_proofs` to apply 14 suggestions)
 warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
    --> src/../gat_adapter/loader.rs:637:30
     |
@@ -391,11 +403,11 @@ warning: use of deprecated function `sha256::digest_file`: Use new function `try
     = note: `#[warn(deprecated)]` on by default
 
 warning: `ezkl` (lib) generated 1 warning
-    Finished `release` profile [optimized] target(s) in 0.47s
+    Finished `release` profile [optimized] target(s) in 2.00s
 [ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
-[ezkl-formal] BUILD_STAGE=verify-native-source-identity sidecar=/home/pzh/project/comparison/ezkl/artifacts/gat_adapter/native_source_tree.Y7T3vob5
-[*] [2026-10-19 10:44:45:350, ezkl] - succeeded
+[ezkl-formal] BUILD_STAGE=verify-native-source-identity sidecar=/home/pzh/project/comparison/ezkl/artifacts/gat_adapter/native_source_tree.DVqmbcN8
+[*] [2026-10-21 12:28:16:882, ezkl] - succeeded
 [ezkl-formal] wrote current GPU build receipt /home/pzh/project/comparison/ezkl/artifacts/build/gpu/build_receipt.json
 [ezkl-formal] BUILD_STAGE=complete backend=gpu binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
 
---- 2026-10-19T10:44:45.842239+00:00 command_exit_code=0 wall_ms=1465.376044 outcome=success ---
+--- 2026-10-21T12:28:17.354412+00:00 command_exit_code=0 wall_ms=2921.342353 outcome=success ---

@@ -7226,7 +7226,7 @@ namespace gatzk::protocol
                     bind_fh_coset_slots();
                     progress_note("prove:quotient:t_FH:coset_prewarm:done:ms=" + std::to_string(elapsed_ms(prewarm_start, Clock::now())));
                 }
-                else if (label_ != "t_edge")
+                else if (label_ != "t_edge" && !cuda_t_fh_route)
                 {
                     const auto prewarm_start = Clock::now();
                     const auto dependency_labels = quotient_dependency_labels(context_, label_);
