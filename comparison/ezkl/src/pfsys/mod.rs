@@ -33,6 +33,7 @@ use rand::rngs::OsRng;
 #[cfg(feature = "det-prove")]
 use rand::rngs::StdRng;
 use serde::de::DeserializeOwned;
+use serde::ser::SerializeSeq;
 use serde::{Deserialize, Serialize};
 use snark_verifier::verifier::plonk::PlonkProtocol;
 use std::fs::File;
@@ -255,6 +256,87 @@ where
     version: Option<String>,
 }
 
+/// Authenticated reference to the public instances reconstructed from formal GAT statement files.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProofInstancesRefV1 {
+    /// Schema version of the authenticated public-instance reference.
+    pub schema_version: u32,
+    /// Relative path to the authenticated public statement file.
+    pub statement_path: String,
+    /// SHA-256 digest of the public statement file bytes.
+    pub statement_sha256: String,
+    /// Relative path to the public output Y file.
+    pub public_output_path: String,
+    /// SHA-256 digest of the public output Y file bytes.
+    pub public_output_sha256: String,
+    /// Relative path to the artifact manifest that binds the statement and output.
+    pub artifact_manifest_path: String,
+    /// SHA-256 identity of the source tree that produced this proof.
+    pub source_tree_sha256: String,
+    /// SHA-256 identity of the native proof-producing binary.
+    pub binary_sha256: String,
+    /// SHA-256 identity of the authenticated resource manifest.
+    pub resource_manifest_sha256: String,
+    /// Encoding used for the canonical public-instance digest.
+    pub encoding: String,
+    /// SHA-256 digest of the canonical public-instance matrix.
+    pub sha256: String,
+    /// Total number of scalar instances across all columns.
+    pub count: usize,
+    /// Scalar instance count for each column, in column order.
+    pub column_counts: Vec<usize>,
+}
+
+/// Compact formal GAT proof artifact. The transcript remains the native Halo2 transcript;
+/// public instances are resolved only by the formal verifier after external authentication.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactProofV2<C: CurveAffine>
+where
+    C::Scalar: Serialize + DeserializeOwned,
+    C::ScalarExt: Serialize + DeserializeOwned,
+{
+    /// Identifier for the compact native GAT proof artifact format.
+    pub artifact_format: String,
+    /// Version of the compact proof envelope schema.
+    pub schema_version: u32,
+    /// Legacy protocol metadata; this is null for compact v2 GAT proofs.
+    pub protocol: Option<PlonkProtocol<C>>,
+    /// Hex-encoded native Halo2 transcript and its byte length.
+    pub proof_transcript: CompactProofTranscriptV1,
+    /// Authenticated reference for resolving public instances during verification.
+    pub instances_ref: ProofInstancesRefV1,
+    /// Optional legacy split-commit range metadata.
+    pub split: Option<CompactProofSplitCommitV1>,
+    /// Optional proof creation timestamp in Unix milliseconds.
+    pub timestamp: Option<u128>,
+    /// Optional ezkl crate version that produced the proof.
+    pub version: Option<String>,
+}
+
+/// Canonically encoded native transcript bytes for a compact formal proof.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactProofTranscriptV1 {
+    /// Canonical encoding name for transcript data.
+    pub encoding: String,
+    /// Native transcript length in bytes.
+    pub byte_length: usize,
+    /// Lowercase hexadecimal representation of the native transcript bytes.
+    pub data: String,
+}
+
+/// Strict compact-v2 representation of the optional legacy proof split metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactProofSplitCommitV1 {
+    /// First output index in the legacy split range.
+    pub start: usize,
+    /// End output index in the legacy split range.
+    pub end: usize,
+}
+
 /// Native proof work measured by Halo2's scoped commitment hook.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProofTiming {
@@ -266,7 +348,9 @@ pub struct ProofTiming {
     pub phase0_advice_commitment_count: usize,
     /// Number of affine-normalization batches included in the timer.
     pub affine_normalization_batch_count: usize,
-    /// Remaining proof construction and verifier-facing encoding.
+    /// Total native `create_proof` wall time, including the commitment phase.
+    pub create_proof_wall_ms: f64,
+    /// Remaining proof construction and verifier-facing encoding, exclusive of commitments.
     pub prove_ms: f64,
 }
 
@@ -370,6 +454,131 @@ where
     pub fn decode_json_bytes(proof_bytes: &[u8]) -> Result<Self, PfsysError> {
         serde_json::from_slice(proof_bytes).map_err(|e| PfsysError::LoadProof(format!("{}", e)))
     }
+
+    /// Save a formal proof without embedding its large public-instance and display arrays.
+    pub fn save_compact_v2(&self, proof_path: &PathBuf, instances_ref: ProofInstancesRefV1) -> Result<(), PfsysError> {
+        let proof = CompactProofV2 {
+            artifact_format: "ezkl-gat-native-proof".into(),
+            schema_version: 2,
+            protocol: self.protocol.clone(),
+            proof_transcript: CompactProofTranscriptV1 { encoding: "hex-lower".into(), byte_length: self.proof.len(), data: hex::encode(&self.proof) },
+            instances_ref,
+            split: self.split.as_ref().map(|split| CompactProofSplitCommitV1 { start: split.start, end: split.end }),
+            timestamp: self.timestamp,
+            version: self.version.clone(),
+        };
+        let file = std::fs::File::create(proof_path).map_err(|e| PfsysError::SaveProof(format!("{}", e)))?;
+        let mut writer = BufWriter::with_capacity(*EZKL_BUF_CAPACITY, file);
+        serde_json::to_writer(&mut writer, &proof).map_err(|e| PfsysError::SaveProof(format!("{}", e)))?;
+        writer.flush().map_err(|e| PfsysError::SaveProof(format!("{}", e)))?;
+        Ok(())
+    }
+}
+
+impl<C: CurveAffine + Serialize + DeserializeOwned> CompactProofV2<C>
+where
+    C::Scalar: PrimeField + SerdeObject + Serialize + DeserializeOwned + FromUniformBytes<64>,
+    C::ScalarExt: Serialize + DeserializeOwned,
+{
+    /// Decode only the explicit compact GAT envelope; legacy Snark deserialization remains separate.
+    pub fn decode_json_bytes(proof_bytes: &[u8]) -> Result<Self, PfsysError> {
+        serde_json::from_slice(proof_bytes).map_err(|e| PfsysError::LoadProof(format!("{}", e)))
+    }
+
+    /// Resolve an authenticated compact artifact only when its reference matches reconstructed instances.
+    #[cfg(feature = "ezkl")]
+    pub fn into_snark(self, instances: Vec<Vec<C::Scalar>>) -> Result<Snark<C::Scalar, C>, PfsysError> {
+        let invalid = |message: &str| PfsysError::LoadProof(message.to_owned());
+        let reference = &self.instances_ref;
+        let valid_digest = |value: &str| {
+            value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        };
+        if self.artifact_format != "ezkl-gat-native-proof"
+            || self.schema_version != 2
+            || self.protocol.is_some()
+            || self.proof_transcript.encoding != "hex-lower"
+            || self.split.as_ref().map_or(false, |split| split.start > split.end)
+            || self.version.as_ref().map_or(false, |version| version.is_empty() || version.len() > 256)
+        {
+            return Err(invalid("unsupported compact GAT proof metadata"));
+        }
+        if self.proof_transcript.data.len() != self.proof_transcript.byte_length.saturating_mul(2) || self.proof_transcript.data.bytes().any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(&byte)) {
+            return Err(PfsysError::LoadProof("compact proof transcript is not canonical lower-case hex".into()));
+        }
+        let count_sum = reference.column_counts.iter().try_fold(0usize, |sum, value| sum.checked_add(*value));
+        if reference.schema_version != 1
+            || reference.statement_path != "statement.json"
+            || reference.public_output_path != "public_output.json"
+            || reference.artifact_manifest_path != "artifact_manifest.json"
+            || reference.encoding != "canonical-json"
+            || !valid_digest(&reference.statement_sha256)
+            || !valid_digest(&reference.public_output_sha256)
+            || !valid_digest(&reference.source_tree_sha256)
+            || !valid_digest(&reference.binary_sha256)
+            || !valid_digest(&reference.resource_manifest_sha256)
+            || !valid_digest(&reference.sha256)
+            || reference.count == 0
+            || reference.column_counts.is_empty()
+            || reference.column_counts.iter().any(|count| *count == 0)
+            || count_sum != Some(reference.count)
+        {
+            return Err(invalid("compact proof public-instance reference metadata is malformed"));
+        }
+        let proof = hex::decode(&self.proof_transcript.data).map_err(|e| PfsysError::LoadProof(format!("invalid compact proof transcript: {}", e)))?;
+        if proof.len() != self.proof_transcript.byte_length || proof.is_empty() {
+            return Err(PfsysError::LoadProof("compact proof transcript byte length is invalid".into()));
+        }
+        let (digest, count, column_counts) = canonical_instance_digest(&instances).map_err(PfsysError::LoadProof)?;
+        if digest != reference.sha256 || count != reference.count || column_counts != reference.column_counts {
+            return Err(invalid("compact proof public-instance reference does not match reconstructed instances"));
+        }
+        let split = self.split.map(|split| ProofSplitCommit { start: split.start, end: split.end });
+        let mut snark = Snark::new(self.protocol, instances, proof, None, split, None);
+        snark.timestamp = self.timestamp;
+        snark.version = self.version;
+        Ok(snark)
+    }
+}
+
+struct CanonicalInstanceMatrix<'a, F>(&'a [Vec<F>]);
+
+impl<F: PrimeField + SerdeObject + Serialize> Serialize for CanonicalInstanceMatrix<'_, F> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut columns = serializer.serialize_seq(Some(self.0.len()))?;
+        for column in self.0 { columns.serialize_element(&CanonicalInstanceColumn(column))?; }
+        columns.end()
+    }
+}
+
+struct CanonicalInstanceColumn<'a, F>(&'a [F]);
+
+impl<F: PrimeField + SerdeObject + Serialize> Serialize for CanonicalInstanceColumn<'_, F> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut values = serializer.serialize_seq(Some(self.0.len()))?;
+        for value in self.0 { values.serialize_element(&field_to_string(value))?; }
+        values.end()
+    }
+}
+
+#[cfg(feature = "ezkl")]
+struct Sha256HashWriter(sha2::Sha256);
+
+#[cfg(feature = "ezkl")]
+impl Write for Sha256HashWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> { sha2::Digest::update(&mut self.0, bytes); Ok(bytes.len()) }
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+/// Hash the existing canonical JSON matrix of lower-case field strings without materializing it.
+#[cfg(feature = "ezkl")]
+pub fn canonical_instance_digest<F: PrimeField + SerdeObject + Serialize>(instances: &[Vec<F>]) -> Result<(String, usize, Vec<usize>), String> {
+    if instances.is_empty() || instances.iter().any(Vec::is_empty) { return Err("native proof instances must have nonempty columns".into()); }
+    let mut count = 0_usize;
+    let mut column_counts = Vec::with_capacity(instances.len());
+    for column in instances { count = count.checked_add(column.len()).ok_or_else(|| "native proof instance count overflow".to_string())?; column_counts.push(column.len()); }
+    let mut writer = Sha256HashWriter(<sha2::Sha256 as sha2::Digest>::new());
+    serde_json::to_writer(&mut writer, &CanonicalInstanceMatrix(instances)).map_err(|e| format!("canonical native instance encoding failed: {}", e))?;
+    Ok((hex::encode(sha2::Digest::finalize(writer.0)), count, column_counts))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -601,6 +810,81 @@ where
     Scheme::Curve: Serialize + DeserializeOwned + SerdeObject,
     Scheme::ParamsProver: Send + Sync,
 {
+    create_proof_circuit_inner::<Scheme, C, P, V, Strategy, E, TW, TR>(
+        circuit, instances, params, pk, check_mode, split, protocol, true,
+    )
+}
+
+/// Create a native proof without materializing the legacy duplicate hex field.
+/// Formal compact proof artifacts encode the native transcript exactly once.
+#[allow(clippy::too_many_arguments)]
+pub fn create_proof_circuit_compact<
+    'params,
+    Scheme: CommitmentScheme,
+    C: Circuit<Scheme::Scalar>,
+    P: Prover<'params, Scheme>,
+    V: Verifier<'params, Scheme>,
+    Strategy: VerificationStrategy<'params, Scheme, V>,
+    E: EncodedChallenge<Scheme::Curve>,
+    TW: TranscriptWriterBuffer<Vec<u8>, Scheme::Curve, E>,
+    TR: TranscriptReadBuffer<Cursor<Vec<u8>>, Scheme::Curve, E>,
+>(
+    circuit: C,
+    instances: Vec<Vec<Scheme::Scalar>>,
+    params: &'params Scheme::ParamsProver,
+    pk: &ProvingKey<Scheme::Curve>,
+    check_mode: CheckMode,
+    split: Option<ProofSplitCommit>,
+    protocol: Option<PlonkProtocol<Scheme::Curve>>,
+) -> Result<Snark<Scheme::Scalar, Scheme::Curve>, PfsysError>
+where
+    Scheme::ParamsVerifier: 'params,
+    Scheme::Scalar: Serialize
+        + DeserializeOwned
+        + SerdeObject
+        + PrimeField
+        + FromUniformBytes<64>
+        + WithSmallOrderMulGroup<3>,
+    Scheme::Curve: Serialize + DeserializeOwned + SerdeObject,
+    Scheme::ParamsProver: Send + Sync,
+{
+    create_proof_circuit_inner::<Scheme, C, P, V, Strategy, E, TW, TR>(
+        circuit, instances, params, pk, check_mode, split, protocol, false,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_proof_circuit_inner<
+    'params,
+    Scheme: CommitmentScheme,
+    C: Circuit<Scheme::Scalar>,
+    P: Prover<'params, Scheme>,
+    V: Verifier<'params, Scheme>,
+    Strategy: VerificationStrategy<'params, Scheme, V>,
+    E: EncodedChallenge<Scheme::Curve>,
+    TW: TranscriptWriterBuffer<Vec<u8>, Scheme::Curve, E>,
+    TR: TranscriptReadBuffer<Cursor<Vec<u8>>, Scheme::Curve, E>,
+>(
+    circuit: C,
+    instances: Vec<Vec<Scheme::Scalar>>,
+    params: &'params Scheme::ParamsProver,
+    pk: &ProvingKey<Scheme::Curve>,
+    check_mode: CheckMode,
+    split: Option<ProofSplitCommit>,
+    protocol: Option<PlonkProtocol<Scheme::Curve>>,
+    include_hex_proof: bool,
+) -> Result<Snark<Scheme::Scalar, Scheme::Curve>, PfsysError>
+where
+    Scheme::ParamsVerifier: 'params,
+    Scheme::Scalar: Serialize
+        + DeserializeOwned
+        + SerdeObject
+        + PrimeField
+        + FromUniformBytes<64>
+        + WithSmallOrderMulGroup<3>,
+    Scheme::Curve: Serialize + DeserializeOwned + SerdeObject,
+    Scheme::ParamsProver: Send + Sync,
+{
     let strategy = Strategy::new(params.verifier_params());
     let mut transcript = TranscriptWriterBuffer::<_, Scheme::Curve, _>::init(vec![]);
     #[cfg(feature = "det-prove")]
@@ -638,18 +922,24 @@ where
         .map_err(|error| PfsysError::TimingError(error.to_string()))?;
     let commitment_elapsed = commitment_timing.elapsed;
     let proof = transcript.finalize();
-    let hex_proof = format!("0x{}", hex::encode(&proof));
+    let hex_proof = include_hex_proof.then(|| format!("0x{}", hex::encode(&proof)));
     let prove_elapsed = now.elapsed();
+    let create_proof_wall_ms = prove_elapsed.as_secs_f64() * 1000.0;
+    let commitment_ms = commitment_elapsed.as_secs_f64() * 1000.0;
+    if create_proof_wall_ms < commitment_ms {
+        return Err(PfsysError::TimingError(
+            "create_proof wall time is shorter than its measured commitment phase".into(),
+        ));
+    }
 
-    let mut checkable_pf = Snark::new(protocol, instances, proof, Some(hex_proof), split, None);
+    let mut checkable_pf = Snark::new(protocol, instances, proof, hex_proof, split, None);
     checkable_pf.proof_timing = Some(ProofTiming {
-        commitment_ms: commitment_elapsed.as_secs_f64() * 1000.0,
+        commitment_ms,
         instance_commitment_count: commitment_timing.instance_commitments,
         phase0_advice_commitment_count: commitment_timing.advice_commitments,
         affine_normalization_batch_count: commitment_timing.normalization_batches,
-        prove_ms: (prove_elapsed.as_secs_f64() * 1000.0
-            - commitment_elapsed.as_secs_f64() * 1000.0)
-            .max(0.0),
+        create_proof_wall_ms,
+        prove_ms: create_proof_wall_ms - commitment_ms,
     });
 
     // sanity check that the generated proof is valid

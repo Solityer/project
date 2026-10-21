@@ -1,0 +1,23 @@
+
+This GDB supports auto-downloading debuginfo from the following URLs:
+  <https://debuginfod.ubuntu.com>
+Enable debuginfod for this session? (y or [n]) [answered N; input not from terminal]
+Debuginfod has been disabled.
+To make this setting permanent, add 'set debuginfod enabled off' to .gdbinit.
+[Thread debugging using libthread_db enabled]
+Using host libthread_db library "/lib/aarch64-linux-gnu/libthread_db.so.1".
+gat_adapter_prover_stage: native-initSubset begin
+gat_adapter_prover_stage: native-initSubset complete elapsed_ms=1.27683
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000fffff7b26120 in ?? () from /lib/aarch64-linux-gnu/libgcc_s.so.1
+
+Thread 1 (Thread 0xfffff7ff0460 (LWP 2035534) "gat_proof_plan_"):
+#0  0x0000fffff7b26120 in ?? () from /lib/aarch64-linux-gnu/libgcc_s.so.1
+#1  0x0000fffff7b27698 [PAC] in _Unwind_RaiseException () from /lib/aarch64-linux-gnu/libgcc_s.so.1
+#2  0x0000fffff7caa8fc [PAC] in __cxa_throw () from /lib/aarch64-linux-gnu/libstdc++.so.6
+#3  0x0000aaaaaacbe4f4 [PAC] in zkgpt::native_gkr::PackedAffinePrefixArena::coordinate_value(unsigned long, mcl::FpT<1, 256ul> const&) const ()
+#4  0x0000aaaaaacb74cc in prover::sumcheckFinalize1(mcl::FpT<1, 256ul> const&, mcl::FpT<1, 256ul>&, mcl::FpT<1, 256ul>&) ()
+#5  0x0000aaaaaab6ed90 in zkgpt::gat::exercise_official_primitives(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) ()
+#6  0x0058fffff7d64ed4 in ?? ()
+#7  0x0000aaaaaaab2910 in main ()

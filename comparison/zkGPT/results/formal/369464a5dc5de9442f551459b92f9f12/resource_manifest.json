@@ -1,0 +1,65 @@
+{
+  "baseline": "zkGPT",
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "datasets": {
+    "ogbn_arxiv": {
+      "cache_entries": {
+        "edges.txt": "b847b26c612b78a52fd785590bc4fbb6d6fc607337cda1b6d5ba5b6524151bf5",
+        "features.npy": "e2e4dda733eff8130a8e3ff0167ce091ee145eb6f0e6eedb8e04fef36100e40b",
+        "labels.txt": "7d16a4e399d6f89d2204735ca01e8e4667efae291ab154b56c2bd9110c47767c",
+        "meta.cfg": "90c1ca1a28b4387c8d434ec3bc7a09a71d34eab786fb66160ab58abb53c78595"
+      },
+      "cache_sidecar_sha256": "821af30ff922687ce2f2fe1a6ef4027b719474dda30458ffcc3d3354d094a249",
+      "checkpoint_entries": {
+        "best_model.pt": "cecac253dc0562b0e7f8292ae9e886dab5b4928946cf1dbad5e957acbf8ff8ff",
+        "manifest.json": "74e78c6162ac2f723e52656260427b566c14598b9bfa0823f8ecac4688e7d501",
+        "qat_best_logits.npy": "d6144507648692d44a367b89656f97066534b7ba53860950de2668047092c676",
+        "tensors.npz": "e49c578434376093ea815557faea2b721a9c5369579615b067ce37c8e59bd0f0",
+        "tensors.txt": "3f4bb23664c1446c49b78404593ef701b15c6e27614829039446dc0daa0dd6c9",
+        "training_summary.json": "e955b2a72f9cdc2c811a9dc62ae202e11157e0b5cbe42c2b1e2feebc70d02394"
+      },
+      "checkpoint_manifest_sha256": "74e78c6162ac2f723e52656260427b566c14598b9bfa0823f8ecac4688e7d501",
+      "checkpoint_sidecar_sha256": "a3a7ec003c493d5e88fcfb0a7caf1b3a0d40e6228a467299af1e83f6aa72ca77",
+      "config_sha256": "201c56defdf0f05dd0e658b38693ddd011f0eb0ce9435c14147c30267841c9f6"
+    },
+    "ppi": {
+      "cache_entries": {
+        "edges.txt": "b28ac7c1724769e59bb1941ae0cb3a7e9da0f8fc6d5567ec13be161f1e122507",
+        "features.npy": "b7528351c39f33759aa25411047696dc02306d2a55eec0a8cefe4ec32ce90efa",
+        "labels_multi.npy": "ea1c3e783dda9b1fe7a97e90bded98ce00421bb409f9810b902b124dc6288d8d",
+        "labels_multi.txt": "422cc2269e970d3ba8df4a4b30c084ec359b84a7beb3a2cf5fe88a3eeb7e6153",
+        "meta.cfg": "c847ba5d967bd9ce165faff3c51280f2a0a1522288e4047f7e8716b995ada5e4",
+        "node_ptr.txt": "b8c715ff62744f2f0859d3f310236e660278c72433cafd80a1849814cd7ed969",
+        "test_mask.npy": "b3b62173d34dcd7124a4e945ef5d0d642b052e8f12ffed8ec084e57e27f38abb",
+        "train_mask.npy": "efcfbbbe9ed6ae044508edb640ecb8d00aea2ae33e8f9754cd44b8986eb53a87",
+        "val_mask.npy": "3ae62bd5f0cba295f416ed5c39138edf12a443922eb2ce03cd6708307269792e"
+      },
+      "cache_sidecar_sha256": "b5dfaebaf13ca908eb251b01aaa71057294e72366986280178123882b1297389",
+      "checkpoint_entries": {
+        "best_model.pt": "cb61946963d82ae2cd21353f035eb2caa50f899006300b101a83dcab1f43ce1d",
+        "manifest.json": "3f4178f4cd8c52b3a026e0b47e15cbdc33330c06c74f32d1c808334d5c90b39e",
+        "qat_best_logits.npy": "d44f34c3c6188fdbe02248e4f6e00ad305b32890040a4d2d930bf03a25f30ef5",
+        "tensors.npz": "1e7abf4f8468b36f9535a62b1e61bc1bbf327ff5b783c30e22217df0dc6f5062",
+        "tensors.txt": "546e070e0c3e0132efe10e2a693dd3de2f8ed9f33227e04d33eb00bf39e52282",
+        "training_summary.json": "f2eee8782c61a5af94a44d32b5ff5d8688acc4d9f5b7e19c92b2d1e7883c9e9d"
+      },
+      "checkpoint_manifest_sha256": "3f4178f4cd8c52b3a026e0b47e15cbdc33330c06c74f32d1c808334d5c90b39e",
+      "checkpoint_sidecar_sha256": "1b2db8cd992b4e757e808f41947963aa82a16063084d3f000c7c573850dea6c6",
+      "config_sha256": "69a7fa581442e60575939d84d3f53d85e0e461a31f5ac52b467a92335b688b17"
+    }
+  },
+  "quantization_entries": {
+    "quantization_scale_chain.cfg": "7846f59a43b9490603457ce73ad52ce4b6df684de9ec69280ffb47d76cd911da"
+  },
+  "quantization_scale_chain_sha256": "7846f59a43b9490603457ce73ad52ce4b6df684de9ec69280ffb47d76cd911da",
+  "resource_scope": "baseline-local",
+  "schema": "zkgpt-gat-formal-scoped-resource-manifest-v1",
+  "session_id": "369464a5dc5de9442f551459b92f9f12",
+  "session_manifest_sha256": "06616f8766df28da13d0d12cb741f083bdfb71c2ca99cbd18dd89e06b18e3ef5",
+  "setup_mode": "hyrax_native_local",
+  "static_tables_source": "authenticated_quantization_scale_chain",
+  "status": "AUTHENTICATED"
+}

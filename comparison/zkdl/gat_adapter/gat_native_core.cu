@@ -5050,16 +5050,20 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             std::min<std::uint64_t>(domain, kSegmentSize);
         std::uint32_t qpad_bits = 0U;
         std::uint64_t eqmask_table_peak_bytes = 0U;
+        std::uint64_t qpad_auxiliary_peak_bytes = 0U;
         if (!log2_domain(domain, qpad_bits) ||
             !relation::pointwise_eqmask_weight_table_peak_bytes(
-                qpad_bits, eqmask_table_peak_bytes)) {
+                qpad_bits, eqmask_table_peak_bytes) ||
+            !checked_add_u64(eqmask_table_peak_bytes,
+                             relation::kQpadSelectorXiCacheMaxBytes,
+                             qpad_auxiliary_peak_bytes)) {
             if (error) *error = "native Qpad eqmask table live-memory bound overflows: " + family.id;
             return false;
         }
         if (!record_segmented_sumcheck_peak(
-                4U, domain, segment_size, 1U, eqmask_table_peak_bytes) ||
+                4U, domain, segment_size, 1U, qpad_auxiliary_peak_bytes) ||
             !record_sumcheck_shape(4U, domain, segment_size, false, 1U,
-                                   eqmask_table_peak_bytes) ||
+                                   qpad_auxiliary_peak_bytes) ||
             !record_terminal_hyrax_openings(
                 domain, segment_size, 2U,
                 &metrics->padding_opening_segment_count,

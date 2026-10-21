@@ -1,0 +1,13 @@
+[zkGPT][native-lasso-family] stage=booleanity begin family=a Q=2 T=4
+[zkGPT][native-lasso-family] stage=booleanity complete family=a Q=2 T=4 elapsed_ms=85.9209
+[zkGPT][native-lasso-family] stage=booleanity begin family=padding Q=32 T=2
+[zkGPT][native-lasso-family] stage=booleanity complete family=padding Q=32 T=2 elapsed_ms=202.188
+[zkGPT][native-lasso-family] stage=booleanity begin family=range_all Q=32 T=2
+[zkGPT][native-lasso-family] stage=booleanity complete family=range_all Q=32 T=2 elapsed_ms=199.69
+native_lasso_range_negative: REJECTED non-binary L_qry by range/all table binding
+native_lasso_unexpected_tensor_scope: PASS session rebuilt; unconsumed tensor label rejected
+[zkGPT][native-lasso-family] stage=booleanity begin family=a Q=2 T=4
+[zkGPT][native-lasso-family] stage=booleanity complete family=a Q=2 T=4 elapsed_ms=85.7038
+NATIVE_LASSO_STORAGE Fr_bytes=32 G1_bytes=144 sparse_entry_bytes=80 T2_private_bytes=549755813888 T2_field_bytes=32 sparse_private_bytes=2684354560
+native_lasso_range_smoke: PASS
+elapsed_s=3.03 exit=0

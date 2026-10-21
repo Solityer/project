@@ -1,0 +1,7 @@
+[zkGPT][native-lasso-family] stage=booleanity begin family=a Q=2 T=4
+[zkGPT][native-lasso-family] stage=booleanity complete family=a Q=2 T=4 elapsed_ms=85.6037
+[zkGPT][native-lasso-family] stage=booleanity begin family=padding Q=32 T=2
+[zkGPT][native-lasso-family] stage=booleanity complete family=padding Q=32 T=2 elapsed_ms=199.476
+native Lasso range/all accepted a non-binary L_qry value or failed outside its table/query binding: native Lasso prover witness dimensions are invalid
+Command exited with non-zero status 23
+elapsed_s=1.41 exit=23

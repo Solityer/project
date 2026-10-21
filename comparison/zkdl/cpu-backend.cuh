@@ -681,22 +681,39 @@ inline void cpu_parallel_for_expensive_tasks(std::size_t count,
                                     std::forward<Function>(function));
 }
 
-inline size_t cpu_g1_msm_workspace_bound_bytes() {
+inline size_t cpu_g1_msm_workspace_bound_bytes(size_t point_count) {
 #if defined(ZKDL_USE_BLST_G1_CODEC)
-    const size_t scratch_bytes =
-        zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
+    if (point_count == 0U || point_count > kCpuG1MsmChunkPoints) return 0U;
+    const size_t scratch_bytes = point_count < 32U ? 0U :
+        zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(point_count);
     if (scratch_bytes > std::numeric_limits<size_t>::max() -
-                            kCpuG1MsmChunkPoints *
+                            point_count *
                                 (sizeof(zkdl_blst::blst_p1_affine) +
                                  2U * sizeof(const zkdl_blst::byte*))) {
         throw std::overflow_error("BLST G1 MSM workspace size overflow");
     }
-    return scratch_bytes + kCpuG1MsmChunkPoints *
+    return scratch_bytes + point_count *
                                (sizeof(zkdl_blst::blst_p1_affine) +
                                 2U * sizeof(const zkdl_blst::byte*));
 #else
+    (void)point_count;
     return 0U;
 #endif
+}
+
+inline size_t cpu_g1_msm_workspace_bound_bytes() {
+    return cpu_g1_msm_workspace_bound_bytes(kCpuG1MsmChunkPoints);
+}
+
+inline size_t cpu_g1_msm_or_nbits(const FrWire& scalar_or) noexcept {
+    for (size_t limb = scalar_or.size(); limb > 0U; --limb) {
+        const std::uint32_t word = scalar_or[limb - 1U];
+        if (word != 0U) {
+            return (limb - 1U) * 32U +
+                   32U - static_cast<size_t>(__builtin_clz(word));
+        }
+    }
+    return 0U;
 }
 
 inline CpuG1Point cpu_g1_sum(const CpuG1Point* points, const FrWire* scalars,
@@ -705,35 +722,49 @@ inline CpuG1Point cpu_g1_sum(const CpuG1Point* points, const FrWire* scalars,
         throw std::invalid_argument("G1 MSM has null input");
 #if defined(ZKDL_USE_BLST_G1_CODEC)
     if (count == 0U) return CpuG1Point::zero();
-    if (cpu_g1_msm_workspace_bound_bytes() > kCpuG1MsmProfileBytes) {
+    const size_t workspace_points = std::min(count, kCpuG1MsmChunkPoints);
+    if (cpu_g1_msm_workspace_bound_bytes(workspace_points) >
+        kCpuG1MsmProfileBytes) {
         throw std::runtime_error("BLST G1 MSM exceeds its source-bound workspace profile");
     }
     CpuG1Point result = CpuG1Point::zero();
     std::unique_ptr<zkdl_blst::blst_p1_affine[]> affine(
-        new zkdl_blst::blst_p1_affine[kCpuG1MsmChunkPoints]);
+        new zkdl_blst::blst_p1_affine[workspace_points]);
     std::unique_ptr<const zkdl_blst::byte*[]> scalar_ptrs(
-        new const zkdl_blst::byte*[kCpuG1MsmChunkPoints]);
-    const size_t scratch_bytes =
-        zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(kCpuG1MsmChunkPoints);
-    if (scratch_bytes == 0U || scratch_bytes % sizeof(zkdl_blst::limb_t) != 0U) {
-        throw std::runtime_error("BLST returned an invalid Pippenger scratch bound");
-    }
-    std::unique_ptr<zkdl_blst::limb_t[]> scratch(
-        new zkdl_blst::limb_t[scratch_bytes / sizeof(zkdl_blst::limb_t)]);
+        new const zkdl_blst::byte*[workspace_points]);
+    std::unique_ptr<zkdl_blst::limb_t[]> scratch;
+    size_t scratch_bytes = 0U;
     const zkdl_blst::blst_p1_affine* affine_sources[2] = {affine.get(), nullptr};
     for (size_t offset = 0U; offset < count;) {
         const size_t chunk_count = std::min(kCpuG1MsmChunkPoints, count - offset);
+        FrWire scalar_or{};
         for (size_t i = 0U; i < chunk_count; ++i) {
             if (!fr_canonical(scalars[offset + i])) {
                 throw std::invalid_argument("non-canonical G1 MSM scalar");
             }
+            for (size_t limb = 0U; limb < scalar_or.size(); ++limb)
+                scalar_or[limb] |= scalars[offset + i][limb];
             const zkdl_blst::blst_p1 projective = cpu_g1_to_blst(points[offset + i]);
             zkdl_blst::blst_p1_to_affine(&affine[i], &projective);
             scalar_ptrs[i] = reinterpret_cast<const zkdl_blst::byte*>(scalars[offset + i].data());
         }
+        const size_t nbits = cpu_g1_msm_or_nbits(scalar_or);
+        if (nbits == 0U) {
+            offset += chunk_count;
+            continue;
+        }
+        if (chunk_count >= 32U && !scratch) {
+            scratch_bytes = zkdl_blst::blst_p1s_mult_pippenger_scratch_sizeof(
+                workspace_points);
+            if (scratch_bytes == 0U ||
+                scratch_bytes % sizeof(zkdl_blst::limb_t) != 0U)
+                throw std::runtime_error("BLST returned an invalid Pippenger scratch bound");
+            scratch.reset(new zkdl_blst::limb_t[
+                scratch_bytes / sizeof(zkdl_blst::limb_t)]);
+        }
         zkdl_blst::blst_p1 partial{};
         zkdl_blst::blst_p1s_mult_pippenger(
-            &partial, affine_sources, chunk_count, scalar_ptrs.get(), sizeof(FrWire) * 8U,
+            &partial, affine_sources, chunk_count, scalar_ptrs.get(), nbits,
             scratch.get());
         result = cpu_g1_add(result, cpu_g1_from_blst(partial));
         offset += chunk_count;
@@ -1363,9 +1394,22 @@ struct CpuHyraxGpuFoldStats {
     std::string device_uuid;
 };
 
-/* CUDA is an explicit, proof-local offload for the Hyrax generator fold only.
- * Scalar folding, transcript control, relation evaluation, and verification
- * remain on the CPU. */
+struct CpuHyraxGpuFoldRound {
+    CpuG1Point left;
+    CpuG1Point right;
+    FrWire cross_left{};
+    FrWire cross_right{};
+};
+
+struct CpuHyraxGpuFoldFinalState {
+    CpuG1Point generator;
+    FrWire a{};
+    FrWire b{};
+};
+
+/* CUDA is an explicit, proof-local offload for authenticated Hyrax G/a/b
+ * folding and cross terms. Transcript control, relation evaluation, and
+ * verification remain on the CPU. */
 class CpuHyraxGpuFoldSession {
 public:
     virtual ~CpuHyraxGpuFoldSession() = default;
@@ -1374,11 +1418,12 @@ public:
         const std::vector<CpuG1Point>& generators,
         const CpuG1Point& h, const CpuG1Point& u) const noexcept = 0;
     virtual void reset(std::size_t generator_count) = 0;
-    virtual std::pair<CpuG1Point, CpuG1Point> compute_lr(
-        const std::vector<FrWire>& current_a, std::size_t current_size) = 0;
+    virtual void initialize_scalars(const std::vector<FrWire>& current_a,
+                                    const std::vector<FrWire>& current_b) = 0;
+    virtual CpuHyraxGpuFoldRound compute_lr(std::size_t current_size) = 0;
     virtual void fold(const FrWire& challenge, const FrWire& inverse,
                       std::size_t half) = 0;
-    virtual CpuG1Point final_generator() = 0;
+    virtual CpuHyraxGpuFoldFinalState final_state() = 0;
     virtual CpuHyraxGpuFoldStats stats() const = 0;
 };
 
@@ -1408,6 +1453,23 @@ public:
         if (count == 0U) return CpuG1Point::zero();
         const std::size_t chunk_count =
             (count + kCpuG1MsmChunkPoints - 1U) / kCpuG1MsmChunkPoints;
+        std::vector<std::size_t> chunk_nbits(chunk_count, 0U);
+        bool any_nonzero = false;
+        for (std::size_t chunk = 0U; chunk < chunk_count; ++chunk) {
+            const std::size_t offset = chunk * kCpuG1MsmChunkPoints;
+            const std::size_t points = std::min(kCpuG1MsmChunkPoints, count - offset);
+            FrWire scalar_or{};
+            for (std::size_t index = 0U; index < points; ++index) {
+                const FrWire& scalar = scalars[offset + index];
+                if (!fr_canonical(scalar))
+                    throw std::invalid_argument("non-canonical G1 MSM scalar");
+                for (std::size_t limb = 0U; limb < scalar_or.size(); ++limb)
+                    scalar_or[limb] |= scalar[limb];
+            }
+            chunk_nbits[chunk] = cpu_g1_msm_or_nbits(scalar_or);
+            any_nonzero = any_nonzero || chunk_nbits[chunk] != 0U;
+        }
+        if (!any_nonzero) return CpuG1Point::zero();
         std::size_t workspace_count = 1U;
         bool parallel_chunks = false;
         if (chunk_count >= kCpuG1MsmParallelThresholdChunks &&
@@ -1422,14 +1484,6 @@ public:
         if (workspaces_.size() < workspace_count)
             workspaces_.resize(workspace_count);
 
-        // Fail before dispatching any worker so malformed scalar input cannot
-        // create partial concurrent MSM work or nondeterministic errors.
-        if (parallel_chunks) {
-            for (std::size_t index = 0U; index < count; ++index)
-                if (!fr_canonical(scalars[index]))
-                    throw std::invalid_argument("non-canonical G1 MSM scalar");
-        }
-
         const zkdl_blst::blst_p1_affine* const affine_base =
             prepared_basis_.affine_points();
         std::vector<CpuG1Point> partials(chunk_count, CpuG1Point::zero());
@@ -1437,10 +1491,9 @@ public:
                                        std::size_t workspace_index) {
             const std::size_t offset = chunk_index * kCpuG1MsmChunkPoints;
             const std::size_t points = std::min(kCpuG1MsmChunkPoints, count - offset);
+            if (chunk_nbits[chunk_index] == 0U) return;
             CpuG1MsmWorkspace& workspace = workspaces_[workspace_index];
             for (std::size_t index = 0U; index < points; ++index) {
-                if (!parallel_chunks && !fr_canonical(scalars[offset + index]))
-                    throw std::invalid_argument("non-canonical G1 MSM scalar");
                 workspace.scalar_ptrs()[index] = reinterpret_cast<const zkdl_blst::byte*>(
                     scalars[offset + index].data());
             }
@@ -1449,7 +1502,7 @@ public:
             zkdl_blst::blst_p1 partial{};
             zkdl_blst::blst_p1s_mult_pippenger(
                 &partial, affine_sources, points,
-                workspace.scalar_ptrs(), sizeof(FrWire) * 8U,
+                workspace.scalar_ptrs(), chunk_nbits[chunk_index],
                 workspace.scratch());
             partials[chunk_index] = cpu_g1_from_blst(partial);
         };
@@ -1511,6 +1564,19 @@ public:
         if (count == 0U) return CpuG1Point::zero();
         const std::size_t chunk_count =
             (count + kCpuG1MsmChunkPoints - 1U) / kCpuG1MsmChunkPoints;
+        std::vector<FrWire> chunk_scalar_or(chunk_count);
+        for (std::size_t index = 0U; index < count; ++index) {
+            FrWire& scalar_or = chunk_scalar_or[index / kCpuG1MsmChunkPoints];
+            for (std::size_t limb = 0U; limb < scalar_or.size(); ++limb)
+                scalar_or[limb] |= scalars[index][limb];
+        }
+        std::vector<std::size_t> chunk_nbits(chunk_count, 0U);
+        bool any_nonzero = false;
+        for (std::size_t chunk = 0U; chunk < chunk_count; ++chunk) {
+            chunk_nbits[chunk] = cpu_g1_msm_or_nbits(chunk_scalar_or[chunk]);
+            any_nonzero = any_nonzero || chunk_nbits[chunk] != 0U;
+        }
+        if (!any_nonzero) return CpuG1Point::zero();
         std::size_t workspace_count = 1U;
         bool parallel_chunks = false;
         if (chunk_count >= kCpuG1MsmParallelThresholdChunks &&
@@ -1532,6 +1598,7 @@ public:
                                        std::size_t workspace_index) {
             const std::size_t offset = chunk_index * kCpuG1MsmChunkPoints;
             const std::size_t points = std::min(kCpuG1MsmChunkPoints, count - offset);
+            if (chunk_nbits[chunk_index] == 0U) return;
             CpuG1MsmWorkspace& workspace = workspaces_[workspace_index];
             auto point_ptrs = workspace.indexed_point_ptrs();
             for (std::size_t index = 0U; index < points; ++index) {
@@ -1542,7 +1609,7 @@ public:
             zkdl_blst::blst_p1 partial{};
             zkdl_blst::blst_p1s_mult_pippenger(
                 &partial, point_ptrs, points, workspace.scalar_ptrs(),
-                sizeof(FrWire) * 8U, workspace.scratch());
+                chunk_nbits[chunk_index], workspace.scratch());
             partials[chunk_index] = cpu_g1_from_blst(partial);
         };
         for (std::size_t base = 0U; base < chunk_count; base += workspace_count) {
@@ -2680,6 +2747,11 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         if (!indexed_generator_fold) current_generators[i] = generators[i];
         current_a[i] = values[i];
     }
+    if (gpu_generator_fold) {
+        gpu_fold_session->initialize_scalars(current_a, current_b);
+        std::vector<FrWire>().swap(current_a);
+        std::vector<FrWire>().swap(current_b);
+    }
     CpuG1Point current_upsilon = cpu_g1_add(xi, tau);
     FrWire current_blinder = fr_add(randomness, result.tau_blinder);
 
@@ -2692,13 +2764,11 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         CpuG1Point left = CpuG1Point::zero();
         CpuG1Point right = CpuG1Point::zero();
         if (gpu_generator_fold) {
-            for (const FrWire& value : current_a)
-                if (!fr_canonical(value))
-                    throw std::invalid_argument(
-                        "non-canonical Hyrax GPU fold scalar");
-            const auto lr = gpu_fold_session->compute_lr(current_a, current_size);
-            left = lr.first;
-            right = lr.second;
+            const CpuHyraxGpuFoldRound lr = gpu_fold_session->compute_lr(current_size);
+            left = lr.left;
+            right = lr.right;
+            left = cpu_g1_add(left, cpu_g1_mul(u_generator, lr.cross_left));
+            right = cpu_g1_add(right, cpu_g1_mul(u_generator, lr.cross_right));
         } else if (indexed_generator_fold) {
             cpu_ipa_fold_generator_lrs_indexed(
                 *msm_session, *authenticated_basis, generators, generator_count,
@@ -2710,12 +2780,14 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
             right = cpu_g1_sum(current_generators.data(),
                                current_a.data() + half, half);
         }
-        left = cpu_g1_add(left, cpu_g1_mul(
-            u_generator, cpu_ipa_inner_product(
-                current_a, 0U, current_b, half, half)));
-        right = cpu_g1_add(right, cpu_g1_mul(
-            u_generator, cpu_ipa_inner_product(
-                current_a, half, current_b, 0U, half)));
+        if (!gpu_generator_fold) {
+            left = cpu_g1_add(left, cpu_g1_mul(
+                u_generator, cpu_ipa_inner_product(
+                    current_a, 0U, current_b, half, half)));
+            right = cpu_g1_add(right, cpu_g1_mul(
+                u_generator, cpu_ipa_inner_product(
+                    current_a, half, current_b, 0U, half)));
+        }
         const FrWire r_left = cpu_fresh_csprng_scalar();
         const FrWire r_right = cpu_fresh_csprng_scalar();
         left = cpu_g1_add(left, cpu_g1_mul(blinding_generator, r_left));
@@ -2734,37 +2806,39 @@ inline HyraxOpeningProverResult cpu_open_hyrax_v3_impl(
         current_blinder = fr_add(current_blinder,
                                  fr_add(fr_mul(challenge_sq, r_left),
                                         fr_mul(inverse_sq, r_right)));
-        std::vector<FrWire> next_a(half), next_b(half);
         if (gpu_generator_fold) {
             gpu_fold_session->fold(challenge, inverse, half);
-            cpu_ipa_fold_scalar_vectors_parallel(
-                current_a, current_b, challenge, inverse, next_a, next_b);
-        } else if (indexed_generator_fold) {
-            cpu_ipa_fold_scalar_vectors_parallel(
-                current_a, current_b, challenge, inverse, next_a, next_b);
-            current_weights = cpu_ipa_next_generator_weights_fast(
-                current_weights, challenge, inverse);
         } else {
-            std::vector<CpuG1Point> next_generators;
-            cpu_ipa_fold_projective_vectors_parallel(
-                current_generators, current_a, current_b, challenge, inverse,
-                next_generators, next_a, next_b);
-            current_generators.swap(next_generators);
+            std::vector<FrWire> next_a(half), next_b(half);
+            if (indexed_generator_fold) {
+                cpu_ipa_fold_scalar_vectors_parallel(
+                    current_a, current_b, challenge, inverse, next_a, next_b);
+                current_weights = cpu_ipa_next_generator_weights_fast(
+                    current_weights, challenge, inverse);
+            } else {
+                std::vector<CpuG1Point> next_generators;
+                cpu_ipa_fold_projective_vectors_parallel(
+                    current_generators, current_a, current_b, challenge, inverse,
+                    next_generators, next_a, next_b);
+                current_generators.swap(next_generators);
+            }
+            current_a.swap(next_a);
+            current_b.swap(next_b);
         }
-        current_a.swap(next_a);
-        current_b.swap(next_b);
         current_size = half;
     }
 
     // Fennel's short terminal Sigma equation proves the folded scalar while
     // keeping a_hat and the accumulated blinder hidden.  The public folded
     // weight b_hat is verifier-derived and must be nonzero for this form.
-    const FrWire a_hat = current_a[0];
-    const FrWire b_hat = current_b[0];
+    CpuHyraxGpuFoldFinalState gpu_final_state;
+    if (gpu_generator_fold) gpu_final_state = gpu_fold_session->final_state();
+    const FrWire a_hat = gpu_generator_fold ? gpu_final_state.a : current_a[0];
+    const FrWire b_hat = gpu_generator_fold ? gpu_final_state.b : current_b[0];
     if (fr_compare(b_hat, FrWire{}) == 0)
         throw std::runtime_error("BLOCKED: Hyrax v3 terminal weight is zero");
     const CpuG1Point g_hat = gpu_generator_fold
-        ? gpu_fold_session->final_generator()
+        ? gpu_final_state.generator
         : indexed_generator_fold
         ? msm_session->sum(*authenticated_basis, generators,
                            blinding_generator, u_generator,

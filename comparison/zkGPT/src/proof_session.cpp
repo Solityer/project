@@ -296,7 +296,7 @@ bool NativeProofStatement::valid(std::string* reason) const {
     if (l_dimension == 0 || (l_dimension & (l_dimension - 1)) != 0 ||
         l_dimension > std::numeric_limits<std::uint64_t>::max() / 4)
         return fail("native proof statement L dimension is invalid");
-    if (relation_schema != "zkgpt-gat-relation-v1" && relation_schema != "zkgpt-gat-sparse-gkr-v1")
+    if (relation_schema != "zkgpt-gat-relation-v2" && relation_schema != "zkgpt-gat-sparse-gkr-v1")
         return fail("native proof statement relation schema is unsupported");
     if (!is_lower_hex_digest(relation_digest)) return fail("native proof statement relation digest is not canonical");
     std::set<std::string> relation_ids;

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from collect_results import build_matrix_document
-from formal_common import DATASETS, ROOT, sha256
+from formal_common import DATASETS, ROOT, has_compact_native_proof_v2_prefix, sha256
 
 MAX_RESULT_JSON_BYTES = 4 * 1024 * 1024
 MAX_SESSION_JSON_BYTES = 1024 * 1024
@@ -225,20 +225,44 @@ def typed_statement_requirements(*, num_nodes: int, num_features: int, num_class
     }
 
 
-def typed_proof_requirements(*, proof_size_bytes: int, statement_shape: Mapping[str, int]) -> dict[str, int | float | bool]:
-    """Bound the native Snark JSON by its source-defined typed field schema.
+def typed_proof_requirements(
+    *,
+    proof_size_bytes: int,
+    statement_shape: Mapping[str, int],
+    compact_v2: bool = False,
+) -> dict[str, int | float | bool]:
+    """Bound legacy Snark and compact-v2 JSON by their source-defined schemas.
 
-    The canonical formal producer emits one Fr instance column, a u8 proof
-    vector and its duplicate hex string, and PrettyElements for all public
-    inputs/outputs. The large fields therefore have different Python object
-    costs; multiplying the complete proof JSON size by a generic DOM factor
-    needlessly treats every 64-character Fr as a recursively nested object.
+    Legacy proofs retain the original Fr/proof/PrettyElements lower bounds.
+    Compact v2 uses a conservative small-document DOM and read-text envelope,
+    since its instances are reconstructed from authenticated statement files.
     """
     if isinstance(proof_size_bytes, bool) or not isinstance(proof_size_bytes, int) or proof_size_bytes <= 0:
         _fail("native proof JSON stat size is invalid")
     required = ("num_nodes", "num_features", "num_classes", "graph_count", "feature_values", "edge_count_upper_after_undirected_expansion_and_self_loops", "public_y_values")
     if any(isinstance(statement_shape.get(key), bool) or not isinstance(statement_shape.get(key), int) or statement_shape[key] <= 0 for key in required):
         _fail("native proof capacity shape is missing a positive producer-derived dimension")
+
+    if compact_v2:
+        # Compact v2 contains only a native transcript hex string and fixed-size
+        # authenticated references. It has no embedded Fr or PrettyElements
+        # arrays, so the legacy lower bound is inapplicable. Retain a deliberately
+        # conservative recursive-DOM multiplier and transient-text allowance.
+        proof_text_bytes_upper = math.ceil(PROOF_TEXT_WIRE_FACTOR * proof_size_bytes)
+        proof_document_dom = (
+            math.ceil(PROOF_DOM_WIRE_FACTOR_MIN * proof_size_bytes)
+            + PROOF_SCHEMA_FIXED_DOM_ALLOWANCE_BYTES
+        )
+        proof_json_load_peak = proof_text_bytes_upper + proof_document_dom
+        return {
+            "proof_file_stat_size_bytes": proof_size_bytes,
+            "compact_proof_v2": True,
+            "proof_document_dom_bytes_upper_compact_v2": proof_document_dom,
+            "proof_text_bytes_upper_ascii_read_and_decode": proof_text_bytes_upper,
+            "proof_json_load_peak_bytes_upper": proof_json_load_peak,
+            "proof_canonical_digest_peak_bytes_upper": proof_document_dom,
+            "proof_peak_bytes_source_derived_typed_snark": proof_json_load_peak,
+        }
 
     nodes = statement_shape["num_nodes"]
     feature_values = statement_shape["feature_values"]
@@ -826,7 +850,11 @@ def check_finalization_capacity(
         output_sizes[dataset] = int(stats["public_output"].st_size)
     shapes, shape_source_stats = _dataset_shape_bounds(resource_manifest_sha256)
     proof_bounds = {
-        dataset: typed_proof_requirements(proof_size_bytes=proof_sizes[dataset], statement_shape=shapes[dataset])
+        dataset: typed_proof_requirements(
+            proof_size_bytes=proof_sizes[dataset],
+            statement_shape=shapes[dataset],
+            compact_v2=has_compact_native_proof_v2_prefix(artifact_paths[dataset]["proof.json"]),
+        )
         for dataset in DATASETS
     }
     for dataset in DATASETS:

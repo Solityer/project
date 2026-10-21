@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import time
 from pathlib import Path
 from typing import Any
+
+import stop_formal
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
@@ -38,6 +41,69 @@ def tail(path: Path, count: int = 12) -> list[str]:
     return lines[-count:]
 
 
+def _live_process_health(state: dict[str, Any], role: str) -> tuple[str, str]:
+    pid = state.get(f"{role}_pid")
+    try:
+        current = stop_formal.process_identity(pid)
+    except stop_formal.StopError as exc:
+        cause = exc.__cause__
+        if isinstance(cause, OSError) and cause.errno in (errno.ENOENT, errno.ESRCH):
+            return "NO_LIVE_OWNER", f"{role} process exited"
+        return "OWNER_UNVERIFIED", f"cannot inspect {role} identity: {exc}"
+    expected = {
+        "start_ticks": state.get(f"{role}_start_ticks"),
+        "process_group": state.get(f"{role}_process_group"),
+        "cwd": state.get(f"{role}_cwd"),
+        "executable": state.get(f"{role}_executable"),
+        "argv": state.get(f"{role}_argv"),
+    }
+    if current != expected or current["process_group"] != pid:
+        return "NO_LIVE_OWNER", f"{role} PID identity mismatch"
+    return "LIVE", ""
+
+
+def inspect_live_launch(root: Path, launch_id: str, status_path: Path) -> tuple[str, dict[str, Any] | None, str]:
+    try:
+        state = stop_formal.read_json(status_path, "detached launch status")
+        launch_status = stop_formal.validate_status(state, root, launch_id, status_path)
+    except stop_formal.StopError as exc:
+        health = "OWNER_UNVERIFIED" if isinstance(exc.__cause__, PermissionError) else "OWNER_STATUS_INVALID"
+        return health, None, str(exc)
+    if launch_status in stop_formal.TERMINAL_STATES:
+        return "TERMINAL", state, ""
+    health, reason = _live_process_health(state, "supervisor")
+    if health != "LIVE":
+        if health == "NO_LIVE_OWNER":
+            try:
+                latest = stop_formal.read_json(status_path, "detached launch status")
+                latest_status = stop_formal.validate_status(latest, root, launch_id, status_path)
+            except stop_formal.StopError as exc:
+                latest_health = "OWNER_UNVERIFIED" if isinstance(exc.__cause__, PermissionError) else "OWNER_STATUS_INVALID"
+                return latest_health, state, str(exc)
+            if latest_status in stop_formal.TERMINAL_STATES:
+                return "TERMINAL", latest, ""
+        return health, state, reason
+    if launch_status == "RUNNING":
+        health, reason = _live_process_health(state, "child")
+        if health != "LIVE":
+            try:
+                latest = stop_formal.read_json(status_path, "detached launch status")
+                latest_status = stop_formal.validate_status(latest, root, launch_id, status_path)
+            except stop_formal.StopError as exc:
+                health = "OWNER_UNVERIFIED" if isinstance(exc.__cause__, PermissionError) else "OWNER_STATUS_INVALID"
+                return health, state, str(exc)
+            if latest_status in stop_formal.TERMINAL_STATES:
+                return "TERMINAL", latest, ""
+            if latest_status != "RUNNING":
+                return "OWNER_STATUS_INVALID", latest, "launch status changed unexpectedly while checking its child"
+            supervisor_health, supervisor_reason = _live_process_health(latest, "supervisor")
+            if supervisor_health != "LIVE":
+                return supervisor_health, latest, supervisor_reason
+            health, reason = _live_process_health(latest, "child")
+            return health, latest, reason
+    return "LIVE", state, ""
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true")
@@ -59,7 +125,7 @@ def main() -> int:
             print("zkGPT latest launch pointer has an invalid identity", flush=True)
             return 1
         launch_dir = pointer_path.parent / launch_id
-        status = read_json(launch_dir / "status.json")
+        owner_health, status, owner_reason = inspect_live_launch(root, launch_id, launch_dir / "status.json")
         owner = read_json(root / "baseline-local" / "formal-owner.json")
         session_id = owner.get("session_id") if owner else None
         session_status = read_json(
@@ -67,7 +133,7 @@ def main() -> int:
         ) if isinstance(session_id, str) else None
         active_stage = (owner or {}).get("active_stage") or (session_status or {}).get("active_stage")
         active_dataset = (owner or {}).get("active_dataset")
-        formal_state = (owner or {}).get("status") or (session_status or {}).get("status")
+        formal_state = "INTERRUPTED" if owner_health == "NO_LIVE_OWNER" else ((owner or {}).get("status") or (session_status or {}).get("status"))
         dataset_scope = ((status or {}).get("requested_datasets") or
                          (session_status or {}).get("dataset_scope") or
                          (owner or {}).get("dataset_scope"))
@@ -93,6 +159,8 @@ def main() -> int:
             active_stage,
             active_dataset,
             scope_text,
+            owner_health,
+            owner_reason,
             str(selected_log) if selected_log else None,
             selected_tail[-1] if selected_tail else None,
             console_tail[-1] if console_tail else None,
@@ -104,7 +172,7 @@ def main() -> int:
                 f"exit_code={(status or {}).get('exit_code')} "
                 f"datasets={scope_text} "
                 f"formal_session={session_id or 'pending'} formal_status={formal_state or 'pending'} "
-                f"stage={active_stage or 'pending'} dataset={active_dataset or '-'}",
+                f"live_owner={owner_health} stage={active_stage or 'pending'} dataset={active_dataset or '-'}",
                 flush=True,
             )
             if selected_log is not None:
@@ -113,7 +181,15 @@ def main() -> int:
                     print(line, flush=True)
             for line in console_tail:
                 print(f"CONSOLE {line}", flush=True)
+            if owner_health != "LIVE" and owner_health != "TERMINAL":
+                print(f"ZKGPT_PROGRESS_OWNER_CHECK {owner_health} reason={owner_reason}", flush=True)
             previous = snapshot
+        if owner_health == "NO_LIVE_OWNER":
+            print(f"ZKGPT_PROGRESS_INTERRUPTED launch_id={launch_id} reason={owner_reason}", flush=True)
+            return 2
+        if owner_health == "OWNER_UNVERIFIED" or owner_health == "OWNER_STATUS_INVALID":
+            print(f"ZKGPT_PROGRESS_OWNER_UNVERIFIED launch_id={launch_id} reason={owner_reason}", flush=True)
+            return 2
         if args.once or (status is not None and status.get("status") in
                          ("COMPLETE", "SUBSET_COMPLETE", "SUBSET_FAILED", "FAILED", "INTERRUPTED")):
             return 0

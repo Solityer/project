@@ -1,0 +1,98 @@
+{
+  "build_log_path": "results/formal/369464a5dc5de9442f551459b92f9f12/logs/build.log",
+  "build_log_sha256": "bfa63d3d3f7307ee86178029c498af022e7440e93c433853e45070732198685e",
+  "created_unix_ns": 1792504789030001444,
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "datasets": [
+    "cora",
+    "citeseer",
+    "pubmed",
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "local_capacity_profile": {
+    "baseline": "zkgpt",
+    "bound_methods": {
+      "additional_disk_peak": "source_derived_upper_bound",
+      "host_peak": "source_derived_upper_bound"
+    },
+    "dataset_scope": [
+      "ppi",
+      "ogbn_arxiv"
+    ],
+    "datasets": {
+      "citeseer": {
+        "reason": "OUT_OF_SCOPE:dataset_not_requested",
+        "status": "BLOCKED"
+      },
+      "cora": {
+        "reason": "OUT_OF_SCOPE:dataset_not_requested",
+        "status": "BLOCKED"
+      },
+      "ogbn_arxiv": {
+        "additional_disk_peak_bytes": 1450227275964,
+        "cell_retained_artifact_bytes_upper_bound": 1140753462,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 38875843278,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "ppi": {
+        "additional_disk_peak_bytes": 854667280940,
+        "cell_retained_artifact_bytes_upper_bound": 749571250,
+        "device_peak_bytes": 0,
+        "host_peak_bytes": 24959661043,
+        "phase_coverage": [
+          "setup",
+          "witness",
+          "commitment",
+          "prove",
+          "verify"
+        ],
+        "status": "READY"
+      },
+      "pubmed": {
+        "reason": "OUT_OF_SCOPE:dataset_not_requested",
+        "status": "BLOCKED"
+      }
+    },
+    "device": null,
+    "finalization_disk_bytes_upper_bound": 67108864,
+    "finalization_host_bytes_upper_bound": 38875843278,
+    "fs_device_id": "66306",
+    "memory_accounting_kind": "host-only",
+    "preexisting_baseline_artifact_bytes": 0,
+    "schema": "zkgpt-local-capacity-profile-v2",
+    "session_id": "369464a5dc5de9442f551459b92f9f12"
+  },
+  "local_capacity_profile_sha256": "ad07eaec73e10d43543d828e5a9876593686426f52066bb175ed450c012aae10",
+  "native_source_sha256": "78dd3a11a0cff4e7794cd1f31aef2490e0ad144d44f3dcd189a3e484e9fbb2dc",
+  "preflight_sha256": "73fe141573358897aa359a65ac8fa1777babdc1950abf193f664be6ba182b7e1",
+  "prover_fingerprint": {
+    "mtime_ns": 1792504334612666644,
+    "sha256": "dc45f7575176f0821ca7901f06459aa74d8ab834762c344c120f668c80eca349",
+    "size_bytes": 3807664
+  },
+  "resource_manifest_path": "results/formal/369464a5dc5de9442f551459b92f9f12/resource_manifest.json",
+  "resource_manifest_sha256": "d22739f94468eb2c2eb53e2c8ea500345bbbb8d3206c9dc83ec7cb2ccfc4ed6d",
+  "root_session_id": "369464a5dc5de9442f551459b92f9f12",
+  "runtime_source_sha256": "a31635dbca153c4cfd94b8a4629f44ef26a0e2429f081af7e1ad36e55b384421",
+  "schema": "zkgpt-gat-local-formal-context-v1",
+  "session_manifest_sha256": "06616f8766df28da13d0d12cb741f083bdfb71c2ca99cbd18dd89e06b18e3ef5",
+  "source_tree_sha256": "78dd3a11a0cff4e7794cd1f31aef2490e0ad144d44f3dcd189a3e484e9fbb2dc",
+  "status": "PREPARED",
+  "verifier_fingerprint": {
+    "mtime_ns": 1792504334839682148,
+    "sha256": "c04d5ec6a6baa7050f99f9bb80227a0f86e6a7f3e0ed166a8f28b73259fb0062",
+    "size_bytes": 3735632
+  }
+}

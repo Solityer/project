@@ -4978,7 +4978,7 @@ struct CliOptions {
 };
 
 void usage() {
-    std::cerr << "usage: gat_runner <inspect|admit|resource-check|resource-plan|gpu-offload-device-info|prepare|run|prove|verify> --config FILE "
+    std::cerr << "usage: gat_runner <inspect|admit|resource-check|resource-plan|gpu-offload-device-info|run|prove|verify> --config FILE "
                  "[--backend cpu|gpu] [--gpu-offload-stage hyrax_ipa_fold] [--run-dir DIR] [--planned-shape ANALYSIS_ONLY_JSON]\n";
 }
 
@@ -4989,7 +4989,7 @@ CliOptions parse_cli(int argc, char **argv) {
     }
     CliOptions options;
     options.command = argv[1];
-    const std::set<std::string> commands = {"inspect", "admit", "resource-check", "resource-plan", "gpu-offload-device-info", "prepare", "run", "prove", "verify"};
+    const std::set<std::string> commands = {"inspect", "admit", "resource-check", "resource-plan", "gpu-offload-device-info", "run", "prove", "verify"};
     if (!commands.count(options.command)) fail("unknown command: " + options.command);
     for (int i = 2; i < argc; ++i) {
         const std::string argument = argv[i];
@@ -5168,15 +5168,6 @@ std::string serialize_plan_text(const RelationPlan &plan, const StaticTables &ta
         output << '|' << operation.selector_id << '|' << operation.terminal_point << '|' << operation.terminal_value << '|' << operation.terminal_claim << '\n';
     }
     return output.str();
-}
-
-void write_plan(const std::filesystem::path &path, const RelationPlan &plan, const StaticTables &tables) {
-    std::filesystem::create_directories(path.parent_path());
-    std::ofstream output(path, std::ios::binary);
-    if (!output) fail("cannot write relation plan " + path.string());
-    const std::string serialized = serialize_plan_text(plan, tables);
-    if (!serialized.empty()) output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
-    finish_output(output, path, "relation plan");
 }
 
 void write_bytes(const std::filesystem::path &path, const std::vector<std::uint8_t> &bytes) {
@@ -5441,8 +5432,6 @@ int produce(const Config &config, const CliOptions &options) {
         const auto statement = make_statement(run_config, graph, model, tables, relation, trace);
         write_statement(statement_path, statement);
         write_matrix_text(directory / "public_Y.txt", trace.logits);
-        write_plan(directory / "relation.plan", relation, tables);
-
         const auto witness = build_native_relation_witness(run_config, graph, model, tables, relation, trace);
         // Every private trace family above has been synchronously persisted
         // into authenticated NativeFamilyStorage.  The native proof core only
@@ -5525,31 +5514,6 @@ int produce(const Config &config, const CliOptions &options) {
         write_run_record(record_path, rejected_record(run_config, options.backend, nullptr, exception.what(), kernel_executed));
         return 2;
     }
-}
-
-int prepare(const Config &config, const CliOptions &options) {
-    const auto directory = run_path(config, options.run_dir);
-    const auto run_config = config_for_run(config, directory);
-    const auto model = load_model_bundle(run_config);
-    const auto graph = load_graph(run_config);
-    const auto tables = build_static_tables(run_config, graph);
-    const auto plan = build_relation_plan(run_config, graph, tables);
-    std::string relation_error;
-    if (!relation_plan_complete(plan, &relation_error)) fail(relation_error);
-    write_plan(directory / "relation.plan", plan, tables);
-    std::ofstream identity(directory / "identity.cfg");
-    if (!identity) fail("cannot write identity.cfg");
-    identity << "dataset=" << config.dataset << "\nmodel_manifest_sha256=" << model.manifest_digest << "\n"
-             << "topology_sha256=" << digest_graph(graph) << "\nfeature_sha256=" << digest_matrix(graph.feature_values) << "\n"
-             << "table_sha256=" << tables.digest << "\nstatic_table_descriptor_digest=" << tables.descriptor_digest << "\n"
-             << "scale_chain_digest=" << config.scale_chain_digest << "\ninteger_bound_ledger_id=" << plan.integer_bound_ledger.ledger_id << "\n"
-             << "integer_bound_ledger_digest=" << plan.integer_bound_ledger.digest << "\n"
-             << "integer_bound_ledger_descriptor_digest=" << plan.integer_bound_ledger.descriptor_digest << "\n"
-             << "proof_scope=" << plan.proof_scope << "\n";
-    finish_output(identity, directory / "identity.cfg", "prepare identity");
-    std::cout << "prepared dataset=" << config.dataset << " nodes=" << graph.nodes << " edges=" << graph.edges
-              << " relation_operations=" << plan.operation_families.size() << "\n";
-    return 0;
 }
 
 void validate_statement_binding(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, const RelationPlan &relation,
@@ -6917,7 +6881,6 @@ int main(int argc, char **argv) {
                 options.has_gpu_offload_stage ? options.gpu_offload_stage : std::string());
         if (options.command == "gpu-offload-device-info")
             return zkdl_gat::gpu_offload_device_info();
-        if (options.command == "prepare") return zkdl_gat::prepare(config, options);
         if (options.command == "run" || options.command == "prove") return zkdl_gat::produce(config, options);
         return zkdl_gat::verify_only(config, options);
     } catch (const std::exception &exception) {

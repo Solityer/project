@@ -19,9 +19,9 @@ use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model, SupportedOp
 use crate::pfsys::{
     create_keys, create_keys_with_native_gate, load_pk,
     load_pk_with_native_backing_budget_and_timing, load_vk, save_params, save_pk,
-    swap_proof_commitments, Snark,
+    swap_proof_commitments, CompactProofV2, ProofInstancesRefV1, Snark,
 };
-use crate::pfsys::{create_proof_circuit, verify_proof_circuit, ProofSplitCommit};
+use crate::pfsys::{create_proof_circuit, create_proof_circuit_compact, verify_proof_circuit, ProofSplitCommit};
 use crate::pfsys::{
     canonical_fr_to_string, canonical_string_to_fr, save_vk, srs::*,
 };
@@ -67,6 +67,7 @@ use std::fs::File;
 #[cfg(any(feature = "eth", feature = "reusable-verifier"))]
 use std::io::Write;
 use std::io::BufReader;
+use std::io::Read;
 use std::io::BufWriter;
 use std::io::Cursor;
 use std::path::Path;
@@ -2711,6 +2712,68 @@ fn public_instances_from_statement(
     Ok(vec![circuit.prepare_public_inputs(&witness)?])
 }
 
+fn formal_proof_instances_ref(run_dir: &Path, proof_path: &Path, instances: &[Vec<Fr>]) -> Result<ProofInstancesRefV1, EZKLError> {
+    let root = std::fs::canonicalize(run_dir)?;
+    let proof_parent = proof_path.parent().ok_or_else(|| "formal proof path has no parent".to_string())?;
+    if std::fs::canonicalize(proof_parent)? != root { return Err("compact formal proof and its public reference files must share one cell directory".into()); }
+    let statement_path = root.join("statement.json");
+    let output_path = root.join("public_output.json");
+    let manifest_path = root.join("artifact_manifest.json");
+    require_formal_regular_file(&statement_path, "public statement")?;
+    require_formal_regular_file(&output_path, "public output")?;
+    require_formal_regular_file(&manifest_path, "artifact manifest")?;
+    let artifact = ArtifactManifest::load(&manifest_path).map_err(EZKLError::from)?;
+    artifact.validate().map_err(EZKLError::from)?;
+    let statement_sha256 = get_file_hash(&statement_path)?;
+    let public_output_sha256 = get_file_hash(&output_path)?;
+    if artifact.statement_sha256 != statement_sha256 { return Err("compact proof statement reference disagrees with authenticated artifact manifest".into()); }
+    for (name, digest) in [("statement.json", statement_sha256.as_str()), ("public_output.json", public_output_sha256.as_str())] {
+        let record = artifact.files.iter().find(|file| file.path == name).ok_or_else(|| format!("artifact manifest has no {} reference", name))?;
+        if record.sha256 != digest { return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into()); }
+    }
+    let (sha256, count, column_counts) = crate::pfsys::canonical_instance_digest(instances).map_err(EZKLError::from)?;
+    Ok(ProofInstancesRefV1 { schema_version: 1, statement_path: "statement.json".into(), statement_sha256, public_output_path: "public_output.json".into(), public_output_sha256, artifact_manifest_path: "artifact_manifest.json".into(), source_tree_sha256: artifact.source_tree_sha256, binary_sha256: artifact.binary_sha256, resource_manifest_sha256: artifact.resource_manifest_sha256, encoding: "canonical-json".into(), sha256, count, column_counts })
+}
+
+fn validate_formal_proof_instances_ref(
+    reference: &ProofInstancesRefV1,
+    proof_path: &Path,
+    statement_path: &Path,
+    public_output_path: &Path,
+    artifact_path: &Path,
+    artifact: &ArtifactManifest,
+    statement_sha256: &str,
+    public_output_sha256: &str,
+) -> Result<(), EZKLError> {
+    let root = std::fs::canonicalize(artifact_path.parent().ok_or_else(|| "artifact manifest path has no parent directory".to_string())?)?;
+    for (path, name, label) in [(proof_path, "proof.json", "proof"), (statement_path, "statement.json", "statement"), (public_output_path, "public_output.json", "public output")] {
+        if path.file_name().and_then(|value| value.to_str()) != Some(name) || std::fs::canonicalize(path.parent().ok_or_else(|| format!("compact proof {} path has no parent", label))?)? != root { return Err(format!("compact proof {} reference is outside the authenticated cell directory", label).into()); }
+    }
+    if artifact_path.file_name().and_then(|value| value.to_str()) != Some("artifact_manifest.json") || reference.schema_version != 1 || reference.statement_path != "statement.json" || reference.public_output_path != "public_output.json" || reference.artifact_manifest_path != "artifact_manifest.json" || reference.encoding != "canonical-json" {
+        return Err("compact proof has an unsupported or noncanonical public-instance reference".into());
+    }
+    if reference.statement_sha256 != statement_sha256 || reference.statement_sha256 != artifact.statement_sha256 || reference.public_output_sha256 != public_output_sha256 || reference.source_tree_sha256 != artifact.source_tree_sha256 || reference.binary_sha256 != artifact.binary_sha256 || reference.resource_manifest_sha256 != artifact.resource_manifest_sha256 {
+        return Err("compact proof reference disagrees with authenticated manifest, statement, or public output".into());
+    }
+    for (name, digest) in [("statement.json", statement_sha256), ("public_output.json", public_output_sha256)] {
+        let file = artifact.files.iter().find(|file| file.path == name)
+            .ok_or_else(|| format!("artifact manifest has no {} record", name))?;
+        if file.sha256 != digest {
+            return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into());
+        }
+    }
+    Ok(())
+}
+
+fn is_compact_gat_proof_v2(path: &Path) -> Result<bool, EZKLError> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = [0_u8; 96];
+    let length = file.read(&mut bytes)?;
+    let bytes = &bytes[..length];
+    let start = bytes.iter().position(|byte| !byte.is_ascii_whitespace()).unwrap_or(bytes.len());
+    Ok(bytes[start..].starts_with(br#"{"artifact_format":"ezkl-gat-native-proof","schema_version":2,"#))
+}
+
 fn gat_prepare(
     dataset: String,
     phase: GatPreparePhase,
@@ -3383,6 +3446,34 @@ fn gat_prepare_admission(
     let proof_domain_size = quotient_extent
         .checked_next_power_of_two()
         .ok_or_else(|| "native GAT extended proof domain is not representable".to_string())?;
+    let icicle_ntt_capacity_elements = proof_domain_size.max(domain_size).min(1u64 << 25);
+    let icicle_ntt_device_workspace_upper_bytes = icicle_ntt_capacity_elements
+        .checked_mul(64)
+        .ok_or_else(|| "native ICICLE NTT device workspace bound overflow".to_string())?;
+    let icicle_ntt_domain_cache_upper_bytes = icicle_ntt_capacity_elements
+        .checked_add(1 + 64 + 6)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<Fr>() as u64))
+        .ok_or_else(|| "native ICICLE NTT domain-cache bound overflow".to_string())?;
+    let icicle_ntt_init_scratch_upper_bytes = 4u64
+        .checked_mul(64)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<Fr>() as u64))
+        .ok_or_else(|| "native ICICLE NTT domain-init scratch bound overflow".to_string())?;
+    let icicle_ntt_device_peak_upper_bytes = icicle_ntt_device_workspace_upper_bytes
+        .checked_add(icicle_ntt_domain_cache_upper_bytes)
+        .and_then(|bytes| bytes.checked_add(icicle_ntt_init_scratch_upper_bytes))
+        .ok_or_else(|| "native ICICLE NTT device peak bound overflow".to_string())?;
+    let icicle_ntt_host_staging_upper_bytes = icicle_ntt_capacity_elements
+        .checked_mul(std::mem::size_of::<Fr>() as u64)
+        .ok_or_else(|| "native ICICLE NTT host staging bound overflow".to_string())?;
+    let icicle_msm_precompute_factor = 4u64;
+    let icicle_msm_precomputed_basis_count = 1u64;
+    let icicle_msm_precomputed_basis_device_upper_bytes = domain_size
+        .checked_mul(64 * icicle_msm_precompute_factor * icicle_msm_precomputed_basis_count)
+        .ok_or_else(|| "native ICICLE resident MSM basis bound overflow".to_string())?;
+    let icicle_msm_point_staging_host_upper_bytes = domain_size
+        .min(1u64 << 20)
+        .checked_mul(64)
+        .ok_or_else(|| "native ICICLE MSM point staging bound overflow".to_string())?;
     let proof_logrows = proof_domain_size.trailing_zeros();
     let uses_recursive_fft = !cfg!(target_arch = "x86_64");
     let recursive_fft_twiddle_field_elements = if uses_recursive_fft {
@@ -3483,13 +3574,26 @@ fn gat_prepare_admission(
     )
     .map_err(|_| "native permutation grand-product mapped bank exceeds u64".to_string())?;
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-static-envelope-v18",
+        "schema": "ezkl-halo2-static-envelope-v20",
         "evidence_kind": "source_derived_upper_bounds_and_configured_geometry",
         "coverage": "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt",
         "native_target_arch": std::env::consts::ARCH,
         "uses_recursive_fft": uses_recursive_fft,
         "proof_logrows": proof_logrows,
         "proof_domain_size": proof_domain_size,
+        "icicle_ntt_min_log_size": 16,
+        "icicle_ntt_max_log_size": 25,
+        "icicle_ntt_capacity_elements": icicle_ntt_capacity_elements,
+        "icicle_ntt_device_workspace_upper_bytes": icicle_ntt_device_workspace_upper_bytes,
+        "icicle_ntt_domain_cache_upper_bytes": icicle_ntt_domain_cache_upper_bytes,
+        "icicle_ntt_init_scratch_upper_bytes": icicle_ntt_init_scratch_upper_bytes,
+        "icicle_ntt_device_peak_upper_bytes": icicle_ntt_device_peak_upper_bytes,
+        "icicle_ntt_host_staging_upper_bytes": icicle_ntt_host_staging_upper_bytes,
+        "icicle_msm_max_concurrency": 1,
+        "icicle_msm_precompute_factor": icicle_msm_precompute_factor,
+        "icicle_msm_precomputed_basis_count": icicle_msm_precomputed_basis_count,
+        "icicle_msm_precomputed_basis_device_upper_bytes": icicle_msm_precomputed_basis_device_upper_bytes,
+        "icicle_msm_point_staging_host_upper_bytes": icicle_msm_point_staging_host_upper_bytes,
         "recursive_fft_cached_domain_lengths": recursive_fft_cached_domain_lengths,
         "recursive_fft_twiddle_field_elements": recursive_fft_twiddle_field_elements,
         "fft_cache_supported_length_count": fft_cache_entry_count,
@@ -3865,7 +3969,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-static-envelope-v18")
+        != Some("ezkl-halo2-static-envelope-v20")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
         || memory_model.get("evidence_kind").and_then(JsonValue::as_str)
@@ -3973,6 +4077,32 @@ fn load_native_admission_circuit(
     let expected_proof_domain_size = quotient_extent
         .checked_next_power_of_two()
         .ok_or_else(|| "native admission proof-domain size overflow".to_string())?;
+    let expected_icicle_ntt_capacity_elements = expected_proof_domain_size.max(n).min(1u128 << 25);
+    let expected_icicle_ntt_device_workspace_upper_bytes = expected_icicle_ntt_capacity_elements
+        .checked_mul(64)
+        .ok_or_else(|| "native admission ICICLE NTT workspace bound overflow".to_string())?;
+    let expected_icicle_ntt_domain_cache_upper_bytes = expected_icicle_ntt_capacity_elements
+        .checked_add(1 + 64 + 6)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<Fr>() as u128))
+        .ok_or_else(|| "native admission ICICLE NTT domain bound overflow".to_string())?;
+    let expected_icicle_ntt_init_scratch_upper_bytes = 4u128
+        .checked_mul(64)
+        .and_then(|elements| elements.checked_mul(std::mem::size_of::<Fr>() as u128))
+        .ok_or_else(|| "native admission ICICLE NTT init scratch bound overflow".to_string())?;
+    let expected_icicle_ntt_device_peak_upper_bytes = expected_icicle_ntt_device_workspace_upper_bytes
+        .checked_add(expected_icicle_ntt_domain_cache_upper_bytes)
+        .and_then(|bytes| bytes.checked_add(expected_icicle_ntt_init_scratch_upper_bytes))
+        .ok_or_else(|| "native admission ICICLE NTT device peak bound overflow".to_string())?;
+    let expected_icicle_ntt_host_staging_upper_bytes = expected_icicle_ntt_capacity_elements
+        .checked_mul(std::mem::size_of::<Fr>() as u128)
+        .ok_or_else(|| "native admission ICICLE NTT host staging bound overflow".to_string())?;
+    let expected_icicle_msm_precomputed_basis_device_upper_bytes = n
+        .checked_mul(64 * 4)
+        .ok_or_else(|| "native admission ICICLE resident MSM basis bound overflow".to_string())?;
+    let expected_icicle_msm_point_staging_host_upper_bytes = n
+        .min(1u128 << 20)
+        .checked_mul(64)
+        .ok_or_else(|| "native admission ICICLE MSM point staging bound overflow".to_string())?;
     let expected_proof_logrows = expected_proof_domain_size.trailing_zeros();
     let uses_recursive_fft = !cfg!(target_arch = "x86_64");
     let expected_twiddle_elements = if uses_recursive_fft {
@@ -4016,6 +4146,51 @@ fn load_native_admission_circuit(
     for (name, expected) in [
         ("native_target_arch", JsonValue::from(std::env::consts::ARCH)),
         ("uses_recursive_fft", JsonValue::from(uses_recursive_fft)),
+        ("icicle_ntt_min_log_size", JsonValue::from(16)),
+        ("icicle_ntt_max_log_size", JsonValue::from(25)),
+        ("icicle_msm_precompute_factor", JsonValue::from(4)),
+        ("icicle_msm_precomputed_basis_count", JsonValue::from(1)),
+        (
+            "icicle_msm_precomputed_basis_device_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_msm_precomputed_basis_device_upper_bytes)
+                .map_err(|_| "native admission ICICLE resident MSM basis bound exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_msm_point_staging_host_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_msm_point_staging_host_upper_bytes)
+                .map_err(|_| "native admission ICICLE MSM point staging bound exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_capacity_elements",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_capacity_elements)
+                .map_err(|_| "native admission ICICLE NTT capacity exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_device_workspace_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_device_workspace_upper_bytes)
+                .map_err(|_| "native admission ICICLE NTT workspace exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_domain_cache_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_domain_cache_upper_bytes)
+                .map_err(|_| "native admission ICICLE NTT domain cache exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_init_scratch_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_init_scratch_upper_bytes)
+                .map_err(|_| "native admission ICICLE NTT init scratch exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_device_peak_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_device_peak_upper_bytes)
+                .map_err(|_| "native admission ICICLE NTT peak exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_ntt_host_staging_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_ntt_host_staging_upper_bytes)
+                .map_err(|_| "native admission ICICLE NTT host staging exceeds u64".to_string())?),
+        ),
+        ("icicle_msm_max_concurrency", JsonValue::from(1)),
         (
             "recursive_fft_twiddle_field_elements",
             JsonValue::from(u64::try_from(expected_twiddle_elements)
@@ -5962,7 +6137,7 @@ fn authenticated_native_prove_backing_budget(
     let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
         .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
     let expected_budget = [
-        ("schema", "ezkl.native-prove-budget.v3"),
+        ("schema", "ezkl.native-prove-budget.v5"),
         ("session_id", session_id.as_str()),
         ("setup_receipt_sha256", setup_sha256.as_str()),
         ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
@@ -6012,6 +6187,90 @@ fn authenticated_native_prove_backing_budget(
         .get("domain_size")
         .and_then(JsonValue::as_u64)
         .ok_or("formal admission lacks a valid proof domain size")?;
+    let ntt_read = |name: &str| -> Result<u64, EZKLError> {
+        memory_model
+            .get(name)
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| format!("formal admission lacks native GPU NTT {}", name).into())
+    };
+    let msm_read = |name: &str| -> Result<u64, EZKLError> {
+        memory_model
+            .get(name)
+            .and_then(JsonValue::as_u64)
+            .ok_or_else(|| format!("formal admission lacks native resident MSM {}", name).into())
+    };
+    let ntt_capacity = ntt_read("proof_domain_size")?.max(admission_domain_size).min(1u64 << 25);
+    let ntt_device_workspace = ntt_capacity.checked_mul(64).ok_or("native GPU NTT workspace bound overflow")?;
+    let ntt_domain_cache = ntt_capacity
+        .checked_add(1 + 64 + 6)
+        .and_then(|elements| elements.checked_mul(32))
+        .ok_or("native GPU NTT domain cache bound overflow")?;
+    let ntt_init_scratch = 4 * 64 * 32;
+    let ntt_device_peak = ntt_device_workspace
+        .checked_add(ntt_domain_cache)
+        .and_then(|bytes| bytes.checked_add(ntt_init_scratch))
+        .ok_or("native GPU NTT device peak bound overflow")?;
+    let ntt_host_staging = ntt_capacity.checked_mul(32).ok_or("native GPU NTT host staging bound overflow")?;
+    let msm_cache_upper = admission_domain_size
+        .checked_mul(64 * 4)
+        .ok_or("native resident MSM cache bound overflow")?;
+    let msm_point_staging_upper = admission_domain_size.min(1u64 << 20)
+        .checked_mul(64)
+        .ok_or("native MSM point staging bound overflow")?;
+    let msm_workspace_query_schema = prove_budget
+        .get("icicle_msm_workspace_query_schema")
+        .and_then(JsonValue::as_str);
+    let msm_ordinary_workspace_peak = prove_budget
+        .get("icicle_msm_ordinary_factor1_device_workspace_peak_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks ordinary factor-1 MSM workspace peak")?;
+    let msm_prepared_workspace_peak = prove_budget
+        .get("icicle_msm_prepared_factor4_device_workspace_peak_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks prepared factor-4 MSM workspace peak")?;
+    let msm_workspace_peak = prove_budget
+        .get("device_workspace_peak_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its two-path MSM workspace peak")?;
+    if halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY != "halo2_icicle-bn254-gpu-ntt-16-25-msm-lagrange-resident-f4-v4"
+        || halo2_proofs::icicle::FORMAL_GPU_NTT_MIN_SIZE != (1usize << 16)
+        || halo2_proofs::icicle::FORMAL_GPU_NTT_MAX_SIZE != (1usize << 25)
+        || halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY != 1
+        || halo2_proofs::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR != 4
+        || ntt_read("icicle_ntt_min_log_size")? != 16
+        || ntt_read("icicle_ntt_max_log_size")? != 25
+        || ntt_read("icicle_ntt_capacity_elements")? != ntt_capacity
+        || ntt_read("icicle_ntt_device_workspace_upper_bytes")? != ntt_device_workspace
+        || ntt_read("icicle_ntt_domain_cache_upper_bytes")? != ntt_domain_cache
+        || ntt_read("icicle_ntt_init_scratch_upper_bytes")? != ntt_init_scratch
+        || ntt_read("icicle_ntt_device_peak_upper_bytes")? != ntt_device_peak
+        || ntt_read("icicle_ntt_host_staging_upper_bytes")? != ntt_host_staging
+        || msm_read("icicle_msm_precompute_factor")? != 4
+        || msm_read("icicle_msm_precomputed_basis_count")? != 1
+        || msm_read("icicle_msm_precomputed_basis_device_upper_bytes")? != msm_cache_upper
+        || msm_read("icicle_msm_point_staging_host_upper_bytes")? != msm_point_staging_upper
+        || prove_budget.get("native_execution_policy").and_then(JsonValue::as_str)
+            != Some(halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY)
+        || prove_budget.get("icicle_msm_max_concurrency").and_then(JsonValue::as_u64) != Some(1)
+        || prove_budget.get("icicle_ntt_min_log_size").and_then(JsonValue::as_u64) != Some(16)
+        || prove_budget.get("icicle_ntt_max_log_size").and_then(JsonValue::as_u64) != Some(25)
+        || prove_budget.get("icicle_ntt_capacity_elements").and_then(JsonValue::as_u64) != Some(ntt_capacity)
+        || prove_budget.get("icicle_ntt_device_workspace_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_device_workspace)
+        || prove_budget.get("icicle_ntt_domain_cache_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_domain_cache)
+        || prove_budget.get("icicle_ntt_init_scratch_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_init_scratch)
+        || prove_budget.get("icicle_ntt_device_peak_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_device_peak)
+        || prove_budget.get("icicle_ntt_host_staging_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_host_staging)
+        || prove_budget.get("icicle_msm_precompute_factor").and_then(JsonValue::as_u64) != Some(4)
+        || prove_budget.get("icicle_msm_precomputed_basis_count").and_then(JsonValue::as_u64) != Some(1)
+        || prove_budget.get("icicle_msm_precomputed_basis_device_upper_bytes").and_then(JsonValue::as_u64) != Some(msm_cache_upper)
+        || prove_budget.get("icicle_msm_point_staging_host_upper_bytes").and_then(JsonValue::as_u64) != Some(msm_point_staging_upper)
+        || msm_workspace_query_schema != Some("ezkl.icicle.cub_msm_workspace_query.v3")
+        || msm_ordinary_workspace_peak == 0
+        || msm_prepared_workspace_peak == 0
+        || msm_workspace_peak != msm_ordinary_workspace_peak.max(msm_prepared_workspace_peak)
+    {
+        return Err("native prove budget does not match the current fixed GPU NTT/MSM execution profile".into());
+    }
     let grand_product_sets_per_instance = memory_model
         .get("shplonk_permutation_product_set_count")
         .and_then(JsonValue::as_u64)
@@ -6595,7 +6854,7 @@ fn write_native_pk_read_timing_receipt(
     let settings_sha256 = required_string("settings_sha256")?;
     let compiled_circuit_sha256 = required_string("compiled_circuit_sha256")?;
     let vk_sha256 = required_string("vk_sha256")?;
-    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v3")
+    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v5")
         || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
         || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
         || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
@@ -6676,6 +6935,7 @@ pub(crate) fn prove(
     srs_path: Option<PathBuf>,
     check_mode: CheckMode,
 ) -> Result<Snark<Fr, G1Affine>, EZKLError> {
+    let native_prove_command_started = Instant::now();
     let formal_srs_sha256 = if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
         validate_formal_producer_run(Path::new(&run_dir))?;
         let path = srs_path
@@ -6697,6 +6957,19 @@ pub(crate) fn prove(
     } else {
         None
     };
+    let formal_gpu_prove = formal_srs_sha256.is_some()
+        && std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into()) == "gpu";
+    #[cfg(feature = "gpu-accelerated")]
+    let _native_prove_ntt_scope = if formal_gpu_prove {
+        halo2_proofs::icicle::reset_execution_operation_stats();
+        Some(halo2_proofs::icicle::native_prove_ntt_scope())
+    } else {
+        None
+    };
+    #[cfg(not(feature = "gpu-accelerated"))]
+    if formal_gpu_prove {
+        return Err("formal GPU proving requires the matching GPU-capable native binary".into());
+    }
     let data = GraphWitness::from_path(data_path)?;
     let mut circuit = GraphCircuit::load(compiled_circuit_path)?;
 
@@ -6705,7 +6978,7 @@ pub(crate) fn prove(
         circuit.ensure_complete_gat_witness()?;
     }
 
-    let pretty_public_inputs = circuit.pretty_public_inputs(&data)?;
+    let pretty_public_inputs = if formal_srs_sha256.is_some() { None } else { circuit.pretty_public_inputs(&data)? };
     let public_inputs = circuit.prepare_public_inputs(&data)?;
 
     let circuit_settings = circuit.settings().clone();
@@ -6783,32 +7056,65 @@ pub(crate) fn prove(
     } else {
         None
     };
-    let mut snark = create_proof_circuit::<
-        KZGCommitmentScheme<Bn256>,
-        _,
-        ProverSHPLONK<_>,
-        VerifierSHPLONK<_>,
-        KZGSingleStrategy<_>,
-        _,
-        EvmTranscript<_, _, _, _>,
-        EvmTranscript<_, _, _, _>,
-    >(
-        circuit,
-        vec![public_inputs],
-        &params,
-        &pk,
-        check_mode,
-        proof_split_commits,
-        None,
-    )?;
+    let native_pre_create_proof_wall_ms = native_prove_command_started.elapsed().as_secs_f64() * 1000.0;
+    let mut snark = if formal_srs_sha256.is_some() {
+        create_proof_circuit_compact::<
+            KZGCommitmentScheme<Bn256>,
+            _,
+            ProverSHPLONK<_>,
+            VerifierSHPLONK<_>,
+            KZGSingleStrategy<_>,
+            _,
+            EvmTranscript<_, _, _, _>,
+            EvmTranscript<_, _, _, _>,
+        >(
+            circuit,
+            vec![public_inputs],
+            &params,
+            &pk,
+            check_mode,
+            proof_split_commits,
+            None,
+        )?
+    } else {
+        create_proof_circuit::<
+            KZGCommitmentScheme<Bn256>,
+            _,
+            ProverSHPLONK<_>,
+            VerifierSHPLONK<_>,
+            KZGSingleStrategy<_>,
+            _,
+            EvmTranscript<_, _, _, _>,
+            EvmTranscript<_, _, _, _>,
+        >(
+            circuit,
+            vec![public_inputs],
+            &params,
+            &pk,
+            check_mode,
+            proof_split_commits,
+            None,
+        )?
+    };
+    let native_post_create_cleanup_started = Instant::now();
     drop(pk);
     drop(params);
     drop(_native_spill);
+    let native_post_create_cleanup_wall_ms =
+        native_post_create_cleanup_started.elapsed().as_secs_f64() * 1000.0;
 
     snark.pretty_public_inputs = pretty_public_inputs;
 
     if let Some(proof_path) = proof_path {
-        snark.save(&proof_path)?;
+        let native_proof_artifact_finalize_started = Instant::now();
+        let mut native_proof_metrics_document: Option<JsonValue> = None;
+        if formal_srs_sha256.is_some() {
+            let run_dir = std::env::var("EZKL_GAT_RUN_DIR").map(PathBuf::from).map_err(|_| "formal compact proof requires EZKL_GAT_RUN_DIR")?;
+            let instances_ref = formal_proof_instances_ref(&run_dir, &proof_path, &snark.instances)?;
+            snark.save_compact_v2(&proof_path, instances_ref)?;
+        } else {
+            snark.save(&proof_path)?;
+        }
         if let Some(timing) = snark.proof_timing.as_ref() {
             let proof_sha256 = get_file_hash(&proof_path)?;
             let prove_time_ms = timing.prove_ms + native_pk_materialize_ms;
@@ -6816,25 +7122,25 @@ pub(crate) fn prove(
                 return Err("native composed prove timing is nonfinite or nonpositive".into());
             }
             let metrics = serde_json::json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "operation": "native_halo2_initial_instance_and_phase0_advice_commitments",
-                "included_in": "native_create_proof",
-                "measurement_scope": "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization",
-                "prove_included_in": "native_create_proof_plus_authenticated_pk_materialization",
-                "prove_measurement_scope": "native_create_proof_wall_plus_authenticated_fixed_value_decode_coefficient_ifft_and_boundary_rebuild",
+                "included_in": "native_create_proof_wall_ms",
+                "measurement_scope": "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization_included_in_native_create_proof_wall_ms",
+                "prove_included_in": "native_create_proof_residual_plus_authenticated_pk_materialization",
+                "prove_measurement_scope": "native_create_proof_residual_excluding_initial_commitments_plus_authenticated_fixed_value_decode_coefficient_ifft_and_boundary_rebuild",
+                "native_pre_create_proof_wall_ms": native_pre_create_proof_wall_ms,
+                "native_post_create_cleanup_wall_ms": native_post_create_cleanup_wall_ms,
                 "commitment_time_ms": timing.commitment_ms,
                 "instance_commitment_count": timing.instance_commitment_count,
                 "phase0_advice_commitment_count": timing.phase0_advice_commitment_count,
                 "affine_normalization_batch_count": timing.affine_normalization_batch_count,
-                "native_create_proof_time_ms": timing.prove_ms,
+                "native_create_proof_wall_ms": timing.create_proof_wall_ms,
+                "native_create_proof_residual_ms": timing.prove_ms,
                 "pk_materialize_time_ms": native_pk_materialize_ms,
                 "prove_time_ms": prove_time_ms,
                 "proof_sha256": proof_sha256,
             });
-            std::fs::write(
-                proof_path.with_file_name("native_proof_metrics.json"),
-                serde_json::to_vec_pretty(&metrics)?,
-            )?;
+            native_proof_metrics_document = Some(metrics);
         }
         let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
         if backend != "cpu" && backend != "gpu" {
@@ -6874,6 +7180,13 @@ pub(crate) fn prove(
                 );
             }
             artifact.save(&artifact_path).map_err(EZKLError::from)?;
+        }
+        if let Some(mut metrics) = native_proof_metrics_document {
+            let finalize_ms = native_proof_artifact_finalize_started.elapsed().as_secs_f64() * 1000.0;
+            if let Some(object) = metrics.as_object_mut() {
+                object.insert("native_proof_artifact_finalize_wall_ms".into(), JsonValue::from(finalize_ms));
+            }
+            std::fs::write(proof_path.with_file_name("native_proof_metrics.json"), serde_json::to_vec_pretty(&metrics)?)?;
         }
     }
 
@@ -7134,14 +7447,9 @@ pub(crate) fn verify_with_formal_inputs(
         || public_output_path.is_some()
         || artifact_manifest_path.is_some()
         || resource_manifest_path.is_some();
-    let mut formal_context: Option<(
-        PublicStatement,
-        ArtifactManifest,
-        Vec<Vec<String>>,
-        String,
-        String,
-        PathBuf,
-    )> = None;
+    let mut formal_context: Option<(PublicStatement, ArtifactManifest, String, usize, String, PathBuf)> = None;
+    let mut formal_proof: Option<Snark<Fr, G1Affine>> = None;
+    let mut formal_proof_decode_ms = 0.0_f64;
     let mut formal_srs_sha256: Option<String> = None;
     if formal_inputs {
         require_formal_regular_file(&proof_path, "proof")?;
@@ -7296,33 +7604,38 @@ pub(crate) fn verify_with_formal_inputs(
             return Err("formal verify loaded a circuit with invalid zero logrows".into());
         }
         assert_native_gat_public_identity(&compiled_circuit, &statement)?;
-        let proof = Snark::load::<KZGCommitmentScheme<Bn256>>(&proof_path)?;
+        let statement_sha = get_file_hash(&statement_path)?;
         let expected_instances =
             public_instances_from_statement(&mut compiled_circuit, &statement)?;
-        if proof.instances != expected_instances {
-            return Err(
-                "native proof public instances disagree with the independently reconstructed GraphCircuit inputs/outputs"
-                    .into(),
-            );
-        }
-        let proof_instances = proof
-            .instances
-            .iter()
-            .map(|column| {
-                column
-                    .iter()
-                    .map(crate::pfsys::field_to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
-        let proof_instances_digest =
-            crate::gat_adapter::schema::sha256_digest(&serde_json::to_vec(&proof_instances)?)
-                .map_err(EZKLError::from)?;
+        let (proof, proof_instances_digest, proof_instance_count, proof_decode_ms) = if is_compact_gat_proof_v2(&proof_path)? {
+            let proof_bytes = std::fs::read(&proof_path).map_err(|error| crate::pfsys::PfsysError::LoadProof(format!("{}", error)))?;
+            let decode_started = Instant::now();
+            let compact = CompactProofV2::<G1Affine>::decode_json_bytes(&proof_bytes)?;
+            let json_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
+            validate_formal_proof_instances_ref(&compact.instances_ref, &proof_path, &statement_path, &public_output_path, &artifact_manifest_path, &artifact, &statement_sha, &output_sha)?;
+            let proof_instances_digest = compact.instances_ref.sha256.clone();
+            let proof_instance_count = compact.instances_ref.count;
+            let transcript_started = Instant::now();
+            let proof = compact.into_snark(expected_instances)?;
+            let proof_decode_ms = json_decode_ms + transcript_started.elapsed().as_secs_f64() * 1000.0;
+            (proof, proof_instances_digest, proof_instance_count, proof_decode_ms)
+        } else {
+            let decode_started = Instant::now();
+            let proof = Snark::load::<KZGCommitmentScheme<Bn256>>(&proof_path)?;
+            let proof_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
+            if proof.instances != expected_instances {
+                return Err("native proof public instances disagree with the independently reconstructed GraphCircuit inputs/outputs".into());
+            }
+            let (digest, count, _) = crate::pfsys::canonical_instance_digest(&proof.instances).map_err(EZKLError::from)?;
+            (proof, digest, count, proof_decode_ms)
+        };
+        formal_proof = Some(proof);
+        formal_proof_decode_ms = proof_decode_ms;
         formal_context = Some((
             statement,
             artifact,
-            proof_instances,
             proof_instances_digest,
+            proof_instance_count,
             output_sha,
             statement_path,
         ));
@@ -7357,13 +7670,13 @@ pub(crate) fn verify_with_formal_inputs(
         EvmTranscript<G1Affine, _, _, _>,
         GraphCircuit,
         _,
-    >(proof_path.clone(), circuit_settings, vk_path, &params, logrows)?;
+    >(proof_path.clone(), circuit_settings, vk_path, &params, logrows, formal_proof.as_ref(), formal_proof_decode_ms)?;
     drop(params);
     if let Some((
         statement,
         artifact,
-        proof_instances,
         proof_instances_digest,
+        proof_instance_count,
         output_sha,
         statement_path,
     )) = formal_context
@@ -7402,7 +7715,7 @@ pub(crate) fn verify_with_formal_inputs(
             public_statement_sha256: get_file_hash(&statement_path)?,
             public_output_sha256: output_sha,
             proof_instances_sha256: proof_instances_digest,
-            proof_instance_count: proof_instances.iter().map(Vec::len).sum(),
+            proof_instance_count,
             circuit_ref: artifact.circuit_ref,
         };
         std::fs::write(
@@ -7428,6 +7741,8 @@ fn verify_commitment<
     vk_path: PathBuf,
     params: &'a Scheme::ParamsVerifier,
     logrows: u32,
+    preloaded_proof: Option<&Snark<Scheme::Scalar, Scheme::Curve>>,
+    preloaded_proof_decode_ms: f64,
 ) -> Result<(bool, f64), EZKLError>
 where
     Scheme::Scalar: FromUniformBytes<64>
@@ -7438,18 +7753,18 @@ where
     Scheme::Curve: SerdeObject + Serialize + DeserializeOwned,
     Scheme::ParamsVerifier: 'a,
 {
-    let proof_bytes = std::fs::read(&proof_path)
-        .map_err(|e| crate::pfsys::PfsysError::LoadProof(format!("{}", e)))?;
+    let proof_bytes = if preloaded_proof.is_none() { Some(std::fs::read(&proof_path).map_err(|e| crate::pfsys::PfsysError::LoadProof(format!("{}", e)))?) } else { None };
 
     let strategy = Strategy::new(params);
     let vk = load_vk::<Scheme, C>(vk_path, settings)?;
     let now = Instant::now();
 
-    let proof = Snark::<Scheme::Scalar, Scheme::Curve>::decode_json_bytes(&proof_bytes)?;
+    let decoded_proof = proof_bytes.as_deref().map(Snark::<Scheme::Scalar, Scheme::Curve>::decode_json_bytes).transpose()?;
+    let proof = preloaded_proof.or(decoded_proof.as_ref()).ok_or_else(|| EZKLError::from("native verifier lost its proof artifact"))?;
     let result =
-        verify_proof_circuit::<V, _, _, _, TR>(&proof, params, &vk, strategy, 1 << logrows);
+        verify_proof_circuit::<V, _, _, _, TR>(proof, params, &vk, strategy, 1 << logrows);
 
-    let elapsed = now.elapsed();
+    let elapsed = now.elapsed() + Duration::from_secs_f64(preloaded_proof_decode_ms.max(0.0) / 1000.0);
     info!(
         "verify took {}.{}",
         elapsed.as_secs(),

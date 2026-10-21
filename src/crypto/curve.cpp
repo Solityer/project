@@ -1326,9 +1326,12 @@ namespace gatzk::crypto
                 return out;
             }
 
-            const bool coalesced_same_srs_request = current_cuda_msm_batch_window() != nullptr && count >= (std::size_t{1} << 12);
+            const auto live_prefix_count = last_nonzero_exclusive;
+            const bool coalesced_same_srs_request = current_cuda_msm_batch_window() != nullptr &&
+                                                   live_prefix_count >= (std::size_t{1} << 12);
 
-            if (stable_srs_bases && util::route2_options().cuda_field_hotspots && (count >= (std::size_t{1} << 14) || coalesced_same_srs_request))
+            if (stable_srs_bases && util::route2_options().cuda_field_hotspots &&
+                (live_prefix_count >= (std::size_t{1} << 14) || coalesced_same_srs_request))
             {
                 if (profile != nullptr)
                 {
@@ -1336,10 +1339,10 @@ namespace gatzk::crypto
 
                     profile->sparse_compaction = false;
 
-                    profile->effective_scalar_count = count;
+                    profile->effective_scalar_count = live_prefix_count;
                 }
 
-                if (execute_cuda_msm_when_requested(&out, points, scalars, count, true, stable_srs_capacity))
+                if (execute_cuda_msm_when_requested(&out, points, scalars, live_prefix_count, true, stable_srs_capacity))
                 {
                     return out;
                 }

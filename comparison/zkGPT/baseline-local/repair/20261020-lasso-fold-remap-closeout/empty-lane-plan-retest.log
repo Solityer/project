@@ -1,0 +1,15 @@
+Internal ctest changing into directory: /home/pzh/project/comparison/zkGPT/build/cpu-tests
+Test project /home/pzh/project/comparison/zkGPT/build/cpu-tests
+    Start 4: gat_proof_plan_smoke
+1/1 Test #4: gat_proof_plan_smoke .............***Exception: SegFault  2.37 sec
+gat_adapter_prover_stage: native-initSubset begin
+gat_adapter_prover_stage: native-initSubset complete elapsed_ms=1.27018
+
+
+0% tests passed, 1 tests failed out of 1
+
+Total Test time (real) =   2.37 sec
+
+The following tests FAILED:
+	  4 - gat_proof_plan_smoke (SEGFAULT)
+Errors while running CTest

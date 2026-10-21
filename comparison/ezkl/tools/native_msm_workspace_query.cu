@@ -11,28 +11,33 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <curves/params/bn254.cuh>
 
 namespace {
-constexpr unsigned kScalarBits = 254;
-constexpr unsigned kC = 16;
-constexpr unsigned kChunkScalars = 1U << 20;
-constexpr unsigned kWindowCount = (kScalarBits + kC - 1) / kC;
-constexpr unsigned kM = kChunkScalars * kWindowCount;
-constexpr unsigned kB = (kWindowCount << kC) - kWindowCount;
-constexpr unsigned kHMax = kB;
-constexpr unsigned kAverageBucketSize = kChunkScalars / (1U << kC);
-constexpr unsigned kBucketThreshold = 10U * kAverageBucketSize;
-constexpr unsigned kLMax = kM / (kBucketThreshold + 1U);
-constexpr unsigned kLargeBucketThreadsMax =
-    (kM + kAverageBucketSize - 1U) / kAverageBucketSize + kLMax;
-static_assert(kWindowCount == 16 && kM == 16777216 && kB == 1048560, "ICICLE MSM profile drift");
-static_assert(kAverageBucketSize == 16 && kBucketThreshold == 160 && kLMax == 104206,
-              "large-bucket bound no longer matches the pinned ICICLE MSM implementation");
-static_assert(kLMax <= kHMax && kHMax <= kB, "invalid conservative ICICLE MSM query bounds");
+constexpr unsigned kScalarBits = 254, kC = 16, kChunkScalars = 1U << 20;
+constexpr unsigned kTotalWindowCount = (kScalarBits + kC - 1U) / kC, kM = kChunkScalars * kTotalWindowCount;
+constexpr unsigned kLargeBucketFactor = 10, kOrdinaryPrecomputeFactor = 1, kPreparedPrecomputeFactor = 4;
+struct MsmPathProfile { unsigned precompute_factor, window_count, bucket_count, average_bucket_size, large_bucket_threshold, large_bucket_count_max, large_bucket_threads_max; };
+constexpr MsmPathProfile make_path_profile(unsigned precompute_factor) {
+  const unsigned window_count = (kTotalWindowCount - 1U) / precompute_factor + 1U;
+  const unsigned bucket_count = (window_count << kC) - window_count;
+  const unsigned average_bucket_size = (kChunkScalars / (1U << kC)) * precompute_factor;
+  const unsigned large_bucket_threshold = kLargeBucketFactor * average_bucket_size;
+  const unsigned large_bucket_count_max = kM / (large_bucket_threshold + 1U);
+  const unsigned large_bucket_threads_max = (kM + average_bucket_size - 1U) / average_bucket_size + large_bucket_count_max;
+  return {precompute_factor, window_count, bucket_count, average_bucket_size, large_bucket_threshold, large_bucket_count_max, large_bucket_threads_max};
+}
+constexpr MsmPathProfile kOrdinaryPath = make_path_profile(kOrdinaryPrecomputeFactor);
+constexpr MsmPathProfile kPreparedPath = make_path_profile(kPreparedPrecomputeFactor);
+static_assert(kTotalWindowCount == 16 && kM == 16777216, "ICICLE MSM profile drift");
+static_assert(kOrdinaryPath.window_count == 16 && kOrdinaryPath.bucket_count == 1048560 && kOrdinaryPath.average_bucket_size == 16 && kOrdinaryPath.large_bucket_threshold == 160 && kOrdinaryPath.large_bucket_count_max == 104206 && kOrdinaryPath.large_bucket_threads_max == 1152782, "factor-1 ICICLE MSM bounds drift");
+static_assert(kPreparedPath.window_count == 4 && kPreparedPath.bucket_count == 262140 && kPreparedPath.average_bucket_size == 64 && kPreparedPath.large_bucket_threshold == 640 && kPreparedPath.large_bucket_count_max == 26173 && kPreparedPath.large_bucket_threads_max == 288317, "factor-4 ICICLE MSM bounds drift");
+static_assert(kOrdinaryPath.large_bucket_count_max <= kOrdinaryPath.bucket_count && kPreparedPath.large_bucket_count_max <= kPreparedPath.bucket_count, "invalid conservative ICICLE MSM query bounds");
 struct Query { const char* name; std::uint64_t num_items; std::uint64_t scratch_bytes; };
+struct PathQuery { MsmPathProfile profile; std::vector<Query> queries; std::uint64_t scratch_bytes; std::uint64_t device_bytes; std::uint64_t point_upload_bytes; std::uint64_t precompute_device_temporary_bytes; };
 void check_cuda(cudaError_t status, const char* operation) {
   if (status != cudaSuccess) throw std::runtime_error(std::string(operation) + ": " + cudaGetErrorString(status));
 }
@@ -114,6 +119,9 @@ Query query_inclusive_scan(const char* name, unsigned count, cudaStream_t stream
       static_cast<const unsigned*>(nullptr), static_cast<unsigned*>(nullptr), count, stream), name);
   return {name, count, checked_size(bytes, name)};
 }
+std::vector<Query> query_path_operations(const MsmPathProfile& profile, cudaStream_t stream) {
+  return {query_sort_pairs("scalar_index_sort_pairs", kM, stream), query_rle("sorted_bucket_run_length_encode", kM, stream), query_exclusive_scan("bucket_offsets_exclusive_scan", profile.bucket_count + 1U, stream), query_sort_pairs_descending("bucket_size_offset_sort_pairs_descending", profile.bucket_count, stream), query_sort_pairs_descending("bucket_size_index_sort_pairs_descending", profile.bucket_count, stream), query_inclusive_scan("large_bucket_prefix_inclusive_scan", profile.large_bucket_count_max, stream)};
+}
 
 std::uint64_t scratch_sum(const std::vector<Query>& queries) {
   std::uint64_t total = 0;
@@ -131,37 +139,33 @@ void print_queries(const std::vector<Query>& queries) {
   std::cout << ']';
 }
 
-std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
-                                           std::uint64_t affine_bytes,
-                                           std::uint64_t projective_bytes,
-                                           std::uint64_t uint_bytes,
-                                           std::uint64_t scratch_bytes_sum) {
+std::uint64_t device_workspace_upper_bound(const MsmPathProfile& profile, bool points_are_host_resident, std::uint64_t scalar_bytes, std::uint64_t affine_bytes, std::uint64_t projective_bytes, std::uint64_t uint_bytes, std::uint64_t scratch_bytes_sum) {
   std::uint64_t total = 0;
   const auto add = [&total](std::uint64_t bytes) { total = checked_add(total, bytes); };
   // This sums source-sized array maxima across MSM phases. Several entries
   // are not simultaneously live; summing them is intentionally conservative.
-  add(array_bytes(kChunkScalars, scalar_bytes));                         // uploaded scalars
-  add(array_bytes(kChunkScalars, affine_bytes));                         // uploaded points
-  add(array_bytes(4ULL * kM, uint_bytes));                               // input and sorted indices
-  add(array_bytes(kB + 1ULL, uint_bytes));                               // single bucket indices
-  add(array_bytes(kB + 1ULL, uint_bytes));                               // bucket sizes
-  add(array_bytes(kB + 1ULL, uint_bytes));                               // bucket offsets
-  add(array_bytes(kB, uint_bytes));                                      // sorted bucket sizes
-  add(array_bytes(kB, uint_bytes));                                      // sorted bucket offsets
-  add(array_bytes(kB, uint_bytes));                                      // sorted single bucket indices
-  add(4ULL * uint_bytes);                                                // scalar counters
-  add(array_bytes(kB + kWindowCount, projective_bytes));                // main buckets
-  add(array_bytes(kLMax + 1, uint_bytes));                              // large bucket prefix sums
-  add(array_bytes(kLargeBucketThreadsMax, uint_bytes));                // large bucket indices
-  add(array_bytes(kLargeBucketThreadsMax, projective_bytes));           // large bucket points
+  add(array_bytes(kChunkScalars, scalar_bytes));
+  if (points_are_host_resident) add(array_bytes(kChunkScalars, affine_bytes));
+  add(array_bytes(4ULL * kM, uint_bytes));
+  add(array_bytes(profile.bucket_count + 1ULL, uint_bytes));
+  add(array_bytes(profile.bucket_count + 1ULL, uint_bytes));
+  add(array_bytes(profile.bucket_count + 1ULL, uint_bytes));
+  add(array_bytes(profile.bucket_count, uint_bytes));
+  add(array_bytes(profile.bucket_count, uint_bytes));
+  add(array_bytes(profile.bucket_count, uint_bytes));
+  add(4ULL * uint_bytes);
+  add(array_bytes(profile.bucket_count + profile.window_count, projective_bytes));
+  add(array_bytes(profile.large_bucket_count_max + 1ULL, uint_bytes));
+  add(array_bytes(profile.large_bucket_threads_max, uint_bytes));
+  add(array_bytes(profile.large_bucket_threads_max, projective_bytes));
 
   // The iterative reduction allocates one source array, two source-sized
   // temporaries, and one target array per iteration. Compute the largest
   // live iteration from the implementation's same bit/window recurrence.
   std::uint64_t reduction_peak_elements = 0;
   unsigned source_bits = kC;
-  unsigned source_windows = kWindowCount;
-  std::uint64_t source_count = kB + kWindowCount;
+  unsigned source_windows = profile.window_count;
+  std::uint64_t source_count = profile.bucket_count + profile.window_count;
   for (;;) {
     const unsigned target_bits = (source_bits + 1U) >> 1U;
     const unsigned target_windows = source_windows << 1U;
@@ -181,9 +185,29 @@ std::uint64_t device_workspace_upper_bound(std::uint64_t scalar_bytes,
     source_count = target_count;
   }
   add(array_bytes(reduction_peak_elements, projective_bytes));
-  add(array_bytes(kWindowCount + (kScalarBits + 1ULL), projective_bytes));  // reduction/final result buffers
-  add(scratch_bytes_sum);                                                // sum of all queried CUB temporaries
+  add(array_bytes(profile.window_count + (kScalarBits + 1ULL), projective_bytes));
+  add(scratch_bytes_sum);
   return total;
+}
+PathQuery build_path_query(const MsmPathProfile& profile, bool points_are_host_resident, std::uint64_t scalar_bytes, std::uint64_t affine_bytes, std::uint64_t projective_bytes, std::uint64_t uint_bytes, cudaStream_t stream) {
+  std::vector<Query> queries = query_path_operations(profile, stream);
+  const std::uint64_t scratch_bytes = scratch_sum(queries);
+  const std::uint64_t point_upload_bytes = points_are_host_resident ? array_bytes(kChunkScalars, affine_bytes) : 0;
+  const std::uint64_t device_bytes = device_workspace_upper_bound(profile, points_are_host_resident, scalar_bytes, affine_bytes, projective_bytes, uint_bytes, scratch_bytes);
+  return {profile, std::move(queries), scratch_bytes, device_bytes, point_upload_bytes, 0};
+}
+void print_path_query(const char* name, const PathQuery& path) {
+  std::cout << "\"" << name << "\":{\"precompute_factor\":" << path.profile.precompute_factor
+            << ",\"window_count_per_msm\":" << path.profile.window_count << ",\"B\":" << path.profile.bucket_count
+            << ",\"H_max\":" << path.profile.bucket_count << ",\"average_bucket_size\":" << path.profile.average_bucket_size
+            << ",\"large_bucket_threshold\":" << path.profile.large_bucket_threshold
+            << ",\"L_max\":" << path.profile.large_bucket_count_max
+            << ",\"large_bucket_threads_max\":" << path.profile.large_bucket_threads_max
+            << ",\"point_upload_bytes\":" << path.point_upload_bytes
+            << ",\"precompute_device_temporary_bytes\":" << path.precompute_device_temporary_bytes
+            << ",\"device_workspace_peak_bytes\":" << path.device_bytes << ",\"queries\":";
+  print_queries(path.queries);
+  std::cout << ",\"scratch_bytes_sum\":" << path.scratch_bytes << '}';
 }
 }
 
@@ -237,31 +261,23 @@ int main(int argc, char** argv) {
     check_cuda(cudaRuntimeGetVersion(&runtime_version), "cudaRuntimeGetVersion");
     check_cuda(cudaDriverGetVersion(&driver_version), "cudaDriverGetVersion");
     const cudaStream_t stream = nullptr;
-    const std::vector<Query> queries = {
-        query_sort_pairs("scalar_index_sort_pairs", kM, stream),
-        query_rle("sorted_bucket_run_length_encode", kM, stream),
-        query_exclusive_scan("bucket_offsets_exclusive_scan", kB + 1, stream),
-        query_sort_pairs_descending("bucket_size_offset_sort_pairs_descending", kHMax, stream),
-        query_sort_pairs_descending("bucket_size_index_sort_pairs_descending", kHMax, stream),
-        query_inclusive_scan("large_bucket_prefix_inclusive_scan", kLMax, stream),
-    };
-    const std::uint64_t total_scratch_bytes = scratch_sum(queries);
     const auto scalar_size = static_cast<std::uint64_t>(sizeof(bn254::scalar_t));
     const auto affine_size = static_cast<std::uint64_t>(sizeof(bn254::affine_t));
     const auto projective_size = static_cast<std::uint64_t>(sizeof(bn254::projective_t));
     const auto uint_size = static_cast<std::uint64_t>(sizeof(unsigned));
+    const PathQuery ordinary_path = build_path_query(kOrdinaryPath, true, scalar_size, affine_size, projective_size, uint_size, stream);
+    const PathQuery prepared_path = build_path_query(kPreparedPath, false, scalar_size, affine_size, projective_size, uint_size, stream);
+    const std::uint64_t device_peak = ordinary_path.device_bytes > prepared_path.device_bytes ? ordinary_path.device_bytes : prepared_path.device_bytes;
     size_t free_bytes = 0;
     size_t total_bytes = 0;
     check_cuda(cudaMemGetInfo(&free_bytes, &total_bytes), "cudaMemGetInfo");
-    const auto device_peak = device_workspace_upper_bound(
-        scalar_size, affine_size, projective_size, uint_size, total_scratch_bytes);
 #if defined(__CUDACC_VER_MAJOR__) && defined(__CUDACC_VER_MINOR__) && defined(__CUDACC_VER_BUILD__)
     const std::string toolkit_version = std::to_string(__CUDACC_VER_MAJOR__) + "." +
         std::to_string(__CUDACC_VER_MINOR__) + "." + std::to_string(__CUDACC_VER_BUILD__);
 #else
 #error CUDA compiler version macros are required for workspace identity
 #endif
-    std::cout << "{\"schema\":\"ezkl.icicle.cub_msm_workspace_query.v2\""
+    std::cout << "{\"schema\":\"ezkl.icicle.cub_msm_workspace_query.v3\""
               << ",\"session_id\":\"" << session_id << "\""
               << ",\"icicle_source_tree_sha256\":\"" << source_sha256 << "\""
               << ",\"native_backend_manifest_sha256\":\"" << manifest_sha256 << "\""
@@ -270,8 +286,8 @@ int main(int argc, char** argv) {
               << ",\"total_memory_bytes\":" << static_cast<std::uint64_t>(total_bytes)
               << ",\"integrated_device\":" << (properties.integrated ? "true" : "false")
               << ",\"scalar_bits\":" << kScalarBits << ",\"c\":" << kC
-              << ",\"chunk_scalars\":" << kChunkScalars << ",\"window_count\":" << kWindowCount
-              << ",\"M\":" << kM << ",\"B\":" << kB << ",\"H_max\":" << kHMax << ",\"L_max\":" << kLMax
+              << ",\"chunk_scalars\":" << kChunkScalars << ",\"total_window_count\":" << kTotalWindowCount
+              << ",\"M\":" << kM << ",\"supported_paths\":[\"ordinary_factor1\",\"prepared_factor4\"]"
               << ",\"cuda_runtime_version\":" << runtime_version << ",\"cuda_driver_version\":" << driver_version
               << ",\"cuda_toolkit_version\":\"" << toolkit_version << "\""
               << ",\"cub_version\":" << CUB_VERSION
@@ -279,10 +295,11 @@ int main(int argc, char** argv) {
               << ",\"native_type_sizes\":{\"scalar_bytes\":" << scalar_size
               << ",\"affine_bytes\":" << affine_size << ",\"projective_bytes\":" << projective_size
               << ",\"unsigned_bytes\":" << uint_size << "}"
-              << ",\"device_workspace_peak_bytes\":" << device_peak
-              << ",\"queries\":";
-    print_queries(queries);
-    std::cout << ",\"scratch_bytes_sum\":" << total_scratch_bytes << "}\n";
+              << ',';
+    print_path_query("ordinary_factor1", ordinary_path);
+    std::cout << ',';
+    print_path_query("prepared_factor4", prepared_path);
+    std::cout << ",\"device_workspace_peak_bytes\":" << device_peak << "}\n";
     return std::cout.good() ? 0 : 1;
   } catch (const std::exception& error) {
     std::cerr << "native MSM CUB workspace query failed: " << error.what() << '\n';

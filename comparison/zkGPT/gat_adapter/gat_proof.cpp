@@ -43,6 +43,16 @@ std::once_flag field_once;
 
 const std::size_t kArtifactMaxString = 1ULL << 26;
 const std::size_t kArtifactMaxMessages = 1ULL << 20;
+
+std::uint64_t hyrax_l_qry_binary_lut_workspace_bytes(std::uint64_t rows,
+                                                     std::uint64_t columns) {
+    if (rows < 128 || columns < 8 || columns % 8 != 0) return 0;
+    const unsigned __int128 point_count = static_cast<unsigned __int128>(columns / 8) * 256U;
+    const unsigned __int128 bytes = point_count * sizeof(G1);
+    if (bytes > std::numeric_limits<std::uint64_t>::max())
+        throw std::overflow_error("Hyrax L_qry binary subset-table workspace exceeds u64");
+    return static_cast<std::uint64_t>(bytes);
+}
 const std::uint64_t kArtifactMaxWireBytes = 1ULL << 30;
 const std::uint64_t kArtifactHardMaxWireBytes = 4ULL << 30;
 const std::uint64_t kArtifactRowPointBytesPerCopy = 284;
@@ -1558,39 +1568,26 @@ class GkrPointShapeCollector {
                                     std::size_t unary_count,
                                     std::size_t binary_count) {
         const std::size_t current_layer = circuit_.circuit.size();
-        if (width == 0 || first_output > std::numeric_limits<std::size_t>::max() - width ||
-            range_begin > std::numeric_limits<std::size_t>::max() - width)
+        if (width == 0 || range_begin > std::numeric_limits<std::size_t>::max() - width)
             throw std::overflow_error("shape-only GKR range decomposition overflows size_t");
         if (symbolic_) {
-            observe_output(first_output + width);
+            observe_output(first_output);
             (void)support_index(static_cast<std::uint64_t>(source));
             validate_support_interval(static_cast<std::uint64_t>(range_begin),
                                       static_cast<std::uint64_t>(width));
-            if (width > (std::numeric_limits<std::size_t>::max() - 1) / 2 ||
-                unary_count != 2 * width + 1 || binary_count != width)
+            if (unary_count != width + 1 || binary_count != 0)
                 throw std::logic_error("symbolic GKR range gate profile is inconsistent");
             unary_count_ += unary_count;
-            binary_count_ += binary_count;
-            has_v_operand_ = true;
             return;
         }
-        observe_output(first_output + width);
+        observe_output(first_output);
         observe_source(0, 0, source, current_layer);
         mark_support_interval(0, static_cast<std::uint64_t>(range_begin),
                               static_cast<std::uint64_t>(width));
-        mark_support_interval(1, static_cast<std::uint64_t>(range_begin),
-                              static_cast<std::uint64_t>(width));
-        if (width > (std::numeric_limits<std::size_t>::max() - 1) / 2)
-            throw std::overflow_error("shape-only GKR range gate count overflows size_t");
-        const std::size_t expected_unary = 2 * width + 1;
-        if (unary_count != expected_unary || binary_count != width)
+        if (unary_count != width + 1 || binary_count != 0)
             throw std::logic_error("shape-only GKR range gate profile is inconsistent");
         unary_count_ += unary_count;
-        binary_count_ += binary_count;
-        has_v_operand_ = true;
-        if (binary_count > std::numeric_limits<std::size_t>::max() - unary_count)
-            throw std::overflow_error("GKR shape progress gate delta overflows size_t");
-        note_shape_progress(static_cast<std::uint64_t>(unary_count + binary_count));
+        note_shape_progress(static_cast<std::uint64_t>(unary_count));
     }
 
     void append_explicit_layer(layerType type, std::size_t output_size,
@@ -2215,9 +2212,9 @@ struct RelationLayerBuilder {
         if (!shape_only) throw std::logic_error("range decomposition shortcut used outside shape admission");
         if (width == 0 || width > (std::numeric_limits<std::size_t>::max() - 1) / 2)
             throw std::length_error("shape-only range decomposition width is invalid");
-        const std::size_t unary_count = 2 * static_cast<std::size_t>(width) + 1;
-        const std::size_t binary_count = static_cast<std::size_t>(width);
-        const std::size_t target_count = static_cast<std::size_t>(width) + 1;
+        const std::size_t unary_count = static_cast<std::size_t>(width) + 1;
+        const std::size_t binary_count = 0;
+        const std::size_t target_count = 1;
         if (next_output > output_capacity || target_count > output_capacity - next_output ||
             emitted_targets > target_capacity || target_count > target_capacity - emitted_targets ||
             emitted_unary > unary_capacity || unary_count > unary_capacity - emitted_unary ||
@@ -2407,11 +2404,7 @@ void add_nonnegative_range_residuals(RelationLayerBuilder& builder, std::size_t 
         return;
     }
     std::vector<LinearTerm> decomposition = {{source, -coefficient}};
-    for (unsigned bit = 0; bit < width; ++bit) {
-        decomposition.emplace_back(range_cursor, static_cast<ll>(1ULL << bit));
-        builder.add_residual({{range_cursor, -1}}, {{range_cursor, range_cursor, 1}});
-        ++range_cursor;
-    }
+    for (unsigned bit = 0; bit < width; ++bit) { decomposition.emplace_back(range_cursor, static_cast<ll>(1ULL << bit)); ++range_cursor; }
     builder.add_residual(decomposition, {}, constant);
 }
 
@@ -3247,7 +3240,7 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
 
     GatCircuitPlan plan;
     plan.recipe_schema = "canonical_plan_recipe_v3";
-    plan.relation_schema = "zkgpt-gat-relation-v1";
+    plan.relation_schema = "zkgpt-gat-relation-v2";
     plan.model_arch_id = model.manifest.model_arch_id;
     plan.model_shape = canonical_model_shape(model);
     plan.graph_num_nodes = graph.num_nodes;
@@ -3989,7 +3982,12 @@ GatCircuitPlan build_plan_impl(const Graph& graph, const Model& model, const Qua
     plan.has_placeholder = false;
     if (plan.registry.descriptors.empty() || !plan.registry.covers_all_segments()) plan.official_layered = false;
     std::string plan_reason;
+    const auto plan_validation_begin = std::chrono::steady_clock::now();
+    std::cerr << "gat_adapter_prover_stage: canonical-plan-gate-validation begin" << std::endl;
     if (!validate_gat_circuit_plan_impl(plan, &plan_reason)) throw std::invalid_argument("canonical GAT proof plan validation failed: " + plan_reason);
+    std::cerr << "gat_adapter_prover_stage: canonical-plan-gate-validation complete elapsed_ms="
+              << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - plan_validation_begin).count()
+              << std::endl;
     return plan;
 }
 
@@ -4003,6 +4001,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
             return fail("native GAT proof backing is not resident");
         if (plan.virtual_sparse) {
             if (!plan.official_layered || plan.has_placeholder || plan.recipe_schema != "canonical_plan_recipe_v3" ||
+                plan.relation_schema != "zkgpt-gat-relation-v1" ||
                 plan.sparse_relation_schema != kSparseGkrRelationSchema || plan.sparse_relation_version != kSparseGkrRelationVersion ||
                 plan.sparse_chunk_size != kSparseGkrChunkEntries || !is_lower_hex_digest(plan.sparse_plan_digest) || plan.model_arch_id.empty() ||
                 plan.model_arch_id != plan.model_shape.model_arch_id || !canonical_model_shape_valid(plan.model_shape, reason) || plan.graph_num_nodes == 0 ||
@@ -4071,7 +4070,8 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
             return true;
         }
         if (!plan.official_layered || plan.has_placeholder) return fail("plan is not an official layered circuit");
-        if (plan.recipe_schema != "canonical_plan_recipe_v3" || plan.sparse_relation_schema != kSparseGkrRelationSchema ||
+        if (plan.recipe_schema != "canonical_plan_recipe_v3" || plan.relation_schema != "zkgpt-gat-relation-v2" ||
+            plan.sparse_relation_schema != kSparseGkrRelationSchema ||
             plan.sparse_relation_version != kSparseGkrRelationVersion || plan.sparse_chunk_size != kSparseGkrChunkEntries ||
             !is_lower_hex_digest(plan.sparse_plan_digest) || plan.model_arch_id.empty() || plan.model_arch_id != plan.model_shape.model_arch_id ||
             !canonical_model_shape_valid(plan.model_shape, reason) || plan.graph_num_nodes == 0 || plan.graph_num_features == 0 || plan.graph_count == 0 ||
@@ -4152,7 +4152,7 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
             const InputSegment* rhs_segment = canonical_segment_for_span(plan.input_layout, descriptor.rhs_offset,
                                                                          checked_mul(descriptor.inner, descriptor.cols, "plan MatMul canonical RHS span"));
             const InputSegment* output_segment = canonical_segment_for_span(plan.input_layout, descriptor.output_offset, descriptor.output_coordinates);
-            if (descriptor.relation_id.empty() || descriptor.rows == 0 || descriptor.inner == 0 || descriptor.cols == 0 ||
+            if (descriptor.relation_schema != plan.relation_schema || descriptor.relation_id.empty() || descriptor.rows == 0 || descriptor.inner == 0 || descriptor.cols == 0 ||
                 descriptor.output_coordinates != checked_mul(descriptor.rows, descriptor.cols, "plan MatMul output") ||
                 !require_span(descriptor.lhs_offset, checked_mul(descriptor.rows, descriptor.inner, "plan MatMul lhs")) ||
                 !require_span(descriptor.rhs_offset, checked_mul(descriptor.inner, descriptor.cols, "plan MatMul rhs")) ||
@@ -4208,6 +4208,27 @@ bool validate_gat_circuit_plan_impl(const GatCircuitPlan& plan, std::string* rea
                 return fail("aggregation descriptor lacks field or SignedRoundDiv relation");
         }
         if (plan.sparse_gkr.empty()) return fail("canonical plan has no sparse GKR descriptors");
+        const std::size_t expected_native_relation_count = checked_add(
+            checked_add(plan.matmuls.size(), plan.sparse_gkr.size(), "native relation descriptor count"),
+            1, "native relation descriptor count");
+        if (plan.native_relations.size() != expected_native_relation_count)
+            return fail("native relation descriptor count does not match canonical MatMul, sparse, and rounding relations");
+        for (std::size_t index = 0; index < plan.matmuls.size(); ++index) {
+            const NativeRelationDescriptor& descriptor = plan.native_relations[index];
+            if (descriptor.relation_id != plan.matmuls[index].relation_id ||
+                descriptor.relation_schema != plan.relation_schema)
+                return fail("native MatMul relation descriptor schema or order is not canonical");
+        }
+        for (std::size_t index = 0; index < plan.sparse_gkr.size(); ++index) {
+            const NativeRelationDescriptor& descriptor = plan.native_relations[plan.matmuls.size() + index];
+            if (descriptor.relation_id != plan.sparse_gkr[index].relation_id ||
+                descriptor.relation_schema != kSparseGkrRelationSchema)
+                return fail("native sparse relation descriptor schema or order is not canonical");
+        }
+        const NativeRelationDescriptor& rounding_descriptor = plan.native_relations.back();
+        if (rounding_descriptor.relation_id != "rounding/signed_round_div" ||
+            rounding_descriptor.relation_schema != plan.relation_schema)
+            return fail("native rounding relation descriptor schema is not canonical");
         const InputSegment& query_segment = plan.input_layout.segments.at(3);
         std::size_t query_cursor = query_segment.offset;
         if (plan.lasso.size() != 4) return fail("canonical plan must contain four Lasso families");
@@ -7071,7 +7092,7 @@ void append_context_plan(std::string& out, const GatCircuitPlan& plan) { append_
 bool read_compact_plan_recipe(ContextReader& reader, GatCircuitPlan& plan) {
     std::uint64_t sparse_version = 0;
     if (!reader.read_string(plan.recipe_schema, "plan recipe schema") || plan.recipe_schema != "canonical_plan_recipe_v3" ||
-        !reader.read_string(plan.relation_schema, "plan relation schema") || plan.relation_schema != "zkgpt-gat-relation-v1" ||
+        !reader.read_string(plan.relation_schema, "plan relation schema") || plan.relation_schema != "zkgpt-gat-relation-v2" ||
         !reader.read_string(plan.sparse_relation_schema, "sparse relation schema") || plan.sparse_relation_schema != kSparseGkrRelationSchema ||
         !reader.read_u64(sparse_version) || sparse_version != kSparseGkrRelationVersion ||
         !reader.read_size(plan.sparse_chunk_size, "sparse relation chunk size") || plan.sparse_chunk_size != kSparseGkrChunkEntries ||
@@ -7617,6 +7638,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         std::uint64_t selected_row_cache_heap_bytes = 0;
         std::uint64_t selected_row_cache_mapped_bytes = 0;
         std::uint64_t lasso_heap_transient_peak_bytes = 0;
+        std::uint64_t lasso_t2_heap_transient_peak_bytes = 0;
         std::uint64_t largest_family_transient_bytes = 0;
         std::uint64_t family_wire_bytes_sum = 0;
         std::uint64_t family_message_count_sum = 0;
@@ -7729,13 +7751,26 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                 "Lasso row-fold heap workspace");
             lasso_heap_transient_peak_bytes = std::max(lasso_heap_transient_peak_bytes,
                 std::max(family_row_fold_heap, workspace.onehot_heap_peak_bytes));
+            if (workspace.t2_booleanity && query_challenges >= 4) {
+                const std::uint64_t equality_low_width = std::uint64_t(1) <<
+                    std::min<std::uint64_t>(12, query_challenges - 4);
+                const std::uint64_t equality_histogram_fields = uadd(equality_low_width,
+                    query_challenges - 4, "T2 compact equality histogram fields");
+                const std::uint64_t compact_heap_fields = uadd(65536,
+                    std::max<std::uint64_t>(equality_histogram_fields, 278),
+                    "T2 compact Booleanity heap fields");
+                lasso_t2_heap_transient_peak_bytes = std::max(lasso_t2_heap_transient_peak_bytes,
+                    ubytes(compact_heap_fields, sizeof(Fr), "T2 compact Booleanity heap workspace"));
+            }
             largest_family_transient_bytes = std::max(largest_family_transient_bytes,
                 workspace.family_peak_bytes > workspace.row_ledger_retained_bytes ? workspace.family_peak_bytes - workspace.row_ledger_retained_bytes : std::uint64_t(0));
             family_wire_bytes_sum = uadd(family_wire_bytes_sum, family_wire, "Lasso family wire total");
             family_message_count_sum = uadd(family_message_count_sum, family_messages, "Lasso family messages total");
             maximum_family_response_entries = std::max(maximum_family_response_entries, workspace.columns);
             maximum_family_columns = std::max(maximum_family_columns, workspace.columns);
-            maximum_family_fr_buffer_bytes = std::max({maximum_family_fr_buffer_bytes, workspace.private_witness_bytes,
+            const std::uint64_t physical_booleanity_workspace_bytes =
+                workspace.booleanity_peak_bytes - workspace.row_ledger_retained_bytes;
+            maximum_family_fr_buffer_bytes = std::max({maximum_family_fr_buffer_bytes, physical_booleanity_workspace_bytes,
                 workspace.row_blinding_bytes, workspace.row_fold_weights_bytes, workspace.row_fold_values_bytes,
                 workspace.onehot_query_bytes, workspace.t2_column_one_bytes, workspace.onehot_heap_peak_bytes,
                 workspace.masked_opening_coefficient_bytes, workspace.masked_opening_response_bytes});
@@ -7759,7 +7794,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         report.lasso_heap_workspace_peak_bytes = uadd(uadd(family_persistent_bytes,
             uadd(selected_row_cache_heap_bytes,
                 uadd(umul(2, family_column_generator_bytes, "Lasso public identity generator copies"),
-                    std::max(family_row_commitment_bytes, lasso_heap_transient_peak_bytes),
+                    std::max({family_row_commitment_bytes, lasso_heap_transient_peak_bytes,
+                              lasso_t2_heap_transient_peak_bytes}),
                     "Lasso ordinary vector workspace peak"),
                 "Lasso cache and ordinary vector workspace"), "Lasso heap workspace peak"),
             report.lasso_sparse_matrix_workspace_bytes_upper_bound,
@@ -7797,10 +7833,21 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         };
         report.hyrax_aux_tensor_workspace_bytes = tensor_open_peak(aux_tensor);
         report.hyrax_l_qry_tensor_workspace_bytes = tensor_open_peak(l_query_tensor);
+        report.hyrax_l_qry_binary_lut_workspace_bytes = hyrax_l_qry_binary_lut_workspace_bytes(
+            l_query_tensor[1], l_query_tensor[2]);
         report.hyrax_tensor_retained_workspace_bytes = uadd(tensor_retained(aux_tensor), tensor_retained(l_query_tensor), "tensor retained live set");
         report.hyrax_tensor_opening_transient_peak_workspace_bytes = std::max(tensor_transient(aux_tensor), tensor_transient(l_query_tensor));
+        const std::uint64_t l_query_commit_chunk_entries = std::min<std::uint64_t>(l_query_tensor[2], 1ULL << 12);
+        const std::uint64_t l_query_commit_block_workspace = ubytes(
+            l_query_commit_chunk_entries, sizeof(G1) + sizeof(Fr), "L_qry commitment block workspace");
+        const std::uint64_t l_query_commit_transient = uadd(
+            report.hyrax_l_qry_binary_lut_workspace_bytes,
+            uadd(ubytes(l_query_tensor[2], sizeof(G1), "L_qry commitment column generators"),
+                 l_query_commit_block_workspace, "L_qry commitment generators and block workspace"),
+            "L_qry commitment transient workspace");
         report.hyrax_tensor_combined_peak_workspace_bytes = uadd(report.hyrax_tensor_retained_workspace_bytes,
-            report.hyrax_tensor_opening_transient_peak_workspace_bytes, "tensor simultaneous opening peak");
+            std::max(report.hyrax_tensor_opening_transient_peak_workspace_bytes, l_query_commit_transient),
+            "tensor simultaneous opening and commitment peak");
         const std::uint64_t w_active = pow2(u64_from_size(report.input_layout.segments.at(1).logical_length, "W MLE length"));
         report.hyrax_w_mle_workspace_bytes = ubytes(w_active, sizeof(G1) + 2 * sizeof(Fr), "W masked MLE workspace");
 
@@ -7829,22 +7876,16 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         };
         const auto add_relation_range = [&umul, &uadd, &add_relation_counts](RelationCapacityCounts& destination,
                                                                             std::uint64_t count, std::uint64_t width) {
-            const std::uint64_t rows_per_range = uadd(width, 1, "range residual count");
-            const std::uint64_t unary_per_range = uadd(umul(2, width, "range unary gates"), 1, "range unary gates");
-            add_relation_counts(destination, umul(count, rows_per_range, "range residual count"),
-                umul(count, unary_per_range, "range unary gates"), umul(count, width, "range binary gates"));
+            const std::uint64_t unary_per_range = uadd(width, 1, "range unary gates");
+            add_relation_counts(destination, count, umul(count, unary_per_range, "range unary gates"), 0);
         };
         const auto add_relation_lookup = [&umul, &uadd, &add_relation_counts](RelationCapacityCounts& destination,
                                                                               std::uint64_t count, std::uint64_t x_width,
                                                                               std::uint64_t y_width) {
-            const std::uint64_t rows_per_lookup = uadd(5, uadd(umul(2, x_width, "lookup range residuals"),
-                umul(2, y_width, "lookup range residuals"), "lookup range residuals"), "lookup residual count");
-            const std::uint64_t unary_per_lookup = uadd(7, uadd(umul(4, x_width, "lookup unary gates"),
-                umul(4, y_width, "lookup unary gates"), "lookup unary gates"), "lookup unary gates");
-            const std::uint64_t binary_per_lookup = uadd(umul(2, x_width, "lookup binary gates"),
-                umul(2, y_width, "lookup binary gates"), "lookup binary gates");
-            add_relation_counts(destination, umul(count, rows_per_lookup, "lookup residual count"),
-                umul(count, unary_per_lookup, "lookup unary gates"), umul(count, binary_per_lookup, "lookup binary gates"));
+            const std::uint64_t unary_per_lookup = uadd(7, uadd(umul(2, x_width, "lookup unary gates"),
+                umul(2, y_width, "lookup unary gates"), "lookup unary gates"), "lookup unary gates");
+            add_relation_counts(destination, umul(count, 5, "lookup residual count"),
+                umul(count, unary_per_lookup, "lookup unary gates"), 0);
         };
         const auto add_relation_attention = [&umul, &uadd, &add_relation_counts, graph_nodes, graph_edges](
                                                 RelationCapacityCounts& destination, std::uint64_t dim) {
@@ -7875,9 +7916,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                                                         const std::array<unsigned, 5>& profile) {
             std::uint64_t width_sum = 0;
             for (unsigned width : profile) width_sum = uadd(width_sum, width, "division range width sum");
-            add_relation_counts(destination, umul(count, uadd(5, width_sum, "division range residuals"), "division range residuals"),
-                umul(count, uadd(5, umul(2, width_sum, "division range unary gates"), "division range unary gates"),
-                     "division range unary gates"), umul(count, width_sum, "division range binary gates"));
+            add_relation_counts(destination, umul(count, 5, "division range residuals"),
+                umul(count, uadd(5, width_sum, "division range unary gates"), "division range unary gates"), 0);
         };
 
         const auto& lrelu_bounds = native_lookup_bounds.lrelu;
@@ -8864,7 +8904,9 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t subset_bitmap_bytes_per_lane = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map lane bitmap");
         const std::uint64_t subset_bitmap_bytes = umul(2, subset_bitmap_bytes_per_lane,
             "packed U and V source-map bitmaps");
-        const std::uint64_t subset_rank_bytes = ubytes(bitmap_word_count, sizeof(std::uint64_t), "one packed source-map rank prefix");
+        const std::uint64_t subset_rank_slot_count = umul(2, bitmap_word_count / 2 + bitmap_word_count % 2,
+            "paired U/V source-map rank slots");
+        const std::uint64_t subset_rank_bytes = ubytes(subset_rank_slot_count, sizeof(std::uint64_t), "paired U/V source-map rank prefixes");
         const std::uint64_t mapped_subset_bitmap = uadd(mapped_allocation(subset_bitmap_bytes_per_lane),
             mapped_allocation(subset_bitmap_bytes_per_lane), "mapped U and V source-map bitmaps");
         const std::uint64_t mapped_subset_rank = mapped_allocation(subset_rank_bytes);
@@ -8945,7 +8987,8 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
             // The row ledger, row commitments and row-fold vectors are ordinary
             // std::vector allocations. Only the sparse/T2 witness and prepared
             // Hyrax opening buffers use NativeVector backing here.
-            const std::uint64_t booleanity_peak = mapped_allocation(workspace.private_witness_bytes);
+            const std::uint64_t booleanity_peak = mapped_allocation(
+                workspace.t2_booleanity ? workspace.t2_column_one_bytes : workspace.private_witness_bytes);
             const std::uint64_t opening_peak = uadd(mapped_allocation(workspace.masked_opening_generator_bytes),
                 uadd(mapped_allocation(workspace.masked_opening_coefficient_bytes),
                     mapped_allocation(workspace.masked_opening_response_bytes), "mapped Lasso opening workspace"),
@@ -9121,7 +9164,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
         const std::uint64_t statement_prefix_bytes = uadd(encoded_string_bytes(sizeof("zkgpt-native-statement-v4") - 1, "native statement prefix"),
             uadd(umul(10, encoded_string_bytes(64, "native statement digest fields"), "native statement digest fields"),
                 uadd(encoded_string_bytes(sizeof("bn254-fr-v1") - 1, "native statement field id"),
-                    uadd(8, uadd(encoded_string_bytes(sizeof("zkgpt-gat-relation-v1") - 1, "native statement relation schema"),
+                    uadd(8, uadd(encoded_string_bytes(sizeof("zkgpt-gat-relation-v2") - 1, "native statement relation schema"),
                         uadd(encoded_string_bytes(64, "native statement relation digest"), 8, "native statement relation order"),
                         "native statement relation metadata"), "native statement dimensions"), "native statement fixed fields"),
                 "native statement encoding"), "native statement encoding");
@@ -9165,7 +9208,7 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                 "artifact/session and sequence metadata"), "native transcript vector metadata");
         const std::uint64_t statement_string_bytes = umul(2,
             uadd(umul(10, 64, "native statement digest strings"),
-                uadd(sizeof("bn254-fr-v1") - 1, sizeof("zkgpt-gat-relation-v1") - 1, "native statement identifiers"),
+                uadd(sizeof("bn254-fr-v1") - 1, sizeof("zkgpt-gat-relation-v2") - 1, "native statement identifiers"),
                 "native statement string contents"), "native statement copies");
         const std::uint64_t field_decode_bytes = ubytes(report.maximum_transcript_field_entries_upper_bound, sizeof(Fr),
             "native transcript field-vector decode workspace");
@@ -9186,7 +9229,11 @@ GatCapacityReport inspect_gat_capacity(const Graph& graph, const Model& model, c
                     uadd(report.lasso_table_and_index_bytes_upper_bound,
                         uadd(report.estimated_native_heap_bytes_upper_bound,
                             uadd(report.lasso_heap_workspace_peak_bytes,
-                                uadd(plan_metadata_bytes, transcript_host_bytes, "plan and transcript host workspace"), "Lasso heap and proof session"),
+                                uadd(report.hyrax_tensor_combined_peak_workspace_bytes,
+                                    uadd(plan_metadata_bytes, transcript_host_bytes,
+                                         "plan and transcript host workspace"),
+                                    "tensor, plan, and transcript host workspace"),
+                                "Lasso heap, tensor, and proof session"),
                             "native heap and proof session"),
                         "tables and native heap"), "borrowed trace and proof state"), "model and proof state"), "graph and proof state");
         const std::uint64_t feature_entries = umul(graph_nodes, u64_from_size(graph.num_features, "forward admission feature width"),
@@ -9304,16 +9351,17 @@ void finalize_gat_capacity_report(GatCapacityReport& report) {
                  report.gkr_subset_bitmap_scratch_bytes_upper_bound !=
                      2 * ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t) ||
                  report.gkr_subset_rank_scratch_bytes_upper_bound !=
-                     ((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::uint64_t))
+                     2 * ((((report.gkr_subset_source_support_entries_upper_bound + 63) / 64) + 1) / 2) * sizeof(std::uint64_t))
             report.reason = "native GKR point-domain scratch does not match exact logical source support";
         else if (report.flattened_input_domain_entries == 0 || report.flattened_input_domain_entries > report.flattened_input_domain_limit_u64 ||
                  report.input_layout.n_in > report.coordinate_domain_limit_u64)
             report.reason = "flattened input domain exceeds the checked u64 and MLE-coordinate limits";
         else if (!report.full_relation_bound || report.proof_path != "formal_native_masked_lasso_hyrax+native_masked_layered_gkr")
             report.reason = "formal masked Lasso/Hyrax/GKR relation path is not fully bound";
-        else if (!report.forward_value_admission_ready || report.forward_admission_peak_host_memory_bytes_upper_bound == 0) {
+        else if (report.forward_value_admission_ready || report.forward_value_admission_mode != "deferred_to_owned_forward_v1" ||
+                 report.forward_admission_peak_host_memory_bytes_upper_bound == 0) {
             if (report.reason.empty() || report.reason == "runtime resource headroom has not been finalized")
-                report.reason = "canonical all-value forward admission is incomplete";
+                report.reason = "canonical all-value forward admission mode is invalid or was not deferred to the owned forward";
         }
         else if (report.lasso_workspace_profile.size() != 4 || report.lasso_logical_domain_entries == 0 || report.hyrax_active_domain_workspace_entries == 0)
             report.reason = "formal Lasso family profile is incomplete";
@@ -9766,23 +9814,75 @@ detail::ValidatedFormalInputs detail::ValidatedFormalInputs::consume(
     if (!validate_relation(owned.graph_, owned.features_, owned.model_,
                            owned.quant_, owned.forward_))
         throw std::invalid_argument("canonical GAT relation validation failed for move-owned formal inputs");
+    std::string admission_reason;
+    const auto division_profiles = canonical_division_range_bits(owned.graph_, owned.model_, owned.quant_,
+        static_lookup_bounds(owned.forward_.trace.tables));
+    if (!detail::validate_formal_forward_value_admission(owned.graph_, owned.model_, owned.quant_,
+                                                          owned.forward_, division_profiles, &admission_reason))
+        throw std::invalid_argument("canonical GAT forward value admission failed for move-owned formal inputs: " + admission_reason);
     owned.canonical_validation_ms_ = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - validation_begin).count();
-    owned.capacity_quant_digest_ = canonical_quant_digest(owned.quant_);
-    if (owned.capacity_census_calls_ != 0U)
-        throw std::logic_error("private formal capacity census was already performed");
-    ++owned.capacity_census_calls_;
-    owned.capacity_ = inspect_gat_capacity(owned.graph_, owned.model_,
-                                           owned.quant_);
-    owned.plan_ = std::make_shared<GatCircuitPlan>(
-        build_plan_impl(owned.graph_, owned.model_, owned.quant_,
-                        &owned.forward_, false, &owned.capacity_, true));
-    if (owned.capacity_quant_digest_ != canonical_quant_digest(owned.quant_) ||
-        !detail::formal_capacity_report_matches_plan(
-            owned.capacity_, owned.graph_, owned.model_, owned.quant_,
-            *owned.plan_))
-        throw std::logic_error("private formal capacity report does not match its move-owned inputs and canonical plan");
+    owned.finalize();
     return owned;
+}
+
+detail::ValidatedFormalInputs detail::ValidatedFormalInputs::compute_and_own(
+    Graph&& graph, Tensor2D&& features, Model&& model, QuantConfig&& quant) {
+    ValidatedFormalInputs owned(std::move(graph), std::move(features),
+                                std::move(model), std::move(quant), ForwardResult{});
+    const auto generation_begin = std::chrono::steady_clock::now();
+    owned.forward_ = detail::compute_formal_forward_unvalidated(
+        owned.graph_, owned.features_, owned.model_, owned.quant_);
+    owned.canonical_forward_generation_calls_ = 1;
+    owned.canonical_forward_generation_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - generation_begin).count();
+    const ForwardResult& fresh = owned.forward_;
+    if (!fresh.trace.relation_ok ||
+        fresh.trace.input.rows != owned.graph_.num_nodes ||
+        fresh.trace.input.cols != owned.graph_.num_features ||
+        fresh.logits.rows != owned.graph_.num_nodes ||
+        fresh.logits.cols != owned.graph_.num_classes ||
+        fresh.trace.logits.rows != owned.graph_.num_nodes ||
+        fresh.trace.logits.cols != owned.graph_.num_classes ||
+        fresh.trace.hidden_layers.size() != 2 ||
+        fresh.trace.output_heads.size() != owned.model_.manifest.output_heads ||
+        fresh.trace.ledger.table_id != fresh.trace.tables.table_id)
+        throw std::invalid_argument("fresh canonical GAT forward failed its relation or shape checks");
+    const auto admission_begin = std::chrono::steady_clock::now();
+    std::string admission_reason;
+    const auto division_profiles = canonical_division_range_bits(owned.graph_, owned.model_, owned.quant_,
+        static_lookup_bounds(owned.forward_.trace.tables));
+    if (!detail::validate_formal_forward_value_admission(owned.graph_, owned.model_, owned.quant_,
+                                                          owned.forward_, division_profiles, &admission_reason))
+        throw std::invalid_argument("fresh canonical GAT forward value admission failed: " + admission_reason);
+    owned.canonical_forward_value_admission_calls_ = 1;
+    owned.canonical_forward_value_admission_ms_ = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - admission_begin).count();
+    owned.finalize();
+    return owned;
+}
+
+void detail::ValidatedFormalInputs::finalize() {
+    capacity_quant_digest_ = canonical_quant_digest(quant_);
+    if (capacity_census_calls_ != 0U)
+        throw std::logic_error("private formal capacity census was already performed");
+    ++capacity_census_calls_;
+    capacity_ = inspect_gat_capacity(graph_, model_, quant_);
+    plan_ = std::make_shared<GatCircuitPlan>(
+        build_plan_impl(graph_, model_, quant_, &forward_, false, &capacity_, true));
+    const auto metadata_validation_begin = std::chrono::steady_clock::now();
+    std::cerr << "gat_adapter_prover_stage: canonical-plan-context-metadata-validation begin" << std::endl;
+    std::string metadata_reason;
+    if (plan_->virtual_sparse) throw std::invalid_argument("canonical formal plan unexpectedly uses the virtual sparse path");
+    if (!context_layer_metadata_valid_impl(*plan_, &metadata_reason, false))
+        throw std::invalid_argument("canonical GAT context metadata validation failed: " + metadata_reason);
+    std::cerr << "gat_adapter_prover_stage: canonical-plan-context-metadata-validation complete elapsed_ms="
+              << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - metadata_validation_begin).count()
+              << std::endl;
+    if (capacity_quant_digest_ != canonical_quant_digest(quant_) ||
+        !detail::formal_capacity_report_matches_plan(
+            capacity_, graph_, model_, quant_, *plan_))
+        throw std::logic_error("private formal capacity report does not match its move-owned inputs and canonical plan");
 }
 
 bool detail::formal_capacity_report_matches_plan(
@@ -9822,10 +9922,20 @@ bool detail::formal_capacity_report_matches_plan(
         const CanonicalModelShape expected_model = canonical_model_shape(model);
         const InputLayout expected_layout =
             canonical_input_layout_impl(graph, model, quant);
+        const std::size_t l_query_active = next_power_of_two(
+            expected_layout.segments.at(3).logical_length);
+        std::size_t l_query_bits = 0;
+        for (std::size_t cursor = l_query_active; cursor > 1; cursor >>= 1)
+            ++l_query_bits;
+        const std::size_t l_query_columns = std::size_t(1) << (l_query_bits / 2);
+        const std::size_t l_query_rows = l_query_active / l_query_columns;
+        const std::uint64_t expected_l_query_binary_lut_bytes =
+            hyrax_l_qry_binary_lut_workspace_bytes(l_query_rows, l_query_columns);
         const std::string quant_digest = canonical_quant_digest(quant);
         const std::string formal_path =
             "formal_native_masked_lasso_hyrax+native_masked_layered_gkr";
-        if (capacity.schema != "zkgpt-gat-capacity-v9" ||
+        if (capacity.schema != "zkgpt-gat-capacity-v11" ||
+            capacity.forward_value_admission_ready || capacity.forward_value_admission_mode != "deferred_to_owned_forward_v1" ||
             capacity.symbolic_analysis_profile_complete ||
             !capacity.gkr_point_shape_ready || !capacity.gkr_point_shape_exact ||
             !is_lower_hex_digest(capacity.gkr_point_shape_digest) ||
@@ -9840,6 +9950,7 @@ bool detail::formal_capacity_report_matches_plan(
             !same_model_shape(capacity.model_shape, plan.model_shape) ||
             !same_layout(capacity.input_layout, expected_layout) ||
             !same_layout(capacity.input_layout, plan.input_layout) ||
+            capacity.hyrax_l_qry_binary_lut_workspace_bytes != expected_l_query_binary_lut_bytes ||
             plan.model_arch_id != model.manifest.model_arch_id ||
             plan.graph_num_nodes != graph.num_nodes ||
             plan.graph_num_features != graph.num_features ||
@@ -9850,7 +9961,7 @@ bool detail::formal_capacity_report_matches_plan(
             plan.quant_digest != quant_digest ||
             capacity.gkr_point_shape_digest != plan.gkr_point_shape_digest ||
             plan.recipe_schema != "canonical_plan_recipe_v3" ||
-            plan.relation_schema != "zkgpt-gat-relation-v1" ||
+            plan.relation_schema != "zkgpt-gat-relation-v2" ||
             plan.opening_policy != "same_r_three_terminal_openings_v1" ||
             plan.terminal_openings != std::vector<std::string>{"W@r", "Aux@r", "L_qry@r"} ||
             !plan.official_layered || plan.has_placeholder)
@@ -10920,43 +11031,78 @@ std::size_t compact_plan_recipe_bytes(const GatCircuitPlan& plan) { return plan_
 
 std::size_t verifier_context_payload_bytes(const VerifierContext& context) { return serialize_verifier_context_payload(context).size(); }
 
+static bool write_verifier_context_file(const VerifierContext& context, const std::string& path, std::string* reason) {
+    std::string payload = serialize_verifier_context_payload(context);
+    if (payload.size() > kContextMaxWireBytes) {
+        set_reason(reason, "serialized verifier context exceeds the wire-size limit");
+        return false;
+    }
+    struct stat existing{};
+    if (::lstat(path.c_str(), &existing) == 0 && S_ISLNK(existing.st_mode)) {
+        set_reason(reason, "refusing to overwrite a verifier-context symlink");
+        return false;
+    }
+    const std::string temporary = path + ".partial";
+    std::ofstream output(temporary.c_str(), std::ios::binary | std::ios::trunc);
+    if (!output) {
+        set_reason(reason, "cannot open temporary verifier context");
+        return false;
+    }
+    output.write(kVerifierContextMagic, 8);
+    write_u32(output, kVerifierContextVersion);
+    write_u64(output, static_cast<std::uint64_t>(payload.size()));
+    if (!payload.empty()) output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
+    output.flush();
+    if (!output.good()) {
+        output.close();
+        std::remove(temporary.c_str());
+        set_reason(reason, "verifier context write failed");
+        return false;
+    }
+    output.close();
+    if (std::rename(temporary.c_str(), path.c_str()) != 0) {
+        std::remove(temporary.c_str());
+        set_reason(reason, "cannot finalize verifier context");
+        return false;
+    }
+    return true;
+}
+
 bool write_verifier_context(const VerifierContext& context, const std::string& path, std::string* reason) {
     try {
         if (!validate_verifier_context_object(context, reason)) return false;
-        std::string payload = serialize_verifier_context_payload(context);
-        if (payload.size() > kContextMaxWireBytes) {
-            set_reason(reason, "serialized verifier context exceeds the wire-size limit");
+        return write_verifier_context_file(context, path, reason);
+    } catch (const std::exception& error) {
+        set_reason(reason, error.what());
+        return false;
+    }
+}
+
+bool detail::write_verifier_context_formal(const detail::ValidatedFormalInputs& inputs, const VerifierContext& context, const std::string& path, std::string* reason) {
+    try {
+        const std::shared_ptr<const GatCircuitPlan> owner = inputs.plan_owner();
+        if (!owner || context.shared_plan != owner || owner.get() != &inputs.plan() || &context.plan_ref() != owner.get() ||
+            !owner->native_proof_backing_is_resident()) {
+            set_reason(reason, "formal verifier context does not share the move-owned resident plan");
             return false;
         }
-        struct stat existing{};
-        if (::lstat(path.c_str(), &existing) == 0 && S_ISLNK(existing.st_mode)) {
-            set_reason(reason, "refusing to overwrite a verifier-context symlink");
+        if (!validate_verifier_context_nonplan_object(context, reason)) return false;
+        const Graph& graph = inputs.graph();
+        const Tensor2D& features = inputs.features();
+        const Tensor2D& logits = inputs.forward().logits;
+        if (context.graph.num_nodes != graph.num_nodes || context.graph.num_features != graph.num_features ||
+            context.graph.graph_count != graph.graph_count || context.graph.num_classes != graph.num_classes ||
+            context.graph.src != graph.src || context.graph.dst != graph.dst || context.graph.edge_gid != graph.edge_gid ||
+            context.graph.node_ptr != graph.node_ptr || context.graph.edge_ptr != graph.edge_ptr ||
+            context.public_features.rows != features.rows || context.public_features.cols != features.cols ||
+            context.public_features.values != features.values || context.public_logits.rows != logits.rows ||
+            context.public_logits.cols != logits.cols || context.public_logits.values != logits.values ||
+            canonical_quant_digest(context.quant) != canonical_quant_digest(inputs.quant()) ||
+            !registration_matches_model(inputs.model(), inputs.quant(), inputs.plan().input_layout, context.registration)) {
+            set_reason(reason, "formal verifier context does not match the move-owned GAT inputs");
             return false;
         }
-        const std::string temporary = path + ".partial";
-        std::ofstream output(temporary.c_str(), std::ios::binary | std::ios::trunc);
-        if (!output) {
-            set_reason(reason, "cannot open temporary verifier context");
-            return false;
-        }
-        output.write(kVerifierContextMagic, 8);
-        write_u32(output, kVerifierContextVersion);
-        write_u64(output, static_cast<std::uint64_t>(payload.size()));
-        if (!payload.empty()) output.write(payload.data(), static_cast<std::streamsize>(payload.size()));
-        output.flush();
-        if (!output.good()) {
-            output.close();
-            std::remove(temporary.c_str());
-            set_reason(reason, "verifier context write failed");
-            return false;
-        }
-        output.close();
-        if (std::rename(temporary.c_str(), path.c_str()) != 0) {
-            std::remove(temporary.c_str());
-            set_reason(reason, "cannot finalize verifier context");
-            return false;
-        }
-        return true;
+        return write_verifier_context_file(context, path, reason);
     } catch (const std::exception& error) {
         set_reason(reason, error.what());
         return false;
@@ -11086,6 +11232,9 @@ static NativeProofStatement make_native_proof_statement_with_basis_digest(const 
     NativeProofStatement statement;
     statement.verifier_context_digest = verifier_context_digest(context);
     statement.field_id = "bn254-fr-v1";
+    statement.relation_schema = context.plan_ref().virtual_sparse
+        ? kSparseGkrRelationSchema
+        : context.plan_ref().relation_schema;
     if (!is_lower_hex_digest(context.plan_ref().plan_digest)) throw std::invalid_argument("native statement plan digest is not canonical");
     statement.plan_digest = context.plan_ref().plan_digest;
     statement.resources_digest = canonical_digest64(resource_material);
@@ -11248,14 +11397,18 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
              &model != &validated_owner->model() ||
              &quant != &validated_owner->quant() ||
              &forward != &validated_owner->forward() ||
-             !shared_plan || shared_plan.get() != &validated_owner->plan()))
+             !shared_plan || shared_plan.get() != &validated_owner->plan() ||
+             !shared_plan->native_proof_backing_is_resident()))
             throw std::invalid_argument("trusted formal proof inputs do not match their move-owned validated context");
         if (provided_context != nullptr) {
             if (!shared_plan || provided_context->shared_plan != shared_plan ||
                 &provided_context->plan_ref() != shared_plan.get())
                 throw std::invalid_argument("prover context does not share the supplied immutable plan owner");
             std::string context_reason;
-            if (!validate_verifier_context_object(*provided_context, &context_reason))
+            const bool context_valid = validated_owner != nullptr
+                ? validate_verifier_context_nonplan_object(*provided_context, &context_reason)
+                : validate_verifier_context_object(*provided_context, &context_reason);
+            if (!context_valid)
                 throw std::invalid_argument("prover context is invalid: " + context_reason);
             if (provided_context->registration.binding_digest != registration.binding_digest ||
                 provided_context->registration.registration_digest != registration.registration_digest ||
@@ -12254,6 +12407,7 @@ bool verify_gat(const VerifierContext& context, const GatProofArtifact& artifact
             actual_native_statement.com_w_digest != expected_native_statement.com_w_digest ||
             actual_native_statement.aux_digest != expected_native_statement.aux_digest ||
             actual_native_statement.l_digest != expected_native_statement.l_digest ||
+            actual_native_statement.relation_schema != expected_native_statement.relation_schema ||
             actual_native_statement.basis_digest != expected_native_statement.basis_digest ||
             actual_native_statement.l_dimension != expected_native_statement.l_dimension ||
             actual_native_statement.statement_root_digest != expected_native_statement.statement_root_digest) {
@@ -13220,6 +13374,7 @@ NativePrimitiveEvidence exercise_official_primitives(const std::string& label) {
         return value;
     }();
     const quadratic_poly polynomial = native_prover.sumcheckUpdate1(Field(0));
+    native_prover.sumcheckApplyChallenge(challenge);
     Field claim0, claim1;
     native_prover.sumcheckFinalize1(challenge, claim0, claim1);
     evidence.sumcheck_called = true;

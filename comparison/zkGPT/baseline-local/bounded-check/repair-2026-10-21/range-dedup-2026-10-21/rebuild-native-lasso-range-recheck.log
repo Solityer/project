@@ -1,0 +1,9 @@
+[  3%] Built target gen_base.o
+[  6%] Built target gen_bint.o
+[ 12%] Built target mcl
+[ 68%] Built target gpt_lib
+[ 93%] Built target gat_adapter
+[ 96%] Building CXX object tests/CMakeFiles/native_lasso_range_smoke.dir/native_lasso_range_smoke.cpp.o
+[100%] Linking CXX executable native_lasso_range_smoke
+[100%] Built target native_lasso_range_smoke
+elapsed_s=3.35 exit=0

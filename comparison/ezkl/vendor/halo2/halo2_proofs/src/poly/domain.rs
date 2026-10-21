@@ -2,7 +2,7 @@
 //! domain that is of a suitable size for the application.
 
 use crate::{
-    arithmetic::{best_fft, parallelize},
+    arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
     fft::recursive::FFTData,
     plonk::Assigned,
 };
@@ -651,10 +651,12 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     }
 
     fn ifft(&self, a: &mut [F], omega_inv: F, log_n: u32, divisor: F) {
-        // The parallel FFT does not read FFTData; avoid populating the
-        // recursive twiddle cache for this path.
-        crate::fft::parallel::fft(a, omega_inv, log_n, &FFTData::default(), true);
-        // self.fft_inner(a, omega_inv, log_n, true);
+        if !try_gpu_fft_if_eligible(a, omega_inv, log_n, true) {
+            #[cfg(target_arch = "x86_64")]
+            best_fft_cpu(a, omega_inv, log_n, &FFTData::default(), true);
+            #[cfg(not(target_arch = "x86_64"))]
+            self.fft_inner(a, omega_inv, log_n, true);
+        }
         parallelize(a, |a, _| {
             for a in a {
                 // Finish iFFT
@@ -664,6 +666,9 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     }
 
     fn fft_inner(&self, a: &mut [F], omega: F, log_n: u32, inverse: bool) {
+        if try_gpu_fft_if_eligible(a, omega, log_n, inverse) {
+            return;
+        }
         let fft_data = self.get_fft_data(a.len());
         best_fft(a, omega, log_n, fft_data, inverse)
     }

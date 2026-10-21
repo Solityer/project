@@ -1014,6 +1014,61 @@ bool run_forward_admission(const Graph& graph, const Tensor2D& features, const M
     }
 }
 
+bool detail::validate_formal_forward_value_admission(const Graph& graph, const Model& model, const QuantConfig& quant,
+                                                     const ForwardResult& forward,
+                                                     const std::vector<std::array<unsigned, 5>>& division_profiles,
+                                                     std::string* reason) {
+    try {
+        if (!forward.trace.relation_ok || !forward.trace.ledger.validate()) throw std::invalid_argument("canonical forward trace or integer-bound ledger is invalid");
+        if (forward.trace.tables.quant_cfg_id != quant.quant_cfg_id) throw std::invalid_argument("canonical forward static tables do not match the quantization configuration");
+        const std::size_t expected_profiles = 2 * model.hidden_heads() + 2 * model.manifest.output_heads + 1;
+        if (division_profiles.size() != expected_profiles || forward.trace.hidden_layers.size() != 2 ||
+            forward.trace.output_heads.size() != model.manifest.output_heads)
+            throw std::invalid_argument("canonical GAT forward value-admission profile coverage is incomplete");
+        const AdmissionTableAbsBounds bounds{admission_table_abs_bounds(forward.trace.tables.lrelu, "LeakyReLU"),
+                                             admission_table_abs_bounds(forward.trace.tables.exp, "ExpMap"),
+                                             admission_table_abs_bounds(forward.trace.tables.elu, "ELU")};
+        std::size_t profile_index = 0;
+        const auto check_attention = [&](const AttentionTrace& trace, bool hidden, const std::array<unsigned, 5>& profile) {
+            if (!trace.relation_ok || trace.raw_score.size() != graph.edges() || trace.leaky_score.size() != graph.edges() ||
+                trace.delta.size() != graph.edges() || trace.exp.size() != graph.edges() ||
+                trace.recovered.size() != trace.activated.size() || trace.divisions.size() != trace.recovered.size())
+                throw std::invalid_argument("canonical GAT attention trace has an invalid value-admission shape");
+            for (std::size_t edge = 0; edge < graph.edges(); ++edge) {
+                require_admission_tuple(trace.raw_score[edge], trace.leaky_score[edge], bounds.lrelu, "LeakyReLU");
+                require_admission_tuple(trace.delta[edge], trace.exp[edge], bounds.exp, "ExpMap");
+                require_admission_range_value(trace.delta[edge], admission_bit_width(2 * bounds.lrelu.second), "softmax delta");
+            }
+            if (hidden)
+                for (std::size_t index = 0; index < trace.recovered.size(); ++index)
+                    require_admission_tuple(trace.recovered[index], trace.activated[index], bounds.elu, "ELU");
+            for (const DivisionWitness& division : trace.divisions) require_admission_division(division, profile, "attention");
+        };
+        for (const HiddenLayerTrace& layer : forward.trace.hidden_layers) {
+            if (layer.heads.size() != model.hidden_heads()) throw std::invalid_argument("canonical hidden forward head count is invalid");
+            for (const AttentionTrace& head : layer.heads) check_attention(head, true, division_profiles.at(profile_index++));
+        }
+        for (const OutputHeadTrace& head : forward.trace.output_heads) {
+            check_attention(head.attention, false, division_profiles.at(profile_index++));
+            if (head.alignment_divisions.size() != head.logits.size()) throw std::invalid_argument("canonical output-alignment division shape is invalid");
+            for (const DivisionWitness& division : head.alignment_divisions) require_admission_division(division, division_profiles.at(profile_index), "output alignment");
+            ++profile_index;
+        }
+        if (forward.trace.final_average_divisions.size() != forward.trace.head_sum.size()) throw std::invalid_argument("canonical output-average division shape is invalid");
+        for (const DivisionWitness& division : forward.trace.final_average_divisions) require_admission_division(division, division_profiles.at(profile_index), "final output average");
+        ++profile_index;
+        if (profile_index != division_profiles.size()) throw std::logic_error("canonical GAT forward value admission did not consume every division profile");
+        if (reason != nullptr) reason->clear();
+        return true;
+    } catch (const std::exception& error) {
+        if (reason != nullptr) *reason = error.what();
+        return false;
+    } catch (...) {
+        if (reason != nullptr) *reason = "unknown canonical forward value-admission failure";
+        return false;
+    }
+}
+
 DivisionResult signed_round_div(Int dividend, Int denominator, RoundingMode mode) {
     ensure_field();
     if (denominator <= 0) throw std::invalid_argument("SignedRoundDiv denominator must be positive");

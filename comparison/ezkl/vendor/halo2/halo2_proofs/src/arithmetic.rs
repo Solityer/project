@@ -34,10 +34,8 @@ where
 /// Best MSM
 pub fn best_multiexp<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve {
     #[cfg(feature = "icicle_gpu")]
-    if env::var("ENABLE_ICICLE_GPU").is_ok() && !icicle::should_use_cpu_msm(coeffs.len()) {
-        #[cfg(feature = "formal-gpu-msm")]
-        assert!(icicle::is_gpu_supported_field(&coeffs[0]), "formal ICICLE MSM received an unsupported scalar field");
-        if icicle::is_gpu_supported_field(&coeffs[0]) { return best_multiexp_gpu(coeffs, bases); }
+    if env::var("ENABLE_ICICLE_GPU").is_ok() && !coeffs.is_empty() && !icicle::should_use_cpu_msm(coeffs.len()) {
+        if icicle::is_gpu_supported_curve::<C>() && icicle::is_gpu_supported_field(&coeffs[0]) { return best_multiexp_gpu(coeffs, bases); }
     }
 
     #[cfg(feature = "metal")]
@@ -103,21 +101,49 @@ pub fn best_fft<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeF
     data: &FFTData<Scalar>,
     inverse: bool,
 ) {
-    #[cfg(all(feature = "icicle_gpu", feature = "formal-gpu-msm"))]
+    if try_gpu_fft_if_eligible(scalars, omega, log_n, inverse) {
+        return;
+    }
     best_fft_cpu(scalars, omega, log_n, data, inverse);
+}
+
+/// Execute an eligible native NTT before callers allocate CPU FFT twiddles.
+///
+/// Returns `true` only when the transform was dispatched to ICICLE. Eligible
+/// GPU errors remain fail-closed inside `best_fft_gpu`; `false` means the
+/// current scope, field, or fixed size policy requires the CPU path.
+pub fn try_gpu_fft_if_eligible<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeField>(
+    scalars: &mut [G],
+    omega: Scalar,
+    log_n: u32,
+    inverse: bool,
+) -> bool {
+    #[cfg(all(feature = "icicle_gpu", feature = "formal-gpu-msm"))]
+    {
+        if icicle::native_prove_ntt_scope_active()
+            && !icicle::should_use_cpu_fft(scalars.len())
+            && icicle::is_gpu_supported_field(&omega)
+        {
+            best_fft_gpu(scalars, omega, log_n, inverse);
+            return true;
+        }
+    }
 
     #[cfg(all(feature = "icicle_gpu", not(feature = "formal-gpu-msm")))]
-    if env::var("ENABLE_ICICLE_GPU").is_ok()
-        && !icicle::should_use_cpu_fft(scalars.len())
-        && icicle::is_gpu_supported_field(&omega)
     {
-        best_fft_gpu(scalars, omega, log_n, inverse);
-    } else {
-        best_fft_cpu(scalars, omega, log_n, data, inverse);
+        if env::var("ENABLE_ICICLE_GPU").is_ok()
+            && !icicle::should_use_cpu_fft(scalars.len())
+            && icicle::is_gpu_supported_field(&omega)
+        {
+            best_fft_gpu(scalars, omega, log_n, inverse);
+            return true;
+        }
     }
 
     #[cfg(not(feature = "icicle_gpu"))]
-    best_fft_cpu(scalars, omega, log_n, data, inverse);
+    let _ = (scalars, omega, log_n, inverse);
+
+    false
 }
 
 /// Performs a NTT operation on GPU using Icicle library

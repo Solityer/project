@@ -755,6 +755,7 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("hyrax_active_domain_workspace_bytes", report.hyrax_active_domain_workspace_bytes);
     number("hyrax_l_qry_tensor_columns", report.hyrax_l_qry_tensor_columns);
     number("hyrax_l_qry_tensor_workspace_bytes", report.hyrax_l_qry_tensor_workspace_bytes);
+    number("hyrax_l_qry_binary_lut_workspace_bytes", report.hyrax_l_qry_binary_lut_workspace_bytes);
     number("hyrax_aux_tensor_workspace_bytes", report.hyrax_aux_tensor_workspace_bytes);
     number("hyrax_folded_columns_workspace_bytes", report.hyrax_folded_columns_workspace_bytes);
     number("hyrax_tensor_retained_workspace_bytes", report.hyrax_tensor_retained_workspace_bytes);
@@ -861,6 +862,7 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
     number("estimated_peak_host_memory_bytes", report.estimated_peak_host_memory_bytes);
     number("forward_admission_peak_host_memory_bytes_upper_bound", report.forward_admission_peak_host_memory_bytes_upper_bound);
     json_bool(out, "forward_value_admission_ready", report.forward_value_admission_ready);
+    json_string(out, "forward_value_admission_mode", report.forward_value_admission_mode);
     number("estimated_native_scratch_bytes", report.estimated_native_scratch_bytes);
     number("estimated_native_heap_bytes_upper_bound", report.estimated_native_heap_bytes_upper_bound);
     number("estimated_native_mapped_bytes_upper_bound", report.estimated_native_mapped_bytes_upper_bound);
@@ -1061,11 +1063,15 @@ void write_public_statement(const std::string& path, const Record& record, const
     write_text(path, out.str());
 }
 
-void write_verifier_context(const std::string& path, const VerifierContext& context) {
+void write_formal_verifier_context(const std::string& path, const detail::ValidatedFormalInputs& inputs, const VerifierContext& context) {
+    const auto write_begin = Clock::now();
+    std::cerr << "gat_adapter_prover_stage: formal-context-write begin" << std::endl;
     std::string reason;
-    if (!zkgpt::gat::write_verifier_context(context, path, &reason)) {
+    if (!detail::write_verifier_context_formal(inputs, context, path, &reason)) {
         throw std::runtime_error("cannot write verifier context v4: " + (reason.empty() ? std::string("unknown error") : reason));
     }
+    std::cerr << "gat_adapter_prover_stage: formal-context-write complete elapsed_ms="
+              << elapsed_ms(write_begin, Clock::now()) << std::endl;
 }
 
 Options parse_options(int argc, char** argv) {
@@ -1345,34 +1351,10 @@ int main(int argc, char** argv) {
                 return report.symbolic_analysis_profile_complete ? 0 : 1;
             }
             if (point_shape_ready && report.forward_admission_peak_host_memory_bytes_upper_bound <= resource_snapshot.host_headroom_bytes) {
-                std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_forward_inputs\n" << std::flush;
-                const Tensor2D features = load_features(cache_dir, config, quant, graph);
-                const Model model = Model::load(bundle_dir);
-                model.validate_identity(config);
-                std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset << " stage=canonical_forward_inputs feature_rows="
-                          << features.rows << " feature_cols=" << features.cols << " model_layers="
-                          << model.manifest.layers << " hidden_heads=" << model.hidden_heads()
-                          << " output_heads=" << model.manifest.output_heads << '\n' << std::flush;
-                std::cerr << "CAPACITY_STAGE_BEGIN dataset=" << options.dataset << " stage=canonical_all_value_forward\n" << std::flush;
-                const std::vector<std::array<unsigned, 5>> division_profiles = canonical_division_range_profiles(graph, model, quant);
-                std::string admission_reason;
-                const auto progress = [](const char* phase, std::size_t layer, std::size_t head, bool complete) {
-                    std::cerr << "CAPACITY_FORWARD_ADMISSION phase=" << phase << " layer=" << layer
-                              << " head=" << head << " status=" << (complete ? "DONE" : "BEGIN")
-                              << '\n' << std::flush;
-                };
-                if (run_forward_admission(graph, features, model, quant, division_profiles, &admission_reason,
-                                          nullptr, progress)) {
-                    report.forward_value_admission_ready = true;
-                    std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset
-                              << " stage=canonical_all_value_forward status=PASS\n" << std::flush;
-                } else {
-                    report.ready = false;
-                    report.reason = "canonical all-value forward admission failed: " + admission_reason;
-                    std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset
-                              << " stage=canonical_all_value_forward status=BLOCKED reason="
-                              << admission_reason << '\n' << std::flush;
-                }
+                report.forward_value_admission_ready = false;
+                report.forward_value_admission_mode = "deferred_to_owned_forward_v1";
+                std::cerr << "CAPACITY_STAGE_END dataset=" << options.dataset
+                          << " stage=canonical_all_value_forward status=DEFERRED_TO_OWNED_FORWARD\n" << std::flush;
             } else if (point_shape_ready) {
                 report.ready = false;
                 report.reason = "canonical forward-admission host bound exceeds current available memory";
@@ -1460,13 +1442,10 @@ int main(int argc, char** argv) {
         record.load_ms = elapsed_ms(load_begin, Clock::now());
 
         const auto witness_begin = Clock::now();
-        ForwardResult computed_forward = detail::compute_formal_forward_unvalidated(
-            loaded_graph, loaded_features, model, quant);
         detail::ValidatedFormalInputs owned_inputs =
-            detail::ValidatedFormalInputs::consume(
+            detail::ValidatedFormalInputs::compute_and_own(
                 std::move(loaded_graph), std::move(loaded_features),
-                std::move(model), std::move(quant),
-                std::move(computed_forward));
+                std::move(model), std::move(quant));
         const Graph& graph = owned_inputs.graph();
         const Tensor2D& features = owned_inputs.features();
         const QuantConfig& owner_quant = owned_inputs.quant();
@@ -1474,10 +1453,13 @@ int main(int argc, char** argv) {
         const auto plan_owner = owned_inputs.plan_owner();
         const GatCircuitPlan& plan = *plan_owner;
         if (!plan.official_layered || plan.has_placeholder) throw std::runtime_error("official layered GAT circuit plan is unavailable");
-        if (owned_inputs.canonical_validation_calls() != 1U)
-            throw std::logic_error("formal inputs were not independently reference-validated exactly once");
-        std::cerr << "[zkGPT][forward] canonical_reference_validation_calls=1 canonical_reference_validation_ms="
-                  << owned_inputs.canonical_validation_ms() << '\n' << std::flush;
+        if (owned_inputs.canonical_forward_generation_calls() != 1U ||
+            owned_inputs.canonical_forward_value_admission_calls() != 1U)
+            throw std::logic_error("formal inputs did not complete one fresh canonical forward and value-admission pass");
+        std::cerr << "[zkGPT][forward] canonical_forward_generation_calls=1 canonical_forward_generation_ms="
+                  << owned_inputs.canonical_forward_generation_ms() << '\n' << std::flush;
+        std::cerr << "[zkGPT][forward] canonical_forward_value_admission_calls=1 canonical_forward_value_admission_ms="
+                  << owned_inputs.canonical_forward_value_admission_ms() << '\n' << std::flush;
         record.witness_ms = elapsed_ms(witness_begin, Clock::now());
 
         const auto registration_begin = Clock::now();
@@ -1518,11 +1500,14 @@ int main(int argc, char** argv) {
         record.verifier_context_path = run_rel + "/verifier_context.bin";
         write_logits(run_dir + "/public_logits.txt", forward.logits);
         write_public_statement(run_dir + "/public_statement.json", record, graph, features, owner_quant, tables, plan);
-        write_verifier_context(run_dir + "/verifier_context.bin", context);
+        write_formal_verifier_context(run_dir + "/verifier_context.bin", owned_inputs, context);
 
         const auto prove_begin = Clock::now();
+        std::cerr << "gat_adapter_prover_stage: native-formal-proof begin" << std::endl;
         ProveResult proved = detail::prove_gat_formal(
             owned_inputs, registration, context, record.privacy_profile);
+        std::cerr << "gat_adapter_prover_stage: native-formal-proof complete elapsed_ms="
+                  << elapsed_ms(prove_begin, Clock::now()) << " status=" << prove_status_name(proved.status) << std::endl;
         record.prove_total_ms = elapsed_ms(prove_begin, Clock::now());
         record.preparation_ms = proved.preparation_ms;
         record.aux_commitment_ms = proved.aux_commitment_ms;

@@ -727,7 +727,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
                     gpu_padded < 1 or gpu_padded > max_basis_padded or gpu_padded & (gpu_padded - 1) or
                     not valid_histogram or max_segment_generators > gpu_basis or
                     gpu_padded != max_histogram_padded or
-                    type(gpu_workspace) is not int or gpu_workspace != 144 * gpu_basis + 608 * gpu_padded or
+                    type(gpu_workspace) is not int or gpu_workspace != 144 * gpu_basis + 704 * gpu_padded + 352 or
                     gpu_workspace > (1 << 64) - 1):
                 raise PhaseError(f"native GPU workspace is not bound to the authenticated maximum opening for {dataset}")
             gpu_device_name = gpu.get("gpu_device_name")
@@ -1041,7 +1041,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         "bound_methods": {
             "additional_disk_peak": "source_derived_upper_bound",
             "host_peak": "source_derived_upper_bound",
-            **({"gpu_workspace": "authenticated_basis_144B_plus_max_opening_608P",
+            **({"gpu_workspace": "authenticated_basis_144B_plus_max_opening_704P_plus_352",
                 "shared_host_cuda": "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace"} if hybrid else {}),
             "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
         },

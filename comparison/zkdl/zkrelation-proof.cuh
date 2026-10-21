@@ -58,6 +58,18 @@ namespace relation {
 
 using byte = zkdl::byte;
 using FrWire = zkdl::FrWire;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+using ZkSumcheckFoldedScalar = zkdl_blst::blst_fr;
+inline FrWire zksc_folded_scalar_to_wire(const ZkSumcheckFoldedScalar& value) {
+    return zkdl::cpu_ipa_montgomery_to_frwire(value);
+}
+#else
+using ZkSumcheckFoldedScalar = FrWire;
+inline FrWire zksc_folded_scalar_to_wire(const ZkSumcheckFoldedScalar& value) {
+    return value;
+}
+#endif
+using ZkSumcheckFoldedState = std::vector<std::vector<ZkSumcheckFoldedScalar>>;
 using RouteWorkProgressCallback =
     std::function<void(const char*, std::uint64_t, std::uint64_t)>;
 using SegmentCommitmentProgressCallback =
@@ -672,7 +684,8 @@ inline bool zksc_segmented_streaming_peak_bytes(
     if (!multiply(tensor_count, segment_size, segment_values) ||
         !multiply(segment_values, 4U, scratch_values) ||
         !multiply(scratch_values, sizeof(FrWire), payload_bytes) ||
-        !multiply(tensor_count, 2U * sizeof(std::vector<FrWire>), vector_headers) ||
+        !multiply(tensor_count, sizeof(std::vector<FrWire>) +
+                  sizeof(std::vector<ZkSumcheckFoldedScalar>), vector_headers) ||
         !multiply(tensor_count, sizeof(FrWire), terminal_values) ||
         !add(vector_headers, terminal_values, metadata_bytes) ||
         !add(payload_bytes, metadata_bytes, peak_bytes)) {
@@ -706,9 +719,23 @@ inline bool zksc_folded_state_peak_bytes(
                            (logical_domain / 2U))
         return false;
     cached_values = tensor_count * (logical_domain / 2U);
-    if (cached_values > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    constexpr std::uint64_t kCachedScalarBytes = sizeof(zkdl_blst::blst_fr);
+#else
+    constexpr std::uint64_t kCachedScalarBytes = sizeof(FrWire);
+#endif
+    if (cached_values > std::numeric_limits<std::uint64_t>::max() / kCachedScalarBytes)
         return false;
-    cached_bytes = cached_values * sizeof(FrWire);
+    cached_bytes = cached_values * kCachedScalarBytes;
+    if (tensor_count > (std::numeric_limits<std::uint64_t>::max() -
+                        sizeof(ZkSumcheckFoldedState)) /
+                           sizeof(std::vector<ZkSumcheckFoldedScalar>))
+        return false;
+    const std::uint64_t folded_headers = sizeof(ZkSumcheckFoldedState) +
+        tensor_count * sizeof(std::vector<ZkSumcheckFoldedScalar>);
+    if (folded_headers > std::numeric_limits<std::uint64_t>::max() - cached_bytes)
+        return false;
+    cached_bytes += folded_headers;
     if (logical_domain > 2U &&
         !zksc_montgomery_row_scratch_peak_bytes(
             tensor_count, logical_domain / 4U, cached_round_scratch_bytes))
@@ -3240,16 +3267,18 @@ struct FacLine8Proof {
                             std::string* error = nullptr);
 };
 
-/* Publicly described Qpad relation.  The selector itself is reconstructed
- * from the authenticated TensorDescriptor by both sides; only its digest and
- * the hidden selector-times-value proof are serialized. */
+/* One same-mask Qpad random-linear-combination proof group.  The selector is
+ * reconstructed from the authenticated TensorDescriptors and is never
+ * committed or serialized.  Member order is canonical descriptor order. */
 struct PaddingProofRecord {
-    static const std::uint32_t kVersion = 1U;
+    static const std::uint32_t kVersion = 2U;
+    static constexpr std::uint32_t kMaxMembers = 128U;
     std::uint32_t version = kVersion;
-    std::string tensor_id;
-    std::uint32_t commitment_index = std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t group_index = std::numeric_limits<std::uint32_t>::max();
+    std::array<byte, 32U> group_key{};
     std::uint32_t domain_size = 0U;
-    std::array<byte, 32U> selector_digest{};
+    std::vector<std::string> member_tensor_ids;
+    std::vector<std::uint32_t> member_commitment_indices;
     ConstraintProof relation;
 
     std::vector<byte> serialize() const;
@@ -3263,7 +3292,7 @@ struct PaddingProofRecord {
 };
 
 struct Proof {
-    static const std::uint32_t kVersion = 7U;
+    static const std::uint32_t kVersion = 8U;
     std::uint32_t version = kVersion;
     RelationStatement statement;
     std::vector<CommitmentWire> commitments;
@@ -3285,11 +3314,11 @@ struct Proof {
     std::vector<byte> serialize() const;
     static bool deserialize(const std::vector<byte>& bytes, Proof& proof,
                             std::string* error = nullptr);
-    // A formal verifier supplies the authenticated plan-derived Qpad ids and
+    // A formal verifier supplies the authenticated plan-derived Qpad groups and
     // their native typed per-record byte ceiling.  The generic wire-only
     // entry point above retains its smaller untrusted-item limit.
     static bool deserialize(const std::vector<byte>& bytes, Proof& proof,
-                            const std::vector<std::string>& expected_qpad_ids,
+                            const std::vector<std::vector<std::string>>& expected_qpad_groups,
                             std::uint64_t max_qpad_record_bytes,
                             std::uint64_t max_terminal_body_bytes,
                             std::uint64_t max_sorted_lookup_relation_body_bytes,
@@ -4261,16 +4290,31 @@ inline bool read_constraint_proof(
 }
 
 inline std::vector<byte> PaddingProofRecord::serialize() const {
-    if (version != kVersion || tensor_id.empty() || domain_size == 0U ||
-        selector_digest == std::array<byte, 32U>{{}}) {
+    if (version != kVersion ||
+        group_index == std::numeric_limits<std::uint32_t>::max() ||
+        group_key == std::array<byte, 32U>{{}} || domain_size == 0U ||
+        (domain_size & (domain_size - 1U)) != 0U ||
+        member_tensor_ids.empty() || member_tensor_ids.size() > kMaxMembers ||
+        member_tensor_ids.size() != member_commitment_indices.size()) {
         throw std::invalid_argument("invalid Qpad proof record");
     }
-    std::vector<byte> out{'P', 'A', 'D', '1'};
+    std::set<std::string> member_ids;
+    std::set<std::uint32_t> commitment_indices;
+    for (std::size_t index = 0U; index < member_tensor_ids.size(); ++index)
+        if (member_tensor_ids[index].empty() ||
+            !member_ids.insert(member_tensor_ids[index]).second ||
+            !commitment_indices.insert(member_commitment_indices[index]).second)
+            throw std::invalid_argument("invalid Qpad group member map");
+    std::vector<byte> out{'P', 'A', 'D', '2'};
     zkdl::append_u32(out, version);
-    zkdl::append_string(out, tensor_id);
-    zkdl::append_u32(out, commitment_index);
+    zkdl::append_u32(out, group_index);
+    append_digest(out, group_key);
     zkdl::append_u32(out, domain_size);
-    append_digest(out, selector_digest);
+    zkdl::append_u64(out, static_cast<std::uint64_t>(member_tensor_ids.size()));
+    for (std::size_t index = 0U; index < member_tensor_ids.size(); ++index) {
+        zkdl::append_string(out, member_tensor_ids[index]);
+        zkdl::append_u32(out, member_commitment_indices[index]);
+    }
     std::vector<byte> relation_bytes;
     append_constraint_proof(relation_bytes, relation);
     zkdl::append_u64(out, static_cast<std::uint64_t>(relation_bytes.size()));
@@ -4285,21 +4329,39 @@ inline bool PaddingProofRecord::deserialize(const std::vector<byte>& bytes,
                                             std::uint64_t max_terminal_body_bytes) {
     PaddingProofRecord parsed;
     std::uint32_t version = 0U;
-    std::uint64_t nested_size = 0U;
+    std::uint64_t nested_size = 0U, member_count = 0U;
     std::size_t offset = 0U;
     if (bytes.size() > max_record_body_bytes || bytes.size() < 4U ||
         bytes[0] != 'P' || bytes[1] != 'A' ||
-        bytes[2] != 'D' || bytes[3] != '1') {
+        bytes[2] != 'D' || bytes[3] != '2') {
         if (error) *error = "invalid Qpad proof framing or authenticated body bound";
         return false;
     }
     offset = 4U;
     if (!zkdl::read_u32(bytes, offset, version) || version != PaddingProofRecord::kVersion ||
-        !zkdl::read_string(bytes, offset, parsed.tensor_id) ||
-        !zkdl::read_u32(bytes, offset, parsed.commitment_index) ||
+        !zkdl::read_u32(bytes, offset, parsed.group_index) ||
+        !read_digest(bytes, offset, parsed.group_key) ||
         !zkdl::read_u32(bytes, offset, parsed.domain_size) ||
-        !read_digest(bytes, offset, parsed.selector_digest) ||
-        !zkdl::read_u64(bytes, offset, nested_size) || nested_size == 0U ||
+        !zkdl::read_u64(bytes, offset, member_count) || member_count == 0U ||
+        member_count > PaddingProofRecord::kMaxMembers ||
+        member_count > (bytes.size() - offset) / 12U) {
+        if (error) *error = "truncated or invalid Qpad group header";
+        return false;
+    }
+    parsed.member_tensor_ids.resize(static_cast<std::size_t>(member_count));
+    parsed.member_commitment_indices.resize(static_cast<std::size_t>(member_count));
+    std::set<std::string> member_ids;
+    std::set<std::uint32_t> commitment_indices;
+    for (std::size_t index = 0U; index < parsed.member_tensor_ids.size(); ++index)
+        if (!zkdl::read_string(bytes, offset, parsed.member_tensor_ids[index]) ||
+            parsed.member_tensor_ids[index].empty() ||
+            !member_ids.insert(parsed.member_tensor_ids[index]).second ||
+            !zkdl::read_u32(bytes, offset, parsed.member_commitment_indices[index]) ||
+            !commitment_indices.insert(parsed.member_commitment_indices[index]).second) {
+            if (error) *error = "invalid Qpad group member map";
+            return false;
+        }
+    if (!zkdl::read_u64(bytes, offset, nested_size) || nested_size == 0U ||
         nested_size > max_record_body_bytes ||
         nested_size != bytes.size() - offset) {
         if (error) *error = "truncated or trailing Qpad proof record";
@@ -4310,9 +4372,11 @@ inline bool PaddingProofRecord::deserialize(const std::vector<byte>& bytes,
     std::size_t relation_offset = 0U;
     if (!read_constraint_proof(relation_bytes, relation_offset, parsed.relation,
                                max_terminal_body_bytes) ||
-        relation_offset != relation_bytes.size() || parsed.tensor_id.empty() ||
+        relation_offset != relation_bytes.size() ||
+        parsed.group_index == std::numeric_limits<std::uint32_t>::max() ||
+        parsed.group_key == std::array<byte, 32U>{{}} ||
         parsed.domain_size == 0U ||
-        parsed.selector_digest == std::array<byte, 32U>{{}}) {
+        (parsed.domain_size & (parsed.domain_size - 1U)) != 0U) {
         if (error) *error = "invalid Qpad relation payload";
         return false;
     }
@@ -4824,25 +4888,30 @@ inline std::vector<byte> Proof::serialize() const {
 
 inline bool proof_deserialize_impl(
     const std::vector<byte>& bytes, Proof& proof,
-    const std::vector<std::string>* expected_qpad_ids,
+    const std::vector<std::vector<std::string>>* expected_qpad_groups,
     std::uint64_t max_qpad_record_bytes,
     std::uint64_t max_terminal_body_bytes,
     std::uint64_t max_sorted_lookup_relation_body_bytes,
     std::string* error) {
     const std::uint64_t max_items = 1U << 20;
-    if (expected_qpad_ids != nullptr) {
-        if (expected_qpad_ids->size() > max_items ||
+    if (expected_qpad_groups != nullptr) {
+        if (expected_qpad_groups->size() > max_items ||
             max_terminal_body_bytes == 0U ||
-            (!expected_qpad_ids->empty() && max_qpad_record_bytes == 0U)) {
+            (!expected_qpad_groups->empty() && max_qpad_record_bytes == 0U)) {
             if (error) *error = "authenticated relation context has invalid item/body bounds";
             return false;
         }
         std::set<std::string> expected_ids;
-        for (const auto& id : *expected_qpad_ids) {
-            if (id.empty() || !expected_ids.insert(id).second) {
-                if (error) *error = "authenticated Qpad context has empty or duplicate tensor ids";
+        for (const auto& group : *expected_qpad_groups) {
+            if (group.empty() || group.size() > PaddingProofRecord::kMaxMembers) {
+                if (error) *error = "authenticated Qpad context has an empty or oversized group";
                 return false;
             }
+            for (const auto& id : group)
+                if (id.empty() || !expected_ids.insert(id).second) {
+                    if (error) *error = "authenticated Qpad context has empty or duplicate tensor ids";
+                    return false;
+                }
         }
     }
     size_t offset = 0U;
@@ -4872,19 +4941,19 @@ inline bool proof_deserialize_impl(
             if (error) *error = "duplicate/empty GAT commitment id";
             return false;
         }
-    const std::uint64_t qpad_count_limit = expected_qpad_ids == nullptr
+    const std::uint64_t qpad_count_limit = expected_qpad_groups == nullptr
         ? kMaxRelationOpenings
-        : static_cast<std::uint64_t>(expected_qpad_ids->size());
+        : static_cast<std::uint64_t>(expected_qpad_groups->size());
     if (!zkdl::read_u64(bytes, offset, count) || count > qpad_count_limit ||
-        (expected_qpad_ids != nullptr && count != expected_qpad_ids->size())) {
-        if (error) *error = expected_qpad_ids == nullptr
+        (expected_qpad_groups != nullptr && count != expected_qpad_groups->size())) {
+        if (error) *error = expected_qpad_groups == nullptr
             ? "invalid Qpad proof record section"
-            : "Qpad proof record count does not match the authenticated tensor plan";
+            : "Qpad proof group count does not match the authenticated tensor plan";
         return false;
     }
     const std::uint64_t nested_qpad_cap =
         zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes;
-    const std::uint64_t qpad_body_limit = expected_qpad_ids == nullptr
+    const std::uint64_t qpad_body_limit = expected_qpad_groups == nullptr
         ? nested_qpad_cap
         : max_qpad_record_bytes;
     parsed.padding_records.reserve(static_cast<std::size_t>(count));
@@ -4893,7 +4962,7 @@ inline bool proof_deserialize_impl(
         if (!zkdl::read_u64(bytes, offset, padding_bytes) || padding_bytes == 0U ||
             padding_bytes > qpad_body_limit ||
             padding_bytes > bytes.size() - offset) {
-            if (error) *error = expected_qpad_ids == nullptr
+            if (error) *error = expected_qpad_groups == nullptr
                 ? "truncated Qpad proof record"
                 : "Qpad record body exceeds the authenticated typed plan bound";
             return false;
@@ -4906,11 +4975,27 @@ inline bool proof_deserialize_impl(
         if (!PaddingProofRecord::deserialize(encoded, padding, error,
                                              qpad_body_limit,
                                              max_terminal_body_bytes)) return false;
-        if (expected_qpad_ids != nullptr &&
-            padding.tensor_id != (*expected_qpad_ids)[index]) {
-            if (error) *error = "Qpad proof tensor id/order does not match the authenticated tensor plan";
+        if (expected_qpad_groups != nullptr &&
+            padding.member_tensor_ids != (*expected_qpad_groups)[index]) {
+            if (error) *error = "Qpad group member order differs from the authenticated tensor plan";
             return false;
         }
+        if (expected_qpad_groups != nullptr)
+            for (std::size_t member = 0U;
+                 member < padding.member_tensor_ids.size(); ++member) {
+                const auto commitment = std::find_if(
+                    parsed.commitments.begin(), parsed.commitments.end(),
+                    [&](const CommitmentWire& wire) {
+                        return wire.tensor_id == padding.member_tensor_ids[member];
+                    });
+                if (commitment == parsed.commitments.end() ||
+                    static_cast<std::size_t>(std::distance(
+                        parsed.commitments.begin(), commitment)) !=
+                        padding.member_commitment_indices[member]) {
+                    if (error) *error = "Qpad member commitment index differs from canonical commitment order";
+                    return false;
+                }
+            }
         parsed.padding_records.push_back(std::move(padding));
     }
     if (!zkdl::read_u64(bytes, offset, count) || count != 0U) {
@@ -4981,12 +5066,12 @@ inline bool Proof::deserialize(const std::vector<byte>& bytes, Proof& proof,
 
 inline bool Proof::deserialize(
     const std::vector<byte>& bytes, Proof& proof,
-    const std::vector<std::string>& expected_qpad_ids,
+    const std::vector<std::vector<std::string>>& expected_qpad_groups,
     std::uint64_t max_qpad_record_bytes,
     std::uint64_t max_terminal_body_bytes,
     std::uint64_t max_sorted_lookup_relation_body_bytes,
     std::string* error) {
-    return proof_deserialize_impl(bytes, proof, &expected_qpad_ids,
+    return proof_deserialize_impl(bytes, proof, &expected_qpad_groups,
                                   max_qpad_record_bytes,
                                   max_terminal_body_bytes,
                                   max_sorted_lookup_relation_body_bytes, error);
@@ -5844,7 +5929,7 @@ inline bool zksc_segmented_round_evaluations(
 inline bool zksc_segmented_fold_state_initialize(
     const std::vector<SegmentedTensorProvider>& providers,
     const FrWire& challenge,
-    std::vector<std::vector<FrWire>>& state,
+    ZkSumcheckFoldedState& state,
     std::string* error = nullptr,
     std::uint32_t progress_round = 0U,
     const ZkSumcheckProgressCallback* progress = nullptr) {
@@ -5873,13 +5958,39 @@ inline bool zksc_segmented_fold_state_initialize(
             }
             state[tensor].reserve(logical_domain / 2U);
         }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+        const zkdl_blst::blst_fr challenge_montgomery =
+            zkdl::cpu_ipa_frwire_to_montgomery_unchecked(challenge);
+#endif
         for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
-            std::vector<std::vector<FrWire>> blocks(providers.size());
             for (std::size_t tensor = 0U; tensor < providers.size(); ++tensor) {
-                if (!providers[tensor].read_segment(segment, blocks[tensor], error) ||
-                    blocks[tensor].size() != segment_size) return false;
-                fold_values(blocks[tensor], challenge);
-                state[tensor].insert(state[tensor].end(), blocks[tensor].begin(), blocks[tensor].end());
+                std::vector<FrWire> block;
+                if (!providers[tensor].read_segment(segment, block, error) ||
+                    block.size() != segment_size) return false;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                std::vector<zkdl_blst::blst_fr> folded_values;
+                folded_values.reserve(segment_size / 2U);
+                for (std::size_t index = 0U; index < block.size() / 2U; ++index) {
+                    if (!zkdl::fr_canonical(block[2U * index]) ||
+                        !zkdl::fr_canonical(block[2U * index + 1U])) {
+                        if (error) *error = "segmented ZkSumcheck provider scalar is not canonical";
+                        return false;
+                    }
+                    const zkdl_blst::blst_fr left =
+                        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(block[2U * index]);
+                    const zkdl_blst::blst_fr right =
+                        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(block[2U * index + 1U]);
+                    zkdl_blst::blst_fr difference{}, scaled{}, folded{};
+                    zkdl_blst::blst_fr_sub(&difference, &right, &left);
+                    zkdl_blst::blst_fr_mul(&scaled, &challenge_montgomery, &difference);
+                    zkdl_blst::blst_fr_add(&folded, &left, &scaled);
+                    folded_values.push_back(folded);
+                }
+                state[tensor].insert(state[tensor].end(), folded_values.begin(), folded_values.end());
+#else
+                fold_values(block, challenge);
+                state[tensor].insert(state[tensor].end(), block.begin(), block.end());
+#endif
             }
             if (progress != nullptr)
                 (*progress)("fold_state_init_segments", progress_round,
@@ -5898,7 +6009,7 @@ inline bool zksc_segmented_fold_state_initialize(
     return true;
 }
 
-inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
+inline bool zksc_fold_values_in_place(std::vector<ZkSumcheckFoldedScalar>& values,
                                       const FrWire& challenge,
                                       std::string* error = nullptr,
                                       std::uint32_t progress_round = 0U,
@@ -5909,9 +6020,59 @@ inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
         if (error) *error = "segmented ZkSumcheck in-place fold shape is invalid";
         return false;
     }
-    const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
     const std::size_t folded_size = values.size() / 2U;
     constexpr std::size_t kProgressRows = 1U << 18U;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    const zkdl_blst::blst_fr challenge_montgomery =
+        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(challenge);
+#else
+    const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
+#endif
+    for (std::size_t begin = 0U; begin < folded_size;) {
+        const std::size_t end = progress == nullptr
+            ? folded_size : std::min(folded_size, begin + kProgressRows);
+        for (std::size_t index = begin; index < end; ++index) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+            const zkdl_blst::blst_fr left = values[2U * index];
+            const zkdl_blst::blst_fr right = values[2U * index + 1U];
+            zkdl_blst::blst_fr difference{}, scaled{}, folded{};
+            zkdl_blst::blst_fr_sub(&difference, &right, &left);
+            zkdl_blst::blst_fr_mul(&scaled, &challenge_montgomery, &difference);
+            zkdl_blst::blst_fr_add(&folded, &left, &scaled);
+            values[index] = folded;
+#else
+            const FrWire left = values[2U * index];
+            const FrWire right = values[2U * index + 1U];
+            values[index] = zkdl::fr_add(zkdl::fr_mul(one_minus, left),
+                                         zkdl::fr_mul(challenge, right));
+#endif
+        }
+        begin = end;
+        if (progress != nullptr)
+            (*progress)("fold_state_rows", progress_round, tensor_index,
+                        end, folded_size);
+    }
+    values.resize(folded_size);
+    return true;
+}
+
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+// Spilled folded state remains canonical wire storage.  Keep its legacy wire
+// fold separate from the cached in-memory BLST Montgomery representation.
+inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
+                                      const FrWire& challenge,
+                                      std::string* error = nullptr,
+                                      std::uint32_t progress_round = 0U,
+                                      std::uint32_t tensor_index = 0U,
+                                      const ZkSumcheckProgressCallback* progress = nullptr) {
+    if (values.size() < 2U || (values.size() & 1U) != 0U ||
+        !zkdl::fr_canonical(challenge)) {
+        if (error) *error = "segmented ZkSumcheck wire fold shape is invalid";
+        return false;
+    }
+    const std::size_t folded_size = values.size() / 2U;
+    constexpr std::size_t kProgressRows = 1U << 18U;
+    const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
     for (std::size_t begin = 0U; begin < folded_size;) {
         const std::size_t end = progress == nullptr
             ? folded_size : std::min(folded_size, begin + kProgressRows);
@@ -5929,6 +6090,7 @@ inline bool zksc_fold_values_in_place(std::vector<FrWire>& values,
     values.resize(folded_size);
     return true;
 }
+#endif
 
 inline bool zksc_spilled_round_evaluations(
     const ConstraintDescriptor& descriptor,
@@ -6282,14 +6444,190 @@ inline bool zksc_spilled_terminal_values(
     return true;
 }
 
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+inline bool zksc_accumulate_montgomery_folded_round_evaluation_rows(
+    const ConstraintDescriptor& descriptor,
+    const std::vector<std::vector<zkdl_blst::blst_fr>>& current,
+    std::uint32_t degree, std::size_t row_begin, std::size_t row_end,
+    std::vector<FrWire>& evaluations,
+    ZkSumcheckRoundEvaluationScratch& scratch, std::string* error,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan) {
+    if (row_begin > row_end || current.empty() || current.front().size() < 2U ||
+        (current.front().size() & 1U) != 0U || degree > 8U ||
+        evaluations.size() != degree + 1U ||
+        row_end > current.front().size() / 2U) {
+        if (error) *error = "segmented ZkSumcheck Montgomery cached round shape is invalid";
+        return false;
+    }
+    for (const auto& tensor : current)
+        if (tensor.size() != current.front().size()) {
+            if (error) *error = "segmented ZkSumcheck Montgomery cached tensor shapes differ";
+            return false;
+        }
+    const std::size_t row_count = row_end - row_begin;
+    if (row_count == 0U) return true;
+    std::size_t chunk_limit = 1U;
+    if (row_count >= 4096U)
+        chunk_limit = std::min(row_count,
+            static_cast<std::size_t>(zkdl::cpu_parallel_worker_count()) + 1U);
+    const std::size_t grain = row_count / chunk_limit +
+                              (row_count % chunk_limit != 0U ? 1U : 0U);
+    const std::size_t active_chunks = row_count / grain +
+                                      (row_count % grain != 0U ? 1U : 0U);
+    if (active_chunks == 0U) {
+        if (error) *error = "segmented ZkSumcheck Montgomery cached scratch is empty";
+        return false;
+    }
+    if (montgomery_plan != nullptr) {
+        if (!montgomery_plan->enabled || montgomery_plan->degree != degree ||
+            montgomery_plan->tensor_count != current.size() ||
+            active_chunks > scratch.montgomery_row_state.size() ||
+            active_chunks > scratch.montgomery_chunk_evaluations.size() ||
+            active_chunks > scratch.montgomery_chunk_valid.size()) {
+            if (error) *error = "segmented ZkSumcheck Montgomery cached plan/scratch shape is invalid";
+            return false;
+        }
+        const std::size_t row_state_size = current.size() * 3U;
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+            if (scratch.montgomery_row_state[chunk].size() != row_state_size ||
+                scratch.montgomery_chunk_evaluations[chunk].size() != evaluations.size()) {
+                if (error) *error = "segmented ZkSumcheck Montgomery cached scratch shape is invalid";
+                return false;
+            }
+            std::fill(scratch.montgomery_chunk_evaluations[chunk].begin(),
+                      scratch.montgomery_chunk_evaluations[chunk].end(),
+                      zkdl_blst::blst_fr{});
+            scratch.montgomery_chunk_valid[chunk] = 1U;
+        }
+        zkdl::cpu_parallel_for(row_count, grain, [&](std::size_t local_row) {
+            const std::size_t chunk = local_row / grain;
+            const std::size_t row = row_begin + local_row;
+            auto& row_state = scratch.montgomery_row_state[chunk];
+            auto& partial = scratch.montgomery_chunk_evaluations[chunk];
+            for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                const auto& left = current[tensor][2U * row];
+                const auto& right = current[tensor][2U * row + 1U];
+                row_state[tensor] = left;
+                zkdl_blst::blst_fr_sub(
+                    &row_state[current.size() + tensor], &right, &left);
+            }
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+                const auto& x = montgomery_plan->evaluation_points[evaluation];
+                for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                    zkdl_blst::blst_fr scaled{};
+                    zkdl_blst::blst_fr_mul(
+                        &scaled, &x, &row_state[current.size() + tensor]);
+                    zkdl_blst::blst_fr_add(
+                        &row_state[2U * current.size() + tensor],
+                        &row_state[tensor], &scaled);
+                }
+                const auto value = zksc_eval_constraint_montgomery(
+                    *montgomery_plan, row_state.data() + 2U * current.size());
+                zkdl_blst::blst_fr next{};
+                zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
+                partial[evaluation] = next;
+            }
+        });
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+                evaluations[evaluation] = zkdl::fr_add(
+                    evaluations[evaluation],
+                    zkdl::cpu_ipa_montgomery_to_frwire(
+                        scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        return true;
+    }
+    if (active_chunks > scratch.row_values.size() ||
+        active_chunks > scratch.chunk_evaluations.size()) {
+        if (error) *error = "segmented ZkSumcheck cached wire scratch shape is invalid";
+        return false;
+    }
+    std::array<FrWire, 9U> evaluation_points{};
+    for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+        evaluation_points[evaluation] = zkdl::fr_from_u32(evaluation);
+    for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+        if (scratch.row_values[chunk].size() != current.size() ||
+            scratch.chunk_evaluations[chunk].size() != evaluations.size()) {
+            if (error) *error = "segmented ZkSumcheck cached wire scratch shape is invalid";
+            return false;
+        }
+        std::fill(scratch.chunk_evaluations[chunk].begin(),
+                  scratch.chunk_evaluations[chunk].end(), FrWire{});
+    }
+    zkdl::cpu_parallel_for(row_count, grain, [&](std::size_t local_row) {
+        const std::size_t chunk = local_row / grain;
+        const std::size_t row = row_begin + local_row;
+        auto& values = scratch.row_values[chunk];
+        auto& partial = scratch.chunk_evaluations[chunk];
+        for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
+            const FrWire& x = evaluation_points[evaluation];
+            for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                const FrWire left = zkdl::cpu_ipa_montgomery_to_frwire(current[tensor][2U * row]);
+                const FrWire right = zkdl::cpu_ipa_montgomery_to_frwire(current[tensor][2U * row + 1U]);
+                values[tensor] = zkdl::fr_add(
+                    left, zkdl::fr_mul(x, zkdl::fr_sub(right, left)));
+            }
+            partial[evaluation] = zkdl::fr_add(
+                partial[evaluation], eval_constraint(descriptor, values));
+        }
+    });
+    for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+        for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
+            evaluations[evaluation] = zkdl::fr_add(
+                evaluations[evaluation], scratch.chunk_evaluations[chunk][evaluation]);
+    return true;
+}
+
+inline bool zksc_montgomery_folded_round_evaluations(
+    const ConstraintDescriptor& descriptor,
+    const ZkSumcheckFoldedState& state, std::uint32_t degree,
+    std::vector<FrWire>& evaluations, std::string* error,
+    std::uint32_t round_index,
+    const ZkSumcheckProgressCallback* progress,
+    const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan) {
+    if (state.empty() || state.front().size() < 2U ||
+        (state.front().size() & 1U) != 0U) {
+        if (error) *error = "segmented ZkSumcheck cached round state is invalid";
+        return false;
+    }
+    evaluations.assign(degree + 1U, FrWire{});
+    const std::size_t row_count = state.front().size() / 2U;
+    constexpr std::size_t kProgressRows = 1U << 18U;
+    const std::size_t scratch_rows = progress == nullptr
+        ? row_count : std::min(row_count, kProgressRows);
+    const std::size_t scratch_chunks = scratch_rows < 4096U ? 1U :
+        std::min(scratch_rows,
+                 static_cast<std::size_t>(zkdl::cpu_parallel_worker_count()) + 1U);
+    ZkSumcheckRoundEvaluationScratch scratch(
+        scratch_chunks, state.size(), evaluations.size(), montgomery_plan != nullptr);
+    for (std::size_t row_begin = 0U; row_begin < row_count;) {
+        const std::size_t row_end = row_begin + std::min(
+            row_count - row_begin, progress == nullptr ? row_count : kProgressRows);
+        if (!zksc_accumulate_montgomery_folded_round_evaluation_rows(
+                descriptor, state, degree, row_begin, row_end, evaluations,
+                scratch, error, montgomery_plan)) return false;
+        row_begin = row_end;
+        if (progress != nullptr)
+            (*progress)("sumcheck_cached_rows", round_index,
+                        std::numeric_limits<std::uint32_t>::max(), row_end,
+                        row_count);
+    }
+    return true;
+}
+#endif
+
 inline bool zksc_folded_round_evaluations(
     const ConstraintDescriptor& descriptor,
-    const std::vector<std::vector<FrWire>>& state,
+    const ZkSumcheckFoldedState& state,
     std::uint32_t degree, std::vector<FrWire>& evaluations,
     std::string* error = nullptr,
     std::uint32_t round_index = 0U,
     const ZkSumcheckProgressCallback* progress = nullptr,
     const ZkSumcheckMontgomeryConstraintPlan* montgomery_plan = nullptr) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    return zksc_montgomery_folded_round_evaluations(
+        descriptor, state, degree, evaluations, error, round_index, progress,
+        montgomery_plan);
+#else
     if (state.empty() || state.front().size() < 2U ||
         (state.front().size() & 1U) != 0U) {
         if (error) *error = "segmented ZkSumcheck cached round state is invalid";
@@ -6299,6 +6637,7 @@ inline bool zksc_folded_round_evaluations(
     return zksc_accumulate_round_evaluations(
         descriptor, state, degree, evaluations, error, round_index, progress,
         "sumcheck_cached_rows", montgomery_plan);
+#endif
 }
 
 inline bool zksc_segmented_terminal_values(
@@ -6498,7 +6837,7 @@ inline bool prove_zk_sumcheck_segmented(
         FrWire previous_blinder{};
         std::vector<FrWire> prior_challenges;
         prior_challenges.reserve(bits);
-        std::vector<std::vector<FrWire>> folded_state;
+        ZkSumcheckFoldedState folded_state;
         ZkSumcheckFoldedSpillFile spilled_folded_state;
         for (std::uint32_t round_index = 0U; round_index < bits; ++round_index) {
             std::vector<FrWire> evaluations;
@@ -6638,7 +6977,8 @@ inline bool prove_zk_sumcheck_segmented(
                     if (error) *error = "segmented ZkSumcheck cached terminal shape is invalid";
                     return false;
                 }
-                result.folded_terminal_values.push_back(tensor.front());
+                result.folded_terminal_values.push_back(
+                    zksc_folded_scalar_to_wire(tensor.front()));
             }
         } else if (use_spilled_folded_state) {
             if (!zksc_spilled_terminal_values(
@@ -6948,6 +7288,15 @@ struct SegmentCommitmentMaterial {
     std::vector<zkdl::CpuG1Point> commitments;
 };
 
+struct QpadGroupPlan;
+struct QpadGroupProverContext;
+class QpadAggregateReadState;
+class SegmentCommitmentValidationReceipt;
+inline bool prove_padding_group(
+    const QpadGroupPlan&, const QpadGroupProverContext&,
+    zkdl::Transcript&, PaddingProofRecord&, std::string*);
+struct QpadAggregateReceiptFactory;
+
 inline void zktr_update_fr_wire_digest(
     zkdl::Sha256& hash, const FrWire* values, std::size_t count) {
     std::array<byte, 4096U> encoded{};
@@ -6967,10 +7316,15 @@ inline void zktr_update_fr_wire_digest(
 }
 
 inline std::array<byte, 32U> zktr_segment_scalar_digest(
-    const std::vector<FrWire>& values) {
+    const FrWire* values, std::size_t count) {
     zkdl::Sha256 hash;
-    zktr_update_fr_wire_digest(hash, values.data(), values.size());
+    zktr_update_fr_wire_digest(hash, values, count);
     return hash.final();
+}
+
+inline std::array<byte, 32U> zktr_segment_scalar_digest(
+    const std::vector<FrWire>& values) {
+    return zktr_segment_scalar_digest(values.data(), values.size());
 }
 
 inline std::array<byte, 32U> zktr_segment_receipt_header_digest(
@@ -6993,10 +7347,11 @@ inline std::array<byte, 32U> zktr_segment_receipt_header_digest(
     return zkdl::sha256(encoded);
 }
 
-inline std::array<byte, 32U> zktr_segment_receipt_material_digest(
+inline std::array<byte, 32U> zktr_segment_receipt_material_digest_fields(
     const std::string& tensor_id, std::uint32_t visibility,
     std::uint32_t domain_size, const std::array<byte, 32U>& basis_digest,
-    const SegmentCommitmentMaterial& material, std::uint32_t segment) {
+    std::uint32_t segment, const zkdl::CpuG1Point& commitment,
+    const FrWire& blinder) {
     std::vector<byte> encoded;
     zkdl::append_string(encoded, "zkdl.segment-msm-material.v1");
     zkdl::append_string(encoded, tensor_id);
@@ -7004,10 +7359,18 @@ inline std::array<byte, 32U> zktr_segment_receipt_material_digest(
     zkdl::append_u32(encoded, domain_size);
     zkdl::append_u32(encoded, segment);
     append_digest(encoded, basis_digest);
-    zkdl::append_g1(encoded,
-                    zkdl::cpu_g1_to_native(material.commitments.at(segment)));
-    append_fr_wire(encoded, material.blinders.at(segment));
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(commitment));
+    append_fr_wire(encoded, blinder);
     return zkdl::sha256(encoded);
+}
+
+inline std::array<byte, 32U> zktr_segment_receipt_material_digest(
+    const std::string& tensor_id, std::uint32_t visibility,
+    std::uint32_t domain_size, const std::array<byte, 32U>& basis_digest,
+    const SegmentCommitmentMaterial& material, std::uint32_t segment) {
+    return zktr_segment_receipt_material_digest_fields(
+        tensor_id, visibility, domain_size, basis_digest, segment,
+        material.commitments.at(segment), material.blinders.at(segment));
 }
 
 class SegmentCommitmentValidationReceipt {
@@ -7071,10 +7434,34 @@ public:
         if (!valid_ || segment >= scalar_digests_.size() ||
             segment >= material.blinders.size() ||
             segment >= material.commitments.size() ||
-            zktr_segment_scalar_digest(values) != scalar_digests_[segment] ||
             zktr_segment_receipt_material_digest(
                 tensor_id_, visibility_, domain_size_, basis_digest_, material,
                 segment) != material_digests_[segment]) {
+            if (error) *error = "segment MSM receipt witness/material digest mismatch";
+            return false;
+        }
+        const bool values_match = derived_segment_validator_
+            ? derived_segment_validator_(segment, values, material, error)
+            : zktr_segment_scalar_digest(values) == scalar_digests_[segment];
+        if (!values_match) {
+            if (error && error->empty())
+                *error = "segment MSM receipt witness/material digest mismatch";
+            return false;
+        }
+        return true;
+    }
+
+    bool matches_segment(std::uint32_t segment,
+                         const std::vector<FrWire>& values,
+                         const FrWire& segment_blinder,
+                         const zkdl::CpuG1Point& segment_commitment,
+                         std::string* error = nullptr) const {
+        if (!valid_ || segment >= scalar_digests_.size() ||
+            !zkdl::fr_canonical(segment_blinder) ||
+            zktr_segment_receipt_material_digest_fields(
+                tensor_id_, visibility_, domain_size_, basis_digest_, segment,
+                segment_commitment, segment_blinder) != material_digests_[segment] ||
+            zktr_segment_scalar_digest(values) != scalar_digests_[segment]) {
             if (error) *error = "segment MSM receipt witness/material digest mismatch";
             return false;
         }
@@ -7115,6 +7502,7 @@ public:
 
 private:
     friend struct SegmentCommitmentValidationReceiptFactory;
+    friend struct QpadAggregateReceiptFactory;
     bool valid_ = false;
     zkdl::CpuIpaBasisContext basis_;
     std::string tensor_id_;
@@ -7127,7 +7515,112 @@ private:
     zkdl::CpuG1Point aggregate_commitment_;
     std::vector<std::array<byte, 32U>> scalar_digests_;
     std::vector<std::array<byte, 32U>> material_digests_;
+    std::function<bool(std::uint32_t, const std::vector<FrWire>&,
+                       const SegmentCommitmentMaterial&, std::string*)>
+        derived_segment_validator_;
 };
+
+// Holds the one-pass aggregate-Y scratch receipt state for a Qpad group.
+class QpadAggregateReadState {
+private:
+    friend struct QpadAggregateReceiptFactory;
+    friend bool prove_padding_group(
+        const QpadGroupPlan&, const QpadGroupProverContext&,
+        zkdl::Transcript&, PaddingProofRecord&, std::string*);
+    bool source_members_validated_ = false;
+    std::uint32_t last_segment_ = std::numeric_limits<std::uint32_t>::max();
+    bool last_source_members_valid_ = false;
+    std::array<byte, 32U> last_aggregate_digest_{};
+    std::vector<std::array<byte, 32U>> aggregate_segment_digests_;
+};
+
+struct QpadAggregateReceiptFactory {
+private:
+    static SegmentCommitmentValidationReceipt mint(
+        const zkdl::CpuIpaBasisContext& basis,
+        const std::string& tensor_id, std::uint32_t visibility,
+        const SegmentedTensorProvider& provider,
+        const CommitmentWire& commitment,
+        const SegmentCommitmentMaterial& material,
+        const std::shared_ptr<QpadAggregateReadState>& read_state);
+    friend bool prove_padding_group(
+        const QpadGroupPlan&, const QpadGroupProverContext&,
+        zkdl::Transcript&, PaddingProofRecord&, std::string*);
+};
+
+inline SegmentCommitmentValidationReceipt QpadAggregateReceiptFactory::mint(
+    const zkdl::CpuIpaBasisContext& basis,
+    const std::string& tensor_id, std::uint32_t visibility,
+    const SegmentedTensorProvider& provider,
+    const CommitmentWire& commitment,
+    const SegmentCommitmentMaterial& material,
+    const std::shared_ptr<QpadAggregateReadState>& read_state) {
+    if (!basis.valid() || !read_state || !read_state->source_members_validated_ ||
+        read_state->aggregate_segment_digests_.size() != commitment.segment_count ||
+        tensor_id.empty() || visibility == 0U ||
+        !provider.valid() || !segment_commitment_wire_shape_valid(commitment) ||
+        commitment.tensor_id != tensor_id || commitment.visibility != visibility ||
+        provider.logical_domain() != commitment.domain_size ||
+        provider.segment_size() != commitment.segment_size ||
+        provider.segment_count() != commitment.segment_count ||
+        material.blinders.size() != commitment.segment_count ||
+        material.commitments.size() != commitment.segment_count ||
+        commitment.segment_commitments.size() != commitment.segment_count ||
+        segment_commitment_digest(commitment) !=
+            commitment.segment_commitment_digest)
+        throw std::invalid_argument("cannot mint invalid Qpad aggregate receipt");
+    zkdl::CpuG1Point segment_sum = zkdl::CpuG1Point::zero();
+    for (std::uint32_t segment = 0U; segment < commitment.segment_count; ++segment) {
+        if (!zkdl::fr_canonical(material.blinders[segment]) ||
+            !zkdl::cpu_g1_equal(
+                material.commitments[segment],
+                zkdl::cpu_g1_from_native(
+                    commitment.segment_commitments[segment].commitment)))
+            throw std::invalid_argument("Qpad aggregate receipt material differs from its wire");
+        segment_sum = zkdl::cpu_g1_add(segment_sum, material.commitments[segment]);
+    }
+    if (!zkdl::cpu_g1_equal(
+            segment_sum, zkdl::cpu_g1_from_native(commitment.commitment)))
+        throw std::invalid_argument("Qpad aggregate wire is not the segment commitment sum");
+    SegmentCommitmentValidationReceipt receipt;
+    receipt.basis_ = basis;
+    receipt.tensor_id_ = tensor_id;
+    receipt.visibility_ = visibility;
+    receipt.domain_size_ = commitment.domain_size;
+    receipt.segment_size_ = commitment.segment_size;
+    receipt.segment_count_ = commitment.segment_count;
+    receipt.basis_digest_ = commitment.basis_digest;
+    receipt.aggregate_commitment_ =
+        zkdl::cpu_g1_from_native(commitment.commitment);
+    receipt.header_digest_ = zktr_segment_receipt_header_digest(
+        tensor_id, visibility, provider, commitment);
+    receipt.scalar_digests_.assign(commitment.segment_count, {});
+    receipt.material_digests_.reserve(commitment.segment_count);
+    for (std::uint32_t segment = 0U;
+         segment < commitment.segment_count; ++segment)
+        receipt.material_digests_.push_back(
+            zktr_segment_receipt_material_digest(
+                tensor_id, visibility, commitment.domain_size,
+                commitment.basis_digest, material, segment));
+    receipt.derived_segment_validator_ =
+        [read_state](std::uint32_t segment, const std::vector<FrWire>& values,
+                     const SegmentCommitmentMaterial&, std::string* error) {
+            if (!read_state->source_members_validated_ ||
+                !read_state->last_source_members_valid_ ||
+                read_state->last_segment_ != segment ||
+                segment >= read_state->aggregate_segment_digests_.size() ||
+                read_state->aggregate_segment_digests_[segment] !=
+                    read_state->last_aggregate_digest_ ||
+                read_state->last_aggregate_digest_ !=
+                    zktr_segment_scalar_digest(values)) {
+                if (error) *error = "Qpad aggregate receipt lacks freshly validated member segments";
+                return false;
+            }
+            return true;
+        };
+    receipt.valid_ = true;
+    return receipt;
+}
 
 struct SegmentCommitmentValidationReceiptFactory {
 private:
@@ -7382,7 +7875,8 @@ inline bool zktr_build_segment_commitment_material(
             const zkdl::CpuG1Point xi = zkdl::cpu_g1_add(
                 zktr_cpu_g1_sum(generators, values.data(), layout.segment_size,
                                 authenticated_basis, msm_session),
-                zkdl::cpu_g1_mul(blinding_generator, material.blinders[segment]));
+                zkdl::cpu_g1_mul(blinding_generator,
+                                 material.blinders[segment]));
             const G1Jacobian_t encoded_commitment = zkdl::cpu_g1_to_native(xi);
             const zkdl::CpuG1Point next_legacy = zkdl::cpu_g1_add(legacy, xi);
             commitment_crypto_seconds += std::chrono::duration<double>(
@@ -11234,10 +11728,10 @@ inline bool route_commitment_index(
 
 #include "gat_adapter/gat_sparse_route.cuh"
 
-inline bool qpad_selector_provider(
+inline bool qpad_selector_provider_unhashed(
     const TensorDescriptor& descriptor, std::size_t basis_size,
-    SegmentedTensorProvider& provider,
-    std::array<byte, 32U>& selector_digest, std::string* error = nullptr) {
+    SegmentedTensorProvider& provider, std::string* error = nullptr,
+    std::uint64_t* provider_read_count = nullptr) {
     if (!descriptor.valid(error) || descriptor.logical_shape.size() !=
         descriptor.padded_shape.size()) {
         if (error && error->empty()) *error = "invalid Qpad tensor descriptor";
@@ -11254,52 +11748,51 @@ inline bool qpad_selector_provider(
     std::uint32_t segment_size = 0U, segment_count = 0U;
     if (!SegmentedTensorProvider::shape(
             descriptor.domain_size, basis_size, segment_size, segment_count, error)) return false;
+    const FrWire one = zkdl::fr_from_u32(1U);
     provider = SegmentedTensorProvider(
         descriptor.domain_size, segment_size,
-        [descriptor](std::uint64_t offset, std::uint32_t count,
+        [descriptor, one, provider_read_count](std::uint64_t offset, std::uint32_t count,
                      std::vector<FrWire>& output, std::string* read_error) {
             if (offset > descriptor.domain_size ||
                 count > descriptor.domain_size - offset) {
                 if (read_error) *read_error = "Qpad selector range is out of bounds";
                 return false;
             }
+            if (provider_read_count != nullptr &&
+                *provider_read_count != std::numeric_limits<std::uint64_t>::max())
+                ++*provider_read_count;
             output.assign(count, FrWire{});
-            for (std::uint32_t index = 0U; index < count; ++index) {
-                std::uint64_t remainder = offset + index;
-                bool inside_logical = true;
-                for (std::size_t axis = descriptor.padded_shape.size(); axis-- > 0U;) {
-                    const std::uint64_t coordinate = remainder % descriptor.padded_shape[axis];
-                    remainder /= descriptor.padded_shape[axis];
-                    if (coordinate >= descriptor.logical_shape[axis]) inside_logical = false;
+            const std::uint64_t row_width = descriptor.padded_shape.back();
+            const std::uint64_t end = offset + count;
+            std::uint64_t cursor = offset;
+            std::size_t output_offset = 0U;
+            while (cursor < end) {
+                const std::uint64_t column = cursor % row_width;
+                const std::uint64_t take = std::min<std::uint64_t>(
+                    end - cursor, row_width - column);
+                std::uint64_t outer_index = cursor / row_width;
+                bool inside_outer = true;
+                for (std::size_t axis = descriptor.padded_shape.size() - 1U;
+                     axis > 0U; --axis) {
+                    const std::size_t outer_axis = axis - 1U;
+                    const std::uint64_t coordinate =
+                        outer_index % descriptor.padded_shape[outer_axis];
+                    outer_index /= descriptor.padded_shape[outer_axis];
+                    if (coordinate >= descriptor.logical_shape[outer_axis])
+                        inside_outer = false;
                 }
-                output[index] = inside_logical ? FrWire{} : zkdl::fr_from_u32(1U);
+                const std::uint64_t logical_width = descriptor.logical_shape.back();
+                const std::uint64_t zero_count = inside_outer && column < logical_width
+                    ? std::min<std::uint64_t>(take, logical_width - column) : 0U;
+                std::fill_n(output.begin() + static_cast<std::ptrdiff_t>(
+                                output_offset + static_cast<std::size_t>(zero_count)),
+                            static_cast<std::size_t>(take - zero_count), one);
+                cursor += take;
+                output_offset += static_cast<std::size_t>(take);
             }
             return true;
         });
-    zkdl::Sha256 hash;
-    std::vector<byte> header;
-    zkdl::append_string(header, "Qpad_v1");
-    zkdl::append_string(header, descriptor.id);
-    zkdl::append_u32(header, descriptor.domain_size);
-    zkdl::append_u64(header, static_cast<std::uint64_t>(descriptor.logical_shape.size()));
-    for (const auto value : descriptor.logical_shape) zkdl::append_u64(header, value);
-    zkdl::append_u64(header, static_cast<std::uint64_t>(descriptor.padded_shape.size()));
-    for (const auto value : descriptor.padded_shape) zkdl::append_u64(header, value);
-    zkdl::append_string(header, descriptor.padding_rule);
-    hash.update(header.data(), header.size());
-    for (std::uint32_t segment = 0U; segment < segment_count; ++segment) {
-        std::vector<FrWire> values;
-        if (!provider.read_segment(segment, values, error)) return false;
-        const std::uint64_t offset = static_cast<std::uint64_t>(segment) * segment_size;
-        std::uint32_t actual = 0U;
-        if (!checked_relation_u32(
-                std::min<std::uint64_t>(segment_size,
-                                        descriptor.domain_size - offset),
-                actual, "Qpad selector segment length", error))
-            return false;
-        zktr_update_fr_wire_digest(hash, values.data(), actual);
-    }
-    selector_digest = hash.final();
+    (void)segment_count;
     return true;
 }
 
@@ -11313,21 +11806,386 @@ inline bool qpad_record_required(const std::vector<std::uint64_t>& logical_shape
     return false;
 }
 
-inline ConstraintDescriptor qpad_constraint_descriptor(const std::string& tensor_id) {
+struct QpadGroupPlan {
+    std::uint32_t group_index = 0U;
+    std::array<byte, 32U> group_key{};
+    std::uint32_t domain_size = 0U;
+    std::uint32_t segment_size = 0U;
+    std::uint32_t segment_count = 0U;
+    std::vector<const TensorDescriptor*> members;
+    std::vector<std::uint32_t> descriptor_indices;
+};
+
+struct QpadGroupProverContext {
+    const std::map<std::string, const TensorWitness*>* tensor_map = nullptr;
+    const std::map<std::string, FrWire>* blinders = nullptr;
+    const std::vector<zkdl::CpuG1Point>* generators = nullptr;
+    const zkdl::CpuG1Point* blinding_generator = nullptr;
+    const zkdl::CpuG1Point* u_generator = nullptr;
+    const std::vector<CommitmentWire>* commitments = nullptr;
+    const RelationStatement* statement = nullptr;
+    const std::map<std::string, std::vector<FrWire>>* segment_blinding_scalars = nullptr;
+    const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr;
+    zkdl::CpuG1MsmSession* msm_session = nullptr;
+    const std::map<std::string, SegmentCommitmentValidationReceipt>*
+        validation_receipts = nullptr;
+    const std::string* spill_directory = nullptr;
+};
+
+inline bool qpad_selector_group_identity(
+    const TensorDescriptor& descriptor, std::size_t basis_size,
+    std::vector<byte>& identity, ZkRelationSegmentLayout& layout,
+    std::string* error = nullptr) {
+    SegmentedTensorProvider selector_oracle;
+    if (!descriptor.valid(error) ||
+        !qpad_record_required(descriptor.logical_shape, descriptor.padded_shape,
+                              descriptor.visibility == 1U) ||
+        !qpad_selector_provider_unhashed(
+            descriptor, basis_size, selector_oracle, error) ||
+        !zktr_segment_layout(descriptor.domain_size, basis_size, layout, error) ||
+        layout.logical_domain != descriptor.domain_size) {
+        if (error && error->empty())
+            *error = "Qpad group member lacks a canonical padded tensor/layout";
+        return false;
+    }
+    identity.clear();
+    zkdl::append_string(identity, "zkdl.qpad.selector-identity.v2");
+    zkdl::append_u32(identity, descriptor.domain_size);
+    zkdl::append_u64(identity, descriptor.logical_shape.size());
+    for (const auto axis : descriptor.logical_shape) zkdl::append_u64(identity, axis);
+    zkdl::append_u64(identity, descriptor.padded_shape.size());
+    for (const auto axis : descriptor.padded_shape) zkdl::append_u64(identity, axis);
+    zkdl::append_u32(identity, layout.segment_size);
+    zkdl::append_u32(identity, layout.segment_count);
+    return true;
+}
+
+inline std::array<byte, 32U> qpad_group_key_digest(
+    const std::vector<byte>& selector_identity,
+    const RelationStatement& statement,
+    const std::vector<zkdl::CpuG1Point>& generators,
+    const zkdl::CpuG1Point& blinding_generator,
+    const zkdl::CpuG1Point& u_generator,
+    const ZkRelationSegmentLayout& layout,
+    const zkdl::CpuIpaBasisContext* authenticated_basis) {
+    std::uint32_t generator_count = 0U;
+    if (!checked_relation_u32(generators.size(), generator_count,
+                              "Qpad group generator count"))
+        throw std::invalid_argument("Qpad group generator count exceeds uint32");
+    const auto frame_digest = zktr_basis_digest_for_prefix(
+        generators, blinding_generator, u_generator, layout.segment_size,
+        zkdl::cpu_ipa_padded_size(layout.segment_size), authenticated_basis);
+    const auto basis_digest = zktr_basis_digest_for_prefix(
+        generators, blinding_generator, u_generator, generator_count,
+        zkdl::cpu_ipa_padded_size(generator_count), authenticated_basis);
+    if (statement.srs_digest == std::array<byte, 32U>{} ||
+        statement.registry_digest == std::array<byte, 32U>{} ||
+        statement.segment_commitments_digest == std::array<byte, 32U>{} ||
+        frame_digest == std::array<byte, 32U>{} ||
+        basis_digest == std::array<byte, 32U>{})
+        throw std::invalid_argument("Qpad group key lacks authenticated statement/basis identity");
+    std::vector<byte> encoded;
+    zkdl::append_string(encoded, "zkdl.qpad.same-mask-rlc-group.v2");
+    zkdl::append_u64(encoded, selector_identity.size());
+    encoded.insert(encoded.end(), selector_identity.begin(), selector_identity.end());
+    append_digest(encoded, statement.srs_digest);
+    append_digest(encoded, statement.registry_digest);
+    append_digest(encoded, statement.segment_commitments_digest);
+    append_digest(encoded, basis_digest);
+    append_digest(encoded, frame_digest);
+    zkdl::append_u32(encoded, layout.segment_size);
+    zkdl::append_u32(encoded, layout.segment_count);
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(blinding_generator));
+    zkdl::append_g1(encoded, zkdl::cpu_g1_to_native(u_generator));
+    return zkdl::sha256(encoded);
+}
+
+inline bool qpad_build_group_plans(
+    const std::vector<TensorDescriptor>& descriptors,
+    std::size_t basis_size,
+    const RelationStatement* statement,
+    const std::vector<zkdl::CpuG1Point>* generators,
+    const zkdl::CpuG1Point* blinding_generator,
+    const zkdl::CpuG1Point* u_generator,
+    const zkdl::CpuIpaBasisContext* authenticated_basis,
+    std::vector<QpadGroupPlan>& groups,
+    std::string* error = nullptr) {
+    struct Bucket {
+        std::array<byte, 32U> selector_identity{};
+        std::array<byte, 32U> group_key{};
+        std::uint32_t domain_size = 0U;
+        std::uint32_t segment_size = 0U;
+        std::uint32_t segment_count = 0U;
+        std::vector<const TensorDescriptor*> members;
+        std::vector<std::uint32_t> descriptor_indices;
+    };
+    if (basis_size == 0U ||
+        ((statement == nullptr) != (generators == nullptr)) ||
+        ((statement == nullptr) != (blinding_generator == nullptr)) ||
+        ((statement == nullptr) != (u_generator == nullptr)) ||
+        (statement != nullptr && generators->size() != basis_size)) {
+        if (error) *error = "Qpad group planner lacks a canonical common basis context";
+        return false;
+    }
+    groups.clear();
+    std::vector<Bucket> buckets;
+    std::map<std::array<byte, 32U>, std::size_t> bucket_index;
+    std::set<std::string> required_ids;
+    try {
+        for (std::size_t descriptor_index = 0U;
+             descriptor_index < descriptors.size(); ++descriptor_index) {
+            const auto& descriptor = descriptors[descriptor_index];
+            if (!qpad_record_required(descriptor.logical_shape,
+                                      descriptor.padded_shape,
+                                      descriptor.visibility == 1U)) continue;
+            if (!required_ids.insert(descriptor.id).second) {
+                if (error) *error = "Qpad group planner found a duplicate required tensor id";
+                return false;
+            }
+            std::vector<byte> identity_bytes;
+            ZkRelationSegmentLayout layout;
+            if (!qpad_selector_group_identity(
+                    descriptor, basis_size, identity_bytes, layout, error)) return false;
+            const auto selector_identity = zkdl::sha256(identity_bytes);
+            std::array<byte, 32U> group_key = selector_identity;
+            if (statement != nullptr) {
+                group_key = qpad_group_key_digest(
+                    identity_bytes, *statement, *generators,
+                    *blinding_generator, *u_generator, layout,
+                    authenticated_basis);
+            }
+            auto found = bucket_index.find(group_key);
+            std::size_t index = 0U;
+            if (found == bucket_index.end()) {
+                index = buckets.size();
+                bucket_index.emplace(group_key, index);
+                Bucket bucket;
+                bucket.selector_identity = selector_identity;
+                bucket.group_key = group_key;
+                bucket.domain_size = descriptor.domain_size;
+                bucket.segment_size = layout.segment_size;
+                bucket.segment_count = layout.segment_count;
+                buckets.push_back(std::move(bucket));
+            } else {
+                index = found->second;
+                const auto& bucket = buckets[index];
+                if (bucket.selector_identity != selector_identity ||
+                    bucket.domain_size != descriptor.domain_size ||
+                    bucket.segment_size != layout.segment_size ||
+                    bucket.segment_count != layout.segment_count) {
+                    if (error) *error = "Qpad group-key collision across selector/layout identities";
+                    return false;
+                }
+            }
+            buckets[index].members.push_back(&descriptor);
+            std::uint32_t canonical_index = 0U;
+            if (!checked_relation_u32(descriptor_index, canonical_index,
+                                      "Qpad descriptor index", error)) return false;
+            buckets[index].descriptor_indices.push_back(canonical_index);
+        }
+        for (const auto& bucket : buckets) {
+            for (std::size_t begin = 0U; begin < bucket.members.size();
+                 begin += PaddingProofRecord::kMaxMembers) {
+                QpadGroupPlan group;
+                if (!checked_relation_u32(groups.size(), group.group_index,
+                                          "Qpad group index", error) ||
+                    group.group_index >= 0x10000000U) {
+                    if (error && error->empty()) *error = "Qpad group index exceeds reserved role range";
+                    return false;
+                }
+                group.group_key = bucket.group_key;
+                group.domain_size = bucket.domain_size;
+                group.segment_size = bucket.segment_size;
+                group.segment_count = bucket.segment_count;
+                const std::size_t end = std::min(
+                    bucket.members.size(), begin + PaddingProofRecord::kMaxMembers);
+                group.members.assign(bucket.members.begin() +
+                                         static_cast<std::ptrdiff_t>(begin),
+                                     bucket.members.begin() +
+                                         static_cast<std::ptrdiff_t>(end));
+                group.descriptor_indices.assign(
+                    bucket.descriptor_indices.begin() +
+                        static_cast<std::ptrdiff_t>(begin),
+                    bucket.descriptor_indices.begin() +
+                        static_cast<std::ptrdiff_t>(end));
+                groups.push_back(std::move(group));
+            }
+        }
+        return true;
+    } catch (const std::exception& exception) {
+        if (error) *error = std::string("Qpad group planning failed: ") + exception.what();
+        return false;
+    }
+}
+
+inline std::uint32_t qpad_group_aggregate_index(std::size_t group_index) {
+    std::uint32_t checked_index = 0U;
+    if (group_index >= 0x10000000U ||
+        !checked_relation_u32(group_index, checked_index,
+                              "Qpad group aggregate index"))
+        throw std::invalid_argument("Qpad group aggregate index overflow");
+    return 0x30000000U + checked_index;
+}
+
+inline ConstraintDescriptor qpad_constraint_descriptor(
+    const QpadGroupPlan& group) {
     ConstraintDescriptor descriptor;
-    descriptor.id = "gat.padding/" + tensor_id + "/zero-mask";
+    descriptor.id = "gat.padding-group/" +
+        zkdl::digest_hex(group.group_key) + "/" +
+        std::to_string(group.group_index) + "/zero-mask-rlc-v2";
     descriptor.degree = 2U;
-    descriptor.terms.push_back(Monomial{zkdl::fr_from_u32(1U), {0U, 1U}});
+    descriptor.terms.push_back(
+        Monomial{zkdl::fr_from_u32(1U), {0U, 1U}});
     return descriptor;
 }
 
-inline std::uint32_t qpad_selector_index(std::size_t record_index) {
-    std::uint32_t checked_index = 0U;
-    if (record_index >= 0x0fffffffU ||
-        !checked_relation_u32(record_index, checked_index,
-                              "Qpad selector record index"))
-        throw std::invalid_argument("Qpad selector commitment index overflow");
-    return 0x30000000U + checked_index;
+inline FrWire qpad_selector_mle_from_point(
+    const TensorDescriptor& descriptor,
+    const std::vector<FrWire>& msb_point) {
+    std::vector<FrWire> low_bit_point(msb_point.rbegin(), msb_point.rend());
+    if (low_bit_point.size() != log2_exact(descriptor.domain_size))
+        throw std::invalid_argument("Qpad selector terminal point/domain mismatch");
+    FrWire logical_indicator = zkdl::fr_from_u32(1U);
+    std::size_t offset = 0U;
+    for (std::size_t axis = descriptor.padded_shape.size(); axis > 0U; --axis) {
+        const std::size_t current = axis - 1U;
+        logical_indicator = zkdl::fr_mul(
+            logical_indicator,
+            pointwise_prefix_mle(low_bit_point, offset,
+                                 descriptor.padded_shape[current],
+                                 descriptor.logical_shape[current]));
+        for (std::uint64_t value = descriptor.padded_shape[current];
+             value > 1U; value >>= 1U) ++offset;
+    }
+    if (offset != low_bit_point.size())
+        throw std::invalid_argument("Qpad selector axes do not cover its terminal point");
+    return zkdl::fr_sub(zkdl::fr_from_u32(1U), logical_indicator);
+}
+
+inline ConstraintDescriptor qpad_terminal_descriptor(
+    const QpadGroupPlan& group, const std::vector<FrWire>& rho,
+    const std::vector<FrWire>& msb_point) {
+    if (group.members.empty())
+        throw std::invalid_argument("Qpad terminal descriptor has no group members");
+    const ConstraintDescriptor sumcheck = qpad_constraint_descriptor(group);
+    const FrWire selector_value = qpad_selector_mle_from_point(
+        *group.members.front(), msb_point);
+    const FrWire eqmask_value = pointwise_terminal_weight(
+        sumcheck, rho, msb_point);
+    ConstraintDescriptor terminal;
+    terminal.id = sumcheck.id + "/terminal";
+    terminal.degree = 1U;
+    terminal.terms.push_back(Monomial{
+        zkdl::fr_mul(eqmask_value, selector_value), {0U}});
+    return terminal;
+}
+
+inline bool qpad_absorb_group_header(
+    const QpadGroupPlan& group,
+    const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
+    zkdl::Transcript& transcript,
+    const std::string& operation_context,
+    std::vector<std::uint32_t>& member_commitment_indices,
+    std::string* error = nullptr) {
+    if (group.members.empty() ||
+        group.members.size() != group.descriptor_indices.size() ||
+        group.members.size() > PaddingProofRecord::kMaxMembers ||
+        statement.segment_commitments_digest == std::array<byte, 32U>{}) {
+        if (error) *error = "Qpad group transcript header is incomplete";
+        return false;
+    }
+    std::vector<byte> encoded;
+    zkdl::append_string(encoded, "zkdl.qpad.same-mask-rlc.transcript.v2");
+    zkdl::append_u32(encoded, group.group_index);
+    append_digest(encoded, group.group_key);
+    zkdl::append_u32(encoded, group.domain_size);
+    zkdl::append_u32(encoded, group.segment_size);
+    zkdl::append_u32(encoded, group.segment_count);
+    append_digest(encoded, statement.segment_commitments_digest);
+    append_digest(encoded, statement.statement_digest);
+    zkdl::append_u64(encoded, group.members.size());
+    member_commitment_indices.clear();
+    member_commitment_indices.reserve(group.members.size());
+    std::set<std::uint32_t> seen_commitments;
+    for (std::size_t member = 0U; member < group.members.size(); ++member) {
+        const TensorDescriptor& descriptor = *group.members[member];
+        const auto found = std::find_if(
+            commitments.begin(), commitments.end(),
+            [&](const CommitmentWire& wire) {
+                return wire.tensor_id == descriptor.id;
+            });
+        std::uint32_t commitment_index = 0U;
+        if (!descriptor.valid(error) || found == commitments.end() ||
+            found->domain_size != descriptor.domain_size ||
+            !checked_relation_u32(
+                static_cast<std::size_t>(std::distance(commitments.begin(), found)),
+                commitment_index, "Qpad member commitment index", error) ||
+            !seen_commitments.insert(commitment_index).second) {
+            if (error && error->empty()) *error = "Qpad group member commitment map is invalid";
+            return false;
+        }
+        zkdl::append_u32(encoded, group.descriptor_indices[member]);
+        zkdl::append_string(encoded, descriptor.id);
+        zkdl::append_u32(encoded, descriptor.visibility);
+        zkdl::append_u32(encoded, descriptor.domain_size);
+        zkdl::append_u64(encoded, descriptor.logical_shape.size());
+        for (const auto axis : descriptor.logical_shape)
+            zkdl::append_u64(encoded, axis);
+        zkdl::append_u64(encoded, descriptor.padded_shape.size());
+        for (const auto axis : descriptor.padded_shape)
+            zkdl::append_u64(encoded, axis);
+        zkdl::append_string(encoded, descriptor.mle_order);
+        zkdl::append_string(encoded, descriptor.stack_axis);
+        zkdl::append_string(encoded, descriptor.mapping);
+        zkdl::append_string(encoded, descriptor.padding_rule);
+        zkdl::append_string(encoded, descriptor.registry_id);
+        zkdl::append_u32(encoded, commitment_index);
+        append_digest(encoded, found->segment_commitment_digest);
+        zkdl::append_g1(encoded, found->commitment);
+        member_commitment_indices.push_back(commitment_index);
+    }
+    transcript.absorb(operation_context + ".rlc-v2.group-header", encoded);
+    return true;
+}
+
+inline bool qpad_group_randomizers(
+    const QpadGroupPlan& group,
+    const std::vector<CommitmentWire>& commitments,
+    const RelationStatement& statement,
+    zkdl::Transcript& transcript,
+    const std::string& operation_context,
+    std::vector<std::uint32_t>& member_commitment_indices,
+    std::vector<FrWire>& alphas,
+    std::string* error = nullptr) {
+    if (!qpad_absorb_group_header(
+            group, commitments, statement, transcript, operation_context,
+            member_commitment_indices, error)) return false;
+    alphas.clear();
+    alphas.reserve(group.members.size());
+    for (std::size_t member = 0U; member < group.members.size(); ++member) {
+        bool sampled = false;
+        for (std::uint32_t attempt = 0U; attempt < 16U; ++attempt) {
+            const FrWire alpha = zkdl::fr_wire(transcript.challenge(
+                operation_context + ".rlc-v2.alpha." +
+                std::to_string(member) + ".attempt." +
+                std::to_string(attempt)));
+            if (!zkdl::fr_canonical(alpha)) {
+                if (error) *error = "Qpad Fiat-Shamir coefficient is not canonical";
+                return false;
+            }
+            if (alpha != FrWire{}) {
+                alphas.push_back(alpha);
+                sampled = true;
+                break;
+            }
+        }
+        if (!sampled) {
+            if (error) *error = "Qpad Fiat-Shamir failed to derive a nonzero coefficient";
+            return false;
+        }
+    }
+    return true;
 }
 
 inline bool prove_padding_record(
@@ -11345,13 +12203,15 @@ inline bool prove_padding_record(
     zkdl::CpuG1MsmSession* msm_session = nullptr,
     const std::map<std::string, SegmentCommitmentValidationReceipt>*
         validation_receipts = nullptr,
-    const std::string* spill_directory = nullptr) {
+    const std::string* spill_directory = nullptr,
+    QpadSelectorXiCache* selector_cache = nullptr) {
     try {
-        SegmentedTensorProvider selector_provider;
-        std::array<byte, 32U> selector_digest{};
-        if (!qpad_selector_provider(
-                descriptor, generators.size(), selector_provider, selector_digest, error))
+        PreparedQpadSelector prepared_selector;
+        if (!QpadSelectorCommitmentBuilder::prepare(
+                descriptor, generators.size(), prepared_selector, error))
             return false;
+        const SegmentedTensorProvider& selector_provider =
+            prepared_selector.provider();
         const auto tensor = tensor_map.find(descriptor.id);
         if (tensor == tensor_map.end() || tensor->second == nullptr ||
             tensor->second->domain_size != descriptor.domain_size) {
@@ -11379,15 +12239,31 @@ inline bool prove_padding_record(
         SegmentCommitmentValidationReceipt selector_receipt;
         zkdl::CpuG1Point selector_commitment;
         if (segment_blinding_scalars != nullptr) {
-            if (!zktr_build_segment_commitment_material(
-                    "qpad/" + descriptor.id, 1U, selector_provider, generators,
-                    ipa_blinding_generator, ipa_u_generator, FrWire{}, statement,
-                    selector_wire, selector_material, error, nullptr, 0U, nullptr,
-                    authenticated_basis, msm_session, &selector_receipt)) return false;
+            const auto build_with_cache = [&](QpadSelectorXiCache& cache) {
+                return QpadSelectorCommitmentBuilder::build(
+                    prepared_selector, generators, ipa_blinding_generator,
+                    ipa_u_generator, statement, authenticated_basis, msm_session,
+                    cache, selector_wire,
+                    selector_material, &selector_receipt, error);
+            };
+            bool selector_built = false;
+            if (selector_cache != nullptr) {
+                selector_built = build_with_cache(*selector_cache);
+            } else {
+                QpadSelectorXiCache local_selector_cache;
+                selector_built = build_with_cache(local_selector_cache);
+            }
+            if (!selector_built) return false;
             selector_commitment = zkdl::cpu_g1_from_native(selector_wire.commitment);
         } else {
+            if (!QpadSelectorCommitmentBuilder::compute_digest(
+                    prepared_selector, error)) return false;
             selector_commitment = zktr_segmented_commitment(
                 selector_provider, generators, ipa_blinding_generator, FrWire{}, error);
+        }
+        if (!prepared_selector.selector_digest_ready()) {
+            if (error) *error = "Qpad selector builder did not produce its digest";
+            return false;
         }
         if (selector_commitment.is_zero()) return false;
         const ConstraintDescriptor constraint = qpad_constraint_descriptor(descriptor.id);
@@ -11403,6 +12279,16 @@ inline bool prove_padding_record(
         std::vector<SegmentedTensorProvider> weighted_providers;
         if (!pointwise_providers(constraint, providers, rho, weighted_providers,
                                  error, &eqmask_table, &qpad_record_progress)) return false;
+        const std::uint64_t selector_cache_live_bytes = selector_cache != nullptr
+            ? selector_cache->peak_live_bytes() : 0U;
+        if (selector_cache_live_bytes >
+            std::numeric_limits<std::uint64_t>::max() -
+                eqmask_table.peak_live_bytes) {
+            if (error) *error = "Qpad selector cache live-memory bound overflows";
+            return false;
+        }
+        const std::uint64_t qpad_auxiliary_live_bytes =
+            eqmask_table.peak_live_bytes + selector_cache_live_bytes;
         ZkSumcheckProverResult sumcheck;
         if (!prove_zk_sumcheck_segmented(
                 weighted, weighted_providers, weighted.degree, descriptor.domain_size, generators,
@@ -11410,9 +12296,9 @@ inline bool prove_padding_record(
                 ipa_u_generator, FrWire{}, statement, operation_context,
                 transcript, sumcheck, error, 0U,
                 zksc_folded_state_within_budget(
-                    weighted_providers, weighted, eqmask_table.peak_live_bytes),
+                    weighted_providers, weighted, qpad_auxiliary_live_bytes),
                 "qpad_sumcheck", descriptor.id.c_str(), spill_directory, true,
-                eqmask_table.peak_live_bytes)) return false;
+                qpad_auxiliary_live_bytes)) return false;
         weighted_providers.clear();
         eqmask_table.clear();
         std::vector<FrWire> point;
@@ -11476,7 +12362,7 @@ inline bool prove_padding_record(
         record.tensor_id = descriptor.id;
         record.commitment_index = commitment_index;
         record.domain_size = descriptor.domain_size;
-        record.selector_digest = selector_digest;
+        record.selector_digest = prepared_selector.selector_digest();
         record.relation.descriptor = constraint;
         record.relation.opening_tensor_indices = {0U, 1U};
         record.relation.opening_commitment_indices = commitment_indices;
@@ -11497,18 +12383,19 @@ inline bool verify_padding_record(
     const zkdl::CpuG1Point& ipa_u_generator, const RelationStatement& statement,
     zkdl::Transcript& transcript, std::string* error = nullptr,
     const zkdl::CpuIpaBasisContext* authenticated_basis = nullptr,
-    zkdl::CpuG1MsmSession* msm_session = nullptr) {
+    zkdl::CpuG1MsmSession* msm_session = nullptr,
+    QpadSelectorXiCache* selector_cache = nullptr) {
     try {
-        SegmentedTensorProvider selector_provider;
-        std::array<byte, 32U> selector_digest{};
-        if (!qpad_selector_provider(
-                descriptor, generators.size(), selector_provider, selector_digest, error) ||
+        PreparedQpadSelector prepared_selector;
+        if (!QpadSelectorCommitmentBuilder::prepare(
+                descriptor, generators.size(), prepared_selector, error) ||
             record.version != PaddingProofRecord::kVersion ||
-            record.tensor_id != descriptor.id || record.domain_size != descriptor.domain_size ||
-            record.selector_digest != selector_digest) {
+            record.tensor_id != descriptor.id || record.domain_size != descriptor.domain_size) {
             if (error && error->empty()) *error = "Qpad proof descriptor/digest mismatch";
             return false;
         }
+        const SegmentedTensorProvider& selector_provider =
+            prepared_selector.provider();
         if (record.commitment_index >= commitments.size() ||
             commitments[record.commitment_index].tensor_id != descriptor.id ||
             commitments[record.commitment_index].domain_size != descriptor.domain_size) {
@@ -11525,7 +12412,25 @@ inline bool verify_padding_record(
         }
         CommitmentWire selector_wire;
         SegmentCommitmentMaterial selector_material;
-        if (!zktr_build_segment_commitment_material("qpad/" + descriptor.id, 1U, selector_provider, generators, ipa_blinding_generator, ipa_u_generator, FrWire{}, statement, selector_wire, selector_material, error, nullptr, 0U, nullptr, authenticated_basis, authenticated_basis != nullptr ? msm_session : nullptr, nullptr)) return false;
+        const auto build_with_cache = [&](QpadSelectorXiCache& cache) {
+            return QpadSelectorCommitmentBuilder::build(
+                prepared_selector, generators, ipa_blinding_generator,
+                ipa_u_generator, statement, authenticated_basis, msm_session,
+                cache, selector_wire, selector_material, nullptr, error);
+        };
+        bool selector_built = false;
+        if (selector_cache != nullptr) {
+            selector_built = build_with_cache(*selector_cache);
+        } else {
+            QpadSelectorXiCache local_selector_cache;
+            selector_built = build_with_cache(local_selector_cache);
+        }
+        if (!selector_built) return false;
+        if (!prepared_selector.selector_digest_ready() ||
+            record.selector_digest != prepared_selector.selector_digest()) {
+            if (error) *error = "Qpad proof descriptor/digest mismatch";
+            return false;
+        }
         const zkdl::CpuG1Point selector_commitment = zkdl::cpu_g1_from_native(selector_wire.commitment);
         if (selector_commitment.is_zero()) return false;
         const auto& terminal_proof = record.relation.terminal_relation;
@@ -11607,6 +12512,7 @@ inline bool prove_padding_records(
                                      descriptor.padded_shape,
                                      descriptor.visibility == 1U)) ++total_records;
     }
+    QpadSelectorXiCache selector_cache;
     NativeOperationProgressReporter record_progress("qpad_records", "padding_records");
     std::size_t index = 0U;
     for (const auto& descriptor : context.tensor_descriptors) {
@@ -11622,7 +12528,8 @@ inline bool prove_padding_records(
                 &context.ipa_generators, msm_session,
                 validation_receipts,
                 context.sumcheck_spill_directory.empty()
-                    ? nullptr : &context.sumcheck_spill_directory)) return false;
+                    ? nullptr : &context.sumcheck_spill_directory,
+                &selector_cache)) return false;
         const std::vector<byte> encoded = record.serialize();
         transcript.absorb("gat.relation.padding", encoded);
         records.push_back(std::move(record));
@@ -11647,6 +12554,7 @@ inline bool verify_padding_records(
         if (error) *error = "Qpad proof record count does not match authenticated tensor families";
         return false;
     }
+    QpadSelectorXiCache selector_cache;
     for (std::size_t index = 0U; index < expected.size(); ++index) {
         if (!verify_padding_record(proof.padding_records[index], *expected[index], index,
                                    proof.commitments, context.ipa_generators,
@@ -11654,7 +12562,7 @@ inline bool verify_padding_records(
                                    context.ipa_u_generator, context.statement,
                                    transcript, error,
                                    &context.ipa_generators,
-                                   msm_session)) return false;
+                                   msm_session, &selector_cache)) return false;
         const std::vector<byte> encoded = proof.padding_records[index].serialize();
         transcript.absorb("gat.relation.padding", encoded);
     }

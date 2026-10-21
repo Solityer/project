@@ -266,6 +266,25 @@ bool balanced_row_fold_matches_dense(const NativeLassoFamilyPublic::MatrixDescri
     return split_evaluation == dense_evaluation;
 }
 
+bool sparse_mle_matches_balanced_row_fold(const NativeLassoFamilyProver& family, const std::vector<F>& point) {
+    const NativeLassoFamilyPublic::MatrixDescriptor& layout = family.matrix_layout;
+    if (point.size() != layout.row_bits + layout.column_bits) return false;
+    const std::vector<F> column_point(point.begin(), point.begin() + layout.column_bits);
+    const std::vector<F> row_point(point.begin() + layout.column_bits, point.end());
+    const std::vector<F> row_weights = basis_for(row_point);
+    std::vector<F> folded(static_cast<std::size_t>(layout.columns), F_ZERO);
+    const NativeLassoSparseView sparse = native_lasso_sparse_view(family);
+    sparse.for_each_nonzero([&](std::uint64_t index, const F& value) {
+        const std::uint64_t row = index >> layout.column_bits;
+        const std::uint64_t column = index & (layout.columns - 1U);
+        folded[static_cast<std::size_t>(column)] += row_weights[static_cast<std::size_t>(row)] * value;
+    });
+    const std::vector<F> column_weights = basis_for(column_point);
+    F folded_evaluation = F_ZERO;
+    for (std::size_t column = 0; column < folded.size(); ++column) folded_evaluation += column_weights[column] * folded[column];
+    return sparse.evaluate_mle(point) == folded_evaluation;
+}
+
 }
 
 int main() {
@@ -295,7 +314,7 @@ int main() {
         family.matrix_layout.trusted_generator_id = "native-lasso/M/" + family.family_id + "/column-v2";
         family.matrix_layout.column_generators = generators(family.matrix_layout.trusted_generator_id, family.matrix_layout.columns);
         family.segment_offset = 0;
-        family.logical_queries = 2;
+        family.logical_queries = 1;
         family.padded_queries = 2;
         family.padding_index = 0;
         family.padding_value = family.table[0];
@@ -334,6 +353,10 @@ int main() {
     }
     if (!balanced_row_fold_matches_dense(families.front().matrix_layout, dense_matrix, split_point)) {
         std::cerr << "native Lasso low-column/high-row split differs from dense flat-index reference\n";
+        return 12;
+    }
+    if (!sparse_mle_matches_balanced_row_fold(families.front(), split_point)) {
+        std::cerr << "native Lasso sparse MLE differs from its balanced row-fold scalar with zero padding\n";
         return 12;
     }
     std::vector<NativeLassoFamilyPublic> public_families;
@@ -427,6 +450,10 @@ int main() {
     padding_family.selected_table_row_at = [padding_selected_rows](std::uint64_t row) {
         return padding_selected_rows->at(static_cast<std::size_t>(row));
     };
+    if (!sparse_mle_matches_balanced_row_fold(padding_family, {Fr(2), Fr(3), Fr(4), Fr(5), Fr(6), Fr(7)})) {
+        std::cerr << "native Lasso T2 sparse MLE differs from its balanced row-fold scalar with zero padding\n";
+        return 22;
+    }
     std::vector<G1> padding_l_generators = generators("native-lasso/padding-L", 32);
     std::vector<F> padding_query_values(32, Fr(5));
     padding_query_values[0] = Fr(13);
@@ -473,6 +500,95 @@ int main() {
     if (!verify_lasso_bundle(padding_produced, padding_public_families, padding_public_query, nullptr, &reason)) {
         std::cerr << "native Lasso padding independent verify failed: " << reason << '\n';
         return 22;
+    }
+    std::vector<NativeLassoFamilyProver> invalid_range_families(1);
+    NativeLassoFamilyProver& invalid_range_family = invalid_range_families.front();
+    invalid_range_family.family_id = "range_all";
+    invalid_range_family.table_id = "t_range_all";
+    invalid_range_family.resource_id = "resource-range-all-v1";
+    invalid_range_family.registration_id = "registration-range-all-v1";
+    invalid_range_family.table = {Fr(0), Fr(1)};
+    invalid_range_family.matrix_layout = native_lasso_balanced_matrix_layout(32, invalid_range_family.table.size());
+    invalid_range_family.matrix_layout.trusted_generator_id = "native-lasso/M/range-all/column-v2";
+    invalid_range_family.matrix_layout.column_generators = generators(
+        invalid_range_family.matrix_layout.trusted_generator_id,
+        invalid_range_family.matrix_layout.columns);
+    invalid_range_family.logical_queries = 32;
+    invalid_range_family.padded_queries = 32;
+    invalid_range_family.padding_index = 0;
+    invalid_range_family.padding_value = Fr(0);
+    invalid_range_family.selected_table_row_at = [](std::uint64_t) { return std::uint64_t(1); };
+    std::vector<NativeLassoFamilyPublic> invalid_range_public_families{invalid_range_family};
+    const std::string invalid_range_tables_digest = native_lasso_tables_digest(invalid_range_public_families);
+    const std::string invalid_range_resources_digest = native_lasso_resources_digest(invalid_range_public_families);
+    invalid_range_family.statement_tables_digest = invalid_range_tables_digest;
+    invalid_range_family.statement_resources_digest = invalid_range_resources_digest;
+    invalid_range_public_families.assign(1, invalid_range_family);
+    NativeLassoQueryProver invalid_range_query;
+    invalid_range_query.G = G;
+    invalid_range_query.generators = padding_l_generators;
+    invalid_range_query.values.assign(32, Fr(2));
+    invalid_range_query.basis_id = "0000000000000000000000000000000000000000000000000000000000000004";
+    const hyrax::PedersenMleCommitment invalid_range_query_commitment = hyrax::pedersen_commit_mle(
+        invalid_range_query.generators, invalid_range_query.values, invalid_range_query.basis_id);
+    invalid_range_query.commitment = invalid_range_query_commitment.commitment;
+    invalid_range_query.blinding_generator = invalid_range_query_commitment.blinding_generator;
+    invalid_range_query.commitment_blinding = invalid_range_query_commitment.blinding;
+    invalid_range_query.has_commitment_blinding = true;
+    TensorFixture invalid_range_tensor = make_tensor_fixture(
+        "canonical/L_qry", invalid_range_query.basis_id,
+        "native-lasso/range-all-invalid-L-tensor", 32, invalid_range_query.values);
+    invalid_range_query.tensor_view = invalid_range_tensor.view;
+    invalid_range_query.tensor_commitment = invalid_range_tensor.commitment;
+    invalid_range_query.tensor_state = invalid_range_tensor.state;
+    invalid_range_query.value_provider = invalid_range_tensor.provider;
+    invalid_range_query.statement_l_digest = native_lasso_tensor_query_digest(
+        invalid_range_query.tensor_view, invalid_range_query.tensor_commitment);
+    const NativeProofStatement invalid_range_statement = typed_statement_for(
+        G, padding_l_generators, invalid_range_public_families, invalid_range_tensor,
+        aux_tensor, invalid_range_query.commitment,
+        invalid_range_query.blinding_generator);
+    NativeProofSession invalid_range_session("native-lasso-range-v1", invalid_range_statement);
+    NativeLassoBundleResult invalid_range_proof;
+    reason.clear();
+    const auto invalid_range_rejected = [&]() {
+        if (native_lasso_prove_bundle(invalid_range_session, invalid_range_families,
+                                      invalid_range_query, &invalid_range_proof,
+                                      &reason, prove_tensor_tail_stage))
+            return false;
+        return reason.find("native Lasso selected query differs from L_qry provider") != std::string::npos ||
+               reason.find("native Lasso lookup/query claim mismatch") != std::string::npos;
+    };
+    if (!invalid_range_rejected()) {
+        std::cerr << "native Lasso range/all accepted a non-binary L_qry value or failed outside its table/query binding: "
+                  << reason << '\n';
+        return 23;
+    }
+    std::cout << "native_lasso_range_negative: REJECTED non-binary L_qry by range/all table binding\n";
+    std::vector<NativeProofMessage> padding_tampered_messages = padding_produced.messages();
+    bool padding_claim_changed = false;
+    for (NativeProofMessage& message : padding_tampered_messages) {
+        if (message.kind == NativeProofMessageKind::Field && message.label == "lasso/padding/b-boolean/claim") {
+            message.payload = Fr(1).getStr(16);
+            padding_claim_changed = true;
+            break;
+        }
+    }
+    NativeProofSession padding_tampered_session;
+    if (!padding_claim_changed) {
+        std::cerr << "native Lasso T2 Booleanity claim tamper fixture did not alter a message\n";
+        return 22;
+    }
+    const bool reconstructed_tampered_session = NativeProofSession::from_messages(
+        padding_produced.domain(), padding_produced.statement(), padding_tampered_messages,
+        padding_tampered_session, &reason);
+    if (reconstructed_tampered_session) {
+        reason.clear();
+        if (verify_lasso_bundle(padding_tampered_session, padding_public_families,
+                                padding_public_query, nullptr, &reason)) {
+            std::cerr << "native Lasso T2 Booleanity claim tamper was accepted\n";
+            return 22;
+        }
     }
 
     bool saw_masked_terminal = false;
@@ -787,9 +903,12 @@ int main() {
     const NativeLassoCapacityProfile sparse_profile = native_lasso_capacity_profile(std::uint64_t(1) << 25, 4);
     const std::uint64_t t2_query_count = std::uint64_t(1) << 34;
     const std::uint64_t sparse_query_count = std::uint64_t(1) << 25;
+    const std::uint64_t t2_compact_peak_entries = (std::uint64_t(1) << 16) + (t2_query_count / 16);
     if (!t2_profile.t2_booleanity || t2_profile.private_witness_entries != t2_query_count ||
         t2_profile.private_witness_element_bytes != sizeof(F) || t2_profile.private_witness_bytes != t2_query_count * sizeof(F) ||
-        t2_profile.t2_column_one_bytes != t2_query_count * sizeof(F) || t2_profile.onehot_query_bytes != 2 * sizeof(F) ||
+        t2_profile.t2_column_one_bytes != (t2_query_count / 16) * sizeof(F) ||
+        t2_profile.booleanity_peak_bytes != t2_profile.row_ledger_retained_bytes + t2_compact_peak_entries * sizeof(F) ||
+        t2_profile.onehot_query_bytes != 2 * sizeof(F) ||
         t2_profile.onehot_heap_peak_bytes != 5 * sizeof(F) || t2_profile.row_commitment_chunk_count != 32 ||
         t2_profile.booleanity_rounds != 35 || t2_profile.onehot_rounds != 1 || t2_profile.lookup_rounds != 1 ||
         t2_profile.hyrax_matrix_masked_openings != 4 || t2_profile.hyrax_l_qry_tensor_openings != 1 ||

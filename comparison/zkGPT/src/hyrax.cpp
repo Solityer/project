@@ -27,6 +27,7 @@ static_assert(sizeof(G1) == sizeof(mclBnG1) && alignof(G1) == alignof(mclBnG1), 
 static_assert(sizeof(Fr) == sizeof(mclBnFr) && alignof(Fr) == alignof(mclBnFr), "MCL Fr C and C++ layouts differ");
 constexpr std::size_t kHyraxMsmThreadCap = 20;
 constexpr std::size_t kHyraxIpaParallelMinCount = 1ULL << 12;
+constexpr std::uint64_t kHyraxCommitChunkLimit = 1ULL << 12;
 
 std::size_t hyrax_worker_limit() {
     return std::min({kHyraxMsmThreadCap, static_cast<std::size_t>(std::max(1u, std::thread::hardware_concurrency())), static_cast<std::size_t>(std::max(1, omp_get_num_procs())), static_cast<std::size_t>(std::max(1, omp_get_max_threads())), static_cast<std::size_t>(std::max(1, omp_get_thread_limit()))});
@@ -1173,17 +1174,16 @@ template<class ScalarAt>
 G1 masked_provider_commit(const zkgpt::NativeVector<G1> &generators, std::uint64_t count, ScalarAt scalar_at, std::uint64_t generator_offset = 0) {
     if (count == 0 || generator_offset > generators.size() || count > generators.size() - generator_offset)
         throw std::invalid_argument("masked provider commitment length is invalid");
-    constexpr std::uint64_t chunk_limit = 1ULL << 12;
     const std::size_t chunk_size = static_cast<std::size_t>(
-        std::min(count, chunk_limit));
+        std::min(count, kHyraxCommitChunkLimit));
     zkgpt::NativeVector<G1> mutable_generators(chunk_size);
     zkgpt::NativeFieldVector scalars(chunk_size);
     if (mutable_generators.capacity() != chunk_size || scalars.capacity() != chunk_size)
         throw std::length_error("Hyrax commitment workspace capacity differs from its exact chunk size");
     G1 result;
     result.clear();
-    for (std::uint64_t offset = 0; offset < count; offset += chunk_limit) {
-        const std::uint64_t actual = std::min(chunk_limit, count - offset);
+    for (std::uint64_t offset = 0; offset < count; offset += kHyraxCommitChunkLimit) {
+        const std::uint64_t actual = std::min(kHyraxCommitChunkLimit, count - offset);
         for (std::uint64_t index = 0; index < actual; ++index) {
             mutable_generators[static_cast<std::size_t>(index)] = generators[static_cast<std::size_t>(generator_offset + offset + index)];
             scalars[static_cast<std::size_t>(index)] = scalar_at(offset + index);
@@ -1192,6 +1192,123 @@ G1 masked_provider_commit(const zkgpt::NativeVector<G1> &generators, std::uint64
     }
     return result;
 }
+
+class TensorBinarySubsetSumCache {
+public:
+    explicit TensorBinarySubsetSumCache(const zkgpt::NativeVector<G1> &generators)
+        : generators_(generators) {}
+
+    bool bound_to(const zkgpt::NativeVector<G1> &generators) const noexcept {
+        return &generators_ == &generators && generators_.data() == generators.data() &&
+            generators_.size() == generators.size();
+    }
+
+    void ensure_built() {
+        if (built_) return;
+        if (generators_.size() < 8 || generators_.size() % 8 != 0)
+            throw std::invalid_argument("Hyrax binary subset table requires complete eight-generator groups");
+        const std::size_t groups = generators_.size() / 8;
+        if (groups > std::numeric_limits<std::size_t>::max() / 256)
+            throw std::length_error("Hyrax binary subset table size overflows size_t");
+        const std::size_t point_count = groups * 256;
+        subset_sums_.resize(point_count);
+        if (subset_sums_.capacity() != point_count)
+            throw std::length_error("Hyrax binary subset table capacity differs from its exact point count");
+        for (std::size_t group = 0; group < groups; ++group) {
+            const std::size_t base = group * 256;
+            subset_sums_[base].clear();
+            for (std::size_t pattern = 1; pattern < 256; ++pattern) {
+                std::size_t bit = 0;
+                while (((pattern >> bit) & 1U) == 0U) ++bit;
+                subset_sums_[base + pattern] =
+                    subset_sums_[base + (pattern & (pattern - 1))] +
+                    generators_[group * 8 + bit];
+            }
+        }
+        built_ = true;
+    }
+
+    const G1 &at(std::size_t group, std::uint8_t pattern) const {
+        if (!built_ || pattern == 0 || group >= generators_.size() / 8)
+            throw std::logic_error("Hyrax binary subset table lookup is outside its bound generator set");
+        return subset_sums_[group * 256 + pattern];
+    }
+
+private:
+    const zkgpt::NativeVector<G1> &generators_;
+    std::vector<G1> subset_sums_;
+    bool built_ = false;
+};
+
+class TensorBinarySubsetCommitter {
+public:
+    TensorBinarySubsetCommitter(const zkgpt::NativeVector<G1> &generators,
+                                std::uint64_t columns)
+        : generators_(generators), subset_sums_(generators),
+          chunk_size_(static_cast<std::size_t>(std::min(columns, kHyraxCommitChunkLimit))),
+          scalars_(chunk_size_) {
+        if (columns == 0 || columns != generators_.size() || columns % 8 != 0 ||
+            generators_.size() < 8 || scalars_.capacity() != chunk_size_)
+            throw std::invalid_argument("Hyrax binary tensor commit workspace is invalid");
+    }
+
+    template<class ScalarAt>
+    G1 commit(ScalarAt scalar_at) {
+        G1 result;
+        result.clear();
+        const Fr zero(0);
+        const Fr one(1);
+        for (std::uint64_t offset = 0; offset < generators_.size(); offset += kHyraxCommitChunkLimit) {
+            const std::uint64_t actual = std::min<std::uint64_t>(
+                kHyraxCommitChunkLimit, generators_.size() - offset);
+            bool binary = true;
+            bool nonzero = false;
+            for (std::uint64_t index = 0; index < actual; ++index) {
+                const Fr value = scalar_at(offset + index);
+                scalars_[static_cast<std::size_t>(index)] = value;
+                if (value == one) nonzero = true;
+                else if (value != zero) binary = false;
+            }
+            if (binary && actual % 8 == 0) {
+                if (!nonzero) continue;
+                subset_sums_.ensure_built();
+                const std::uint64_t groups = actual / 8;
+                for (std::uint64_t group = 0; group < groups; ++group) {
+                    std::uint8_t pattern = 0;
+                    for (std::uint64_t bit = 0; bit < 8; ++bit) {
+                        if (scalars_[static_cast<std::size_t>(group * 8 + bit)] == one)
+                            pattern = static_cast<std::uint8_t>(pattern | (std::uint8_t(1) << bit));
+                    }
+                    if (pattern != 0)
+                        result += subset_sums_.at(static_cast<std::size_t>(offset / 8 + group), pattern);
+                }
+                continue;
+            }
+            if (fallback_generators_.empty()) {
+                fallback_generators_.resize(chunk_size_);
+                if (fallback_generators_.capacity() != chunk_size_)
+                    throw std::length_error("Hyrax fallback generator capacity differs from its exact chunk size");
+            }
+            for (std::uint64_t index = 0; index < actual; ++index)
+                fallback_generators_[static_cast<std::size_t>(index)] =
+                    generators_[static_cast<std::size_t>(offset + index)];
+            result += hyrax_native_mul_vec_mt(fallback_generators_.data(), scalars_.data(),
+                                              static_cast<std::size_t>(actual));
+        }
+        return result;
+    }
+
+    bool bound_to(const zkgpt::NativeVector<G1> &generators) const noexcept {
+        return &generators_ == &generators && subset_sums_.bound_to(generators);
+    }
+
+private:
+    const zkgpt::NativeVector<G1> &generators_;
+    TensorBinarySubsetSumCache subset_sums_;
+    std::size_t chunk_size_ = 0;
+    zkgpt::NativeFieldVector scalars_;
+    zkgpt::NativeVector<G1> fallback_generators_;
+};
 
 PreparedMaskedView prepare_masked_view(const HyraxMleBasisView &view) {
     validate_masked_view(view);
@@ -2338,6 +2455,13 @@ bool commit_hyrax_tensor_mle_impl(const HyraxTensorMleView &view,
         if (prepared_row_blindings != nullptr && prepared_row_blindings->size() != view.rows)
             throw std::invalid_argument("Hyrax tensor prepared row blinding count does not match its row domain");
         const zkgpt::NativeVector<G1> generators = tensor_column_generators(view);
+        const bool binary_subset_eligible = view.rows >= 128 && view.columns >= 8 && view.columns % 8 == 0;
+        std::unique_ptr<TensorBinarySubsetCommitter> binary_subset_committer;
+        if (binary_subset_eligible) {
+            binary_subset_committer = std::make_unique<TensorBinarySubsetCommitter>(generators, view.columns);
+            if (!binary_subset_committer->bound_to(generators))
+                throw std::logic_error("Hyrax binary subset cache is not bound to the tensor's canonical generators");
+        }
         const G1 H = derive_pedersen_blinding_generator(view.basis_id);
         HyraxTensorMleCommitment next_commitment;
         next_commitment.role = view.role;
@@ -2361,10 +2485,14 @@ bool commit_hyrax_tensor_mle_impl(const HyraxTensorMleView &view,
                 ? next_state.row_blindings.at(static_cast<std::size_t>(row))
                 : Fr(0);
             if (prepared_row_blindings == nullptr) rho.setByCSPRNG();
-            const G1 row_commitment = masked_provider_commit(generators, view.columns, [&values, &view, row](std::uint64_t column) {
+            const auto scalar_at = [&values, &view, row](std::uint64_t column) {
                 const std::uint64_t index = row * view.columns + column;
                 return index < view.logical_length ? values.at(index) : Fr(0);
-            }) + H * rho;
+            };
+            const G1 unblinded_row_commitment = binary_subset_committer != nullptr
+                ? binary_subset_committer->commit(scalar_at)
+                : masked_provider_commit(generators, view.columns, scalar_at);
+            const G1 row_commitment = unblinded_row_commitment + H * rho;
             next_commitment.row_commitments.push_back(row_commitment);
             if (prepared_row_blindings == nullptr) next_state.row_blindings.push_back(rho);
         }

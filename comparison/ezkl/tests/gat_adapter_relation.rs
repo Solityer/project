@@ -1295,14 +1295,17 @@ fn native_gat_fixture_proof_verifies_independently() {
     );
     let instances: &[&[&[Fr]]] = &[&[&public]];
     #[cfg(feature = "formal-gpu")]
-    let gpu_stats_before_prove = {
+    let _native_prove_scope = {
         assert_eq!(
             std::env::var("ENABLE_ICICLE_GPU").unwrap_or_default(),
             "1",
             "formal GPU proof fixture must not silently use the CPU MSM backend",
         );
-        halo2_proofs::icicle::execution_stats()
+        halo2_proofs::icicle::reset_execution_operation_stats();
+        halo2_proofs::icicle::native_prove_ntt_scope()
     };
+    #[cfg(feature = "formal-gpu")]
+    let gpu_stats_before_prove = halo2_proofs::icicle::execution_stats();
     let started = Instant::now();
     eprintln!("EZKL_TEST_PHASE START stage=tiny_native_gat_prove");
     let mut writer = Blake2bWrite::<_, G1Affine, Challenge255<_>>::init(Vec::new());
@@ -1317,6 +1320,86 @@ fn native_gat_fixture_proof_verifies_independently() {
     .expect("tiny GAT fixture proof generation");
     let proof = writer.finalize();
     #[cfg(feature = "formal-gpu")]
+    drop(_native_prove_scope);
+    let owned_instances = vec![public.clone()];
+    let (instance_digest, instance_count, column_counts) = ezkl::pfsys::canonical_instance_digest(&owned_instances)
+        .expect("compact proof fixture canonical instance digest");
+    let compact = ezkl::pfsys::CompactProofV2::<G1Affine> {
+        artifact_format: "ezkl-gat-native-proof".into(),
+        schema_version: 2,
+        protocol: None,
+        proof_transcript: ezkl::pfsys::CompactProofTranscriptV1 {
+            encoding: "hex-lower".into(),
+            byte_length: proof.len(),
+            data: hex::encode(&proof),
+        },
+        instances_ref: ezkl::pfsys::ProofInstancesRefV1 {
+            schema_version: 1,
+            statement_path: "statement.json".into(),
+            statement_sha256: "1".repeat(64),
+            public_output_path: "public_output.json".into(),
+            public_output_sha256: "2".repeat(64),
+            artifact_manifest_path: "artifact_manifest.json".into(),
+            source_tree_sha256: "3".repeat(64),
+            binary_sha256: "4".repeat(64),
+            resource_manifest_sha256: "5".repeat(64),
+            encoding: "canonical-json".into(),
+            sha256: instance_digest,
+            count: instance_count,
+            column_counts,
+        },
+        split: None,
+        timestamp: Some(1),
+        version: Some("compact-fixture".into()),
+    };
+    let compact_bytes = serde_json::to_vec(&compact).expect("serialize compact proof fixture");
+    let decoded_compact = ezkl::pfsys::CompactProofV2::<G1Affine>::decode_json_bytes(&compact_bytes)
+        .expect("decode compact proof fixture");
+    assert_eq!(decoded_compact.instances_ref.count, instance_count);
+    assert_eq!(decoded_compact.instances_ref.column_counts, vec![public.len()]);
+    assert!(instance_count > 1, "fixture should expose enough public values to split its column");
+
+    let mut unknown_split_key: serde_json::Value = serde_json::from_slice(&compact_bytes)
+        .expect("decode compact proof JSON fixture");
+    unknown_split_key["split"] = serde_json::json!({"start": 0, "end": 0, "extra": 0});
+    assert!(
+        ezkl::pfsys::CompactProofV2::<G1Affine>::decode_json_bytes(
+            &serde_json::to_vec(&unknown_split_key).expect("serialize malformed split fixture")
+        )
+        .is_err(),
+        "compact proof v2 accepted unknown split metadata"
+    );
+
+    let mut bad_count = decoded_compact.clone();
+    bad_count.instances_ref.count += 1;
+    assert!(bad_count.into_snark(owned_instances.clone()).is_err(), "compact resolver accepted a changed public-instance count");
+    let mut bad_digest = decoded_compact.clone();
+    bad_digest.instances_ref.sha256 = "0".repeat(64);
+    assert!(bad_digest.into_snark(owned_instances.clone()).is_err(), "compact resolver accepted a changed public-instance digest");
+    let mut bad_shape = decoded_compact.clone();
+    bad_shape.instances_ref.column_counts = vec![instance_count - 1, 1];
+    assert!(bad_shape.into_snark(owned_instances.clone()).is_err(), "compact resolver accepted a changed public-instance column shape");
+    let mut bad_version = decoded_compact.clone();
+    bad_version.version = Some("v".repeat(257));
+    assert!(bad_version.into_snark(owned_instances.clone()).is_err(), "compact resolver accepted oversized version metadata");
+    let mut split_end_beyond_instance_count = decoded_compact.clone();
+    split_end_beyond_instance_count.split = Some(ezkl::pfsys::CompactProofSplitCommitV1 {
+        start: 0,
+        end: usize::MAX,
+    });
+    assert!(
+        split_end_beyond_instance_count.into_snark(owned_instances.clone()).is_ok(),
+        "compact resolver incorrectly constrained split metadata to the public-instance count"
+    );
+    let mut bad_split_range = decoded_compact.clone();
+    bad_split_range.split = Some(ezkl::pfsys::CompactProofSplitCommitV1 { start: 2, end: 1 });
+    assert!(bad_split_range.into_snark(owned_instances.clone()).is_err(), "compact resolver accepted a reversed split range");
+
+    let resolved = decoded_compact.into_snark(owned_instances)
+        .expect("authenticated compact reference resolves to the native Snark");
+    assert_eq!(resolved.proof, proof, "compact resolution changed the native transcript");
+    assert!(resolved.hex_proof.is_none(), "compact resolution must not rebuild an unused duplicate transcript hex string");
+    #[cfg(feature = "formal-gpu")]
     {
         let gpu_stats_after_prove = halo2_proofs::icicle::execution_stats();
         let msm_operations = gpu_stats_after_prove
@@ -1327,17 +1410,44 @@ fn native_gat_fixture_proof_verifies_independently() {
             .1
             .checked_sub(gpu_stats_before_prove.1)
             .expect("native ICICLE GPU chunk counter did not reset during proof");
+        let gpu_msm_precompute_calls = gpu_stats_after_prove
+            .12
+            .checked_sub(gpu_stats_before_prove.12)
+            .expect("native ICICLE precompute counter did not reset during proof");
+        let gpu_msm_precomputed_chunks = gpu_stats_after_prove
+            .13
+            .checked_sub(gpu_stats_before_prove.13)
+            .expect("native ICICLE prepared-chunk counter did not reset during proof");
+        let gpu_msm_precomputed_hits = gpu_stats_after_prove
+            .14
+            .checked_sub(gpu_stats_before_prove.14)
+            .expect("native ICICLE prepared-cache hit counter did not reset during proof");
+        let ntt_calls = gpu_stats_after_prove
+            .2
+            .checked_sub(gpu_stats_before_prove.2)
+            .expect("native ICICLE NTT counter did not reset during proof");
         let synchronized_calls = gpu_stats_after_prove
             .4
             .checked_sub(gpu_stats_before_prove.4)
             .expect("native ICICLE synchronization counter did not reset during proof");
+        let resident_live_bytes = gpu_stats_after_prove.15;
+        let resident_peak_bytes = gpu_stats_after_prove.16;
+        let params_n = 1usize.checked_shl(k).expect("tiny GAT fixture KZG size exceeds usize");
+        let resident_basis_upper_bytes = params_n
+            .checked_mul(64)
+            .and_then(|bytes| bytes.checked_mul(halo2_proofs::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR))
+            .expect("tiny GAT fixture resident KZG basis upper bound overflows usize");
         assert!(
             msm_operations > 0 && gpu_msm_chunks >= msm_operations,
             "formal GAT proof did not dispatch its MSM commitments to native ICICLE GPU"
         );
+        assert!(gpu_msm_precompute_calls > 0 && gpu_msm_precomputed_hits > 0, "formal GAT proof did not reuse a resident KZG basis during Prove");
+        assert_eq!(gpu_msm_precomputed_chunks, gpu_msm_precompute_calls + gpu_msm_precomputed_hits, "prepared MSM chunks must be either newly precomputed or served from the resident cache");
+        assert!(resident_peak_bytes >= resident_live_bytes, "formal GAT proof resident MSM peak is below its live cache footprint");
+        assert!(resident_peak_bytes <= resident_basis_upper_bytes, "formal GAT proof resident MSM peak exceeds its one factor-4 Lagrange basis");
         assert_eq!(
-            synchronized_calls, gpu_msm_chunks,
-            "native GPU MSM chunks must be synchronized before proof completion"
+            synchronized_calls, gpu_msm_chunks + gpu_msm_precompute_calls + ntt_calls,
+            "native MSM chunks, basis precomputations and NTTs must be synchronized before proof completion"
         );
     }
     eprintln!(
@@ -1348,7 +1458,7 @@ fn native_gat_fixture_proof_verifies_independently() {
 
     let started = Instant::now();
     eprintln!("EZKL_TEST_PHASE START stage=tiny_independent_verify");
-    let mut reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&proof[..]);
+    let mut reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&resolved.proof[..]);
     verify_proof::<KZGCommitmentScheme<Bn256>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
         &params,
         pk.get_vk(),
@@ -1373,7 +1483,7 @@ fn native_gat_fixture_proof_verifies_independently() {
         .expect("public output logits are the final public instances");
     *tampered_logit += Fr::from(1u64);
     let tampered_instances: &[&[&[Fr]]] = &[&[&tampered_public]];
-    let mut tampered_instance_reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&proof[..]);
+    let mut tampered_instance_reader = Blake2bRead::<_, G1Affine, Challenge255<_>>::init(&resolved.proof[..]);
     let tampered_instance_result =
         verify_proof::<KZGCommitmentScheme<Bn256>, VerifierSHPLONK<_>, _, _, SingleStrategy<_>>(
             &params,
@@ -1389,7 +1499,7 @@ fn native_gat_fixture_proof_verifies_independently() {
     );
     eprintln!("EZKL_TEST_PHASE DONE stage=tampered_public_logit_rejected");
 
-    let mut tampered_proof = proof.clone();
+    let mut tampered_proof = resolved.proof.clone();
     let tamper_index = tampered_proof.len() / 2;
     tampered_proof[tamper_index] ^= 1;
     let mut tampered_reader =

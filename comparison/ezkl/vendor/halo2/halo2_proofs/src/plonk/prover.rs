@@ -690,6 +690,7 @@ where
     Scheme::Scalar: PrimeField + WithSmallOrderMulGroup<3> + FromUniformBytes<64>,
     Scheme::ParamsProver: Send + Sync,
 {
+    let native_prove_started = Instant::now();
     #[cfg(feature = "counter")]
     {
         use crate::{FFT_COUNTER, MSM_COUNTER};
@@ -974,6 +975,7 @@ where
         }
     }
 
+    let advice_synthesis_stage = Instant::now();
     let start = Instant::now();
     let (advice, challenges) = {
         let mut advice = vec![
@@ -1153,8 +1155,13 @@ where
         (advice, challenges)
     };
     log::trace!("Advice preparation: {:?}", start.elapsed());
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=advice_synthesis_and_commit elapsed_ms={:.3}",
+        advice_synthesis_stage.elapsed().as_secs_f64() * 1000.0,
+    );
 
     // Sample theta challenge for keeping lookup columns linearly independent
+    let lookup_permutation_shuffle_stage = Instant::now();
     let start = Instant::now();
     let theta: ChallengeTheta<_> = transcript.squeeze_challenge_scalar();
     log::trace!("Theta challenge: {:?}", start.elapsed());
@@ -1706,10 +1713,15 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
     log::trace!("Shuffle commitment: {:?}", start.elapsed());
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=lookup_permutation_shuffle_commit elapsed_ms={:.3}",
+        lookup_permutation_shuffle_stage.elapsed().as_secs_f64() * 1000.0,
+    );
 
     // Shuffle commitments are the final consumer of the Lagrange-form
     // instance columns. Reuse their backing for the coefficient form instead
     // of allocating and copying another full column before the iFFT.
+    let polynomial_h_stage = Instant::now();
     let start = Instant::now();
     for proof_instance in &mut instance {
         proof_instance.instance_polys = std::mem::take(&mut proof_instance.instance_values)
@@ -1770,12 +1782,22 @@ where
         &permutations,
     )?;
     log::trace!("H(X) evaluation: {:?}", start.elapsed());
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=coefficient_ifft_and_h_evaluation elapsed_ms={:.3}",
+        polynomial_h_stage.elapsed().as_secs_f64() * 1000.0,
+    );
 
     // Construct the vanishing argument's h(X) commitments
+    let quotient_construction_stage = Instant::now();
     let start = Instant::now();
     let vanishing = vanishing.construct(params, domain, h_poly, &mut rng, transcript)?;
     log::trace!("Vanishing construction: {:?}", start.elapsed());
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=vanishing_quotient_construction elapsed_ms={:.3}",
+        quotient_construction_stage.elapsed().as_secs_f64() * 1000.0,
+    );
 
+    let opening_setup_stage = Instant::now();
     let start = Instant::now();
     let x: ChallengeX<_> = transcript.squeeze_challenge_scalar();
     let xn = x.pow([params.n()]);
@@ -1971,6 +1993,10 @@ where
         // We query the h(X) polynomial at x
         .chain(vanishing.open(x));
     log::trace!("Open queries: {:?}", start.elapsed());
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=opening_evaluation_and_query_setup elapsed_ms={:.3}",
+        opening_setup_stage.elapsed().as_secs_f64() * 1000.0,
+    );
 
     #[cfg(feature = "counter")]
     {
@@ -1984,10 +2010,20 @@ where
         *FFT_COUNTER.lock().unwrap() = BTreeMap::new();
     }
 
+    let shplonk_opening_stage = Instant::now();
     let prover = P::new(params);
     prover
         .create_proof(rng, transcript, instances)
-        .map_err(|_| Error::ConstraintSystemFailure)
+        .map_err(|_| Error::ConstraintSystemFailure)?;
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=shplonk_opening_proof elapsed_ms={:.3}",
+        shplonk_opening_stage.elapsed().as_secs_f64() * 1000.0,
+    );
+    println!(
+        "EZKL_NATIVE_PHASE DONE stage=native_create_proof_total elapsed_ms={:.3}",
+        native_prove_started.elapsed().as_secs_f64() * 1000.0,
+    );
+    Ok(())
 }
 
 #[test]

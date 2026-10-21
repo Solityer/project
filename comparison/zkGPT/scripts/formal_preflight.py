@@ -48,10 +48,10 @@ from common import (
     atomic_write_text,
 )
 
-CAPACITY_SCHEMA = "zkgpt-gat-capacity-v9"
+CAPACITY_SCHEMA = "zkgpt-gat-capacity-v11"
 CAPACITY_U64_MAX = (1 << 64) - 1
 CAPACITY_SHAPE_FIELDS = ("num_nodes", "num_edges", "num_features", "num_classes", "graph_count", "model_layers", "model_output_heads", "model_classes", "model_input_dim", "model_hidden_dim", "n_raw", "n_in")
-CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "lasso_selected_row_cache_bytes_upper_bound", "lasso_selected_row_cache_heap_bytes_upper_bound", "lasso_selected_row_cache_mapped_bytes_upper_bound", "lasso_sparse_matrix_workspace_bytes_upper_bound", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
+CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "lasso_selected_row_cache_bytes_upper_bound", "lasso_selected_row_cache_heap_bytes_upper_bound", "lasso_selected_row_cache_mapped_bytes_upper_bound", "lasso_sparse_matrix_workspace_bytes_upper_bound", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_l_qry_binary_lut_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
 CAPACITY_INTEGER_FIELDS += ("gkr_point_shape_bitmap_scratch_bytes", "gkr_point_shape_touched_index_scratch_bytes_upper_bound", "gkr_point_shape_layer_count", "gkr_point_shape_fconn_count")
 CAPACITY_INTEGER_FIELDS += ("forward_admission_peak_host_memory_bytes_upper_bound",)
 CAPACITY_INTEGER_FIELDS += ("explicit_unary_gate_buffer_entry_bytes",)
@@ -184,8 +184,8 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     validate_gkr_layer_work_profile(payload, dataset)
     if payload.get("gkr_point_shape_ready") is not True:
         raise ChainError(f"capacity has no successful native GKR point-domain shape admission for {dataset}")
-    if payload.get("forward_value_admission_ready") is not True:
-        raise ChainError(f"capacity has no successful canonical all-value forward admission for {dataset}")
+    if payload.get("forward_value_admission_ready") is not False or payload.get("forward_value_admission_mode") != "deferred_to_owned_forward_v1":
+        raise ChainError(f"capacity does not defer canonical all-value admission to the owned formal forward for {dataset}")
     point_shape_digest = payload.get("gkr_point_shape_digest")
     if not isinstance(point_shape_digest, str) or len(point_shape_digest) != 64 or any(ch not in "0123456789abcdef" for ch in point_shape_digest):
         raise ChainError(f"capacity has an invalid native GKR point-domain shape digest for {dataset}")
@@ -198,7 +198,8 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     source_words = source_support_entries // 64 + (1 if source_support_entries % 64 else 0)
     expected_bitmap_bytes_per_lane = capacity_mul(source_words, 8, "GKR source-map lane bitmap", dataset)
     expected_bitmap_bytes = capacity_mul(expected_bitmap_bytes_per_lane, 2, "GKR U/V source-map bitmaps", dataset)
-    expected_rank_bytes = expected_bitmap_bytes_per_lane
+    expected_rank_slots = capacity_mul(2, (source_words + 1) // 2, "paired U/V source-map rank slots", dataset)
+    expected_rank_bytes = capacity_mul(expected_rank_slots, 8, "paired U/V source-map rank prefixes", dataset)
     if (payload["gkr_subset_bitmap_scratch_bytes_upper_bound"] != expected_bitmap_bytes or
             payload["gkr_subset_rank_scratch_bytes_upper_bound"] != expected_rank_bytes or
             payload["gkr_subset_sort_scratch_bytes_upper_bound"] != 0):
@@ -312,6 +313,8 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     selected_row_cache_heap_bytes = 0
     selected_row_cache_mapped_bytes = 0
     sparse_matrix_workspace_bytes = 0
+    maximum_lasso_fr_buffer_bytes = 0
+    mapped_lasso_transient_peak_bytes = 0
     for index, profile in enumerate(profiles):
         if not isinstance(profile, dict) or profile.get("family_id") != LASSO_FAMILY_IDS[index] or not isinstance(profile.get("workspace"), dict):
             raise ChainError(f"capacity has invalid Lasso profile {index} for {dataset}")
@@ -339,6 +342,31 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
             raise ChainError(f"capacity Lasso selected-row count mismatch for {dataset}")
         if values["private_witness_bytes"] != capacity_mul(values["private_witness_entries"], values["private_witness_element_bytes"], "Lasso private witness bytes", dataset):
             raise ChainError(f"capacity Lasso private workspace size mismatch for {dataset}")
+        query_bits = values["padded_queries"].bit_length() - 1
+        if workspace["t2_booleanity"]:
+            expected_t2_column_entries = values["padded_queries"] // 16 if query_bits >= 4 else values["padded_queries"]
+            if values["t2_column_one_bytes"] != capacity_mul(
+                    expected_t2_column_entries, values["private_witness_element_bytes"],
+                    "Lasso physical T2 column bytes", dataset):
+                raise ChainError(f"capacity T2 physical column size mismatch for {dataset}")
+            if query_bits >= 4:
+                equality_low_width = 1 << min(12, query_bits - 4)
+                equality_histogram_fields = capacity_add(
+                    (equality_low_width, query_bits - 4),
+                    "Lasso T2 equality histogram fields", dataset)
+                compact_fields = capacity_add(
+                    (65536, max(equality_histogram_fields,
+                                values["padded_queries"] // 16, 278)),
+                    "Lasso T2 compact Booleanity peak fields", dataset)
+                booleanity_workspace_bytes = capacity_mul(
+                    compact_fields, values["private_witness_element_bytes"],
+                    "Lasso T2 compact Booleanity peak bytes", dataset)
+            else:
+                booleanity_workspace_bytes = values["t2_column_one_bytes"]
+        else:
+            if values["t2_column_one_bytes"] != 0:
+                raise ChainError(f"capacity non-T2 profile reports a T2 column for {dataset}")
+            booleanity_workspace_bytes = values["private_witness_bytes"]
         cache_width = 1 if values["table_domain"] <= 256 else 2 if values["table_domain"] <= 65536 else 0
         family_cache_bytes = capacity_mul(values["padded_queries"], cache_width,
                                           "compact Lasso selected-row cache", dataset)
@@ -365,7 +393,7 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
                                                 family_sparse_workspace)
         expected_ledger = capacity_add((values["row_blinding_bytes"], values["column_generator_bytes"]), "Lasso retained row ledger", dataset)
         expected_commit_peak = capacity_add((expected_ledger, values["row_commitment_bytes"]), "Lasso commit peak", dataset)
-        expected_booleanity_peak = capacity_add((expected_ledger, max(values["private_witness_bytes"], values["t2_column_one_bytes"])), "Lasso booleanity peak", dataset)
+        expected_booleanity_peak = capacity_add((expected_ledger, booleanity_workspace_bytes), "Lasso booleanity peak", dataset)
         expected_row_fold_peak = capacity_add((expected_ledger, values["row_fold_weights_bytes"], values["row_fold_values_bytes"], values["onehot_query_bytes"]), "Lasso row-fold peak", dataset)
         expected_opening_peak = max(expected_row_fold_peak, capacity_add((expected_ledger, values["row_fold_values_bytes"], values["onehot_query_bytes"], values["masked_opening_generator_bytes"], values["masked_opening_coefficient_bytes"], values["masked_opening_response_bytes"]), "Lasso opening peak", dataset))
         expected_ordinary_onehot_peak = capacity_add((expected_ledger, values["onehot_heap_peak_bytes"]), "Lasso ordinary onehot peak", dataset)
@@ -380,8 +408,26 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         domain_bits = capacity_add((values["padded_queries"].bit_length() - 1, values["table_domain"].bit_length() - 1), "Lasso domain bits", dataset)
         if row_bits != domain_bits // 2 or column_bits != domain_bits - row_bits:
             raise ChainError(f"capacity Lasso matrix layout disagrees with the native balanced layout for {dataset}")
-        if values["family_peak_bytes"] < values["private_witness_bytes"]:
-            raise ChainError(f"capacity Lasso peak omits its private witness for {dataset}")
+        maximum_lasso_fr_buffer_bytes = max(
+            maximum_lasso_fr_buffer_bytes, booleanity_workspace_bytes,
+            values["row_blinding_bytes"], values["row_fold_weights_bytes"],
+            values["row_fold_values_bytes"], values["onehot_query_bytes"],
+            values["t2_column_one_bytes"], values["onehot_heap_peak_bytes"],
+            values["masked_opening_coefficient_bytes"],
+            values["masked_opening_response_bytes"],
+        )
+        bool_native_bytes = (values["t2_column_one_bytes"] if workspace["t2_booleanity"]
+                             else values["private_witness_bytes"])
+        bool_mapped_bytes = bool_native_bytes if bool_native_bytes > (8 << 20) else 0
+        opening_mapped_bytes = capacity_add(
+            (value if value > (8 << 20) else 0
+             for value in (values["masked_opening_generator_bytes"],
+                           values["masked_opening_coefficient_bytes"],
+                           values["masked_opening_response_bytes"])),
+            "mapped Lasso opening transient", dataset)
+        mapped_lasso_transient_peak_bytes = max(
+            mapped_lasso_transient_peak_bytes, bool_mapped_bytes,
+            opening_mapped_bytes)
         row_payload_minimum = capacity_add((capacity_mul(wrapper["row_commitment_chunk_count"], 8, "Lasso row chunk count prefix", dataset), capacity_mul(values["rows"], 8 + 64, "Lasso row commitment payload", dataset)), "Lasso row commitment wire", dataset)
         minimum_family_messages = capacity_add((1, wrapper["row_commitment_chunk_count"], wrapper["booleanity_rounds"], wrapper["a_query_challenges"], wrapper["onehot_rounds"], wrapper["lookup_rounds"], wrapper["hyrax_matrix_masked_openings"], wrapper["hyrax_l_qry_tensor_openings"]), "Lasso family message count", dataset)
         if wrapper["row_commitment_wire_bytes_upper_bound"] < row_payload_minimum or wrapper["family_wire_bytes_upper_bound"] < wrapper["row_commitment_wire_bytes_upper_bound"] or wrapper["family_message_count_upper_bound"] < minimum_family_messages:
@@ -396,6 +442,14 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
             payload["lasso_selected_row_cache_mapped_bytes_upper_bound"] != selected_row_cache_mapped_bytes or
             payload["lasso_sparse_matrix_workspace_bytes_upper_bound"] != sparse_matrix_workspace_bytes):
         raise ChainError(f"capacity compact selected-row cache or sparse-matrix workspace is inconsistent for {dataset}")
+    expected_max_materialized_fr_bytes = max(
+        payload["evaluated_layer_witness_bytes_upper_bound"],
+        maximum_lasso_fr_buffer_bytes,
+    )
+    if payload["max_materialized_fr_bytes"] != expected_max_materialized_fr_bytes:
+        raise ChainError(f"capacity materialized field peak omits an actual Lasso buffer for {dataset}")
+    if breakdown["component:lasso_transient"] != mapped_lasso_transient_peak_bytes:
+        raise ChainError(f"capacity mapped Lasso transient does not match physical witness/opening buffers for {dataset}")
     expected_proof_persistent = capacity_add(
         (breakdown["component:gate_arrays"], breakdown["component:source_maps"],
          breakdown["component:residual_targets"], breakdown["component:layer_values"],
@@ -451,6 +505,25 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         )
         for profile in profiles
     )
+    lasso_t2_heap_transient = 0
+    for profile in profiles:
+        workspace = profile["workspace"]
+        if workspace["t2_booleanity"]:
+            query_bits = workspace["padded_queries"].bit_length() - 1
+            if query_bits >= 4:
+                equality_low_width = 1 << min(12, query_bits - 4)
+                equality_histogram_fields = capacity_add(
+                    (equality_low_width, query_bits - 4),
+                    "Lasso T2 equality histogram fields", dataset)
+                compact_heap_fields = capacity_add(
+                    (65536, max(equality_histogram_fields, 278)),
+                    "Lasso T2 compact standard-heap fields", dataset)
+                lasso_t2_heap_transient = max(
+                    lasso_t2_heap_transient,
+                    capacity_mul(compact_heap_fields,
+                                 workspace["private_witness_element_bytes"],
+                                 "Lasso T2 compact standard-heap bytes", dataset),
+                )
     expected_lasso_heap_workspace = capacity_add(
         (
             lasso_heap_persistent,
@@ -459,6 +532,7 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
             max(
                 lasso_row_commitment_transient,
                 lasso_heap_transient,
+                lasso_t2_heap_transient,
             ),
             sparse_matrix_workspace_bytes,
         ),
@@ -491,6 +565,8 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         raise ChainError(f"capacity Lasso element-size profiles disagree for {dataset}")
     for profile in profiles:
         workspace = profile["workspace"]
+        if workspace["t2_booleanity"] and workspace["private_witness_element_bytes"] != fr_element_bytes:
+            raise ChainError(f"capacity T2 logical witness element size differs from the field size for {dataset}")
         expected_profile_sizes = {
             "row_blinding_bytes": capacity_mul(workspace["rows"], fr_element_bytes, "Lasso row blinding bytes", dataset),
             "row_commitment_bytes": capacity_mul(workspace["rows"], g1_element_bytes, "Lasso row commitment bytes", dataset),
@@ -498,7 +574,12 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
             "row_fold_weights_bytes": capacity_mul(workspace["rows"], fr_element_bytes, "Lasso row fold weights", dataset),
             "row_fold_values_bytes": capacity_mul(workspace["columns"], fr_element_bytes, "Lasso row fold values", dataset),
             "onehot_query_bytes": capacity_mul(workspace["table_domain"], fr_element_bytes, "Lasso selected-table onehot query", dataset),
-            "t2_column_one_bytes": capacity_mul(workspace["padded_queries"], fr_element_bytes, "Lasso T2 NativeVector column", dataset) if workspace["t2_booleanity"] else 0,
+            "t2_column_one_bytes": capacity_mul(
+                workspace["padded_queries"] // 16
+                if workspace["t2_booleanity"] and workspace["padded_queries"].bit_length() - 1 >= 4
+                else workspace["padded_queries"],
+                fr_element_bytes, "Lasso T2 NativeVector column", dataset)
+                if workspace["t2_booleanity"] else 0,
             "onehot_heap_peak_bytes": capacity_mul(
                 capacity_add(
                     (
@@ -518,9 +599,14 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
         }
         if any(workspace[key] != value for key, value in expected_profile_sizes.items()):
             raise ChainError(f"capacity Lasso vector extent profile is inconsistent for {dataset}")
-        if workspace["t2_booleanity"] and workspace["t2_column_one_bytes"] != workspace["private_witness_bytes"]:
-            raise ChainError(f"capacity T2 NativeVector alias size is inconsistent for {dataset}")
     tensor_rows = l_query_active // expected_l_query_columns
+    expected_l_query_binary_lut_bytes = capacity_mul(
+        capacity_mul(expected_l_query_columns, 32, "L_qry binary subset-table points", dataset),
+        g1_element_bytes, "L_qry binary subset-table bytes", dataset)
+    if tensor_rows < 128 or expected_l_query_columns < 8 or expected_l_query_columns % 8:
+        expected_l_query_binary_lut_bytes = 0
+    if payload["hyrax_l_qry_binary_lut_workspace_bytes"] != expected_l_query_binary_lut_bytes:
+        raise ChainError(f"capacity L_qry binary subset-table workspace disagrees with its tensor shape for {dataset}")
     tensor_row_bytes = capacity_add((g1_element_bytes, capacity_mul(2, fr_element_bytes, "L_qry tensor row size", dataset)), "L_qry tensor row size", dataset)
     tensor_column_bytes = capacity_add((capacity_mul(2, g1_element_bytes, "L_qry tensor column generators", dataset), capacity_mul(3, fr_element_bytes, "L_qry tensor column fields", dataset)), "L_qry tensor column size", dataset)
     expected_l_query_workspace = capacity_add((capacity_mul(tensor_rows, tensor_row_bytes, "L_qry tensor row workspace", dataset), capacity_mul(expected_l_query_columns, tensor_column_bytes, "L_qry tensor column workspace", dataset)), "L_qry tensor workspace", dataset)
@@ -604,8 +690,22 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     aux_transient = capacity_add((capacity_mul(aux_rows, fr_element_bytes, "Aux tensor row weights", dataset), capacity_mul(aux_columns, tensor_column_bytes, "Aux tensor column transient", dataset)), "Aux tensor opening transient", dataset)
     l_query_transient = capacity_add((capacity_mul(tensor_rows, fr_element_bytes, "L_qry tensor row weights", dataset), capacity_mul(expected_l_query_columns, tensor_column_bytes, "L_qry tensor column transient", dataset)), "L_qry tensor opening transient", dataset)
     expected_tensor_retained = capacity_add((l_query_retained, aux_retained), "simultaneous Aux/L tensor retained state", dataset)
+    l_query_commit_block_entries = min(expected_l_query_columns, 1 << 12)
+    l_query_commit_transient = capacity_add(
+        (
+            expected_l_query_binary_lut_bytes,
+            capacity_mul(expected_l_query_columns, g1_element_bytes, "L_qry commit column generators", dataset),
+            capacity_mul(l_query_commit_block_entries,
+                         capacity_add((g1_element_bytes, fr_element_bytes), "L_qry commit block entry", dataset),
+                         "L_qry commit block workspace", dataset),
+        ),
+        "L_qry tensor commit transient workspace",
+        dataset,
+    )
     expected_tensor_transient = max(aux_transient, l_query_transient)
-    tensor_combined_expected = capacity_add((expected_tensor_retained, expected_tensor_transient), "combined Aux/L tensor workspace", dataset)
+    tensor_combined_expected = capacity_add(
+        (expected_tensor_retained, max(expected_tensor_transient, l_query_commit_transient)),
+        "combined Aux/L tensor opening and commit workspace", dataset)
     if payload["hyrax_tensor_retained_workspace_bytes"] != expected_tensor_retained or payload["hyrax_tensor_opening_transient_peak_workspace_bytes"] != expected_tensor_transient or payload["hyrax_tensor_combined_peak_workspace_bytes"] != tensor_combined_expected or payload["hyrax_l_qry_tensor_workspace_bytes"] != capacity_add((l_query_retained, l_query_transient), "L_qry tensor opening workspace", dataset) or payload["hyrax_aux_tensor_workspace_bytes"] != capacity_add((aux_retained, aux_transient), "Aux tensor opening workspace", dataset) or payload["l_query_zero_interval_count_upper_bound"] < zero_interval_count:
         raise ChainError(f"capacity simultaneous Aux/L tensor workspace is inconsistent for {dataset}")
     family_messages = capacity_add((profile["family_message_count_upper_bound"] for profile in profiles), "Lasso family messages", dataset)
@@ -632,8 +732,9 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     if payload["disk_requirement_bytes_upper_bound"] != disk_requirement:
         raise ChainError(f"capacity combined disk requirement is inconsistent for {dataset}")
     host_native_and_lasso = capacity_add(
-        (payload["estimated_native_heap_bytes_upper_bound"], payload["lasso_heap_workspace_peak_bytes"]),
-        "native and Lasso host heap requirements",
+        (payload["estimated_native_heap_bytes_upper_bound"], payload["lasso_heap_workspace_peak_bytes"],
+         payload["hyrax_tensor_combined_peak_workspace_bytes"]),
+        "native, Lasso, and Hyrax tensor host workspace requirements",
         dataset,
     )
     if payload["estimated_peak_host_memory_bytes"] < host_native_and_lasso:
@@ -728,7 +829,7 @@ def validate_capacity_numbers(payload: Mapping[str, Any], dataset: str, *, requi
     for key in ("hyrax_active_domain_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "gkr_prefix_workspace_bytes_upper_bound", "lasso_private_selected_row_workspace_peak_bytes", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "max_materialized_gate_bytes", "max_materialized_vector_bytes"):
         if payload[key] > mixed_native_workspace_upper:
             raise ChainError(f"capacity {key} exceeds checked native heap/mapped backing for {dataset}")
-    for key in ("hyrax_l_qry_tensor_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound"):
+    for key in ("hyrax_l_qry_tensor_workspace_bytes", "hyrax_l_qry_binary_lut_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound"):
         if payload[key] > payload["estimated_peak_host_memory_bytes"]:
             raise ChainError(f"capacity {key} exceeds estimated host peak for {dataset}")
 
@@ -828,7 +929,7 @@ def run_capacity(root: Path, dataset: str, backend: str, log_dir: Path) -> Dict[
     print(
         f"CAPACITY_ADMISSION_END dataset={dataset} status={payload.get('status')} "
         f"point_shape={payload.get('gkr_point_shape_ready')} "
-        f"all_value={payload.get('forward_value_admission_ready')} "
+        f"all_value_mode={payload.get('forward_value_admission_mode')} "
         f"host_peak_bytes={payload.get('estimated_peak_host_memory_bytes')} "
         f"disk_peak_bytes={payload.get('disk_requirement_bytes_upper_bound')} "
         f"artifact_bytes={payload.get('artifact_disk_bytes_upper_bound')}",

@@ -35,7 +35,7 @@ struct NativeProofStatement {
 
     std::string statement_root_digest;
 
-    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string relation_schema = "zkgpt-gat-relation-v2";
     std::string relation_digest = std::string(64, '0');
     std::vector<std::string> relation_order;
 

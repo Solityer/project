@@ -20,7 +20,8 @@ import run_formal_matrix  # noqa: E402
 from run_hybrid_formal import (  # noqa: E402
     DATASETS,
     NATIVE_FORMAL_BACKEND,
-    _CUB_QUERY_COUNTS,
+    _CUB_QUERY_OPERATION_NAMES,
+    _CUB_QUERY_PATHS,
     _admit_local_capacity,
     _authenticated_srs_copy_size_bytes,
     _check_dataset_capacity,
@@ -230,6 +231,19 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "uses_recursive_fft": True,
                 "proof_logrows": 5,
                 "proof_domain_size": 32,
+                "icicle_ntt_min_log_size": 16,
+                "icicle_ntt_max_log_size": 25,
+                "icicle_ntt_capacity_elements": 32,
+                "icicle_ntt_device_workspace_upper_bytes": 64 * 32,
+                "icicle_ntt_domain_cache_upper_bytes": 32 * (32 + 1 + 64 + 6),
+                "icicle_ntt_init_scratch_upper_bytes": 4 * 64 * 32,
+                "icicle_ntt_device_peak_upper_bytes": 96 * 32 + 10464,
+                "icicle_ntt_host_staging_upper_bytes": 32 * 32,
+                "icicle_msm_max_concurrency": 1,
+                "icicle_msm_precompute_factor": 4,
+                "icicle_msm_precomputed_basis_count": 1,
+                "icicle_msm_precomputed_basis_device_upper_bytes": 16 * 64 * 4,
+                "icicle_msm_point_staging_host_upper_bytes": 16 * 64,
                 "recursive_fft_cached_domain_lengths": [32],
                 "recursive_fft_twiddle_field_elements": 74,
                 "fft_cache_supported_length_count": 2,
@@ -295,8 +309,32 @@ class LocalFormalEntryTest(unittest.TestCase):
     @staticmethod
     def _cub_query(session_id: str = "a" * 32) -> dict[str, object]:
         selected = {"uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71", "compute_capability": "10.0"}
+        type_sizes = {
+            "scalar_bytes": 32,
+            "affine_bytes": 64,
+            "projective_bytes": 96,
+            "unsigned_bytes": 4,
+        }
+
+        def path(name: str, peak: int) -> dict[str, object]:
+            profile = _CUB_QUERY_PATHS[name]
+            bucket_count = profile["B"]
+            large_count = profile["L_max"]
+            counts = (1 << 24, 1 << 24, bucket_count + 1, bucket_count, bucket_count, large_count)
+            return {
+                **{key: value for key, value in profile.items() if key != "host_resident_points"},
+                "point_upload_bytes": (1 << 20) * type_sizes["affine_bytes"] if profile["host_resident_points"] else 0,
+                "precompute_device_temporary_bytes": 0,
+                "device_workspace_peak_bytes": peak,
+                "queries": [
+                    {"name": name, "num_items": count, "scratch_bytes": 1}
+                    for name, count in zip(_CUB_QUERY_OPERATION_NAMES, counts, strict=True)
+                ],
+                "scratch_bytes_sum": len(_CUB_QUERY_OPERATION_NAMES),
+            }
+
         return {
-            "schema": "ezkl.icicle.cub_msm_workspace_query.v2",
+            "schema": "ezkl.icicle.cub_msm_workspace_query.v3",
             "session_id": session_id,
             "icicle_source_tree_sha256": "1" * 64,
             "native_backend_manifest_sha256": "2" * 64,
@@ -307,28 +345,18 @@ class LocalFormalEntryTest(unittest.TestCase):
             "scalar_bits": 254,
             "c": 16,
             "chunk_scalars": 1 << 20,
-            "window_count": 16,
+            "total_window_count": 16,
             "M": 1 << 24,
-            "B": 1_048_560,
-            "H_max": 1_048_560,
-            "L_max": 104_206,
+            "supported_paths": ["ordinary_factor1", "prepared_factor4"],
             "cuda_runtime_version": 12080,
             "cuda_driver_version": 12080,
             "cuda_toolkit_version": "12.8.0",
             "cub_version": 200800,
             "device_compute_capability": selected["compute_capability"],
-            "native_type_sizes": {
-                "scalar_bytes": 32,
-                "affine_bytes": 64,
-                "projective_bytes": 96,
-                "unsigned_bytes": 4,
-            },
+            "native_type_sizes": type_sizes,
+            "ordinary_factor1": path("ordinary_factor1", 100),
+            "prepared_factor4": path("prepared_factor4", 99),
             "device_workspace_peak_bytes": 100,
-            "queries": [
-                {"name": name, "num_items": count, "scratch_bytes": 1}
-                for name, count in _CUB_QUERY_COUNTS.items()
-            ],
-            "scratch_bytes_sum": len(_CUB_QUERY_COUNTS),
         }
 
     def test_native_capacity_model_counts_setup_and_quotient_mappings(self) -> None:
@@ -854,7 +882,12 @@ class LocalFormalEntryTest(unittest.TestCase):
             + requirements["shplonk_task_host_bytes"],
         )
         reserve = 100
-        device = 200
+        msm_workspace = 200
+        device = (
+            msm_workspace
+            + requirements["icicle_ntt_device_peak_upper_bytes"]
+            + requirements["icicle_msm_precomputed_basis_device_upper_bytes"]
+        )
         expected_taskcap = 7 * minimum_task
         initial_available = (
             requirements["proof_nonprepare_heap_host_bytes"]
@@ -862,6 +895,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             + requirements["lookup_table_cache_retained_host_bytes"]
             + requirements["shplonk_extension_host_upper_bytes"]
             + requirements["icicle_msm_host_staging_bytes"]
+            + requirements["icicle_ntt_host_staging_upper_bytes"]
             + reserve
             + device
             + expected_taskcap
@@ -871,7 +905,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             budget = _native_prepare_budget(
                 requirements,
                 initial_available_bytes=initial_available,
-                workspace_query={"integrated_device": True, "device_workspace_peak_bytes": device},
+                workspace_query={"integrated_device": True, "device_workspace_peak_bytes": msm_workspace},
             )
         self.assertEqual(budget["taskcap_bytes"], expected_taskcap)
         self.assertEqual(
@@ -879,6 +913,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             budget["tablecache_bytes"]
             + budget["shplonk_extensions_bytes"]
             + budget["icicle_staging_bytes"]
+            + budget["icicle_ntt_host_staging_upper_bytes"]
             + expected_taskcap,
         )
         self.assertEqual(
@@ -887,7 +922,11 @@ class LocalFormalEntryTest(unittest.TestCase):
         )
 
     def test_integrated_device_workspace_is_added_to_host_bound(self) -> None:
-        requirements = {"host_known_bytes": 100}
+        requirements = {
+            "host_known_bytes": 100,
+            "icicle_ntt_device_peak_upper_bytes": 0,
+            "icicle_msm_precomputed_basis_device_upper_bytes": 0,
+        }
         sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
         query = {"device_workspace_peak_bytes": 100, "integrated_device": True}
         with mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(199, {})), \
@@ -925,7 +964,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             )
 
         receipt = {
-            "schema": "ezkl.icicle.cub_msm_workspace_query_receipt.v2",
+            "schema": "ezkl.icicle.cub_msm_workspace_query_receipt.v3",
             "session_id": "b" * 32,
             "source_path": "tools/native_msm_workspace_query.cu",
             "source_sha256": "1" * 64,

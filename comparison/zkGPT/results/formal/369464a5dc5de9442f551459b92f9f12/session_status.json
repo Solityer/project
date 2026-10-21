@@ -1,0 +1,42 @@
+{
+  "active_stage": "cell:ppi",
+  "completed_stages": [
+    "prepare"
+  ],
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "failure": "",
+  "local_capacity_rechecks": [
+    {
+      "checked_unix_ns": 1792504789245127197,
+      "disk_available_bytes": 1660145020928,
+      "disk_required_bytes": 854734389804,
+      "fs_device_id": "66306",
+      "host_available_bytes": 112538566656,
+      "host_required_bytes": 24959661043,
+      "pending_datasets": [
+        "ppi"
+      ],
+      "stage": "before-cell:ppi"
+    }
+  ],
+  "local_owner": {
+    "lock_device": 66306,
+    "lock_inode": 24906385,
+    "owner_pid": 2060848,
+    "owner_start_ticks": 47977586,
+    "owner_token_sha256": "09fe8bc0251866a5c76d5c02658ea0ae0cda6711bed7c298273d23d495544653",
+    "schema": "zkgpt-local-formal-owner-v1",
+    "session_id": "369464a5dc5de9442f551459b92f9f12"
+  },
+  "schema": "zkgpt-gat-formal-session-v1",
+  "session_id": "369464a5dc5de9442f551459b92f9f12",
+  "stage_status": {
+    "prepare": "PASS"
+  },
+  "started_unix_ns": 1792504309826006746,
+  "status": "RUNNING",
+  "updated_unix_ns": 1792504789455004520
+}

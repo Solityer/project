@@ -43,6 +43,7 @@ from formal_common import (
     require_file,
     require_positive_timings,
     public_output_values,
+    validate_compact_native_proof_v2,
     resource_manifest_hash,
     sha256,
     source_tree_hash,
@@ -167,14 +168,15 @@ def path_from_result(value: Any, label: str) -> Path:
     return require_file(path, label)
 
 
-def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, Any]:
-    document = load_json(proof, "verifier-facing proof")
-    instances = document.get("instances")
-    if not isinstance(instances, list) or not instances or any(not isinstance(item, list) for item in instances):
-        abort(f"{proof} does not expose a native instances array")
-    count = sum(len(item) for item in instances)
-    if count <= 0:
-        abort(f"{proof} has no native public instances")
+def validate_proof_instances(
+    result: dict[str, Any],
+    proof: Path,
+    *,
+    statement: Path,
+    public_output: Path,
+    artifact_manifest: Path,
+    artifact: dict[str, Any],
+) -> dict[str, Any]:
     expected = result["proof_instances"]
     if not isinstance(expected, dict):
         abort("result proof_instances must be an object")
@@ -189,11 +191,36 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
     }
     if not required.issubset(expected):
         abort(f"result proof_instances is missing fields: {sorted(required - set(expected))}")
-    digest = canonical_json_digest(instances)
-    if expected["proof_field"] != "instances" or expected["encoding"] != "canonical-json":
-        abort("result proof_instances encoding is not canonical native instances")
-    if expected["sha256"] != digest or expected["count"] != count:
-        abort("proof instance digest/count mismatch")
+    reference = validate_compact_native_proof_v2(
+        proof,
+        statement_path=statement,
+        public_output_path=public_output,
+        artifact_manifest_path=artifact_manifest,
+        artifact=artifact,
+    )
+    if reference is not None:
+        if expected["proof_field"] != "instances_ref" or expected["encoding"] != "canonical-json":
+            abort("result proof_instances does not identify the compact native reference encoding")
+        if (
+            "column_counts" not in expected
+            or expected["sha256"] != reference["sha256"]
+            or expected["count"] != reference["count"]
+            or expected["column_counts"] != reference["column_counts"]
+        ):
+            abort("compact proof instance digest/count/column shape mismatch")
+    else:
+        document = load_json(proof, "verifier-facing proof")
+        instances = document.get("instances")
+        if not isinstance(instances, list) or not instances or any(not isinstance(item, list) for item in instances):
+            abort(f"{proof} does not expose a native instances array")
+        count = sum(len(item) for item in instances)
+        if count <= 0:
+            abort(f"{proof} has no native public instances")
+        digest = canonical_json_digest(instances)
+        if expected["proof_field"] != "instances" or expected["encoding"] != "canonical-json":
+            abort("result proof_instances encoding is not canonical native instances")
+        if expected["sha256"] != digest or expected["count"] != count:
+            abort("proof instance digest/count mismatch")
     if expected["public_statement_sha256"] != result["public_statement_sha256"]:
         abort("proof instances are not bound to the external public statement")
     if expected["public_output_sha256"] != result["public_output_sha256"]:
@@ -203,13 +230,71 @@ def validate_proof_instances(result: dict[str, Any], proof: Path) -> dict[str, A
     return expected
 
 
+def _validate_native_ntt_profile(
+    path: Path,
+    admission_path: Path,
+    admission: dict[str, Any],
+    prove_budget: dict[str, Any],
+) -> dict[str, int]:
+    memory = admission.get("native_memory_model")
+    if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v20":
+        abort(f"{path} admission has an incompatible native NTT memory model")
+    proof_domain = memory.get("proof_domain_size")
+    scalar_bytes = memory.get("size_of_fr_bytes")
+    if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (proof_domain, scalar_bytes)):
+        abort(f"{path} admission has malformed native NTT geometry")
+    if scalar_bytes != 32 or proof_domain & (proof_domain - 1):
+        abort(f"{path} admission native NTT geometry is not BN254 power-of-two Fr")
+    base_domain = admission.get("domain_size")
+    if isinstance(base_domain, bool) or not isinstance(base_domain, int) or base_domain <= 0:
+        abort(f"{path} admission has malformed base-domain geometry")
+    capacity = min(max(base_domain, proof_domain), 1 << 25)
+    plan = {
+        "icicle_ntt_min_log_size": 16,
+        "icicle_ntt_max_log_size": 25,
+        "icicle_ntt_capacity_elements": capacity,
+        "icicle_ntt_device_workspace_upper_bytes": 64 * capacity,
+        "icicle_ntt_domain_cache_upper_bytes": 32 * (capacity + 1 + 64 + 6),
+        "icicle_ntt_init_scratch_upper_bytes": 4 * 64 * 32,
+        "icicle_ntt_device_peak_upper_bytes": 96 * capacity + 10464,
+        "icicle_ntt_host_staging_upper_bytes": 32 * capacity,
+        "icicle_msm_max_concurrency": 1,
+        "icicle_msm_precompute_factor": 4,
+        "icicle_msm_precomputed_basis_count": 1,
+        "icicle_msm_precomputed_basis_device_upper_bytes": base_domain * 64 * 4,
+        "icicle_msm_point_staging_host_upper_bytes": min(base_domain, 1 << 20) * 64,
+    }
+    for document_name, document in (("Admission", memory), ("native prove budget", prove_budget)):
+        for key, expected in plan.items():
+            observed = document.get(key)
+            if isinstance(observed, bool) or not isinstance(observed, int) or observed != expected:
+                abort(f"{path} {document_name} {key} does not match its authenticated source formula")
+    if (
+        prove_budget.get("schema") != "ezkl.native-prove-budget.v5"
+        or prove_budget.get("native_execution_policy") != FORMAL_GPU_EXECUTION_POLICY
+        or prove_budget.get("admission_sha256") != sha256(admission_path)
+    ):
+        abort(f"{path} native prove budget does not bind the current GPU NTT Admission profile")
+    if prove_budget.get("icicle_msm_workspace_query_schema") != "ezkl.icicle.cub_msm_workspace_query.v3":
+        abort(f"{path} native prove budget does not bind the two-path CUB workspace schema")
+    ordinary_peak = prove_budget.get("icicle_msm_ordinary_factor1_device_workspace_peak_bytes")
+    prepared_peak = prove_budget.get("icicle_msm_prepared_factor4_device_workspace_peak_bytes")
+    query_peak = prove_budget.get("device_workspace_peak_bytes")
+    if (
+        any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (ordinary_peak, prepared_peak, query_peak))
+        or query_peak != max(ordinary_peak, prepared_peak)
+    ):
+        abort(f"{path} native prove budget has inconsistent CUB workspace path peaks")
+    return plan
+
+
 def _validate_shplonk_fixed_cache_budget(
     path: Path,
     admission: dict[str, Any],
     prove_budget: dict[str, Any],
 ) -> dict[str, int]:
     memory = admission.get("native_memory_model")
-    if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v18":
+    if not isinstance(memory, dict) or memory.get("schema") != "ezkl-halo2-static-envelope-v20":
         abort(f"{path} admission has an incompatible SHPLONK cache memory model")
     cache_domain = admission.get("domain_size")
     cache_extended_domain = memory.get("proof_domain_size")
@@ -387,6 +472,7 @@ def validate_cell(
     backend = result.get("backend")
     if dataset not in DATASETS:
         abort(f"{path} has an unknown dataset")
+    native_ntt_plan: dict[str, int] | None = None
     if formal:
         if not formal_pk_timing_fields.issubset(result):
             abort(f"{path} formal result omits its authenticated compact PK restore timing")
@@ -560,7 +646,6 @@ def validate_cell(
         abort(f"{path} native verification measurement scope mismatch")
     if result["verify_time_ms"] != native_verify_metrics["verify_time_ms"]:
         abort(f"{path} verify_time_ms does not match native verification timing")
-    validate_proof_instances(result, proof)
     artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
     artifact = validate_artifact_identity(
         artifact_manifest,
@@ -572,6 +657,14 @@ def validate_cell(
         compiled=path_from_result(result["compiled_circuit_path"], "compiled circuit"),
         vk=path_from_result(result["vk_path"], "verification key"),
         pk=path_from_result(result["pk_path"], "proving key"),
+    )
+    validate_proof_instances(
+        result,
+        proof,
+        statement=statement,
+        public_output=public_output,
+        artifact_manifest=artifact_manifest,
+        artifact=artifact,
     )
     if secure_config is not None:
         validate_canonical_public_inputs(
@@ -608,6 +701,7 @@ def validate_cell(
         admission = load_json(admission_path, "formal native admission")
         if any(not isinstance(value, dict) for value in (setup_receipt, keygen_budget, keygen_receipt, prove_budget)):
             abort(f"{path} native resource receipts must be JSON objects")
+        native_ntt_plan = _validate_native_ntt_profile(path, admission_path, admission, prove_budget)
         receipt_digests = {name: artifact_records[name]["sha256"] for name in native_receipt_names}
         pk_timing_path = artifact_manifest.parent / "native_pk_read_timing.json"
         timing_file = artifact_records.get("native_pk_read_timing.json")
@@ -814,7 +908,7 @@ def validate_cell(
         ):
             abort(f"{path} native keygen census exceeds its VK/PK resource caps")
         expected_prove = {
-            "schema": "ezkl.native-prove-budget.v3",
+            "schema": "ezkl.native-prove-budget.v5",
             "session_id": session_id,
             "dataset": dataset,
             "admission_sha256": setup_receipt.get("admission_sha256"),
@@ -829,7 +923,55 @@ def validate_cell(
             "resource_manifest_sha256": result["resource_manifest_sha256"],
             "build_receipt_sha256": result["build_receipt_sha256"],
             "build_environment_sha256": result["build_environment_sha256"],
+            "native_execution_policy": FORMAL_GPU_EXECUTION_POLICY,
+            **native_ntt_plan,
         }
+        prove_budget_exact_keys = set(expected_prove) | {
+            "icicle_msm_workspace_query_schema",
+            "icicle_msm_ordinary_factor1_device_workspace_peak_bytes",
+            "icicle_msm_prepared_factor4_device_workspace_peak_bytes",
+            "native_pk_format_version",
+            "native_pk_sigma_wire_encoding",
+            "native_pk_sigma_index_width_bits",
+            "native_pk_sigma_packed_payload_bytes",
+            "disk_available_bytes",
+            "disk_required_known_bytes",
+            "permutation_grand_product_set_count",
+            "permutation_grand_product_bank_mapped_bytes",
+            "permutation_grand_product_window_mapped_bytes",
+            "permutation_grand_product_commit_workspace_bytes",
+            "proof_permutation_grand_product_commit_host_peak_bytes",
+            "shplonk_fixed_cache_group_host_bound_bytes",
+            "shplonk_fixed_cache_group_disk_bound_bytes",
+            "shplonk_fixed_cache_bank_header_bytes",
+            "shplonk_fixed_cache_domain_size",
+            "shplonk_fixed_cache_scalar_bytes",
+            "shplonk_fixed_cache_max_fixed_sources_per_group",
+            "shplonk_fixed_cache_max_points_per_group",
+            "shplonk_fixed_cache_rotation_set_count",
+            "shplonk_fixed_cache_max_groups",
+            "shplonk_fixed_cache_host_limit_bytes",
+            "shplonk_fixed_cache_bank_header_limit_bytes",
+            "shplonk_fixed_cache_disk_limit_bytes",
+            "native_pk_read_backing_required_bytes",
+            "native_pk_read_mapped_peak_upper_bytes",
+            "native_pk_read_mapped_extra_upper_bytes",
+            "max_total_backing_bytes",
+            "native_pk_read_host_scratch_upper_bytes",
+            "native_pk_materialize_host_scratch_upper_bytes",
+            "native_pk_read_successor_cache_upper_bytes",
+            "native_pk_read_target_bitmap_fixed_cache_upper_bytes",
+            "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
+            "native_pk_read_validation_buffers_upper_bytes",
+            "native_pk_read_stream_buffer_upper_bytes",
+            "host_available_bytes",
+            "host_required_known_bytes",
+            "integrated_device",
+            "device_workspace_peak_bytes",
+            "backing_scope",
+            "host_scope",
+        }
+        require_exact_keys(prove_budget, prove_budget_exact_keys, "native prove budget")
         if any(prove_budget.get(name) != value for name, value in expected_prove.items()):
             abort(f"{path} native prove budget does not bind its setup, keygen, and binary identities")
         current_admission_sha256 = sha256(admission_path)
@@ -858,6 +1000,19 @@ def validate_cell(
             "native_pk_read_target_bitmap_allocation_bitmap_upper_bytes",
             "native_pk_read_validation_buffers_upper_bytes",
             "native_pk_read_stream_buffer_upper_bytes",
+            "icicle_msm_max_concurrency",
+            "icicle_msm_precompute_factor",
+            "icicle_msm_precomputed_basis_count",
+            "icicle_msm_precomputed_basis_device_upper_bytes",
+            "icicle_msm_point_staging_host_upper_bytes",
+            "icicle_ntt_min_log_size",
+            "icicle_ntt_max_log_size",
+            "icicle_ntt_capacity_elements",
+            "icicle_ntt_device_workspace_upper_bytes",
+            "icicle_ntt_domain_cache_upper_bytes",
+            "icicle_ntt_init_scratch_upper_bytes",
+            "icicle_ntt_device_peak_upper_bytes",
+            "icicle_ntt_host_staging_upper_bytes",
         ):
             value = prove_budget.get(name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > sys.maxsize:
@@ -943,12 +1098,75 @@ def validate_cell(
     validate_gpu_evidence_from_result(result)
     if native_backend == "gpu":
         record = load_json(proof.parent / "gpu_prover_record.json", "native GPU prover record")
-        require_exact_keys(record, {"proof_sha256", "native_execution_policy", "msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id", "evidence"}, "native GPU prover record")
-        counts = [record[key] for key in ("msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id")]
+        require_exact_keys(record, {
+            "schema_version", "proof_sha256", "admission_sha256", "native_execution_policy", "icicle_msm_max_concurrency",
+            "icicle_msm_precompute_factor", "gpu_msm_precompute_calls", "gpu_msm_precomputed_chunk_calls",
+            "gpu_msm_precomputed_cache_hits", "icicle_msm_precomputed_basis_device_upper_bytes",
+            "icicle_msm_precomputed_basis_device_bytes", "icicle_msm_precomputed_basis_device_peak_bytes",
+            "msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id",
+            "gpu_ntt_elements", "ntt_max_size", "ntt_workspace_capacity_bytes", "ntt_domain_capacity_bytes",
+            "ntt_host_staging_capacity_bytes", "ntt_device_peak_upper_bound_bytes", "evidence",
+        }, "native GPU prover record")
+        counts = [record[key] for key in (
+            "schema_version", "icicle_msm_max_concurrency", "icicle_msm_precompute_factor", "gpu_msm_precompute_calls",
+            "gpu_msm_precomputed_chunk_calls", "gpu_msm_precomputed_cache_hits",
+            "icicle_msm_precomputed_basis_device_upper_bytes", "icicle_msm_precomputed_basis_device_bytes",
+            "icicle_msm_precomputed_basis_device_peak_bytes", "msm_operations", "gpu_msm_chunk_calls", "ntt_calls",
+            "cpu_fft_calls", "synchronized_calls", "device_id", "gpu_ntt_elements", "ntt_max_size",
+            "ntt_workspace_capacity_bytes", "ntt_domain_capacity_bytes", "ntt_host_staging_capacity_bytes",
+            "ntt_device_peak_upper_bound_bytes",
+        )]
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
             abort("native GPU prover record has invalid device/call counters")
-        calls = record["gpu_msm_chunk_calls"] + record["ntt_calls"]
-        if record["proof_sha256"] != result["proof_sha256"] or record["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY or record["msm_operations"] <= 0 or record["gpu_msm_chunk_calls"] < record["msm_operations"] or record["ntt_calls"] != 0 or record["cpu_fft_calls"] <= 0 or calls <= 0 or record["synchronized_calls"] != calls or record["evidence"] != result["gpu_evidence"] or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls:
+        calls = record["gpu_msm_chunk_calls"] + record["gpu_msm_precompute_calls"] + record["ntt_calls"]
+        max_size = record["ntt_max_size"]
+        plan = native_ntt_plan
+        if plan is None:
+            abort("formal GPU prover record has no authenticated NTT Admission plan")
+        expected_workspace = max_size * 64
+        expected_domain = 0 if max_size == 0 else 32 * (max_size + 1 + 64 + 6)
+        expected_host = max_size * 32
+        expected_device_peak = 0 if max_size == 0 else 96 * max_size + 10464
+        planned_ntt_below_minimum = plan["icicle_ntt_capacity_elements"] < (1 << 16)
+        minimum_ntt_elements = (1 << 16) * record["ntt_calls"]
+        maximum_ntt_elements = max_size * record["ntt_calls"]
+        if (
+            record["schema_version"] != 3
+            or record["proof_sha256"] != result["proof_sha256"]
+            or record["admission_sha256"] != sha256(proof.parent / "admission.json")
+            or record["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY
+            or record["icicle_msm_max_concurrency"] != plan["icicle_msm_max_concurrency"]
+            or record["icicle_msm_precompute_factor"] != plan["icicle_msm_precompute_factor"]
+            or record["icicle_msm_precomputed_basis_device_upper_bytes"] != plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+            or record["icicle_msm_precomputed_basis_device_bytes"] > record["icicle_msm_precomputed_basis_device_upper_bytes"]
+            or record["icicle_msm_precomputed_basis_device_peak_bytes"] < record["icicle_msm_precomputed_basis_device_bytes"]
+            or record["icicle_msm_precomputed_basis_device_peak_bytes"] > record["icicle_msm_precomputed_basis_device_upper_bytes"]
+            or record["msm_operations"] <= 0
+            or record["gpu_msm_chunk_calls"] < record["msm_operations"]
+            or record["gpu_msm_precomputed_chunk_calls"] > record["gpu_msm_chunk_calls"]
+            or record["gpu_msm_precompute_calls"] > record["gpu_msm_precomputed_chunk_calls"]
+            or record["gpu_msm_precomputed_cache_hits"] > record["gpu_msm_precomputed_chunk_calls"]
+            or record["gpu_msm_precomputed_chunk_calls"] != record["gpu_msm_precompute_calls"] + record["gpu_msm_precomputed_cache_hits"]
+            or (planned_ntt_below_minimum and record["ntt_calls"] != 0)
+            or (record["ntt_calls"] == 0 and record["gpu_ntt_elements"] != 0)
+            or (record["ntt_calls"] > 0 and max_size < (1 << 16))
+            or (record["ntt_calls"] > 0 and record["gpu_ntt_elements"] < minimum_ntt_elements)
+            or (record["ntt_calls"] > 0 and record["gpu_ntt_elements"] > maximum_ntt_elements)
+            or (max_size != 0 and max_size & (max_size - 1) != 0)
+            or max_size > plan["icicle_ntt_capacity_elements"]
+            or record["ntt_workspace_capacity_bytes"] != expected_workspace
+            or record["ntt_domain_capacity_bytes"] != expected_domain
+            or record["ntt_host_staging_capacity_bytes"] != expected_host
+            or record["ntt_device_peak_upper_bound_bytes"] != expected_device_peak
+            or expected_workspace > plan["icicle_ntt_device_workspace_upper_bytes"]
+            or expected_domain > plan["icicle_ntt_domain_cache_upper_bytes"]
+            or expected_device_peak > plan["icicle_ntt_device_peak_upper_bytes"]
+            or expected_host > plan["icicle_ntt_host_staging_upper_bytes"]
+            or calls <= 0
+            or record["synchronized_calls"] != calls
+            or record["evidence"] != result["gpu_evidence"]
+            or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls
+        ):
             abort("native GPU prover record is not synchronized and bound to the verified proof")
         if formal:
             if record["device_id"] != result["selected_cuda_device"]["logical_device_id"]:

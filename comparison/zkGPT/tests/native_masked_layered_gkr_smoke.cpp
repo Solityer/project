@@ -171,28 +171,34 @@ void test_bitmap_subset_matches_raw_sort_unique() {
     layeredCircuit circuit;
     circuit.init(0, 3);
     circuit.circuit[0].ty = layerType::INPUT;
-    circuit.circuit[0].size = 131;
-    circuit.circuit[0].bit_length = 8;
+    circuit.circuit[0].size = 515;
+    circuit.circuit[0].bit_length = 10;
     circuit.circuit[1].ty = layerType::INPUT;
     circuit.circuit[1].size = 10;
     circuit.circuit[1].bit_length = 4;
     circuit.circuit[2].ty = layerType::ADD_BIAS;
-    circuit.circuit[2].size = 6;
-    circuit.circuit[2].reserve_gate_arrays(5, 4);
+    circuit.circuit[2].size = 7;
+    circuit.circuit[2].bit_length = 3;
+    circuit.circuit[2].reserve_gate_arrays(7, 7);
     circuit.circuit[2].reserve_coefficients(1);
     circuit.circuit[2].add_unary(0, 17, 0, 1);
     circuit.circuit[2].add_unary(1, 17, 0, 1);
     circuit.circuit[2].add_unary(2, 130, 0, 1);
     circuit.circuit[2].add_unary(3, 2, 0, 1);
     circuit.circuit[2].add_unary(4, 5, 1, 1); // Previous-layer source: not part of the layer-0 map.
+    circuit.circuit[2].add_unary(5, 256, 0, 1);
+    circuit.circuit[2].add_unary(6, 386, 0, 1);
     circuit.circuit[2].add_binary(0, 4, 129, 1, 0);
     circuit.circuit[2].add_binary(1, 17, 4, 1, 0);
     circuit.circuit[2].add_binary(2, 2, 3, 1, 1); // Both operands come from layer 1.
     circuit.circuit[2].add_binary(3, 8, 17, 1, 2); // U from layer 1, V from layer 0.
-    circuit.set_source_support_ranges({{0, 64}, {128, 3}});
+    circuit.circuit[2].add_binary(4, 319, 384, 1, 0);
+    circuit.circuit[2].add_binary(5, 386, 257, 1, 0);
+    circuit.circuit[2].add_binary(6, 512, 514, 1, 0);
+    circuit.set_source_support_ranges({{0, 64}, {128, 64}, {256, 64}, {384, 64}, {512, 3}});
 
-    std::vector<u64> expected_u{17, 17, 130, 2, 4, 17};
-    std::vector<u64> expected_v{129, 4, 17};
+    std::vector<u64> expected_u{17, 17, 130, 2, 256, 386, 4, 319, 386, 512};
+    std::vector<u64> expected_v{129, 4, 17, 384, 257, 514};
     std::sort(expected_u.begin(), expected_u.end());
     expected_u.erase(std::unique(expected_u.begin(), expected_u.end()), expected_u.end());
     std::sort(expected_v.begin(), expected_v.end());
@@ -212,12 +218,20 @@ void test_bitmap_subset_matches_raw_sort_unique() {
     assert(mapped.uni_gates[2].u == old_sort_unique_index(expected_u, 130));
     assert(mapped.uni_gates[3].u == old_sort_unique_index(expected_u, 2));
     assert(mapped.uni_gates[4].u == 5);
+    assert(mapped.uni_gates[5].u == old_sort_unique_index(expected_u, 256));
+    assert(mapped.uni_gates[6].u == old_sort_unique_index(expected_u, 386));
     assert(mapped.bin_gates[0].u == old_sort_unique_index(expected_u, 4));
     assert(mapped.bin_gates[0].v == old_sort_unique_index(expected_v, 129));
     assert(mapped.bin_gates[1].u == old_sort_unique_index(expected_u, 17));
     assert(mapped.bin_gates[1].v == old_sort_unique_index(expected_v, 4));
     assert(mapped.bin_gates[2].u == 2 && mapped.bin_gates[2].v == 3);
     assert(mapped.bin_gates[3].u == 8 && mapped.bin_gates[3].v == old_sort_unique_index(expected_v, 17));
+    assert(mapped.bin_gates[4].u == old_sort_unique_index(expected_u, 319));
+    assert(mapped.bin_gates[4].v == old_sort_unique_index(expected_v, 384));
+    assert(mapped.bin_gates[5].u == old_sort_unique_index(expected_u, 386));
+    assert(mapped.bin_gates[5].v == old_sort_unique_index(expected_v, 257));
+    assert(mapped.bin_gates[6].u == old_sort_unique_index(expected_u, 512));
+    assert(mapped.bin_gates[6].v == old_sort_unique_index(expected_v, 514));
 }
 
 NativeLayeredGkrWitness make_witness() {

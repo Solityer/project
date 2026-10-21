@@ -336,7 +336,7 @@ class FormalLocalRunnerTests(unittest.TestCase):
         for index, dataset in enumerate(formal_runner.DATASETS, start=1):
             retained = index * 10
             finalization_rows[dataset] = formal_runner.formal_phase._srs_manifest_finalization_capacity(index, index)
-            gpu_workspace = 144 * (1 << 18) + 608
+            gpu_workspace = 144 * (1 << 18) + 704 + 352
             rows[dataset] = {
                 "additional_disk_peak_bytes": retained + index * 3,
                 "cell_retained_artifact_bytes_upper_bound": retained,
@@ -367,7 +367,7 @@ class FormalLocalRunnerTests(unittest.TestCase):
             "bound_methods": {
                 "additional_disk_peak": "source_derived_upper_bound",
                 "host_peak": "source_derived_upper_bound",
-                "gpu_workspace": "authenticated_basis_144B_plus_max_opening_608P",
+                "gpu_workspace": "authenticated_basis_144B_plus_max_opening_704P_plus_352",
                 "shared_host_cuda": "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace",
                 "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
             },
@@ -377,7 +377,7 @@ class FormalLocalRunnerTests(unittest.TestCase):
     def test_remaining_capacity_accounts_for_future_retained_prefix(self) -> None:
         profile = self._profile()
         all_remaining = formal_runner._remaining_capacity_requirements(profile, ())
-        gpu_workspace = 144 * (1 << 18) + 608
+        gpu_workspace = 144 * (1 << 18) + 704 + 352
         self.assertEqual(all_remaining["host_bytes"], 500 + gpu_workspace)
         self.assertEqual(all_remaining["device_bytes"], gpu_workspace)
         self.assertEqual(all_remaining["finalization_host_bytes"], profile["finalization_host_peak_bytes_upper_bound"])

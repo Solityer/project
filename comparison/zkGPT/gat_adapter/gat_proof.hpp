@@ -221,7 +221,7 @@ struct MatMulDescriptor {
     std::string scale_rule = "canonical_quant_scale_chain";
     std::string native_path = "prover::FCONN / dedicated matrix Sumcheck";
 
-    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string relation_schema = "zkgpt-gat-relation-v2";
     std::string lhs_segment = "X_pub";
     std::string rhs_segment = "W";
     std::string output_segment = "Aux";
@@ -253,7 +253,7 @@ struct FconnClaimLink {
 struct NativeRelationDescriptor {
     std::string relation_id;
     std::string family_id;
-    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string relation_schema = "zkgpt-gat-relation-v2";
     std::string primitive;
     std::string domain_rule;
     std::string selector_rule;
@@ -395,7 +395,7 @@ struct GatGkrLayerShapeProfile {
 };
 
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v9";
+    std::string schema = "zkgpt-gat-capacity-v11";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;
@@ -418,6 +418,7 @@ struct GatCapacityReport {
     std::uint64_t estimated_peak_host_memory_bytes = 0;
     std::uint64_t forward_admission_peak_host_memory_bytes_upper_bound = 0;
     bool forward_value_admission_ready = false;
+    std::string forward_value_admission_mode = "deferred_to_owned_forward_v1";
     std::uint64_t device_peak_bytes = 0;
     std::string memory_accounting_kind = "host-only";
     std::uint64_t estimated_native_heap_bytes_upper_bound = 0;
@@ -446,6 +447,7 @@ struct GatCapacityReport {
     std::uint64_t hyrax_w_mle_workspace_bytes = 0;
     std::uint64_t hyrax_aux_tensor_workspace_bytes = 0;
     std::uint64_t hyrax_l_qry_tensor_workspace_bytes = 0;
+    std::uint64_t hyrax_l_qry_binary_lut_workspace_bytes = 0;
     std::uint64_t hyrax_tensor_retained_workspace_bytes = 0;
     std::uint64_t hyrax_tensor_opening_transient_peak_workspace_bytes = 0;
     std::uint64_t hyrax_tensor_combined_peak_workspace_bytes = 0;
@@ -604,7 +606,7 @@ GatPointDomainAdmission inspect_gat_point_domain_admission(const Graph& graph, c
 
 struct GatCircuitPlan {
     std::string recipe_schema = "canonical_plan_recipe_v3";
-    std::string relation_schema = "zkgpt-gat-relation-v1";
+    std::string relation_schema = "zkgpt-gat-relation-v2";
 
     std::string sparse_relation_schema = kSparseGkrRelationSchema;
     std::uint32_t sparse_relation_version = kSparseGkrRelationVersion;

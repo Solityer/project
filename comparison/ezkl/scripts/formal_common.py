@@ -34,7 +34,8 @@ BACKENDS = ("cpu", "gpu")
 FORMAL_BACKEND = "hybrid"
 NATIVE_FORMAL_BACKEND = "gpu"
 FORMAL_GPU_CARGO_FEATURE = "formal-gpu"
-FORMAL_GPU_EXECUTION_POLICY = "halo2-cpu-fft_icicle-bn254-gpu-msm-c16-chunk-1048576-v1"
+FORMAL_GPU_EXECUTION_POLICY = "halo2_icicle-bn254-gpu-ntt-16-25-msm-lagrange-resident-f4-v4"
+NATIVE_USIZE_MAX = (sys.maxsize << 1) | 1
 FORMAL_GPU_FEATURES = (
     "dep:halo2_solidity_verifier",
     "ezkl",
@@ -1209,6 +1210,173 @@ def load_json_with_sha256(path: Path, label: str) -> tuple[dict[str, Any], str]:
     return value, hashlib.sha256(payload).hexdigest()
 
 
+COMPACT_NATIVE_PROOF_V2_PREFIX = b'{"artifact_format":"ezkl-gat-native-proof","schema_version":2,'
+
+
+def has_compact_native_proof_v2_prefix(path: Path) -> bool:
+    """Identify the producer's canonical compact-v2 envelope without loading legacy multi-GB JSON."""
+    require_file(path, "verifier-facing proof")
+    try:
+        with path.open("rb") as stream:
+            prefix = stream.read(len(COMPACT_NATIVE_PROOF_V2_PREFIX))
+    except OSError as exc:
+        abort(f"cannot read verifier-facing proof prefix: {exc}")
+    return prefix == COMPACT_NATIVE_PROOF_V2_PREFIX
+
+
+def validate_compact_native_proof_v2(
+    proof_path: Path,
+    *,
+    statement_path: Path,
+    public_output_path: Path,
+    artifact_manifest_path: Path,
+    artifact: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Validate the compact v2 envelope and its authenticated statement/Y references.
+
+    Legacy native Snark JSON returns ``None`` and remains validated by its existing
+    embedded-instance path. The compact reference is only metadata; native Rust
+    Verify independently reconstructs instances and checks the same digest before
+    resolving them into the Halo2 proof object.
+    """
+    if not has_compact_native_proof_v2_prefix(proof_path):
+        return None
+    require_file(statement_path, "public statement")
+    require_file(public_output_path, "public output")
+    require_file(artifact_manifest_path, "artifact identity manifest")
+    if any(path.name != name for path, name in (
+        (proof_path, "proof.json"),
+        (statement_path, "statement.json"),
+        (public_output_path, "public_output.json"),
+        (artifact_manifest_path, "artifact_manifest.json"),
+    )):
+        abort("compact proof public-reference paths have noncanonical filenames")
+    try:
+        cell_root = artifact_manifest_path.resolve(strict=True).parent
+        if any(path.resolve(strict=True).parent != cell_root for path in (proof_path, statement_path, public_output_path)):
+            abort("compact proof and public references are not in one authenticated cell directory")
+        document = json.loads(proof_path.read_bytes())
+    except OSError as exc:
+        abort(f"cannot read compact verifier-facing proof: {exc}")
+    except json.JSONDecodeError as exc:
+        abort(f"invalid compact verifier-facing proof JSON: {exc}")
+    document = require_exact_keys(
+        document,
+        {"artifact_format", "schema_version", "protocol", "proof_transcript", "instances_ref", "split", "timestamp", "version"},
+        "compact verifier-facing proof",
+    )
+    if document["artifact_format"] != "ezkl-gat-native-proof" or document["schema_version"] != 2:
+        abort("compact verifier-facing proof format/version mismatch")
+    if document["protocol"] is not None:
+        abort("compact proof v2 protocol metadata must be null")
+    transcript = require_exact_keys(
+        document["proof_transcript"],
+        {"encoding", "byte_length", "data"},
+        "compact proof transcript",
+    )
+    if transcript["encoding"] != "hex-lower":
+        abort("compact proof transcript encoding is not canonical lowercase hexadecimal")
+    byte_length = transcript["byte_length"]
+    encoded = transcript["data"]
+    if (
+        isinstance(byte_length, bool)
+        or not isinstance(byte_length, int)
+        or byte_length <= 0
+        or byte_length > NATIVE_USIZE_MAX
+        or not isinstance(encoded, str)
+        or len(encoded) != 2 * byte_length
+        or re.fullmatch(r"[0-9a-f]+", encoded) is None
+    ):
+        abort("compact proof transcript data/length is malformed")
+    timestamp = document["timestamp"]
+    if timestamp is not None and (
+        isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp < 0 or timestamp >= 1 << 128
+    ):
+        abort("compact proof timestamp is malformed")
+    version = document["version"]
+    if version is not None:
+        if not isinstance(version, str) or not version:
+            abort("compact proof crate-version metadata is malformed")
+        try:
+            version_bytes = version.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            abort(f"compact proof crate-version metadata is not valid UTF-8: {exc}")
+        if len(version_bytes) > 256:
+            abort("compact proof crate-version metadata exceeds its 256-byte bound")
+    split = document["split"]
+    if split is not None:
+        split = require_exact_keys(split, {"start", "end"}, "compact proof split metadata")
+        for name in ("start", "end"):
+            value = split[name]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > NATIVE_USIZE_MAX:
+                abort(f"compact proof split {name} is outside the native usize range")
+        if split["start"] > split["end"]:
+            abort("compact proof split range is reversed")
+
+    reference = require_exact_keys(
+        document["instances_ref"],
+        {
+            "schema_version", "statement_path", "statement_sha256", "public_output_path", "public_output_sha256",
+            "artifact_manifest_path", "source_tree_sha256", "binary_sha256", "resource_manifest_sha256",
+            "encoding", "sha256", "count", "column_counts",
+        },
+        "compact proof instances_ref",
+    )
+    if (
+        isinstance(reference["schema_version"], bool)
+        or reference["schema_version"] != 1
+        or reference["statement_path"] != "statement.json"
+        or reference["public_output_path"] != "public_output.json"
+        or reference["artifact_manifest_path"] != "artifact_manifest.json"
+        or reference["encoding"] != "canonical-json"
+    ):
+        abort("compact proof instances_ref schema/path/encoding mismatch")
+    for field in (
+        "statement_sha256", "public_output_sha256", "source_tree_sha256", "binary_sha256",
+        "resource_manifest_sha256", "sha256",
+    ):
+        require_digest(reference[field], f"compact proof instances_ref.{field}")
+    count = reference["count"]
+    column_counts = reference["column_counts"]
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count <= 0
+        or count > NATIVE_USIZE_MAX
+        or not isinstance(column_counts, list)
+        or not column_counts
+        or any(
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or value <= 0
+            or value > NATIVE_USIZE_MAX
+            for value in column_counts
+        )
+        or sum(column_counts) != count
+    ):
+        abort("compact proof instances_ref count/column shape is malformed")
+    statement_digest = sha256(statement_path)
+    output_digest = sha256(public_output_path)
+    if (
+        reference["statement_sha256"] != statement_digest
+        or reference["statement_sha256"] != artifact.get("statement_sha256")
+        or reference["public_output_sha256"] != output_digest
+        or reference["source_tree_sha256"] != artifact.get("source_tree_sha256")
+        or reference["binary_sha256"] != artifact.get("binary_sha256")
+        or reference["resource_manifest_sha256"] != artifact.get("resource_manifest_sha256")
+    ):
+        abort("compact proof instances_ref does not match the authenticated statement, Y, or artifact identity")
+    artifact_files = artifact.get("files")
+    if not isinstance(artifact_files, list):
+        abort("authenticated artifact manifest has no file records for compact proof references")
+    file_records = {item.get("path"): item for item in artifact_files if isinstance(item, dict)}
+    for name, digest in (("statement.json", statement_digest), ("public_output.json", output_digest)):
+        record = file_records.get(name)
+        if not isinstance(record, dict) or record.get("sha256") != digest:
+            abort(f"compact proof {name} reference is not present in the authenticated artifact manifest")
+    return reference
+
+
 def require_exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         abort(f"{label} must be a JSON object")
@@ -2091,8 +2259,12 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
             "measurement_scope",
             "prove_measurement_scope",
             "prove_included_in",
+            "native_pre_create_proof_wall_ms",
+            "native_post_create_cleanup_wall_ms",
+            "native_proof_artifact_finalize_wall_ms",
             "commitment_time_ms",
-            "native_create_proof_time_ms",
+            "native_create_proof_wall_ms",
+            "native_create_proof_residual_ms",
             "pk_materialize_time_ms",
             "prove_time_ms",
             "proof_sha256",
@@ -2103,12 +2275,12 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
         "native proof metrics",
     )
     if (
-        metrics["schema_version"] != 3
+        metrics["schema_version"] != 4
         or metrics["operation"] != "native_halo2_initial_instance_and_phase0_advice_commitments"
-        or metrics["included_in"] != "native_create_proof"
-        or metrics["measurement_scope"] != "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization"
-        or metrics["prove_included_in"] != "native_create_proof_plus_authenticated_pk_materialization"
-        or metrics["prove_measurement_scope"] != "native_create_proof_wall_plus_authenticated_fixed_value_decode_coefficient_ifft_and_boundary_rebuild"
+        or metrics["included_in"] != "native_create_proof_wall_ms"
+        or metrics["measurement_scope"] != "pre_challenge_public_instance_and_phase0_advice_kzg_commitments_plus_affine_normalization_included_in_native_create_proof_wall_ms"
+        or metrics["prove_included_in"] != "native_create_proof_residual_plus_authenticated_pk_materialization"
+        or metrics["prove_measurement_scope"] != "native_create_proof_residual_excluding_initial_commitments_plus_authenticated_fixed_value_decode_coefficient_ifft_and_boundary_rebuild"
         or metrics["proof_sha256"] != proof_sha256
     ):
         abort("native proof metrics do not match the current proof artifact and timing boundary")
@@ -2116,7 +2288,12 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
         count = metrics[name]
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             abort(f"native proof metrics {name} must be a nonnegative integer diagnostic")
-    for name in ("commitment_time_ms", "native_create_proof_time_ms", "prove_time_ms"):
+    for name in (
+        "commitment_time_ms",
+        "native_create_proof_wall_ms",
+        "native_create_proof_residual_ms",
+        "prove_time_ms",
+    ):
         duration = metrics[name]
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
             abort(f"native proof metrics {name} must be a positive finite measured duration")
@@ -2125,11 +2302,25 @@ def validate_native_proof_metrics(path: Path, *, proof_sha256: str) -> dict[str,
         abort("native proof metrics pk_materialize_time_ms must be a nonnegative finite measured duration")
     if not math.isclose(
         float(metrics["prove_time_ms"]),
-        float(metrics["native_create_proof_time_ms"]) + float(materialize_ms),
+        float(metrics["native_create_proof_residual_ms"]) + float(materialize_ms),
         rel_tol=0.0,
         abs_tol=1e-9,
     ):
-        abort("native prove time is not the sum of create_proof and authenticated PK materialization")
+        abort("native prove time is not the sum of create_proof residual and authenticated PK materialization")
+    if float(metrics["native_create_proof_wall_ms"]) + 1e-6 < float(metrics["commitment_time_ms"]) or not math.isclose(
+        float(metrics["native_create_proof_wall_ms"]),
+        float(metrics["commitment_time_ms"]) + float(metrics["native_create_proof_residual_ms"]),
+        rel_tol=0.0,
+        abs_tol=1e-6,
+    ):
+        abort("native create_proof wall time does not equal commitment plus exclusive residual")
+    for name in ("native_pre_create_proof_wall_ms", "native_proof_artifact_finalize_wall_ms"):
+        duration = metrics[name]
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            abort(f"native proof metrics {name} must be a positive finite coarse stage duration")
+    cleanup_ms = metrics["native_post_create_cleanup_wall_ms"]
+    if isinstance(cleanup_ms, bool) or not isinstance(cleanup_ms, (int, float)) or not math.isfinite(cleanup_ms) or cleanup_ms < 0:
+        abort("native proof metrics native_post_create_cleanup_wall_ms must be a nonnegative finite coarse stage duration")
     return metrics
 
 

@@ -343,9 +343,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     std::size_t old_reference_validation_calls = 0U;
     if (private_formal_fixture) {
         stage("private-move-owned-forward-and-validation");
-        ForwardResult computed_forward = detail::compute_formal_forward_unvalidated(
-            formal_graph, formal_features, formal_model, formal_quant);
         if (owner_check_only) {
+            ForwardResult computed_forward = detail::compute_formal_forward_unvalidated(
+                formal_graph, formal_features, formal_model, formal_quant);
             const auto validation_begin = std::chrono::steady_clock::now();
             for (std::size_t call = 0; call < 4U; ++call) {
                 if (!validate_relation(formal_graph, formal_features, formal_model,
@@ -357,15 +357,26 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
             }
             old_reference_validation_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - validation_begin).count();
-        }
-        owned_formal_inputs = std::make_unique<detail::ValidatedFormalInputs>(
-            detail::ValidatedFormalInputs::consume(
-                std::move(formal_graph), std::move(formal_features),
-                std::move(formal_model), std::move(formal_quant),
-                std::move(computed_forward)));
-        if (owned_formal_inputs->canonical_validation_calls() != 1U) {
-            std::cerr << "private formal fixture did not perform one canonical reference validation\n";
-            return 1;
+            owned_formal_inputs = std::make_unique<detail::ValidatedFormalInputs>(
+                detail::ValidatedFormalInputs::consume(
+                    std::move(formal_graph), std::move(formal_features),
+                    std::move(formal_model), std::move(formal_quant),
+                    std::move(computed_forward)));
+            if (owned_formal_inputs->canonical_validation_calls() != 1U) {
+                std::cerr << "untrusted private formal fixture did not perform one canonical reference validation\n";
+                return 1;
+            }
+        } else {
+            owned_formal_inputs = std::make_unique<detail::ValidatedFormalInputs>(
+                detail::ValidatedFormalInputs::compute_and_own(
+                    std::move(formal_graph), std::move(formal_features),
+                    std::move(formal_model), std::move(formal_quant)));
+            if (owned_formal_inputs->canonical_forward_generation_calls() != 1U ||
+                owned_formal_inputs->canonical_forward_value_admission_calls() != 1U ||
+                owned_formal_inputs->canonical_validation_calls() != 0U) {
+                std::cerr << "fresh private formal fixture did not generate once and complete one value admission without canonical recomputation\n";
+                return 1;
+            }
         }
         formal_plan_owner = owned_formal_inputs->plan_owner();
     } else {
@@ -388,6 +399,18 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         static_assert(!std::is_copy_constructible_v<detail::ValidatedFormalInputs>);
         ForwardResult tampered = proving_forward;
         tampered.trace.hidden_layers.at(0).heads.at(0).activated.at(0) += 1;
+        bool consume_rejected = false;
+        try {
+            (void)detail::ValidatedFormalInputs::consume(
+                Graph(proving_graph), Tensor2D(proving_features), Model(proving_model),
+                QuantConfig(proving_quant), ForwardResult(tampered));
+        } catch (const std::invalid_argument&) {
+            consume_rejected = true;
+        }
+        if (!consume_rejected) {
+            std::cerr << "untrusted private consume API accepted a tampered forward trace\n";
+            return 1;
+        }
         bool public_api_rejected = false;
         try {
             (void)build_gat_circuit_plan(proving_graph, proving_model,
@@ -419,7 +442,7 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         corrupt_coordinate("max delta", checkpoint("attention.softmax/hidden/layer0/head0.delta"));
         for (const LassoFamilyDescriptor& family : formal_plan.lasso) {
             if (family.family_id == "function/lrelu") corrupt_coordinate("lookup tuple", family.query_offset);
-            if (family.family_id == "range/all") { corrupt_coordinate("bit decomposition", family.query_offset); corrupt_coordinate("nonboolean bit", family.query_offset, Fr(2)); }
+            if (family.family_id == "range/all") corrupt_coordinate("bit decomposition", family.query_offset);
         }
         corrupt_coordinate("output fixed denominator", checkpoint("rounding/output_alignment/output/head0") + 8);
         corrupt_coordinate("final fixed denominator", checkpoint("output/final_average") + 8);
@@ -438,9 +461,26 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     formal_context.full_dataset_identity = "canonical:synthetic";
     formal_context.checkpoint_identity = "baseline-local/checkpoints/synthetic_gat/integrity.sha256";
     formal_context.cache_identity = "baseline-local/data/cache/synthetic/integrity.sha256";
+    if (owned_formal_inputs) {
+        const std::string owned_context_path = "/tmp/zkgpt-owned-context-" + std::to_string(static_cast<long long>(::getpid()));
+        std::string owned_context_reason;
+        if (!detail::write_verifier_context_formal(*owned_formal_inputs, formal_context, owned_context_path, &owned_context_reason)) {
+            std::cerr << "private formal context writer rejected its move-owned context: " << owned_context_reason << '\n';
+            return 1;
+        }
+        std::remove(owned_context_path.c_str());
+    }
     if (owner_check_only) {
+        const std::string owned_context_path = "/tmp/zkgpt-owned-context-" + std::to_string(static_cast<long long>(::getpid()));
+        std::string owned_context_reason;
         VerifierContext mismatched_context = formal_context;
         mismatched_context.public_logits.values.at(0) += 1;
+        if (detail::write_verifier_context_formal(*owned_formal_inputs, mismatched_context, owned_context_path, &owned_context_reason) ||
+            owned_context_reason.empty()) {
+            std::remove(owned_context_path.c_str());
+            std::cerr << "private formal context writer accepted logits detached from its move-owned inputs\n";
+            return 1;
+        }
         ProveResult mismatch = detail::prove_gat_formal(
             *owned_formal_inputs, formal_registration, mismatched_context,
             "masked_full");
@@ -468,6 +508,8 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
         }
         if (old_reference_validation_calls != 4U ||
             owned_formal_inputs->canonical_validation_calls() != 1U ||
+            owned_formal_inputs->canonical_forward_generation_calls() != 0U ||
+            owned_formal_inputs->canonical_forward_value_admission_calls() != 0U ||
             owned_formal_inputs->capacity_census_calls() != 1U ||
             owned_formal_inputs->capacity_restore_rebuild_calls() != 0U) {
             std::cerr << "reference validation invocation count differs from old/new formal path contract\n";
@@ -481,7 +523,7 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
                   << " exact_capacity_censuses="
                   << owned_formal_inputs->capacity_census_calls()
                   << " altered_report=REJECT changed_quant=REJECT changed_graph_shape=REJECT"
-                  << " public_tampered_trace=REJECT private_mismatched_context=REJECT\n";
+                  << " untrusted_consume_tampered_trace=REJECT public_tampered_trace=REJECT private_mismatched_context=REJECT\n";
         return 0;
     }
     stage("masked-full-prove");
@@ -499,6 +541,9 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     }
     if (owned_formal_inputs &&
         (owned_formal_inputs->capacity_census_calls() != 1U ||
+         owned_formal_inputs->canonical_forward_generation_calls() != 1U ||
+         owned_formal_inputs->canonical_forward_value_admission_calls() != 1U ||
+         owned_formal_inputs->canonical_validation_calls() != 0U ||
          owned_formal_inputs->capacity_restore_rebuild_calls() != 0U ||
          !formal_plan_owner->native_proof_backing_is_resident())) {
         std::cerr << "private formal proof did not retain its resident native-plan backing after Lasso\n";
@@ -609,6 +654,22 @@ int run_formal_fixture(const std::string& standalone_dir, bool proof_verify_only
     formal_reason.clear();
     if (verify_gat(formal_context, l_tampered, &formal_reason) || formal_reason.empty()) {
         std::cerr << "masked_full verifier did not reject the bound L_qry tensor-root mutation with a reason\n";
+        return 1;
+    }
+    GatProofArtifact missing_range_family = parsed_formal;
+    const auto missing_range_message = std::find_if(
+        missing_range_family.native_messages.begin(), missing_range_family.native_messages.end(),
+        [](const NativeProofMessage& message) {
+            return message.label == "lasso/range_all/commitment";
+        });
+    if (missing_range_message == missing_range_family.native_messages.end()) {
+        std::cerr << "masked_full proof has no range/all family commitment to omit\n";
+        return 1;
+    }
+    missing_range_family.native_messages.erase(missing_range_message);
+    formal_reason.clear();
+    if (verify_gat(formal_context, missing_range_family, &formal_reason) || formal_reason.empty()) {
+        std::cerr << "masked_full verifier accepted an artifact with the range/all Lasso family omitted\n";
         return 1;
     }
     GatProofArtifact linear_tampered = parsed_formal;

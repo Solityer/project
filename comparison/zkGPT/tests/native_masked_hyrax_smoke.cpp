@@ -3,6 +3,7 @@
 #include "native_masked_sumcheck.hpp"
 #include "proof_session.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -425,6 +426,145 @@ bool run_tensor_case() {
     return true;
 }
 
+bool run_tensor_binary_subset_case(std::uint64_t logical_length, const std::string &case_id,
+                                   bool all_zero, bool verify_opening) {
+    std::uint64_t active_domain = 1;
+    while (active_domain < logical_length) active_domain <<= 1;
+    std::size_t active_bits = 0;
+    for (std::uint64_t cursor = active_domain; cursor > 1; cursor >>= 1) ++active_bits;
+    const std::uint64_t columns = std::uint64_t(1) << (active_bits / 2);
+    const std::uint64_t rows = active_domain / columns;
+    const std::uint64_t full_domain = active_domain;
+    const bool binary_subset_eligible = rows >= 128 && columns >= 8 && columns % 8 == 0;
+    if ((case_id == "eligible-mixed-tail" || case_id == "eligible-all-zero") &&
+        !binary_subset_eligible)
+        HYRAX_SMOKE_FAIL();
+    const std::string basis_id = "00000000000000000000000000000000000000000000000000000000000000ef";
+    const std::string generator_label = "masked-hyrax-smoke/binary-subset/" + case_id;
+    const std::string derivation_id = "hashAndMapToG1(canonical_basis_label+/coordinate/+canonical_absolute_index_decimal);absolute-index-u64;v1";
+    const G1 H = hyrax::derive_pedersen_blinding_generator(basis_id);
+    std::vector<G1> column_generators(static_cast<std::size_t>(columns));
+    for (std::uint64_t column = 0; column < columns; ++column)
+        hashAndMapToG1(column_generators[static_cast<std::size_t>(column)],
+                       generator_label + "/coordinate/" + std::to_string(column));
+
+    std::vector<Fr> values(static_cast<std::size_t>(logical_length), Fr(0));
+    if (!all_zero && rows > 1) {
+        if (columns >= 8) {
+            for (std::uint64_t group = 0; group < columns / 8; ++group) {
+                const std::uint8_t pattern = static_cast<std::uint8_t>((group * 37 + 1) & 0xffU);
+                for (std::uint64_t bit = 0; bit < 8; ++bit) {
+                    if ((pattern & (std::uint8_t(1) << bit)) != 0) {
+                        const std::uint64_t index = columns + group * 8 + bit;
+                        if (index < logical_length) values[static_cast<std::size_t>(index)] = Fr(1);
+                    }
+                }
+            }
+        } else if (columns != 0 && columns < logical_length) {
+            values[static_cast<std::size_t>(columns)] = Fr(1);
+        }
+        if (rows > 3 && columns > 5) {
+            const std::uint64_t mixed_index = 3 * columns + 5;
+            if (mixed_index < logical_length) values[static_cast<std::size_t>(mixed_index)] = Fr(7);
+        }
+    }
+
+    std::vector<std::uint32_t> provider_reads(static_cast<std::size_t>(logical_length), 0);
+    hyrax::HyraxTensorMleView view;
+    view.full_domain = full_domain;
+    view.logical_length = logical_length;
+    view.active_domain = active_domain;
+    view.rows = rows;
+    view.columns = columns;
+    view.role = "canonical/L_qry";
+    view.basis_id = basis_id;
+    view.column_generators.size = columns;
+    view.column_generators.canonical_id = NativeProofStatement::basis_descriptor_digest_for(
+        H, generator_label, basis_id, derivation_id, full_domain);
+    view.column_generators.scheme = hyrax::HyraxGeneratorProviderScheme::CanonicalAbsoluteHashToCurveV1;
+    view.column_generators.at = [&column_generators](std::uint64_t index) {
+        return column_generators.at(static_cast<std::size_t>(index));
+    };
+    hyrax::HyraxScalarProvider provider{logical_length, [&values, &provider_reads](std::uint64_t index) {
+        ++provider_reads.at(static_cast<std::size_t>(index));
+        return values.at(static_cast<std::size_t>(index));
+    }};
+    std::vector<Fr> blindings(static_cast<std::size_t>(rows));
+    for (std::uint64_t row = 0; row < rows; ++row)
+        blindings[static_cast<std::size_t>(row)] = Fr(static_cast<int>(row + 19));
+    const std::vector<Fr> expected_blindings = blindings;
+    hyrax::HyraxTensorMleCommitment commitment;
+    hyrax::HyraxTensorMleProverState state;
+    std::string reason;
+    if (!hyrax::commit_hyrax_tensor_mle_with_blindings(
+            view, provider, commitment, state, std::move(blindings), &reason) ||
+        state.row_blindings != expected_blindings || commitment.row_commitments.size() != rows)
+        HYRAX_SMOKE_FAIL();
+    if (std::any_of(provider_reads.begin(), provider_reads.end(),
+                    [](std::uint32_t count) { return count != 1; }))
+        HYRAX_SMOKE_FAIL();
+
+    constexpr std::uint64_t chunk_limit = 1ULL << 12;
+    for (std::uint64_t row = 0; row < rows; ++row) {
+        G1 expected;
+        expected.clear();
+        for (std::uint64_t offset = 0; offset < columns; offset += chunk_limit) {
+            const std::uint64_t actual = std::min(chunk_limit, columns - offset);
+            std::vector<G1> block_generators(static_cast<std::size_t>(actual));
+            std::vector<Fr> block_scalars(static_cast<std::size_t>(actual));
+            for (std::uint64_t index = 0; index < actual; ++index) {
+                const std::uint64_t column = offset + index;
+                block_generators[static_cast<std::size_t>(index)] =
+                    column_generators[static_cast<std::size_t>(column)];
+                const std::uint64_t value_index = row * columns + column;
+                block_scalars[static_cast<std::size_t>(index)] = value_index < logical_length
+                    ? values[static_cast<std::size_t>(value_index)] : Fr(0);
+            }
+            G1 partial;
+            partial.clear();
+            G1::mulVec(partial, block_generators.data(), block_scalars.data(),
+                       static_cast<std::size_t>(actual));
+            expected += partial;
+        }
+        expected += H * expected_blindings[static_cast<std::size_t>(row)];
+        const G1 &actual = commitment.row_commitments[static_cast<std::size_t>(row)];
+        if (actual != expected || actual.serializeToHexStr() != expected.serializeToHexStr())
+            HYRAX_SMOKE_FAIL();
+    }
+
+    if (verify_opening) {
+        std::vector<Fr> point(active_bits);
+        for (std::size_t index = 0; index < point.size(); ++index)
+            point[index] = Fr(static_cast<int>(index + 2));
+        const std::vector<Fr> weights = mle_basis(point);
+        Fr dense_evaluation(0);
+        for (std::uint64_t index = 0; index < full_domain; ++index) {
+            if (index < logical_length)
+                dense_evaluation += weights[static_cast<std::size_t>(index)] * values[static_cast<std::size_t>(index)];
+        }
+        NativeProofStatement statement = make_statement(view.column_generators.canonical_id, full_domain);
+        statement.aux_digest = commitment.root_digest;
+        const zkgpt::native_pedersen::PedersenBasis scalar_basis =
+            zkgpt::native_pedersen::derive_basis("zkgpt/masked-sumcheck/v2/" + statement.root());
+        const auto raw_opening = zkgpt::native_pedersen::commit_fresh(scalar_basis, dense_evaluation);
+        const auto masked_opening = zkgpt::native_pedersen::commit_fresh(scalar_basis, dense_evaluation + Fr(41));
+        NativeProofSession session("masked-hyrax-smoke-binary-tensor-v2", statement);
+        hyrax::MaskedMleOpening claim;
+        if (!hyrax::open_hyrax_tensor_mle_with_claim(
+                view, commitment, state, point, provider, masked_opening.value, session,
+                "tensor/binary-subset/opening", claim, &reason, "", &scalar_basis,
+                &masked_opening, &raw_opening) ||
+            claim.raw_evaluation_opening.value != dense_evaluation ||
+            !hyrax::verify_hyrax_tensor_mle_opening_with_session(
+                view, commitment, point, claim.evaluation_mask_commitment,
+                claim.masked_evaluation, session, "tensor/binary-subset/opening", &reason,
+                false, "", &scalar_basis, &claim.raw_evaluation_opening.commitment,
+                &claim.masked_evaluation_opening.commitment))
+            HYRAX_SMOKE_FAIL();
+    }
+    return true;
+}
+
 bool run_tensor_tail_certificate_case(std::uint64_t full_domain, std::uint64_t logical_length, const std::string &role) {
     const std::string basis_id = "00000000000000000000000000000000000000000000000000000000000000de";
     const std::string generator_label = "masked-hyrax-smoke/tail-column";
@@ -656,6 +796,12 @@ int main() {
     if (!check_case("legacy(1)", [] { return run_legacy_wrapper_case(1); })) return 1;
     if (!check_case("legacy(4)", [] { return run_legacy_wrapper_case(4); })) return 1;
     if (!check_case("tensor", [] { return run_tensor_case(); })) return 1;
+    if (!check_case("tensor-binary-subset(R128,C128,mixed-tail)", [] { return run_tensor_binary_subset_case(16383, "eligible-mixed-tail", false, true); })) return 1;
+    if (!check_case("tensor-binary-subset(R128,C128,zero)", [] { return run_tensor_binary_subset_case(16384, "eligible-all-zero", true, false); })) return 1;
+    if (!check_case("tensor-binary-subset(R64,C64,row-threshold)", [] { return run_tensor_binary_subset_case(4096, "below-row-threshold", false, false); })) return 1;
+    if (!check_case("tensor-binary-subset(C16,R16)", [] { return run_tensor_binary_subset_case(255, "below-row-threshold-16", false, false); })) return 1;
+    if (!check_case("tensor-binary-subset(C8,R8)", [] { return run_tensor_binary_subset_case(63, "below-row-threshold-8", false, false); })) return 1;
+    if (!check_case("tensor-binary-subset(C4,R8)", [] { return run_tensor_binary_subset_case(31, "below-column-threshold", false, false); })) return 1;
     if (!check_case("tail(16,6)", [] { return run_tensor_tail_certificate_case(16, 6, "canonical/L_qry"); })) return 1;
     if (!check_case("tail(32,9)", [] { return run_tensor_tail_certificate_case(32, 9, "canonical/L_qry"); })) return 1;
     if (!check_case("tail(2^37,5)", [] { return run_tensor_tail_certificate_case(std::uint64_t(1) << 37, 5, "canonical/Aux"); })) return 1;

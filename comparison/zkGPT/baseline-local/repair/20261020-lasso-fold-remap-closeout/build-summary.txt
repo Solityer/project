@@ -1,0 +1,6 @@
+Command: cmake --build comparison/zkGPT/build/cpu-tests --target native_lasso_range_smoke native_masked_layered_gkr_smoke gat_proof_plan_smoke zkgpt_gat_prover --parallel 2
+Build directory: comparison/zkGPT/build/cpu-tests (existing Release CPU tests configuration)
+Observed targets: native_lasso_range_smoke, native_masked_layered_gkr_smoke, gat_proof_plan_smoke, and zkgpt_gat_prover all linked and reported Built target.
+Elapsed time: 60.40 seconds (real).
+Command exit status: 1 because tee could not open this log directory before it was created. CMake and all requested targets completed successfully before that pipeline status was returned.
+The full raw build output was returned in the tool session but was not saved because of the missing directory. This summary records the observed result; it is not a reconstructed raw build log.

@@ -331,6 +331,16 @@ namespace gatzk::algebra
             size < kMinRowsPerTask ? std::size_t{1} : std::min<std::size_t>(available_workers, std::max<std::size_t>(2, size / kMinRowsPerTask));
         const auto chunk_size = (size + task_count - 1) / task_count;
         const auto base_native = base.native();
+        if (task_count == 1)
+        {
+            auto power = FieldElement::one().native();
+            for (std::size_t index = 0; index < size; ++index)
+            {
+                output[index] = power;
+                mcl::Fr::mul(power, power, base_native);
+            }
+            return;
+        }
         std::vector<std::future<void>> futures;
         futures.reserve(task_count);
         for (std::size_t task = 0; task < task_count; ++task)

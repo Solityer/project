@@ -12,6 +12,8 @@ use halo2curves::CurveExt;
 use rand_core::{OsRng, RngCore};
 use std::fmt::Debug;
 use std::marker::PhantomData;
+#[cfg(feature = "formal-gpu-msm")]
+use std::sync::{Arc, Mutex};
 
 use std::io;
 
@@ -26,6 +28,8 @@ pub struct ParamsKZG<E: Engine> {
     pub(crate) g_lagrange: Vec<E::G1Affine>,
     pub(crate) g2: E::G2Affine,
     pub(crate) s_g2: E::G2Affine,
+    #[cfg(feature = "formal-gpu-msm")]
+    pub(crate) gpu_msm_cache: Arc<Mutex<crate::icicle::PreparedMsmCache>>,
 }
 
 /// Umbrella commitment scheme construction for all KZG variants
@@ -60,6 +64,11 @@ where
     E::G1Affine: SerdeCurveAffine,
     E::G1: CurveExt<AffineExt = E::G1Affine>,
 {
+    #[cfg(feature = "formal-gpu-msm")]
+    fn new_gpu_msm_cache() -> Arc<Mutex<crate::icicle::PreparedMsmCache>> {
+        Arc::new(Mutex::new(crate::icicle::PreparedMsmCache::default()))
+    }
+
     /// Initializes parameters for the curve, draws toxic secret from given rng.
     /// MUST NOT be used in production.
     pub fn setup<R: RngCore>(k: u32, rng: R) -> Self {
@@ -128,6 +137,8 @@ where
             g_lagrange,
             g2,
             s_g2,
+            #[cfg(feature = "formal-gpu-msm")]
+            gpu_msm_cache: Self::new_gpu_msm_cache(),
         }
     }
 
@@ -159,7 +170,33 @@ where
             g,
             g2,
             s_g2,
+            #[cfg(feature = "formal-gpu-msm")]
+            gpu_msm_cache: Self::new_gpu_msm_cache(),
         }
+    }
+
+    #[cfg(feature = "formal-gpu-msm")]
+    #[doc(hidden)]
+    pub fn commit_coefficients_with_icicle_precompute_factor_for_test(
+        &self,
+        coefficients: &[E::Fr],
+        factor: usize,
+    ) -> E::G1
+    where
+        E::G1Affine: SerdeCurveAffine<ScalarExt = E::Fr, CurveExt = E::G1>,
+    {
+        assert!(factor == 1 || factor == crate::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR, "test comparison factor is outside the fixed MSM profiles");
+        let bases = &self.g;
+        let size = coefficients.len();
+        assert!(!coefficients.is_empty() && bases.len() >= size, "test comparison polynomial does not fit the KZG coefficient basis");
+        assert!(crate::icicle::formal_gpu_msm_selected::<E::G1Affine>(&coefficients[0], size), "test comparison requires the active formal GPU Prove scope");
+        crate::icicle::multiexp_on_device_with_basis_cache_factor(
+            coefficients,
+            bases,
+            &self.gpu_msm_cache,
+            crate::icicle::MsmBasisRole::Coefficient,
+            factor,
+        )
     }
 
     /// Returns gernerator on G2
@@ -272,6 +309,8 @@ where
             g_lagrange,
             g2,
             s_g2,
+            #[cfg(feature = "formal-gpu-msm")]
+            gpu_msm_cache: Self::new_gpu_msm_cache(),
         })
     }
 
@@ -390,6 +429,8 @@ where
             g_lagrange: Vec::new(),
             g2,
             s_g2,
+            #[cfg(feature = "formal-gpu-msm")]
+            gpu_msm_cache: Self::new_gpu_msm_cache(),
         };
         params.downsize(target_k);
         Ok(params)
@@ -420,6 +461,12 @@ where
     fn downsize(&mut self, k: u32) {
         assert!(k <= self.k);
 
+        // A downsize changes both SRS bases. Give this ParamsKZG a fresh
+        // cache before mutation; unchanged clones retain their own old Arc.
+        #[cfg(feature = "formal-gpu-msm")]
+        {
+            self.gpu_msm_cache = Self::new_gpu_msm_cache();
+        }
         self.k = k;
         self.n = 1 << k;
 
@@ -437,6 +484,16 @@ where
         let bases = &self.g_lagrange;
         let size = poly.len();
         assert!(bases.len() >= size);
+
+        #[cfg(feature = "formal-gpu-msm")]
+        if size > 0 && crate::icicle::formal_gpu_msm_selected::<E::G1Affine>(&poly[0], size) {
+            return crate::icicle::multiexp_on_device_with_basis_cache(
+                &poly[..],
+                bases,
+                &self.gpu_msm_cache,
+                crate::icicle::MsmBasisRole::Lagrange,
+            );
+        }
 
         best_multiexp(&poly[..], &bases[0..size])
     }
@@ -480,6 +537,11 @@ where
         let bases = &self.g;
         let size = poly.len();
         assert!(bases.len() >= size);
+
+        #[cfg(feature = "formal-gpu-msm")]
+        if size > 0 && crate::icicle::formal_gpu_msm_selected::<E::G1Affine>(&poly[0], size) {
+            return crate::arithmetic::best_multiexp_gpu(&poly[..], &bases[0..size]);
+        }
 
         best_multiexp(&poly[..], &bases[0..size])
     }

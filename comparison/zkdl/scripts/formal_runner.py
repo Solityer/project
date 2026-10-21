@@ -404,7 +404,7 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
     if legacy_cpu:
         if "gpu_workspace" in methods or "shared_host_cuda" in methods:
             raise RunnerError("legacy CPU-only capacity profile contains GPU accounting fields")
-    elif (methods.get("gpu_workspace") != "authenticated_basis_144B_plus_max_opening_608P" or
+    elif (methods.get("gpu_workspace") != "authenticated_basis_144B_plus_max_opening_704P_plus_352" or
           methods.get("shared_host_cuda") != "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace"):
         raise RunnerError("zkDL capacity profile lacks source-derived shared host/CUDA bounds")
     datasets = profile.get("datasets")
@@ -447,7 +447,7 @@ def _remaining_capacity_requirements(profile: dict[str, Any], completed: tuple[s
             padded = _checked_capacity_int(item.get("gpu_max_opening_padded_generator_size"), f"{dataset} maximum GPU opening")
             workspace = _checked_capacity_int(item.get("gpu_workspace_required_bytes"), f"{dataset} GPU workspace")
             maximum_padded = 1 << basis.bit_length()
-            expected_workspace = 144 * basis + 608 * padded
+            expected_workspace = 144 * basis + 704 * padded + 352
             if (basis != (1 << 18) or padded > maximum_padded or padded & (padded - 1) or
                     expected_workspace > (1 << 64) - 1 or workspace != expected_workspace or
                     item.get("device_peak_bytes") != workspace):

@@ -1,0 +1,19 @@
+E
+======================================================================
+ERROR: test_formal_consumer_accepts_compact_t2_profile_from_native_cli (__main__.T2CapacityConsumerSmoke.test_formal_consumer_accepts_compact_t2_profile_from_native_cli)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/zkGPT/tests/test_t2_capacity_consumer.py", line 132, in test_formal_consumer_accepts_compact_t2_profile_from_native_cli
+    payload = formal_preflight.run_capacity(root, "cora", "cpu", root / "logs")
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/zkGPT/scripts/formal_preflight.py", line 895, in run_capacity
+    validate_capacity_numbers(payload, dataset, require_fits=payload["ready"])
+  File "/home/pzh/project/comparison/zkGPT/scripts/formal_preflight.py", line 346, in validate_capacity_numbers
+    if values["t2_booleanity"]:
+       ~~~~~~^^^^^^^^^^^^^^^^^
+KeyError: 't2_booleanity'
+
+----------------------------------------------------------------------
+Ran 1 test in 0.302s
+
+FAILED (errors=1)

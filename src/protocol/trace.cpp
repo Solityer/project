@@ -148,8 +148,11 @@ namespace gatzk::protocol
 
         bool detailed_profile_enabled() { return std::getenv("GATZK_DETAILED_PROFILE") != nullptr || std::getenv("GATZK_RUN_PROGRESS") != nullptr; }
 
-        bool linear_derivation_validation_enabled() { return detailed_profile_enabled() || std::getenv("GATZK_VALIDATE_LINEAR_DERIVATIONS") != nullptr; }
-
+        bool linear_derivation_validation_enabled()
+        {
+            return std::getenv("GATZK_DETAILED_PROFILE") != nullptr ||
+                   std::getenv("GATZK_VALIDATE_LINEAR_DERIVATIONS") != nullptr;
+        }
         void progress_note(const std::string &label)
         {
             if (progress_enabled())
@@ -413,8 +416,13 @@ namespace gatzk::protocol
 
         template <typename Fn> void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn &&fn)
         {
+            constexpr std::size_t kMinimumRowsPerWorker = 4096;
+            constexpr std::size_t kMaximumWorkers = 8;
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            const auto task_count = (item_count >= min_parallel_items && cpu_count > 1) ? std::min<std::size_t>(cpu_count, item_count) : 1;
+            const auto minimum_rows = std::max(min_parallel_items, kMinimumRowsPerWorker);
+            const auto task_count = item_count < minimum_rows * 2 || cpu_count <= 1
+                                        ? std::size_t{1}
+                                        : std::min<std::size_t>({cpu_count, kMaximumWorkers, item_count / minimum_rows});
             if (task_count <= 1)
             {
                 fn(0, item_count);

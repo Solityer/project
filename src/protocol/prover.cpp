@@ -5557,12 +5557,12 @@ namespace gatzk::protocol
                 }
 
                 std::size_t cache_slot_upper = cache_bounds.desired;
-                const auto memory = util::cached_effective_memory_snapshot();
+                const auto memory = util::read_effective_memory_snapshot();
                 if (memory.effective_available_known && target_size_ != 0 && target_size_ <= std::numeric_limits<std::size_t>::max() / sizeof(mcl::Fr))
                 {
                     const auto bytes_per_slot = target_size_ * sizeof(mcl::Fr);
                     constexpr std::size_t kMaximumAdaptiveLeafCacheBytes = std::size_t{32} << 30;
-                    const auto adaptive_cache_budget = std::min(kMaximumAdaptiveLeafCacheBytes, memory.effective_available_bytes / 4);
+                    const auto adaptive_cache_budget = std::min(kMaximumAdaptiveLeafCacheBytes, memory.effective_available_bytes / 2);
                     const auto budget_slot_count = bytes_per_slot == 0 ? cache_bounds.minimum : adaptive_cache_budget / bytes_per_slot;
                     cache_slot_upper = std::max(cache_bounds.minimum, std::min(cache_bounds.desired, budget_slot_count));
                 }
@@ -5628,6 +5628,177 @@ namespace gatzk::protocol
                 cuda_t_edge_admitted_program_.reset();
 
                 const auto leaf_cache_slots = cuda_t_edge_selected_cache_slots_;
+                if (leaf_cache_slots < 96 && program.terms.size() >= 128)
+                {
+                    const auto register_bucket = [](std::size_t depth)
+                    {
+                        if (depth <= 4) return std::size_t{4};
+                        if (depth <= 8) return std::size_t{8};
+                        if (depth <= 16) return std::size_t{16};
+                        if (depth <= 32) return std::size_t{32};
+                        return std::size_t{kMaximumProgramStackDepth};
+                    };
+                    const auto term_count = program.terms.size();
+                    std::vector<std::vector<std::string>> dependencies(term_count);
+                    for (std::size_t i = 0; i < term_count; ++i)
+                    {
+                        auto &required = dependencies[i];
+                        const auto include = [&](const std::string &label)
+                        {
+                            if (std::find(required.begin(), required.end(), label) == required.end())
+                            {
+                                required.push_back(label);
+                            }
+                        };
+                        for (const auto access_index : program.terms[i].required_accesses)
+                        {
+                            if (access_index >= program.accesses.size())
+                            {
+                                throw std::runtime_error("CUDA t_edge locality planner access index overflow");
+                            }
+                            const auto &label = program.accesses[access_index].label;
+                            include(label);
+                            const auto descriptor = t_edge_derived_linear_descriptor(label);
+                            if (!descriptor.has_value())
+                            {
+                                continue;
+                            }
+                            const auto flattened = flatten_t_edge_descriptor_sources(*descriptor);
+                            const auto &sources = flattened.status == TEdgeDerivedLinearFlattenStatus::Success
+                                                      ? flattened.sources : descriptor->sources;
+                            for (const auto &source : sources)
+                            {
+                                if (!source.scale.is_zero())
+                                {
+                                    include(source.label);
+                                }
+                            }
+                        }
+                    }
+
+                    const auto touch = [leaf_cache_slots](std::vector<std::string> *cache, const std::string &label)
+                    {
+                        const auto it = std::find(cache->begin(), cache->end(), label);
+                        if (it != cache->end())
+                        {
+                            cache->erase(it);
+                        }
+                        else if (cache->size() >= leaf_cache_slots)
+                        {
+                            cache->erase(cache->begin());
+                        }
+                        cache->push_back(label);
+                    };
+                    const auto simulated_misses = [&](const std::vector<std::size_t> &order)
+                    {
+                        std::vector<std::string> cache;
+                        cache.reserve(leaf_cache_slots);
+                        std::size_t misses = 0;
+                        for (const auto index : order)
+                        {
+                            for (const auto &label : dependencies[index])
+                            {
+                                if (std::find(cache.begin(), cache.end(), label) == cache.end())
+                                {
+                                    ++misses;
+                                }
+                                touch(&cache, label);
+                            }
+                        }
+                        return misses;
+                    };
+
+                    std::vector<std::size_t> original(term_count);
+                    std::vector<std::size_t> scheduled;
+                    std::vector<std::uint8_t> chosen(term_count, 0);
+                    std::vector<std::string> recent;
+                    recent.reserve(leaf_cache_slots);
+                    scheduled.reserve(term_count);
+                    for (std::size_t i = 0; i < term_count; ++i)
+                    {
+                        original[i] = i;
+                    }
+                    std::size_t first = 0;
+                    while (scheduled.size() < term_count)
+                    {
+                        while (first < term_count && chosen[first] != 0)
+                        {
+                            ++first;
+                        }
+                        std::size_t best = first;
+                        std::int64_t best_score = std::numeric_limits<std::int64_t>::min();
+                        std::size_t candidates = 0;
+                        for (std::size_t index = first; index < term_count && candidates < 128; ++index)
+                        {
+                            if (chosen[index] != 0)
+                            {
+                                continue;
+                            }
+                            ++candidates;
+                            std::int64_t score = 0;
+                            for (const auto &label : dependencies[index])
+                            {
+                                score += std::find(recent.begin(), recent.end(), label) != recent.end() ? 32 : -4;
+                            }
+                            if (!scheduled.empty() &&
+                                register_bucket(program.terms[index].maximum_stack_depth) ==
+                                    register_bucket(program.terms[scheduled.back()].maximum_stack_depth))
+                            {
+                                score += 12;
+                            }
+                            score -= static_cast<std::int64_t>((index - first) / 4);
+                            if (score > best_score)
+                            {
+                                best_score = score;
+                                best = index;
+                            }
+                        }
+                        chosen[best] = 1;
+                        scheduled.push_back(best);
+                        for (const auto &label : dependencies[best])
+                        {
+                            touch(&recent, label);
+                        }
+                    }
+
+                    const auto original_misses = simulated_misses(original);
+                    const auto scheduled_misses = simulated_misses(scheduled);
+                    const bool accept_schedule = scheduled_misses < original_misses &&
+                                                 scheduled_misses * 10 <= original_misses * 9;
+                    progress_note("prove:quotient:t_edge:locality_plan:terms=" + std::to_string(term_count) +
+                                  ":estimated_loads_original=" + std::to_string(original_misses) +
+                                  ":estimated_loads_scheduled=" + std::to_string(scheduled_misses) +
+                                  ":applied=" + std::to_string(accept_schedule ? 1 : 0));
+                    if (accept_schedule)
+                    {
+                        std::vector<TEdgeProgramTerm> reordered_terms;
+                        std::vector<TEdgeProgramInstruction> reordered_instructions;
+                        reordered_terms.reserve(term_count);
+                        reordered_instructions.reserve(program.instructions.size());
+                        for (const auto index : scheduled)
+                        {
+                            auto term = program.terms[index];
+                            if (term.instruction_end < term.instruction_begin ||
+                                term.instruction_end > program.instructions.size())
+                            {
+                                throw std::runtime_error("CUDA t_edge locality planner encountered invalid instruction bounds");
+                            }
+                            const auto begin = reordered_instructions.size();
+                            reordered_instructions.insert(reordered_instructions.end(),
+                                                          program.instructions.begin() + static_cast<std::ptrdiff_t>(term.instruction_begin),
+                                                          program.instructions.begin() + static_cast<std::ptrdiff_t>(term.instruction_end));
+                            term.instruction_begin = begin;
+                            term.instruction_end = reordered_instructions.size();
+                            reordered_terms.push_back(std::move(term));
+                        }
+                        if (reordered_instructions.size() != program.instructions.size())
+                        {
+                            throw std::runtime_error("CUDA t_edge locality planner lost instructions");
+                        }
+                        program.terms = std::move(reordered_terms);
+                        program.instructions = std::move(reordered_instructions);
+                    }
+                }
 
                 if (leaf_cache_slots == 0)
                 {
@@ -5671,6 +5842,17 @@ namespace gatzk::protocol
                 {
                     auto &labels = term_labels[term_index];
 
+                    const auto record_required_label = [&](const std::string &label)
+                    {
+                        if (std::find(labels.begin(), labels.end(), label) != labels.end())
+                        {
+                            return;
+                        }
+                        labels.push_back(label);
+                        ++remaining_uses[label];
+                        leaf_use_terms[label].push_back(term_index);
+                    };
+
                     for (const auto access_index : program.terms[term_index].required_accesses)
                     {
                         if (access_index >= program.accesses.size())
@@ -5681,14 +5863,21 @@ namespace gatzk::protocol
                         }
 
                         const auto &label = program.accesses[access_index].label;
-
-                        if (std::find(labels.begin(), labels.end(), label) == labels.end())
+                        record_required_label(label);
+                        const auto descriptor = t_edge_derived_linear_descriptor(label);
+                        if (!descriptor.has_value())
                         {
-                            labels.push_back(label);
-
-                            ++remaining_uses[label];
-
-                            leaf_use_terms[label].push_back(term_index);
+                            continue;
+                        }
+                        const auto flattened = flatten_t_edge_descriptor_sources(*descriptor);
+                        const auto &sources = flattened.status == TEdgeDerivedLinearFlattenStatus::Success
+                                                  ? flattened.sources : descriptor->sources;
+                        for (const auto &source : sources)
+                        {
+                            if (!source.scale.is_zero())
+                            {
+                                record_required_label(source.label);
+                            }
                         }
                     }
 

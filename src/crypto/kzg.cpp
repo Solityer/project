@@ -3405,9 +3405,15 @@ namespace gatzk::crypto
                 throw std::runtime_error("failed to open " + std::string(operation) + ": " + info.file_path);
             }
 
-            std::array<std::vector<FieldElement>, 2> chunks;
+            thread_local std::array<std::vector<FieldElement>, 2> chunks;
             for (auto &chunk : chunks)
-                chunk.reserve(std::min(kChunkSize, stored_value_count));
+            {
+                const auto required = std::min(kChunkSize, stored_value_count);
+                if (chunk.capacity() < required)
+                {
+                    chunk.reserve(required);
+                }
+            }
 
             const auto read_chunk = [&](std::size_t slot, std::size_t count)
             {
@@ -5652,8 +5658,6 @@ namespace gatzk::crypto
                                          name);
             }
 
-            estimated_work[index] = estimated_commitment_msm_work(*polynomial);
-
             if (reuse_cache != nullptr && polynomial->basis == algebra::PolynomialBasis::Evaluation && polynomial->shared_data != nullptr)
             {
                 const auto *lagrange_srs = evaluation_srs_points(*polynomial, key.pk);
@@ -5662,6 +5666,7 @@ namespace gatzk::crypto
 
                 preexisting_cache_hit[index] = reuse_cache->lookup_semantic(polynomial->domain.get(), lagrange_srs, polynomial->shared_data, &cached_point);
             }
+            estimated_work[index] = preexisting_cache_hit[index] ? std::size_t{0} : estimated_commitment_msm_work(*polynomial);
         }
 
         struct SemanticRepresentativeKey

@@ -1,5 +1,5 @@
 {
-  "active_stage": "owner-death",
+  "active_stage": "owner-interrupted",
   "completed_stages": [
     "prepare"
   ],
@@ -38,5 +38,5 @@
   },
   "started_unix_ns": 1792379475969142338,
   "status": "INTERRUPTED",
-  "updated_unix_ns": 1792406657334688020
+  "updated_unix_ns": 1792504309782626843
 }

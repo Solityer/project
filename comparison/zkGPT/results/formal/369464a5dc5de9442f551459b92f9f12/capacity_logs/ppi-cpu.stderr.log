@@ -1,0 +1,52 @@
+CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=119414530048 shared_disk_available_bytes=1660613033984 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=8739880964 layer_unary=5799416588 layer_binary=2880046792 current_layer=112 elapsed_ms=15000
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=24180162560 layer_unary=16013033208 layer_binary=8106711768 current_layer=112 elapsed_ms=30010
+CAPACITY_STAGE_END dataset=ppi stage=shape_estimate host_peak_upper_bytes=24165001025 disk_peak_upper_bytes=0 artifact_bytes_upper=732794034
+CAPACITY_STAGE_BEGIN dataset=ppi stage=gkr_point_shape
+CAPACITY_STAGE_END dataset=ppi stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=4461765168 touched_index_bytes_upper=4461765168
+CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_forward_inputs
+CAPACITY_STAGE_END dataset=ppi stage=canonical_forward_inputs feature_rows=56944 feature_cols=50 model_layers=3 hidden_heads=8 output_heads=2
+CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_all_value_forward
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=2 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=3 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=4 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=5 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=6 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=0 head=7 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=2 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=3 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=4 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=5 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=6 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=hidden_head layer=1 head=7 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=0 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_head layer=0 head=1 status=DONE
+CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=BEGIN
+CAPACITY_FORWARD_ADMISSION phase=output_average layer=0 head=0 status=DONE
+CAPACITY_STAGE_END dataset=ppi stage=canonical_all_value_forward status=PASS

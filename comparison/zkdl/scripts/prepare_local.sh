@@ -23,7 +23,6 @@ case "$config_path" in
 esac
 
 manifest_args=()
-runner_args=()
 if [[ -n "$run_dir" ]]; then
     case "$run_dir" in
         /*) run_path="$run_dir" ;;
@@ -39,7 +38,6 @@ if [[ -n "$run_dir" ]]; then
     esac
     mkdir -p -- "$run_path"
     manifest_args=(--output "$run_path/asset_manifest.json")
-    runner_args=(--run-dir "$run_path")
 fi
 
 if [[ -z "${ZKDL_BUILD_MANIFEST:-}" ]]; then
@@ -57,5 +55,3 @@ else
 fi
 python3 "$script_dir/validate_resources.py" --config "$config_path"
 python3 "$script_dir/asset_manifest.py" --config "$config_path" "${manifest_args[@]}"
-runner="$(python3 "$script_dir/formal_provenance.py" --check "$run_path/build_manifest.json" --binary gat_runner)"
-"$runner" prepare --config "$config_path" "${runner_args[@]}"

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <iostream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -1695,24 +1696,144 @@ std::vector<F> weighted_booleanity_t2_round_polynomial(const zkgpt::NativeFieldV
     return polynomial;
 }
 
+constexpr std::size_t kT2CompactBooleanityRounds = 4;
+constexpr std::size_t kT2CompactChunkEntries = std::size_t(1) << kT2CompactBooleanityRounds;
+constexpr std::size_t kT2CompactPatternCount = std::size_t(1) << kT2CompactChunkEntries;
+
+std::vector<F> weighted_booleanity_t2_compact_histogram(const NativeLassoFamilyProver& family, const std::vector<F>& beta, std::size_t query_bits) {
+    if (family.table.size() != 2 || query_bits < kT2CompactBooleanityRounds || beta.size() != query_bits + 1 || family.padded_queries % kT2CompactChunkEntries != 0) throw std::invalid_argument("native Lasso T2 compact Booleanity dimensions are invalid");
+    std::vector<F> histogram(kT2CompactPatternCount, F_ZERO);
+    const std::vector<F> suffix_point(beta.begin() + kT2CompactBooleanityRounds, beta.begin() + query_bits);
+    const std::size_t chunk_count = static_cast<std::size_t>(family.padded_queries / kT2CompactChunkEntries);
+    zkgpt::native_for_each_equality_weight(suffix_point, chunk_count, [&](std::size_t chunk, const F& suffix_weight) {
+        std::uint16_t pattern = 0;
+        const std::uint64_t begin = static_cast<std::uint64_t>(chunk) * kT2CompactChunkEntries;
+        for (std::size_t bit = 0; bit < kT2CompactChunkEntries; ++bit) {
+            const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(begin + bit) : family.selected_table_rows[static_cast<std::size_t>(begin + bit)];
+            if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");
+            if (selected == 1) pattern = static_cast<std::uint16_t>(pattern | (std::uint16_t(1) << bit));
+        }
+        histogram[pattern] += suffix_weight;
+    });
+    return histogram;
+}
+
+std::vector<F> fold_t2_booleanity_pattern_lut(const std::vector<F>& lookup, const F& challenge) {
+    if (lookup.empty() || lookup.size() > 256 || !power_of_two(lookup.size())) throw std::invalid_argument("native Lasso T2 compact Booleanity lookup table is invalid");
+    const std::size_t half_pattern_bits = log2_power(lookup.size());
+    const std::size_t half_pattern_mask = lookup.size() - 1;
+    std::vector<F> folded(lookup.size() * lookup.size());
+    for (std::size_t pattern = 0; pattern < folded.size(); ++pattern) {
+        const F& low = lookup[pattern & half_pattern_mask];
+        const F& high = lookup[(pattern >> half_pattern_bits) & half_pattern_mask];
+        folded[pattern] = low + challenge * (high - low);
+    }
+    return folded;
+}
+
+std::vector<F> weighted_booleanity_t2_compact_round_polynomial(const std::vector<F>& histogram, const std::vector<F>& lookup, const std::vector<F>& beta, std::size_t round, const F& prefix_weight) {
+    if (histogram.size() != kT2CompactPatternCount || round >= kT2CompactBooleanityRounds || beta.size() <= round + 1 || lookup.size() != (std::size_t(1) << (std::size_t(1) << round))) throw std::invalid_argument("native Lasso T2 compact Booleanity round dimensions are invalid");
+    const std::size_t block_bits = std::size_t(1) << round;
+    const std::size_t block_entries = block_bits * 2;
+    const std::size_t offset_count = kT2CompactChunkEntries / block_entries;
+    const std::size_t pattern_count = std::size_t(1) << block_entries;
+    const std::size_t pattern_mask = (std::size_t(1) << block_bits) - 1;
+    std::vector<F> local_histogram;
+    const std::vector<F>* round_histogram = &histogram;
+    std::vector<F> offset_weights(offset_count, F_ZERO);
+    for (std::size_t offset = 0; offset < offset_count; ++offset) {
+        const EqualityFactorPair factor = equality_factor_pair(beta, round + 1, kT2CompactBooleanityRounds - round - 1, offset);
+        offset_weights[offset] = factor.zero_factors == 0 ? factor.nonzero_product : F_ZERO;
+    }
+    if (round + 1 < kT2CompactBooleanityRounds) {
+        local_histogram.assign(pattern_count, F_ZERO);
+        for (std::size_t pattern = 0; pattern < histogram.size(); ++pattern) {
+            const std::uint16_t chunk_pattern = static_cast<std::uint16_t>(pattern);
+            const F& weight = histogram[pattern];
+            for (std::size_t offset = 0; offset < offset_count; ++offset) {
+                std::size_t subpattern = 0;
+                const std::size_t start = offset * block_entries;
+                for (std::size_t bit = 0; bit < block_entries; ++bit) subpattern |= ((chunk_pattern >> (start + bit)) & 1U) << bit;
+                local_histogram[subpattern] += weight * offset_weights[offset];
+            }
+        }
+        round_histogram = &local_histogram;
+    }
+    std::vector<F> polynomial(4, F_ZERO);
+    for (std::size_t pattern = 0; pattern < pattern_count; ++pattern) {
+        const F& weight = (*round_histogram)[pattern];
+        const F& zero = lookup[pattern & pattern_mask];
+        const F& one = lookup[(pattern >> block_bits) & pattern_mask];
+        const F delta = one - zero;
+        for (std::size_t evaluation = 0; evaluation < polynomial.size(); ++evaluation) {
+            const F x(static_cast<int>(evaluation));
+            const F matrix_value = zero + x * delta;
+            const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
+            polynomial[evaluation] += weight * current_weight * matrix_value * (matrix_value - F_ONE);
+        }
+    }
+    for (F& value : polynomial) value *= prefix_weight;
+    return polynomial;
+}
+
+zkgpt::NativeFieldVector materialize_t2_compact_column(const NativeLassoFamilyProver& family, const std::vector<F>& lookup) {
+    if (family.table.size() != 2 || lookup.size() != kT2CompactPatternCount || family.padded_queries % kT2CompactChunkEntries != 0) throw std::invalid_argument("native Lasso T2 compact Booleanity materialization dimensions are invalid");
+    const std::size_t chunks = static_cast<std::size_t>(family.padded_queries / kT2CompactChunkEntries);
+    zkgpt::NativeFieldVector column_one;
+    column_one.resize(chunks);
+    if (column_one.capacity() != chunks)
+        throw std::length_error("native Lasso T2 compact column capacity differs from its exact query count");
+    for (std::size_t chunk = 0; chunk < chunks; ++chunk) {
+        std::uint16_t pattern = 0;
+        const std::uint64_t begin = static_cast<std::uint64_t>(chunk) * kT2CompactChunkEntries;
+        for (std::size_t bit = 0; bit < kT2CompactChunkEntries; ++bit) {
+            const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(begin + bit) : family.selected_table_rows[static_cast<std::size_t>(begin + bit)];
+            if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");
+            if (selected == 1) pattern = static_cast<std::uint16_t>(pattern | (std::uint16_t(1) << bit));
+        }
+        column_one[chunk] = lookup[pattern];
+    }
+    return column_one;
+}
+
 WeightedBooleanityFold append_weighted_booleanity_t2(NativeMaskedSumcheckProver& prover, const NativeLassoFamilyProver& family,
                                                       const std::vector<F>& beta, std::string* reason) {
     const std::uint64_t queries = family.padded_queries;
     const std::size_t query_bits = relation_rounds(static_cast<std::size_t>(queries));
     if (family.table.size() != 2 || beta.size() != query_bits + 1) throw std::invalid_argument("native Lasso T2 Booleanity dimensions are invalid");
     zkgpt::NativeFieldVector column_one;
-    column_one.resize(static_cast<std::size_t>(queries));
-    if (column_one.capacity() != static_cast<std::size_t>(queries))
-        throw std::length_error("native Lasso T2 column witness capacity differs from its exact query count");
-    for (std::uint64_t query = 0; query < queries; ++query) {
-        const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(query) : family.selected_table_rows[static_cast<std::size_t>(query)];
-        if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");
-        column_one[static_cast<std::size_t>(query)] = selected == 1 ? F_ONE : F_ZERO;
-    }
     WeightedBooleanityFold result;
     result.point.reserve(beta.size());
     F prefix_weight = F_ONE;
-    for (std::size_t round = 0; round < query_bits; ++round) {
+    std::size_t first_dense_round = 0;
+    if (query_bits >= kT2CompactBooleanityRounds) {
+        std::vector<F> histogram = weighted_booleanity_t2_compact_histogram(family, beta, query_bits);
+        std::vector<F> lookup = {F_ZERO, F_ONE};
+        for (std::size_t round = 0; round < kT2CompactBooleanityRounds; ++round) {
+            const std::vector<F> polynomial = weighted_booleanity_t2_compact_round_polynomial(histogram, lookup, beta, round, prefix_weight);
+            F challenge;
+            if (!prover.append_round(polynomial, &challenge, reason)) throw std::runtime_error(reason != nullptr ? *reason : "native Lasso T2 compact query Booleanity round failed");
+            result.point.push_back(challenge);
+            prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenge;
+            if (round + 1 == kT2CompactBooleanityRounds) std::vector<F>().swap(histogram);
+            lookup = fold_t2_booleanity_pattern_lut(lookup, challenge);
+        }
+        if (lookup.size() != kT2CompactPatternCount)
+            throw std::logic_error("native Lasso T2 compact Booleanity lookup table did not reach 16 bits");
+        column_one = materialize_t2_compact_column(family, lookup);
+        std::vector<F>().swap(lookup);
+        first_dense_round = kT2CompactBooleanityRounds;
+    } else {
+        column_one.resize(static_cast<std::size_t>(queries));
+        if (column_one.capacity() != static_cast<std::size_t>(queries))
+            throw std::length_error("native Lasso T2 column witness capacity differs from its exact query count");
+        for (std::uint64_t query = 0; query < queries; ++query) {
+            const std::uint64_t selected = family.selected_table_row_at ? family.selected_table_row_at(query) : family.selected_table_rows[static_cast<std::size_t>(query)];
+            if (selected >= 2) throw std::invalid_argument("native Lasso T2 selected column is invalid");
+            column_one[static_cast<std::size_t>(query)] = selected == 1 ? F_ONE : F_ZERO;
+        }
+    }
+    for (std::size_t round = first_dense_round; round < query_bits; ++round) {
         const std::size_t pair_count = column_one.size() / 2;
         const std::vector<F> polynomial = weighted_booleanity_t2_round_polynomial(column_one, beta, round, prefix_weight);
         F challenge;
@@ -2502,7 +2623,8 @@ NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_qu
     profile.row_fold_weights_bytes = bytes(profile.rows, sizeof(F));
     profile.row_fold_values_bytes = bytes(profile.columns, sizeof(F));
     profile.onehot_query_bytes = bytes(table_domain, sizeof(F));
-    profile.t2_column_one_bytes = profile.t2_booleanity ? bytes(padded_queries, sizeof(F)) : 0;
+    const std::size_t query_bits = relation_rounds(static_cast<std::size_t>(padded_queries));
+    profile.t2_column_one_bytes = profile.t2_booleanity ? bytes(query_bits >= kT2CompactBooleanityRounds ? padded_queries / kT2CompactChunkEntries : padded_queries, sizeof(F)) : 0;
     const std::uint64_t onehot_entries = add(add(table_domain, table_domain), table_domain > 1 ? table_domain / 2 : 0);
     profile.onehot_heap_peak_bytes = bytes(onehot_entries, sizeof(F));
     profile.masked_opening_generator_bytes = bytes(profile.columns, sizeof(G1));
@@ -2510,9 +2632,18 @@ NativeLassoCapacityProfile native_lasso_capacity_profile(std::uint64_t padded_qu
     profile.masked_opening_response_bytes = bytes(profile.columns, sizeof(F));
     profile.row_ledger_retained_bytes = add(profile.row_blinding_bytes, profile.column_generator_bytes);
     profile.commit_peak_bytes = add(profile.row_ledger_retained_bytes, profile.row_commitment_bytes);
-    // For T2, private_witness_bytes and t2_column_one_bytes describe the same
-    // NativeFieldVector allocation; take the maximum so consumers do not count it twice.
-    profile.booleanity_peak_bytes = add(profile.row_ledger_retained_bytes, std::max(profile.private_witness_bytes, profile.t2_column_one_bytes));
+    std::uint64_t booleanity_workspace_bytes = profile.private_witness_bytes;
+    if (profile.t2_booleanity) {
+        if (query_bits >= kT2CompactBooleanityRounds) {
+            const std::uint64_t equality_low_width = std::uint64_t(1) << std::min<std::size_t>(12, query_bits - kT2CompactBooleanityRounds);
+            const std::uint64_t histogram_and_suffix_fields = add(equality_low_width, query_bits - kT2CompactBooleanityRounds);
+            const std::uint64_t extra_fields = std::max<std::uint64_t>({histogram_and_suffix_fields, padded_queries / kT2CompactChunkEntries, 278});
+            booleanity_workspace_bytes = bytes(add(kT2CompactPatternCount, extra_fields), sizeof(F));
+        } else {
+            booleanity_workspace_bytes = profile.t2_column_one_bytes;
+        }
+    }
+    profile.booleanity_peak_bytes = add(profile.row_ledger_retained_bytes, booleanity_workspace_bytes);
     profile.row_fold_peak_bytes = add(profile.row_ledger_retained_bytes,
                                       add(profile.row_fold_weights_bytes, add(profile.row_fold_values_bytes, profile.onehot_query_bytes)));
     const std::uint64_t hyrax_opening_workspace = add(profile.masked_opening_generator_bytes,
@@ -2802,47 +2933,58 @@ bool native_lasso_padding_row_commitment_smoke(std::string* failure_reason) {
 
 bool native_lasso_t2_booleanity_dense_reference_smoke() {
     try {
-        const std::vector<std::uint64_t> selected = {1, 0, 1, 0};
-        const std::vector<F> beta = {F(2), F(3), F(5)};
-        const F challenges[3] = {F(7), F(11), F(13)};
-        zkgpt::NativeFieldVector column_one(selected.size());
-        std::vector<F> dense(8, F_ZERO);
-        for (std::size_t query = 0; query < selected.size(); ++query) {
-            column_one[query] = selected[query] == 1 ? F_ONE : F_ZERO;
-            dense[query] = selected[query] == 0 ? F_ONE : F_ZERO;
-            dense[query + selected.size()] = selected[query] == 1 ? F_ONE : F_ZERO;
-        }
+        const std::size_t query_bits = 6;
+        const std::size_t queries = std::size_t(1) << query_bits;
+        const std::size_t logical_queries = 58;
+        const std::vector<F> beta = {F_ZERO, F_ONE, F(5), F(7), F_ZERO, F_ONE, F(11)};
+        const F challenges[6] = {F(7), F(11), F(13), F(17), F(19), F(23)};
+        NativeLassoFamilyProver family;
+        family.table = {F_ZERO, F_ONE};
+        family.padded_queries = queries;
+        family.logical_queries = logical_queries;
+        family.padding_index = 0;
+        family.padding_value = F_ZERO;
+        const auto selected = std::make_shared<std::vector<std::uint64_t>>(queries, 0);
+        for (std::size_t query = 0; query < logical_queries; ++query)
+            (*selected)[query] = ((query * 7 + query / 3) % 5) < 2 ? 1 : 0;
+        family.selected_table_row_at = [selected](std::uint64_t row) { return selected->at(static_cast<std::size_t>(row)); };
+        const std::vector<F> histogram = weighted_booleanity_t2_compact_histogram(family, beta, query_bits);
+        std::vector<F> lookup = {F_ZERO, F_ONE};
+        zkgpt::NativeFieldVector dense(queries);
+        for (std::size_t query = 0; query < queries; ++query)
+            dense[query] = (*selected)[query] == 1 ? F_ONE : F_ZERO;
         F prefix_weight = F_ONE;
-        for (std::size_t round = 0; round < beta.size(); ++round) {
-            const std::vector<F> actual = weighted_booleanity_t2_round_polynomial(column_one, beta, round, prefix_weight);
-            std::vector<F> reference(4, F_ZERO);
-            for (std::size_t pair = 0; pair < dense.size() / 2; ++pair) {
-                F suffix_weight = F_ONE;
-                for (std::size_t bit = round + 1; bit < beta.size(); ++bit) {
-                    const bool set = ((pair >> (bit - round - 1)) & 1U) != 0;
-                    suffix_weight *= set ? beta[bit] : F_ONE - beta[bit];
-                }
-                for (std::size_t evaluation = 0; evaluation < reference.size(); ++evaluation) {
-                    const F x(static_cast<int>(evaluation));
-                    const F matrix_value = dense[2 * pair] + x * (dense[2 * pair + 1] - dense[2 * pair]);
-                    const F current_weight = F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * x;
-                    reference[evaluation] += prefix_weight * suffix_weight * current_weight * matrix_value * (matrix_value - F_ONE);
-                }
-            }
+        for (std::size_t round = 0; round < kT2CompactBooleanityRounds; ++round) {
+            const std::vector<F> actual = weighted_booleanity_t2_compact_round_polynomial(histogram, lookup, beta, round, prefix_weight);
+            const std::vector<F> reference = weighted_booleanity_t2_round_polynomial(dense, beta, round, prefix_weight);
             if (actual != reference) return false;
-            if (round + 1 < beta.size()) {
-                const std::size_t pair_count = column_one.size() / 2;
-                for (std::size_t pair = 0; pair < pair_count; ++pair)
-                    column_one[pair] = column_one[pair * 2] + challenges[round] * (column_one[pair * 2 + 1] - column_one[pair * 2]);
-                column_one.resize(pair_count);
+            if (round == 2) {
+                const std::vector<F> zero_prefix_actual = weighted_booleanity_t2_compact_round_polynomial(histogram, lookup, beta, round, F_ZERO);
+                const std::vector<F> zero_prefix_reference = weighted_booleanity_t2_round_polynomial(dense, beta, round, F_ZERO);
+                if (zero_prefix_actual != zero_prefix_reference) return false;
             }
             for (std::size_t pair = 0; pair < dense.size() / 2; ++pair)
                 dense[pair] = dense[pair * 2] + challenges[round] * (dense[pair * 2 + 1] - dense[pair * 2]);
             dense.resize(dense.size() / 2);
+            lookup = fold_t2_booleanity_pattern_lut(lookup, challenges[round]);
             prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenges[round];
         }
-        const F terminal_matrix_value = F_ONE - column_one[0] + challenges[beta.size() - 1] * (F(2) * column_one[0] - F_ONE);
-        return dense.size() == 1 && column_one.size() == 1 && dense[0] == terminal_matrix_value;
+        zkgpt::NativeFieldVector compact = materialize_t2_compact_column(family, lookup);
+        if (compact.size() != dense.size()) return false;
+        for (std::size_t index = 0; index < dense.size(); ++index)
+            if (compact[index] != dense[index]) return false;
+        for (std::size_t round = kT2CompactBooleanityRounds; round < query_bits; ++round) {
+            if (weighted_booleanity_t2_round_polynomial(compact, beta, round, prefix_weight) !=
+                weighted_booleanity_t2_round_polynomial(dense, beta, round, prefix_weight)) return false;
+            for (std::size_t pair = 0; pair < compact.size() / 2; ++pair) {
+                compact[pair] = compact[pair * 2] + challenges[round] * (compact[pair * 2 + 1] - compact[pair * 2]);
+                dense[pair] = dense[pair * 2] + challenges[round] * (dense[pair * 2 + 1] - dense[pair * 2]);
+            }
+            compact.resize(compact.size() / 2);
+            dense.resize(dense.size() / 2);
+            prefix_weight *= F_ONE - beta[round] + (F(2) * beta[round] - F_ONE) * challenges[round];
+        }
+        return compact.size() == 1 && dense.size() == 1 && compact[0] == dense[0];
     } catch (...) {
         return false;
     }
@@ -2938,12 +3080,14 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             const std::size_t rows = static_cast<std::size_t>(family.padded_queries);
             const std::size_t cols = family.table.size();
             const std::size_t query_rounds = relation_rounds(rows);
+            const auto booleanity_begin = std::chrono::steady_clock::now();
+            std::cerr << "[zkGPT][native-lasso-family] stage=booleanity begin family=" << family.family_id
+                      << " Q=" << family.padded_queries << " T=" << cols << '\n' << std::flush;
             std::vector<F> row_point;
             row_point.reserve(query_rounds);
             for (std::size_t round = 0; round < query_rounds; ++round) row_point.push_back(session.challenge(prefix + "/a-query/r/" + std::to_string(round)));
             local.family_query_points.push_back(row_point);
 
-            NativeLassoSparseView sparse = native_lasso_sparse_view(family);
             NativeMaskedTerminalSpec boolean_spec;
             boolean_spec.kind = NativeMaskedTerminalKind::Product3Public;
             boolean_spec.public_provider = equality_weight_provider(booleanity_weights[family_index]);
@@ -2992,6 +3136,11 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
                                                        boolean_result.terminal_values[1], session, prefix + "/c-boolean-complement-open", boolean_opening,
                                                        reason, false, "", &scalar_basis, &boolean_result.terminal_openings[1], &complement_raw_opening)) return false;
             }
+            const double booleanity_elapsed_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - booleanity_begin).count();
+            std::cerr << "[zkGPT][native-lasso-family] stage=booleanity complete family=" << family.family_id
+                      << " Q=" << family.padded_queries << " T=" << cols
+                      << " elapsed_ms=" << booleanity_elapsed_ms << '\n' << std::flush;
 
             SelectedTableRowMLE onehot_values = selected_table_row_mle(family, query, row_point);
             std::vector<F>& onehot_left = onehot_values.table_weights;
@@ -3017,14 +3166,15 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             }
             std::vector<F> onehot_point = row_point;
             onehot_point.insert(onehot_point.end(), onehot_challenges.begin(), onehot_challenges.end());
-            const zkgpt::native_pedersen::ScalarOpening onehot_raw_opening = scalar_evaluation_opening(scalar_basis, sparse.evaluate_mle(onehot_point));
-            onehot_spec.unmasked_terminal_openings = {onehot_raw_opening};
-            if (!onehot_prover.set_terminal_spec(onehot_spec, reason)) return false;
-            NativeMaskedSumcheckResult onehot_result;
-            if (!onehot_prover.finish({onehot_current.front()}, &onehot_result, reason)) return false;
-            hyrax::MaskedMleOpening onehot_opening;
             {
                 MatrixRowFold onehot_fold = fold_family_rows(family, states[family_index], onehot_point);
+                const zkgpt::native_pedersen::ScalarOpening onehot_raw_opening = scalar_evaluation_opening(
+                    scalar_basis, mle_eval(*onehot_fold.folded_values, onehot_fold.view.point));
+                onehot_spec.unmasked_terminal_openings = {onehot_raw_opening};
+                if (!onehot_prover.set_terminal_spec(onehot_spec, reason)) return false;
+                NativeMaskedSumcheckResult onehot_result;
+                if (!onehot_prover.finish({onehot_current.front()}, &onehot_result, reason)) return false;
+                hyrax::MaskedMleOpening onehot_opening;
                 if (!hyrax::open_masked_mle_with_claim(onehot_fold.commitment, onehot_fold.view, onehot_fold.values, onehot_result.final_claim, session,
                                                        prefix + "/e-onehot-open", onehot_opening, reason, false, "", &scalar_basis,
                                                        &onehot_result.terminal_openings[0], &onehot_raw_opening)) return false;
@@ -3072,16 +3222,16 @@ bool native_lasso_prove_bundle(NativeProofSession& session, std::vector<NativeLa
             }
             std::vector<F> lookup_point = row_point;
             lookup_point.insert(lookup_point.end(), lookup_challenges.begin(), lookup_challenges.end());
-            const zkgpt::native_pedersen::ScalarOpening lookup_raw_opening = scalar_evaluation_opening(scalar_basis, sparse.evaluate_mle(lookup_point));
-            lookup_spec.unmasked_terminal_openings = {lookup_raw_opening};
-
-            lookup_spec.public_evaluation = lookup_right.front();
-            if (!lookup_prover.set_terminal_spec(lookup_spec, reason)) return false;
             NativeMaskedSumcheckResult lookup_result;
-            if (!lookup_prover.finish({lookup_left.front()}, &lookup_result, reason)) return false;
-            hyrax::MaskedMleOpening lookup_opening;
             {
                 MatrixRowFold lookup_fold = fold_family_rows(family, states[family_index], lookup_point);
+                const zkgpt::native_pedersen::ScalarOpening lookup_raw_opening = scalar_evaluation_opening(
+                    scalar_basis, mle_eval(*lookup_fold.folded_values, lookup_fold.view.point));
+                lookup_spec.unmasked_terminal_openings = {lookup_raw_opening};
+                lookup_spec.public_evaluation = lookup_right.front();
+                if (!lookup_prover.set_terminal_spec(lookup_spec, reason)) return false;
+                if (!lookup_prover.finish({lookup_left.front()}, &lookup_result, reason)) return false;
+                hyrax::MaskedMleOpening lookup_opening;
                 if (!hyrax::open_masked_mle_with_claim(lookup_fold.commitment, lookup_fold.view, lookup_fold.values, lookup_result.terminal_values[0],
                                                        session, prefix + "/g-matrix-open", lookup_opening, reason, false, "", &scalar_basis,
                                                        &lookup_result.terminal_openings[0], &lookup_raw_opening)) return false;

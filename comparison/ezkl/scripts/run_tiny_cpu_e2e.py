@@ -1512,6 +1512,7 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
     from formal_common import canonical_json_digest as formal_canonical_json_digest
     from formal_common import (
         load_json,
+        validate_compact_native_proof_v2,
         validate_gpu_evidence,
         validate_native_proof_metrics,
         validate_native_verify_metrics,
@@ -1531,10 +1532,38 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
     verify_metrics_path = output / "native_verify_metrics.json"
     proof_metrics = validate_native_proof_metrics(proof_metrics_path, proof_sha256=sha256(proof))
     verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=sha256(proof))
-    proof_doc = load_json(proof, "proof")
-    instances = proof_doc.get("instances")
-    if not isinstance(instances, list) or not instances:
-        raise TinyE2EError("native proof has no instances")
+    proof_instances_ref = validate_compact_native_proof_v2(
+        proof,
+        statement_path=statement,
+        public_output_path=public_output,
+        artifact_manifest_path=output / "artifact_manifest.json",
+        artifact=artifact,
+    )
+    if proof_instances_ref is not None:
+        proof_instances = {
+            "proof_field": "instances_ref",
+            "encoding": "canonical-json",
+            "sha256": proof_instances_ref["sha256"],
+            "count": proof_instances_ref["count"],
+            "column_counts": proof_instances_ref["column_counts"],
+            "public_statement_sha256": proof_instances_ref["statement_sha256"],
+            "public_output_sha256": proof_instances_ref["public_output_sha256"],
+            "native_binding": True,
+        }
+    else:
+        proof_doc = load_json(proof, "proof")
+        instances = proof_doc.get("instances")
+        if not isinstance(instances, list) or not instances or any(not isinstance(item, list) for item in instances):
+            raise TinyE2EError("native proof has no instances")
+        proof_instances = {
+            "proof_field": "instances",
+            "encoding": "canonical-json",
+            "sha256": formal_canonical_json_digest(instances),
+            "count": sum(len(item) for item in instances),
+            "public_statement_sha256": sha256(statement),
+            "public_output_sha256": sha256(public_output),
+            "native_binding": True,
+        }
     output_doc = load_json(public_output, "public output")
     result = {
         "schema_version": 1,
@@ -1588,15 +1617,7 @@ def make_result(root: Path, output: Path, binary: Path, srs: Path, timings: dict
         },
         "gpu_evidence": evidence,
         "circuit_ref": artifact["circuit_ref"],
-        "proof_instances": {
-            "proof_field": "instances",
-            "encoding": "canonical-json",
-            "sha256": formal_canonical_json_digest(instances),
-            "count": sum(len(item) for item in instances if isinstance(item, list)),
-            "public_statement_sha256": sha256(statement),
-            "public_output_sha256": sha256(public_output),
-            "native_binding": True,
-        },
+        "proof_instances": proof_instances,
         "public_statement_path": relative(root, statement),
         "public_output_path": relative(root, public_output),
         "srs_path": relative(root, srs),

@@ -282,6 +282,10 @@ int main() {
         [](const layer& current) { return current.ty == layerType::FCONN; }));
     const std::uint64_t expected_shape_touch_index_bytes =
         2 * ((capacity.gkr_subset_source_support_entries_upper_bound + 63) / 64) * sizeof(std::size_t);
+    const std::uint64_t subset_source_words = capacity.gkr_subset_source_support_entries_upper_bound / 64 +
+        (capacity.gkr_subset_source_support_entries_upper_bound % 64 != 0);
+    const std::uint64_t expected_subset_rank_bytes =
+        2 * ((subset_source_words + 1) / 2) * sizeof(std::uint64_t);
     if (!shape.ready || shape.reason.size() != 0 || shape.digest != plan.gkr_point_shape_digest ||
         shape.layer_count != plan.circuit.circuit.size() || shape.fconn_count != materialized_fconn_count ||
         shape.bitmap_bytes == 0 ||
@@ -318,6 +322,7 @@ int main() {
         capacity.gkr_point_shape_fconn_count != materialized_fconn_count ||
         capacity.gkr_point_shape_touched_index_scratch_bytes_upper_bound !=
             expected_shape_touch_index_bytes ||
+        capacity.gkr_subset_rank_scratch_bytes_upper_bound != expected_subset_rank_bytes ||
         capacity.gkr_layer_count_upper_bound != plan.circuit.circuit.size() ||
         capacity.gkr_fconn_layer_count_upper_bound != materialized_fconn_count ||
         capacity.explicit_gate_count != expected_gate_count ||

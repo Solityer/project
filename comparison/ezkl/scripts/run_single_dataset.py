@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import signal
@@ -57,6 +58,7 @@ from formal_common import (
     sha256,
     source_tree_hash,
     validate_artifact_identity,
+    validate_compact_native_proof_v2,
     validate_config,
     validate_native_proof_metrics,
     validate_native_pk_read_timing,
@@ -243,8 +245,39 @@ def ensure_relative_arg(value: str | None, label: str, default: Path | None = No
     return local_path(value, label)
 
 
-def read_proof_instances(proof: Path, *, statement_sha256: str, output_sha256: str) -> dict[str, Any]:
+def read_proof_instances(
+    proof: Path,
+    *,
+    statement: Path,
+    public_output: Path,
+    artifact_manifest: Path | None,
+    artifact: dict[str, Any] | None,
+    statement_sha256: str,
+    output_sha256: str,
+) -> dict[str, Any]:
     """Extract native proof instances without recomputing the GAT relation."""
+
+    if artifact_manifest is not None and artifact is not None:
+        reference = validate_compact_native_proof_v2(
+            proof,
+            statement_path=statement,
+            public_output_path=public_output,
+            artifact_manifest_path=artifact_manifest,
+            artifact=artifact,
+        )
+        if reference is not None:
+            if reference["statement_sha256"] != statement_sha256 or reference["public_output_sha256"] != output_sha256:
+                abort("compact proof instances_ref statement/Y digest disagrees with runner inputs")
+            return {
+                "proof_field": "instances_ref",
+                "encoding": "canonical-json",
+                "sha256": reference["sha256"],
+                "count": reference["count"],
+                "column_counts": reference["column_counts"],
+                "public_statement_sha256": statement_sha256,
+                "public_output_sha256": output_sha256,
+                "native_binding": True,
+            }
 
     document = load_json(proof, "verifier-facing proof")
     instances = document.get("instances")
@@ -885,6 +918,10 @@ def main(
         )
         proof_instances = read_proof_instances(
             proof,
+            statement=statement,
+            public_output=public_output,
+            artifact_manifest=artifact_manifest if formal_session_id is not None else None,
+            artifact=artifact if formal_session_id is not None else None,
             statement_sha256=sha256(statement),
             output_sha256=sha256(public_output),
         )
