@@ -1,0 +1,11 @@
+CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=124129734656 shared_disk_available_bytes=1671100514304 same_filesystem=true
+CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3710910464 layer_unary=3329127031 layer_binary=321365849 current_layer=112 elapsed_ms=15008
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9546235904 layer_unary=8727937453 layer_binary=757880867 current_layer=112 elapsed_ms=30014
+CAPACITY_STAGE_END dataset=ppi stage=shape_estimate host_peak_upper_bytes=24812297488 disk_peak_upper_bytes=0 artifact_bytes_upper=732319942
+CAPACITY_STAGE_BEGIN dataset=ppi stage=gkr_point_shape
+CAPACITY_STAGE_END dataset=ppi stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=4461765168 touched_index_bytes_upper=4461765168
+CAPACITY_STAGE_END dataset=ppi stage=canonical_all_value_forward status=DEFERRED_TO_OWNED_FORWARD

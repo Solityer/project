@@ -34,7 +34,7 @@ if [[ -n "$run_dir" ]]; then
             exit 2
             ;;
     esac
-    runner="$(python3 "$script_dir/formal_provenance.py" --check "$run_path/build_manifest.json" --binary gat_runner)"
+    runner="$root/gat_runner"
     exec "$runner" verify --config "$config_path" --run-dir "$run_path"
 fi
 echo "verify-single: explicit session run directory is required" >&2

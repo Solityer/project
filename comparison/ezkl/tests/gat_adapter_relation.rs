@@ -1430,6 +1430,26 @@ fn native_gat_fixture_proof_verifies_independently() {
             .4
             .checked_sub(gpu_stats_before_prove.4)
             .expect("native ICICLE synchronization counter did not reset during proof");
+        let gpu_h_eval_calls = gpu_stats_after_prove.17
+            .checked_sub(gpu_stats_before_prove.17)
+            .expect("native fused-H group counter did not reset during proof");
+        let gpu_h_eval_rows = gpu_stats_after_prove.18
+            .checked_sub(gpu_stats_before_prove.18)
+            .expect("native fused-H row counter did not reset during proof");
+        let gpu_h_eval_fallbacks = gpu_stats_after_prove.19
+            .checked_sub(gpu_stats_before_prove.19)
+            .expect("native fused-H fallback counter did not reset during proof");
+        let gpu_h_eval_chunks = gpu_stats_after_prove.20
+            .checked_sub(gpu_stats_before_prove.20)
+            .expect("native fused-H launch counter did not reset during proof");
+        let gpu_h_eval_syncs = gpu_stats_after_prove.21
+            .checked_sub(gpu_stats_before_prove.21)
+            .expect("native fused-H synchronization counter did not reset during proof");
+        let gpu_h_workspace_high_water_bytes = gpu_stats_after_prove.22;
+        let gpu_h_local_memory_peak_upper_bytes = gpu_stats_after_prove.23;
+        let gpu_h_eval_groups = gpu_stats_after_prove.24
+            .checked_sub(gpu_stats_before_prove.24)
+            .expect("native fused-H attempted-group counter did not reset during proof");
         let resident_live_bytes = gpu_stats_after_prove.15;
         let resident_peak_bytes = gpu_stats_after_prove.16;
         let params_n = 1usize.checked_shl(k).expect("tiny GAT fixture KZG size exceeds usize");
@@ -1445,9 +1465,15 @@ fn native_gat_fixture_proof_verifies_independently() {
         assert_eq!(gpu_msm_precomputed_chunks, gpu_msm_precompute_calls + gpu_msm_precomputed_hits, "prepared MSM chunks must be either newly precomputed or served from the resident cache");
         assert!(resident_peak_bytes >= resident_live_bytes, "formal GAT proof resident MSM peak is below its live cache footprint");
         assert!(resident_peak_bytes <= resident_basis_upper_bytes, "formal GAT proof resident MSM peak exceeds its one factor-4 Lagrange basis");
+        assert!(gpu_h_eval_calls > 0 && gpu_h_eval_rows > 0 && gpu_h_eval_chunks > 0, "formal GAT proof did not execute a fused-H GPU graph group");
+        assert_eq!(gpu_h_eval_groups, gpu_h_eval_calls + gpu_h_eval_fallbacks, "fused-H attempted groups must be either GPU successes or explicit CPU fallbacks");
+        assert_eq!(gpu_h_eval_fallbacks, 0, "the BN254 synthetic GAT group must exercise the fused-H GPU path without fallback");
+        assert_eq!(gpu_h_eval_syncs, gpu_h_eval_chunks, "each fused-H launch chunk must be synchronized before reuse");
+        assert!(gpu_h_workspace_high_water_bytes <= gpu_stats_after_prove.8, "fused-H workspace exceeded the existing NTT double-buffer allocation");
+        assert!(gpu_h_local_memory_peak_upper_bytes as u64 <= halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64, "fused-H kernel local-memory bound exceeds the formal 64 MiB reserve");
         assert_eq!(
-            synchronized_calls, gpu_msm_chunks + gpu_msm_precompute_calls + ntt_calls,
-            "native MSM chunks, basis precomputations and NTTs must be synchronized before proof completion"
+            synchronized_calls, gpu_msm_chunks + gpu_msm_precompute_calls + ntt_calls + gpu_h_eval_syncs,
+            "native MSM chunks, basis precomputations, NTTs and fused-H copies must be synchronized before proof completion"
         );
     }
     eprintln!(

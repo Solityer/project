@@ -51,6 +51,9 @@ from formal_common import (
     DATASETS,
     FORMAL_SESSION_ID,
     FORMAL_GPU_FEATURES,
+    FORMAL_GPU_EXECUTION_POLICY,
+    FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES,
+    FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES,
     NATIVE_FORMAL_BACKEND,
     ROOT,
     SRS_MANIFEST,
@@ -3369,6 +3372,7 @@ def _native_capacity_requirements(
             proof_h_fft_transient,
             lookup_eval_task_host_peak + lookup_h_source_rebuild_host_window_bytes,
         )
+        + FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
     )
     shplonk_mmap_active_window = mmap_active_window(
         4 + evaluation_source_column_window + shplonk_batch_width_upper,
@@ -3626,7 +3630,8 @@ def _check_dataset_capacity(
     prove_phase = phase in {"witness_prove_verify", "tiny_witness_prove_verify"}
     ntt_device_peak = int(requirements["icicle_ntt_device_peak_upper_bytes"]) if prove_phase else 0
     msm_resident_cache_upper = int(requirements["icicle_msm_precomputed_basis_device_upper_bytes"]) if prove_phase else 0
-    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper
+    h_kernel_local_memory_upper = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES if prove_phase else 0
+    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_kernel_local_memory_upper
     device_headroom = device_peak if integrated else 0
     host_required = requirements["host_known_bytes"] + device_headroom + os_reserve
     if host_required > host_available:
@@ -3676,7 +3681,9 @@ def _check_dataset_capacity(
         "integrated_device": integrated,
         "cuda_msm_workspace_bytes": msm_device_peak,
         "cuda_ntt_workspace_upper_bytes": ntt_device_peak,
-        "coverage": "source-derived-known-allocation-gates; Prove includes one MSM plus persistent NTT allocation envelope",
+        "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper,
+        "h_program_metadata_upper_bytes": FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES if prove_phase else 0,
+        "coverage": "source-derived-known-allocation-gates; Prove includes one MSM, persistent NTT allocation envelope, fused H local-memory reserve, and compiled H metadata reserve",
         "sampled_at_utc": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -4038,11 +4045,26 @@ def _write_native_prove_budget_receipt(
         or capacity.get("icicle_msm_precomputed_basis_count") != 1
     ):
         abort(f"{dataset} native prove memory gate does not match its resident MSM workspace identity")
+    h_kernel_local_memory_upper = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+    h_program_metadata_upper = FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
+    expected_cuda_required = (
+        int(workspace_query["device_workspace_peak_bytes"])
+        + int(capacity["icicle_ntt_device_peak_upper_bytes"])
+        + int(msm_resident_cache_upper)
+        + h_kernel_local_memory_upper
+    )
+    if (
+        prove_check.get("cuda_required_workspace_bytes") != expected_cuda_required
+        or prove_check.get("h_kernel_local_memory_upper_bytes") != h_kernel_local_memory_upper
+        or prove_check.get("h_program_metadata_upper_bytes") != h_program_metadata_upper
+        or prove_check.get("host_required_known_bytes", 0) < h_program_metadata_upper
+    ):
+        abort(f"{dataset} prove capacity check does not include the fixed GPU H kernel/metadata reserves")
     required_identity = admission.get("relation_identity")
     if not isinstance(required_identity, dict):
         abort(f"{dataset} native prove budget lacks the admitted relation identity")
     value = {
-        "schema": "ezkl.native-prove-budget.v5",
+        "schema": "ezkl.native-prove-budget.v6",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -4060,6 +4082,10 @@ def _write_native_prove_budget_receipt(
         "native_pk_format_version": admission["native_memory_model"]["native_pk_format_version"],
         "native_pk_sigma_wire_encoding": admission["native_memory_model"]["native_pk_sigma_wire_encoding"],
         "native_execution_policy": FORMAL_GPU_EXECUTION_POLICY,
+        "h_workspace_borrows_ntt": True,
+        "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper,
+        "h_program_metadata_upper_bytes": h_program_metadata_upper,
+        "cuda_required_workspace_bytes": expected_cuda_required,
         "icicle_msm_max_concurrency": capacity["icicle_msm_max_concurrency"],
         "icicle_msm_precompute_factor": capacity["icicle_msm_precompute_factor"],
         "icicle_msm_precomputed_basis_count": capacity["icicle_msm_precomputed_basis_count"],
@@ -4136,7 +4162,7 @@ def _load_reusable_native_prove_budget_receipt(
     if not isinstance(budget, dict) or not isinstance(relation, dict):
         return None
     expected = {
-        "schema": "ezkl.native-prove-budget.v5",
+        "schema": "ezkl.native-prove-budget.v6",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -4154,6 +4180,15 @@ def _load_reusable_native_prove_budget_receipt(
         "native_pk_format_version": admission.get("native_memory_model", {}).get("native_pk_format_version") if isinstance(admission.get("native_memory_model"), dict) else None,
         "native_pk_sigma_wire_encoding": admission.get("native_memory_model", {}).get("native_pk_sigma_wire_encoding") if isinstance(admission.get("native_memory_model"), dict) else None,
         "native_execution_policy": FORMAL_GPU_EXECUTION_POLICY,
+        "h_workspace_borrows_ntt": True,
+        "h_kernel_local_memory_upper_bytes": FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES,
+        "h_program_metadata_upper_bytes": FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES,
+        "cuda_required_workspace_bytes": (
+            int(workspace_query.get("device_workspace_peak_bytes"))
+            + int(capacity.get("icicle_ntt_device_peak_upper_bytes"))
+            + int(capacity.get("icicle_msm_precomputed_basis_device_upper_bytes"))
+            + FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+        ),
         "icicle_msm_max_concurrency": capacity.get("icicle_msm_max_concurrency"),
         "icicle_msm_precompute_factor": capacity.get("icicle_msm_precompute_factor"),
         "icicle_msm_precomputed_basis_count": capacity.get("icicle_msm_precomputed_basis_count"),
@@ -4688,7 +4723,9 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
     msm_device_peak = int(workspace_query["device_workspace_peak_bytes"])
     ntt_device_peak = int(requirements["icicle_ntt_device_peak_upper_bytes"])
     msm_resident_cache_upper = int(requirements["icicle_msm_precomputed_basis_device_upper_bytes"])
-    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper
+    h_kernel_local_memory_upper = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+    h_program_metadata_upper = FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
+    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_kernel_local_memory_upper
     device_headroom = device_peak if integrated else 0
     baseline_heap = requirements["proof_nonprepare_heap_host_bytes"]
     # Include the active mmap pages and the kernel dirty-page ceiling in the
@@ -4702,7 +4739,7 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
     ntt_host_staging = requirements["icicle_ntt_host_staging_upper_bytes"]
     shplonk_extensions = requirements["shplonk_extension_host_upper_bytes"]
     task_envelope = max(
-        0, initial_available_bytes - baseline_heap - baseline_hot_mmap - tablecache - shplonk_extensions - icicle_staging - ntt_host_staging - device_headroom - reserve
+        0, initial_available_bytes - baseline_heap - baseline_hot_mmap - tablecache - h_program_metadata_upper - shplonk_extensions - icicle_staging - ntt_host_staging - device_headroom - reserve
     )
     minimum_task = max(
         requirements["lookup_prepare_task_host_bytes"],
@@ -4722,10 +4759,12 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
         "baseline_hot_mmap_bytes": baseline_hot_mmap,
         "tablecache_bytes": tablecache,
         "shplonk_extensions_bytes": shplonk_extensions,
+        "h_program_metadata_upper_bytes": h_program_metadata_upper,
         "icicle_staging_bytes": icicle_staging,
         "icicle_ntt_host_staging_upper_bytes": ntt_host_staging,
         "msm_device_workspace_upper_bytes": msm_device_peak,
         "ntt_device_workspace_upper_bytes": ntt_device_peak,
+        "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper,
         "icicle_msm_precompute_factor": int(requirements["icicle_msm_precompute_factor"]),
         "icicle_msm_precomputed_basis_count": int(requirements["icicle_msm_precomputed_basis_count"]),
         "icicle_msm_precomputed_basis_device_upper_bytes": msm_resident_cache_upper,
@@ -4734,7 +4773,7 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
         "device_headroom_bytes": device_headroom,
         "reserve_bytes": reserve,
         "incremental_envelope_bytes": max(0, initial_available_bytes - baseline_heap - baseline_hot_mmap - device_headroom - reserve),
-        "future_phase_increment_bytes": tablecache + shplonk_extensions + icicle_staging + ntt_host_staging + task_envelope,
+        "future_phase_increment_bytes": tablecache + h_program_metadata_upper + shplonk_extensions + icicle_staging + ntt_host_staging + task_envelope,
         "minimum_task_bytes": minimum_task,
         "taskcap_bytes": task_envelope,
         "icicle_msm_max_concurrency": int(requirements["icicle_msm_max_concurrency"]),
@@ -4760,10 +4799,12 @@ def _validated_native_prepare_exports(
         "baseline_hot_mmap_bytes",
         "tablecache_bytes",
         "shplonk_extensions_bytes",
+        "h_program_metadata_upper_bytes",
         "icicle_staging_bytes",
         "icicle_ntt_host_staging_upper_bytes",
         "msm_device_workspace_upper_bytes",
         "ntt_device_workspace_upper_bytes",
+        "h_kernel_local_memory_upper_bytes",
         "icicle_msm_precompute_factor",
         "icicle_msm_precomputed_basis_count",
         "icicle_msm_precomputed_basis_device_upper_bytes",
@@ -4799,6 +4840,8 @@ def _validated_native_prepare_exports(
         or budget["initial_available_bytes"] > sys.maxsize
         or budget["taskcap_bytes"] > sys.maxsize
         or budget["device_headroom_bytes"] > sys.maxsize
+        or budget["h_program_metadata_upper_bytes"] != FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
+        or budget["h_kernel_local_memory_upper_bytes"] != FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
         or budget["icicle_msm_max_concurrency"] != 1
         or budget["icicle_msm_precompute_factor"] != 4
         or budget["icicle_msm_precomputed_basis_count"] != 1
@@ -4821,6 +4864,7 @@ def _validated_native_prepare_exports(
             budget["msm_device_workspace_upper_bytes"]
             + budget["ntt_device_workspace_upper_bytes"]
             + budget["icicle_msm_precomputed_basis_device_upper_bytes"]
+            + budget["h_kernel_local_memory_upper_bytes"]
             if budget["integrated_device"] else 0
         )
         or budget["taskcap_bytes"] != max(
@@ -4829,6 +4873,7 @@ def _validated_native_prepare_exports(
             - budget["baseline_heap_bytes"]
             - budget["baseline_hot_mmap_bytes"]
             - budget["tablecache_bytes"]
+            - budget["h_program_metadata_upper_bytes"]
             - budget["shplonk_extensions_bytes"]
             - budget["icicle_staging_bytes"]
             - budget["icicle_ntt_host_staging_upper_bytes"]
@@ -4837,6 +4882,7 @@ def _validated_native_prepare_exports(
         )
         or budget["future_phase_increment_bytes"] != (
             budget["tablecache_bytes"]
+            + budget["h_program_metadata_upper_bytes"]
             + budget["shplonk_extensions_bytes"]
             + budget["icicle_staging_bytes"]
             + budget["icicle_ntt_host_staging_upper_bytes"]

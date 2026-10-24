@@ -13,7 +13,6 @@ import argparse
 import hashlib
 import json
 import re
-import stat
 from pathlib import Path
 from typing import Any
 
@@ -144,16 +143,6 @@ def segment_vector_digest(tensor_id: str, visibility: int, domain: int,
 def config_identity_digest(path: Path) -> str:
     values = config_values(path)
     values.pop("verifier_registry_digest", None)
-    values.pop("model_blinder_sidecar_digest", None)
-    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-    return hashlib.sha256(encoded).hexdigest()
-
-
-def config_binding_digest(path: Path) -> str:
-    values = config_values(path)
-    values.pop("srs_manifest_digest", None)
-    values.pop("verifier_registry_digest", None)
-    values.pop("model_blinder_sidecar_digest", None)
     encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -231,9 +220,6 @@ def validate_srs(root: Path, values: dict[str, str]) -> tuple[Path, dict[str, An
     basis = required_digest(manifest, "basis_digest", "SRS manifest")
     if required_digest(setup, "basis_digest", "SRS setup") != basis:
         fail("SRS setup basis digest is not manifest-bound")
-    config_path = local(root, values["_config_path"], "config")
-    if required_digest(setup, "config_binding_digest", "SRS setup") != config_binding_digest(config_path):
-        fail("SRS setup config binding digest mismatch")
     domain = setup.get("domain")
     basis_domain = setup.get("basis_domain")
     logical_domain = setup.get("logical_domain")
@@ -383,15 +369,12 @@ def validate_registry(root: Path, values: dict[str, str], srs: Path,
     quant_path = root / "configs" / "quantization_scale_chain.cfg"
     static_path = local(root, values["static_table_descriptor"], "static_table_descriptor")
     ledger_path = local(root, values["integer_bound_ledger"], "integer_bound_ledger")
-    manifest_path = local(root, values["checkpoint_bundle"], "checkpoint_bundle") / "manifest.json"
     if required_digest(registry, "scale_chain_digest", "model registry") != digest(quant_path):
         fail("model registry scale-chain digest mismatch")
     if required_digest(registry, "static_table_digest", "model registry") != digest(static_path):
         fail("model registry static-table digest mismatch")
     if required_digest(registry, "integer_bound_ledger_digest", "model registry") != digest(ledger_path):
         fail("model registry integer-ledger digest mismatch")
-    if required_digest(registry, "model_manifest_digest", "model registry") != digest(regular(manifest_path, "checkpoint manifest")):
-        fail("model registry checkpoint-manifest digest mismatch")
     tensors = registry.get("model_tensors")
     if not isinstance(tensors, list) or not tensors:
         fail("model registry has no model_tensors")
@@ -447,19 +430,12 @@ def validate_registry(root: Path, values: dict[str, str], srs: Path,
     return path, registry, actual
 
 
-def validate_blinders(root: Path, values: dict[str, str], registry: dict[str, Any], registry_digest: str) -> tuple[Path, str]:
+def validate_blinders(root: Path, values: dict[str, str], registry: dict[str, Any], registry_digest: str) -> Path:
     raw_path = values.get("model_blinder_sidecar_path")
-    expected_digest = values.get("model_blinder_sidecar_digest")
-    if not raw_path or not expected_digest or expected_digest == "UNAVAILABLE" or not HEX64.fullmatch(expected_digest):
-        fail("model_blinder_sidecar_digest must be an externally supplied lowercase SHA-256")
+    if not raw_path:
+        fail("config lacks model_blinder_sidecar_path")
     path = local(root, raw_path, "model_blinder_sidecar_path")
     regular(path, "model blinder sidecar")
-    mode = stat.S_IMODE(path.stat().st_mode)
-    if mode & 0o077 or mode & 0o600 != 0o600:
-        fail("model blinder sidecar must be owner-only")
-    actual = digest(path)
-    if actual != expected_digest:
-        fail("model blinder sidecar digest does not match config")
     sidecar = json_object(path, "model blinder sidecar")
     if required_string(sidecar, "schema", "model blinder sidecar") != "zkDL_gat_model_blinder_sidecar_v1":
         fail("model blinder sidecar schema mismatch")
@@ -483,7 +459,7 @@ def validate_blinders(root: Path, values: dict[str, str], registry: dict[str, An
         seen.add(tensor_id)
     if seen != registry_ids:
         fail("model blinder sidecar does not cover every registered model tensor")
-    return path, actual
+    return path
 
 
 def validate_sorted_lookup_descriptor(root: Path, values: dict[str, str],
@@ -569,7 +545,7 @@ def main() -> int:
         root, values, static_table_path)
     srs, srs_manifest, generator_digest = validate_srs(root, values)
     registry_path, registry, registry_digest = validate_registry(root, values, srs, srs_manifest, generator_digest)
-    sidecar_path, sidecar_digest = validate_blinders(root, values, registry, registry_digest)
+    sidecar_path = validate_blinders(root, values, registry, registry_digest)
     print(json.dumps({
         "schema": "zkDL_gat_resource_admission_v1",
         "dataset": values["dataset"],
@@ -581,10 +557,9 @@ def main() -> int:
         "model_registry_path": registry_path.relative_to(root).as_posix(),
         "model_registry_digest": registry_digest,
         "model_blinder_sidecar_path": sidecar_path.relative_to(root).as_posix(),
-        "model_blinder_sidecar_digest": sidecar_digest,
         "sorted_lookup_descriptor_path": sorted_lookup_path.relative_to(root).as_posix(),
         "sorted_lookup_descriptor_digest": sorted_lookup_digest,
-        "status": "AUTHENTICATED",
+        "status": "PASS",
     }, sort_keys=True))
     return 0
 

@@ -667,14 +667,6 @@ bool native_segment_commitment_digest(const NativeCommitmentInput &supplied, Dig
     return true;
 }
 
-bool permissions_owner_only(const std::filesystem::path &path) {
-    const auto permissions = std::filesystem::status(path).permissions();
-    using P = std::filesystem::perms;
-    const P forbidden = P::group_read | P::group_write | P::group_exec | P::others_read | P::others_write | P::others_exec;
-    const P required = P::owner_read | P::owner_write;
-    return (permissions & forbidden) == P::none && (permissions & required) == required;
-}
-
 bool manifest_resource_digest(const std::string &manifest, const std::string &label, std::string &path, std::string &sha256, std::uint64_t &count) {
     return resource_field_string(manifest, label, "path", path) && resource_field_string(manifest, label, "sha256", sha256) &&
            resource_field_u64(manifest, label, "count", count);
@@ -1027,7 +1019,7 @@ bool load_authenticated_srs(const Config &config, AuthenticatedSrsResource *reso
         return false;
     }
     std::string setup_schema, setup_mode, trust_status, setup_algorithm, setup_spec;
-    std::string setup_curve, setup_config_binding, setup_basis;
+    std::string setup_curve, setup_basis;
     const bool setup_ok = resource_field_string(manifest, "setup", "schema", setup_schema) && setup_schema == "zkDL_gat_local_random_setup_v1" &&
                           resource_field_string(manifest, "setup", "mode", setup_mode) && setup_mode == "native_local_ephemeral_random" &&
                           resource_field_string(manifest, "setup", "trust_status", trust_status) && trust_status == "native_local_ephemeral_random" &&
@@ -1035,8 +1027,6 @@ bool load_authenticated_srs(const Config &config, AuthenticatedSrsResource *reso
                           setup_algorithm == "os_csprng_nonzero_scalar_mul_bls12_381_g1" && resource_field_string(manifest, "setup", "spec", setup_spec) &&
                           setup_spec == "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1" &&
                           resource_field_string(manifest, "setup", "curve_id", setup_curve) && setup_curve == "bls12_381" &&
-                          resource_field_string(manifest, "setup", "config_binding_digest", setup_config_binding) &&
-                          canonical_digest_text(setup_config_binding) && setup_config_binding == config.config_binding_digest &&
                           resource_field_string(manifest, "setup", "basis_digest", setup_basis) && canonical_digest_text(setup_basis);
     std::string manifest_basis;
     if (!setup_ok || !first_string_occurrence(manifest, "basis_digest", manifest_basis) || manifest_basis != setup_basis) {
@@ -1291,7 +1281,6 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
     }
     std::string static_table_digest;
     std::string integer_bound_ledger_digest;
-    std::string model_manifest_digest;
     const auto required_resource_digest = [&](const char *key, const std::filesystem::path &path_to_check,
                                               std::string &captured, std::uint64_t max_bytes) {
         std::string declared;
@@ -1304,8 +1293,6 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
     if (!required_resource_digest("static_table_digest", config.static_table_descriptor_path, static_table_digest,
                                   kMaxStaticTableDescriptorBytes) ||
         !required_resource_digest("integer_bound_ledger_digest", config.integer_bound_ledger_path, integer_bound_ledger_digest,
-                                  kMaxJsonResourceBytes) ||
-        !required_resource_digest("model_manifest_digest", config.checkpoint_bundle / "manifest.json", model_manifest_digest,
                                   kMaxJsonResourceBytes))
         return false;
     std::vector<std::string> tensor_objects;
@@ -1427,44 +1414,25 @@ bool load_authenticated_model_registry(const Config &config, const Authenticated
     resource->scale_chain_digest = config.scale_chain_digest;
     resource->static_table_digest = std::move(static_table_digest);
     resource->integer_bound_ledger_digest = std::move(integer_bound_ledger_digest);
-    resource->model_manifest_digest = std::move(model_manifest_digest);
     resource->authenticated = true;
     return true;
 }
 
-bool load_authenticated_model_blinders(const Config &config, const AuthenticatedModelRegistry &registry, AuthenticatedModelBlinders *resource,
-                                       std::string *error) {
+bool load_model_blinders(const Config &config, const AuthenticatedModelRegistry &registry, ModelBlinders *resource,
+                         std::string *error) {
     if (!resource) {
         set_error(error, "BLOCKED: model blinder loader output is null");
         return false;
     }
-    *resource = AuthenticatedModelBlinders{};
+    *resource = ModelBlinders{};
     if (!registry.authenticated || registry.digest == Digest{}) {
-        set_error(error, "BLOCKED: model blinder sidecar requires authenticated model registry");
-        return false;
-    }
-    if (config.model_blinder_sidecar_digest.empty() || config.model_blinder_sidecar_digest == kUnavailable ||
-        !canonical_digest_text(config.model_blinder_sidecar_digest)) {
-        set_error(error, "BLOCKED: secure config lacks a pre-authenticated model blinder sidecar digest");
+        set_error(error, "BLOCKED: model blinder sidecar requires the loaded model registry");
         return false;
     }
     std::filesystem::path path;
-    if (!canonical_path(config, config.model_blinder_sidecar_path, path, error) || !permissions_owner_only(path)) {
-        set_error(error, "BLOCKED: model blinder sidecar must be a private owner-only file");
-        return false;
-    }
-    Digest expected_digest{};
-    if (!resource_parse_digest(config.model_blinder_sidecar_digest, expected_digest)) {
-        set_error(error, "BLOCKED: model blinder sidecar digest is not canonical");
-        return false;
-    }
+    if (!canonical_path(config, config.model_blinder_sidecar_path, path, error)) return false;
     std::vector<Byte> bytes;
     if (!read_bytes(path, bytes, error)) return false;
-    const Digest actual_digest = zkdl::sha256(bytes);
-    if (actual_digest != expected_digest) {
-        set_error(error, "BLOCKED: model blinder sidecar digest does not match secure config");
-        return false;
-    }
     const std::string text(bytes.begin(), bytes.end());
     std::string value;
     if (!required_registry_string(text, "schema", value, error) || value != "zkDL_gat_model_blinder_sidecar_v1" ||
@@ -1496,9 +1464,7 @@ bool load_authenticated_model_blinders(const Config &config, const Authenticated
         resource->entries.push_back(std::move(entry));
     }
     resource->path = path.string();
-    resource->digest = actual_digest;
     resource->registry_digest = registry.digest;
-    resource->authenticated = true;
     return true;
 }
 

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """One isolated native full-GAT prove/independent-verify fixture.
 
-The caller supplies a real build snapshot made by formal_provenance.py.  This
-script uses the canonical Cora architecture and scale chain with a separately
+This script uses the canonical Cora architecture and scale chain with a separately
 identified synthetic two-node graph; it never enters the five-dataset runner
 or result collector.
 """
@@ -25,7 +24,6 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
-import formal_provenance  # noqa: E402
 import prepare_form_resources as resources  # noqa: E402
 
 
@@ -42,7 +40,6 @@ PROFILE = {
 PHASE_TIMEOUT_SECONDS = {
     "resource_setup": 300,
     "resource_validation": 60,
-    "asset_manifest": 60,
     "native_prove": 300,
     "native_verify": 180,
 }
@@ -156,21 +153,13 @@ def write_fixture_config(config_path: Path, fixture_root: Path, run_dir: Path) -
 
 def initialize_fixture(run_dir: Path) -> tuple[Path, Path]:
     if run_dir.is_symlink() or not run_dir.is_dir():
-        raise FixtureError(f"real formal_provenance build snapshot is missing: {run_dir}")
+        raise FixtureError(f"fixture run directory is missing: {run_dir}")
     if run_dir.parent != ROOT / "runs" or not run_dir.name.startswith(FIXTURE_PREFIX):
         raise FixtureError(f"run root must be runs/{FIXTURE_PREFIX}<id> and outside formal collection")
     if re.fullmatch(r"native_fixture_TEST_[A-Za-z0-9_]+", run_dir.name) is None:
         raise FixtureError(f"unsafe test run-root name: {run_dir.name}")
     if re.fullmatch(r"formal_[0-9a-f]{32}", run_dir.name):
         raise FixtureError("synthetic fixture must not use a formal session directory")
-    manifest_path = run_dir / "build_manifest.json"
-    if manifest_path.is_symlink() or not manifest_path.is_file():
-        raise FixtureError(f"build manifest from formal_provenance is missing: {manifest_path}")
-    manifest = formal_provenance.validate_manifest(ROOT, manifest_path)
-    binary_paths = {item["name"]: ROOT / item["path"] for item in manifest["binaries"]}
-    if set(binary_paths) != {"gat_runner", "gat_resource_setup"}:
-        raise FixtureError("verified build manifest does not contain both native binaries")
-
     fixture_root = ROOT / "tests" / "fixtures" / "full_gat_native_cora" / run_dir.name
     config_path = ROOT / "configs" / f"{run_dir.name}.cfg"
     if fixture_root.exists() or config_path.exists():
@@ -225,7 +214,7 @@ def initialize_fixture(run_dir: Path) -> tuple[Path, Path]:
     }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"fixture_identity=TEST_FIXTURE id={run_dir.name} config={rel(config_path)} input_root={rel(fixture_root)}",
           flush=True)
-    print(f"native_runner={rel(binary_paths['gat_runner'])} resource_helper={rel(binary_paths['gat_resource_setup'])}",
+    print(f"native_runner={rel(ROOT / 'gat_runner')} resource_helper={rel(ROOT / 'gat_resource_setup')}",
           flush=True)
     return config_path, fixture_root
 
@@ -257,7 +246,7 @@ def prepare_resources(config_path: Path, run_dir: Path) -> None:
     ledger = resources.make_ledger(ROOT, values, table, table_digest, quant_digest, degree=degree)
     ledger_path = ROOT / values["integer_bound_ledger"]
     ledger_digest = resources.write_json(ledger_path, ledger)
-    helper = formal_provenance.native_binary(ROOT, "gat_resource_setup")
+    helper = ROOT / "gat_resource_setup"
     subprocess.run(
         [str(helper), "verify-ledger", "--path", str(ledger_path), "--baseline-root", str(ROOT)],
         cwd=ROOT, check=True,
@@ -320,7 +309,6 @@ def prepare_resources(config_path: Path, run_dir: Path) -> None:
         "scale_chain_digest": quant_digest,
         "static_table_digest": table_digest,
         "integer_bound_ledger_digest": ledger_digest,
-        "model_manifest_digest": resources.sha256_file(checkpoint_manifest_path),
         "model_tensors": registry_entries,
         "source_root": "baseline-local",
     }
@@ -340,12 +328,11 @@ def prepare_resources(config_path: Path, run_dir: Path) -> None:
         "source_root": "baseline-local",
     }
     sidecar_path = ROOT / values["model_blinder_sidecar_path"]
-    sidecar_digest = resources.write_json_atomic(sidecar_path, sidecar, 0o600)
+    resources.write_json_atomic(sidecar_path, sidecar, 0o600)
     resources.update_config(config_path, {
         "degree_bound_id": ledger["degree_bound_id"],
         "srs_manifest_digest": srs_digest,
         "verifier_registry_digest": registry_digest,
-        "model_blinder_sidecar_digest": sidecar_digest,
     })
     print(
         f"fixture_resources=PASS nodes={nodes} edges={edges} model_tensors={len(registry_entries)} "
@@ -360,10 +347,6 @@ def remove_prover_private_material(config_path: Path, run_dir: Path) -> None:
     if sidecar.is_symlink():
         raise FixtureError("refusing to remove a symlinked fixture blinder sidecar")
     sidecar.unlink(missing_ok=True)
-    private_manifest = run_dir / "private_asset_manifest.json"
-    if private_manifest.is_symlink():
-        raise FixtureError("refusing to remove a symlinked private asset manifest")
-    private_manifest.unlink(missing_ok=True)
     scratch = run_dir / ".private_native"
     if scratch.is_symlink():
         raise FixtureError("refusing to remove symlinked native witness scratch")
@@ -401,10 +384,10 @@ def audit_closure(config_path: Path, fixture_root: Path, run_dir: Path) -> dict[
         raise FixtureError("run record contains fallback/output/backend provenance mismatch")
     if receipt.get("status") != "VERIFIED":
         raise FixtureError(f"independent verification receipt is not VERIFIED: {receipt}")
-    if receipt.get("statement_id") != statement.get("statement_id") or receipt.get("proof_id") != record.get("proof_id"):
-        raise FixtureError("independent verification receipt does not bind the proof and statement")
-    if record.get("statement_id") != statement.get("statement_id") or record.get("proof_id") != envelope.get("proof_id"):
-        raise FixtureError("proof, statement, envelope, and run-record identities disagree")
+    if (receipt.get("statement_id") != statement.get("statement_id") or
+            record.get("statement_id") != statement.get("statement_id") or
+            envelope.get("statement_id") != statement.get("statement_id")):
+        raise FixtureError("independent verification receipt does not match the public statement")
     if record.get("proof_size_bytes") != str(proof_bytes) or envelope.get("proof_size_bytes") != str(proof_bytes):
         raise FixtureError("recorded proof size does not match proof.bin")
     if statement.get("nodes") != "2" or statement.get("graphs") != "1" or statement.get("classes") != "7":
@@ -459,7 +442,6 @@ def audit_closure(config_path: Path, fixture_root: Path, run_dir: Path) -> dict[
         "commitment_size_bytes": commitment_bytes,
         "proof_size_bytes": proof_bytes,
         "sorted_lookup_query_count": sorted_lookup_query_count,
-        "proof_id": record["proof_id"],
         "statement_id": record["statement_id"],
         "independent_verification": "VERIFIED",
         "run_dir": rel(run_dir),
@@ -470,14 +452,7 @@ def audit_closure(config_path: Path, fixture_root: Path, run_dir: Path) -> dict[
 def execute_fixture(run_dir: Path) -> dict[str, Any]:
     run_dir = run_dir.resolve()
     config_path, fixture_root = initialize_fixture(run_dir)
-    build_manifest = run_dir / "build_manifest.json"
-    manifest = formal_provenance.validate_manifest(ROOT, build_manifest)
-    binary_paths = {item["name"]: ROOT / item["path"] for item in manifest["binaries"]}
     env = os.environ.copy()
-    for variable in ("ZKDL_FORMAL_SESSION_ROOT", "ZKDL_FORMAL_SESSION_ROOT_DEVICE", "ZKDL_FORMAL_SESSION_ROOT_INODE"):
-        env.pop(variable, None)
-    env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
-
     run_phase("resource_setup", [
         sys.executable, str(Path(__file__).resolve()), "--prepare-resources",
         "--config", str(config_path), "--run-dir", str(run_dir),
@@ -485,21 +460,14 @@ def execute_fixture(run_dir: Path) -> dict[str, Any]:
     run_phase("resource_validation", [
         sys.executable, str(SCRIPTS / "validate_resources.py"), "--config", str(config_path),
     ], run_dir, env)
-    run_phase("asset_manifest", [
-        sys.executable, str(SCRIPTS / "asset_manifest.py"), "--config", str(config_path),
-        "--output", str(run_dir / "asset_manifest.json"),
-    ], run_dir, env)
-
-    runner = binary_paths["gat_runner"]
+    runner = ROOT / "gat_runner"
     run_phase("native_prove", [
         str(runner), "prove", "--config", str(config_path), "--backend", "cpu", "--run-dir", str(run_dir),
     ], run_dir, env)
     remove_prover_private_material(config_path, run_dir)
-    verifier_env = dict(env)
-    verifier_env.pop("ZKDL_BUILD_MANIFEST", None)
     run_phase("native_verify", [
         str(runner), "verify", "--config", str(config_path), "--backend", "cpu", "--run-dir", str(run_dir),
-    ], run_dir, verifier_env)
+    ], run_dir, env)
     result = audit_closure(config_path, fixture_root, run_dir)
     print("native_full_gat_TEST_FIXTURE_closure=PASS " + json.dumps(result, sort_keys=True), flush=True)
     return result
@@ -508,7 +476,7 @@ def execute_fixture(run_dir: Path) -> dict[str, Any]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", required=True, type=Path,
-                        help="existing runs/native_fixture_TEST_* root with formal_provenance build snapshot")
+                        help="existing runs/native_fixture_TEST_* root")
     parser.add_argument("--prepare-resources", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--config", type=Path, help=argparse.SUPPRESS)

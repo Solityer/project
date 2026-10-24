@@ -1,0 +1,33 @@
+{
+  "expected_cell_count": 240,
+  "expected_config_count": 40,
+  "expected_pair_count": 120,
+  "files": {
+    "results_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe/results.csv",
+      "sha256": "bc8c0485b3059d49dfd2b1ebd8a1a59180cd82452315100c17df5126692bf908"
+    },
+    "summary_markdown": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe/summary.md",
+      "sha256": "834075d125bf459ae6bc68ec293248e2f6addd73a149b914cd1e85f30fea49e3"
+    }
+  },
+  "results_csv": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe/results.csv",
+    "sha256": "bc8c0485b3059d49dfd2b1ebd8a1a59180cd82452315100c17df5126692bf908"
+  },
+  "selection": {
+    "input_scope": "main",
+    "mechanism": "feature_folding"
+  },
+  "session_id": "mechanism_20261024T063102Z_7108dda407fe",
+  "session_status": "preflight_complete",
+  "summary_json": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe/summary.json",
+    "sha256": "76730eb21ba6d98d0723cea7d2c453c160d7e874c5656d840f4f542ef41599c7"
+  },
+  "summary_markdown": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe/summary.md",
+    "sha256": "834075d125bf459ae6bc68ec293248e2f6addd73a149b914cd1e85f30fea49e3"
+  }
+}

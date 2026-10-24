@@ -4,11 +4,10 @@
   "title": "zkDL GAT proof artifact metadata",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "statement_id", "proof_id", "backend", "proof_scope", "native_core_api", "status", "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest", "integer_bound_ledger_descriptor_digest", "proof_size_bytes", "commitment_size_bytes", "commitment_time_semantics", "commitment_time_seconds", "prove_time_seconds", "verify_time_seconds", "verifier_reads_witness", "gpu_kernel_executed", "silent_fallback", "output_bound", "error"],
+  "required": ["schema", "statement_id", "backend", "proof_scope", "native_core_api", "status", "static_table_descriptor_digest", "scale_chain_digest", "integer_bound_ledger_id", "integer_bound_ledger_digest", "integer_bound_ledger_descriptor_digest", "proof_size_bytes", "commitment_size_bytes", "commitment_time_semantics", "commitment_time_seconds", "prove_time_seconds", "verify_time_seconds", "verifier_reads_witness", "gpu_kernel_executed", "silent_fallback", "output_bound", "error"],
   "properties": {
     "schema": {"const": "zkDL_gat_proof_envelope_v1"},
     "statement_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "proof_id": {"type": "string", "minLength": 1},
     "backend": {"type": "string", "enum": ["cpu", "gpu"]},
     "proof_scope": {"const": "full_gat_forward"},
     "native_core_api": {"type": "string", "minLength": 1},

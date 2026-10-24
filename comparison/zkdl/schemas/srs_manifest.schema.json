@@ -17,7 +17,7 @@
     "generator_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "setup": {
       "type": "object",
-      "required": ["schema", "mode", "trust_status", "algorithm", "spec", "curve_id", "config_binding_digest", "basis_digest", "basis_domain", "generator_count", "h_count", "u_count", "logical_domain", "segment_size", "segment_count"],
+      "required": ["schema", "mode", "trust_status", "algorithm", "spec", "curve_id", "basis_digest", "basis_domain", "generator_count", "h_count", "u_count", "logical_domain", "segment_size", "segment_count"],
       "properties": {
         "schema": {"const": "zkDL_gat_local_random_setup_v1"},
         "mode": {"const": "native_local_ephemeral_random"},
@@ -25,7 +25,6 @@
         "algorithm": {"const": "os_csprng_nonzero_scalar_mul_bls12_381_g1"},
         "spec": {"const": "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1"},
         "curve_id": {"const": "bls12_381"},
-        "config_binding_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "basis_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "domain": {"type": "integer", "minimum": 1},
         "basis_domain": {"type": "integer", "minimum": 1},

@@ -179,11 +179,9 @@ std::string report_json(const std::string& status, const std::string& reason, co
     const std::string checkpoint_identity = public_context == nullptr ? std::string() : public_context->checkpoint_identity;
     const std::string cache_identity = public_context == nullptr ? std::string() : public_context->cache_identity;
     const std::string proof_digest = proof_artifact == nullptr ? std::string() : zkgpt::gat::canonical_digest64(proof_artifact->transcript_digest);
-    std::string artifact_sha256;
     std::uint64_t artifact_size_bytes = 0;
     if (artifact_wire != nullptr) {
         artifact_size_bytes = static_cast<std::uint64_t>(artifact_wire->size());
-        artifact_sha256 = zkgpt::gat::sha256_bytes_digest(*artifact_wire);
     }
     const double crypto_verify_ms = decode_crypto_ms + verify_crypto_ms;
     const std::size_t slash = context.find_last_of("/\\");
@@ -191,7 +189,7 @@ std::string report_json(const std::string& status, const std::string& reason, co
     std::ostringstream out;
     out << std::setprecision(17);
     out << "{\n"
-        << "  \"schema\": \"zkgpt-gat-independent-verifier-v4\",\n"
+        << "  \"schema\": \"zkgpt-gat-independent-verifier-v5\",\n"
         << "  \"status\": \"" << json_escape(status) << "\",\n"
         << "  \"independent\": true,\n"
         << "  \"masked_full\": true,\n"
@@ -214,7 +212,6 @@ std::string report_json(const std::string& status, const std::string& reason, co
         << "  \"verifier_context_path\": \"" << json_escape(context) << "\",\n"
         << "  \"public_logits_path\": \"" << json_escape(logits) << "\",\n"
         << "  \"artifact_path\": \"" << json_escape(artifact) << "\",\n"
-        << "  \"artifact_sha256\": \"" << json_escape(artifact_sha256) << "\",\n"
         << "  \"artifact_size_bytes\": " << artifact_size_bytes << ",\n"
         << "  \"decode_crypto_ms\": " << decode_crypto_ms << ",\n"
         << "  \"verify_crypto_ms\": " << verify_crypto_ms << ",\n"

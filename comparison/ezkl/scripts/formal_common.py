@@ -34,7 +34,9 @@ BACKENDS = ("cpu", "gpu")
 FORMAL_BACKEND = "hybrid"
 NATIVE_FORMAL_BACKEND = "gpu"
 FORMAL_GPU_CARGO_FEATURE = "formal-gpu"
-FORMAL_GPU_EXECUTION_POLICY = "halo2_icicle-bn254-gpu-ntt-16-25-msm-lagrange-resident-f4-v4"
+FORMAL_GPU_EXECUTION_POLICY = "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5"
+FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES = 64 * 1024 * 1024
+FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES = 64 * 1024 * 1024
 NATIVE_USIZE_MAX = (sys.maxsize << 1) | 1
 FORMAL_GPU_FEATURES = (
     "dep:halo2_solidity_verifier",
@@ -2136,7 +2138,7 @@ def validate_gpu_evidence_document(evidence: Any, *, backend: str) -> dict[str, 
             if not isinstance(value, str) or not value:
                 abort(f"GPU evidence provenance is missing {key}")
         if provenance["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY:
-            abort("GPU evidence does not identify the fixed CPU-FFT/GPU-MSM execution policy")
+            abort("GPU evidence does not identify the fixed fused-H/NTT/MSM execution policy")
         require_digest(provenance["manifest_sha256"], "GPU backend manifest_sha256")
         if provenance["manifest_sha256"] != native_backend_identity()["native_backend_manifest_sha256"]:
             abort("GPU evidence is not bound to the authenticated native CUDA installation")

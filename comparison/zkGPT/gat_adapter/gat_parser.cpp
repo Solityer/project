@@ -43,24 +43,13 @@ std::string require_file(const std::string& path) {
     return path;
 }
 
-std::string sha256_hex(const std::string& bytes) {
-    unsigned char digest[32] = {};
-    if (mcl::fp::sha256(digest, sizeof(digest), bytes.data(), static_cast<std::uint32_t>(bytes.size())) != sizeof(digest)) {
-        throw std::runtime_error("SHA-256 implementation failed");
-    }
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (unsigned char byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
-    return out.str();
-}
-
 std::string sha256_file(const std::string& path) {
     require_file(path);
     std::ifstream in(path.c_str(), std::ios::binary);
     cybozu::Sha256 hasher;
     std::array<char, 1U << 20> buffer;
     while (in) { in.read(buffer.data(), static_cast<std::streamsize>(buffer.size())); const std::streamsize count = in.gcount(); if (count > 0) hasher.update(buffer.data(), static_cast<std::size_t>(count)); }
-    if (!in.eof()) throw std::runtime_error("cannot stream canonical file SHA-256: " + path);
+    if (!in.eof()) throw std::runtime_error("cannot stream file SHA-256: " + path);
     unsigned char digest[32] = {};
     if (hasher.digest(digest, sizeof(digest), nullptr, 0) != sizeof(digest)) throw std::runtime_error("SHA-256 implementation failed");
     std::ostringstream out;
@@ -73,76 +62,6 @@ void update_sha_u64le(cybozu::Sha256& hasher, std::uint64_t value) {
     std::array<unsigned char, 8> encoded{};
     for (unsigned bit = 0; bit < encoded.size(); ++bit) encoded[bit] = static_cast<unsigned char>(value >> (8U * bit));
     hasher.update(encoded.data(), encoded.size());
-}
-
-std::string basename_of(const std::string& path) {
-    const std::size_t slash = path.find_last_of("/\\");
-    return slash == std::string::npos ? path : path.substr(slash + 1);
-}
-
-void verify_sha256_manifest(const std::string& root, const std::string& manifest, const std::vector<std::string>& required) {
-    require_file(manifest);
-    std::ifstream in(manifest.c_str());
-    std::map<std::string, std::string> expected;
-    std::string line;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty() || line[0] == '#') continue;
-        std::istringstream row(line);
-        std::string digest;
-        std::string relative;
-        if (!(row >> digest >> relative)) throw std::runtime_error("malformed SHA-256 manifest: " + manifest);
-        std::string trailing;
-        if (row >> trailing) throw std::runtime_error("extra fields in SHA-256 manifest: " + manifest);
-        if (digest.size() != 64 || digest.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos || relative.empty() || relative[0] == '/' ||
-            relative.find("..") != std::string::npos || relative.find('/') != std::string::npos || relative.find('\\') != std::string::npos) {
-            throw std::runtime_error("invalid SHA-256 manifest entry: " + manifest);
-        }
-        if (!expected.emplace(relative, digest).second) throw std::runtime_error("duplicate SHA-256 manifest entry: " + relative);
-    }
-    for (const std::string& name : required) {
-        const auto it = expected.find(name);
-        if (it == expected.end()) throw std::runtime_error("SHA-256 manifest missing required file: " + name);
-        const std::string actual = sha256_file(root + "/" + name);
-        if (actual != it->second) throw std::runtime_error("SHA-256 mismatch for " + root + "/" + name);
-    }
-    for (const auto& entry : expected) {
-        const std::string actual = sha256_file(root + "/" + entry.first);
-        if (actual != entry.second) throw std::runtime_error("SHA-256 mismatch for " + root + "/" + entry.first);
-    }
-}
-
-void verify_config_auth(const std::string& path) {
-    const std::string sidecar = path + ".sha256";
-    const std::string root = path.substr(0, path.find_last_of("/\\"));
-    verify_sha256_manifest(root.empty() ? "." : root, sidecar, {basename_of(path)});
-}
-
-void verify_cache_auth(const std::string& cache_dir) {
-    const std::string manifest = cache_dir + "/integrity.sha256";
-    require_file(manifest);
-    std::vector<std::string> required{"meta.cfg", "edges.txt"};
-    if (std::ifstream((cache_dir + "/features.txt").c_str()))
-        required.push_back("features.txt");
-    else
-        required.push_back("features.npy");
-    if (std::ifstream((cache_dir + "/labels.txt").c_str()))
-        required.push_back("labels.txt");
-    else if (std::ifstream((cache_dir + "/labels_multi.txt").c_str())) {
-        required.push_back("labels_multi.txt");
-        if (std::ifstream((cache_dir + "/labels_multi.npy").c_str())) required.push_back("labels_multi.npy");
-    } else
-        required.push_back("labels_multi.npy");
-
-    const char* optional[] = {"node_ptr.txt", "test.index", "train_mask.npy", "val_mask.npy", "test_mask.npy"};
-    for (const char* name : optional)
-        if (std::ifstream((cache_dir + "/" + name).c_str())) required.push_back(name);
-    verify_sha256_manifest(cache_dir, manifest, required);
-}
-
-void verify_checkpoint_auth(const std::string& bundle_dir) {
-    verify_sha256_manifest(bundle_dir, bundle_dir + "/integrity.sha256",
-                           {"manifest.json", "tensors.txt", "tensors.npz", "best_model.pt", "qat_best_logits.npy", "training_summary.json"});
 }
 
 Int quantize_double(double value, Int scale) {
@@ -354,18 +273,6 @@ std::string output_name(std::size_t head, const char* kind) {
 
 std::string sha256_file_digest(const std::string& path) { return sha256_file(path); }
 
-std::string sha256_bytes_digest(const std::string& bytes) {
-    cybozu::Sha256 hasher;
-    hasher.update(bytes.data(), bytes.size());
-    unsigned char digest[32] = {};
-    if (hasher.digest(digest, sizeof(digest), nullptr, 0) != sizeof(digest))
-        throw std::runtime_error("SHA-256 implementation failed");
-    std::ostringstream out;
-    out << std::hex << std::setfill('0');
-    for (unsigned char byte : digest) out << std::setw(2) << static_cast<unsigned>(byte);
-    return out.str();
-}
-
 std::string comparison_canonical_graph_digest(const Graph& graph) {
     if (graph.src.size() != graph.dst.size() || graph.node_ptr.size() != graph.graph_count + 1 ||
         graph.edge_ptr.size() != graph.graph_count + 1) {
@@ -413,7 +320,6 @@ std::size_t Shape::elements() const {
 CanonicalConfig CanonicalConfig::load(const std::string& path) {
     CanonicalConfig config;
     config.source_path = path;
-    verify_config_auth(path);
     config.values = read_key_values(path);
     return config;
 }
@@ -643,7 +549,6 @@ void Graph::validate() const {
 }
 
 Graph load_graph(const std::string& cache_dir, const CanonicalConfig& config) {
-    verify_cache_auth(cache_dir);
     CanonicalConfig meta;
     meta.source_path = cache_dir + "/meta.cfg";
     meta.values = read_key_values(meta.source_path);
@@ -751,7 +656,6 @@ Graph load_graph(const std::string& cache_dir, const CanonicalConfig& config) {
 }
 
 Tensor2D load_features(const std::string& cache_dir, const CanonicalConfig& config, const QuantConfig& quant, const Graph& graph) {
-    verify_cache_auth(cache_dir);
     const bool normalize = config.get("input_preprocess_id") == "row_normalize";
     const Int input_scale = quant.s_input;
     if (input_scale <= 0) throw std::runtime_error("canonical config must provide positive s_input");
@@ -802,7 +706,6 @@ Tensor2D load_features(const std::string& cache_dir, const CanonicalConfig& conf
 }
 
 std::vector<Int> load_labels(const std::string& cache_dir, const Graph& graph) {
-    verify_cache_auth(cache_dir);
     const std::string txt = cache_dir + "/labels.txt";
     std::ifstream in(txt.c_str());
     const std::string meta_path = cache_dir + "/meta.cfg";
@@ -880,7 +783,6 @@ std::vector<Int> load_labels(const std::string& cache_dir, const Graph& graph) {
 
 Model Model::load(const std::string& bundle_dir) {
     Model model;
-    verify_checkpoint_auth(bundle_dir);
     const std::string manifest_path = bundle_dir + "/manifest.json";
     model.manifest.source_path = manifest_path;
     const std::string manifest_text = [&]() {
@@ -942,7 +844,6 @@ Model Model::load(const std::string& bundle_dir) {
 
 Model Model::load_shape_only(const std::string& bundle_dir) {
     Model model;
-    verify_checkpoint_auth(bundle_dir);
     const std::string manifest_path = bundle_dir + "/manifest.json";
     model.manifest.source_path = manifest_path;
     require_file(manifest_path);

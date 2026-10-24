@@ -395,7 +395,7 @@ struct GatGkrLayerShapeProfile {
 };
 
 struct GatCapacityReport {
-    std::string schema = "zkgpt-gat-capacity-v11";
+    std::string schema = "zkgpt-gat-capacity-v12";
     std::size_t num_nodes = 0;
     std::size_t num_edges = 0;
     std::size_t num_features = 0;

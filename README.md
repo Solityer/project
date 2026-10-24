@@ -92,13 +92,28 @@ Two real-data CUDA mechanism experiments study the proving-cost reductions:
 - **Feature Folding:** folded feature relations versus coordinate-wise proofs.
 - **Shared Neighborhood:** shared-neighborhood relations versus separate denominator and aggregation proofs.
 
-The experiments use real GAT intermediate values from Cora, CiteSeer, and complete selected PPI graph components. They measure the same four proof metrics but are **mechanism-level comparisons**, not end-to-end GAT speedup measurements. Start the fixed paired experiment using one measurement per configuration:
+The complete matrix contains 47 configurations: Feature Folding has five datasets at D=1..8 and G=1 (40 groups); Shared Neighborhood has five datasets at D=8 and G=1 (5 groups); the appendix adds both mechanisms on all 295 PPI graphs at D=8 (2 groups). With three repetitions and Original/Control, the complete matrix has 141 pairs / 282 cells. The commands below split it into three independent runs. Here `main` means the mechanism ablation main-table inputs, not the zkGAT main experiment. Omitting selectors still runs all 47 groups. These are mechanism-level proof comparisons, not end-to-end GAT speedup measurements.
+
+Run the bounded metadata-only preflight for each selected group before launching it. Preflight checks only the selected datasets and SRS; it does not prepare real proof inputs, rehash key contents, or run Prove/Verify. Launch one command at a time; each run writes to its own new directory:
 
 ```bash
-python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 1
+python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism feature_folding --input-scope main
+python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
+  --mechanism feature_folding --input-scope main \
+  --output-root results/mechanism_ablation_final/ff
+
+python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism shared_neighborhood --input-scope main
+python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
+  --mechanism shared_neighborhood --input-scope main \
+  --output-root results/mechanism_ablation_final/sn
+
+python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism all --input-scope ppi_full
+python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
+  --mechanism all --input-scope ppi_full \
+  --output-root results/mechanism_ablation_final/ppi_full
 ```
 
-The mechanism runner manages its own detached execution and writes session artifacts to `results/mechanism_ablation_final/`. See [the mechanism ablation report](docs/mechanism_ablation.md) for the detailed protocol comparison, experimental results, and audit status. The recorded historical session completed initial independent proof verification but not full post-run reverification; those results are marked *initial-verification-only*.
+The runner creates a new session directory and runs detached. Take `launcher_dir` from the launch output, wait for `MECHANISM_SESSION_STARTED ... output=...` in its `runner.log`, then use that output path as `<session>` for `cat <session>/status.json` and `tail -f <session>/session.log`. Each new session's two reader outputs are Chinese `summary.md` and UTF-8-BOM `results.csv`; raw logs, proofs, statements, receipts, and audit evidence remain alongside them. See [the mechanism ablation instructions](docs/mechanism_ablation.md). The older 11-configuration session is historical only and is not the current matrix.
 
 ## Repository Structure
 

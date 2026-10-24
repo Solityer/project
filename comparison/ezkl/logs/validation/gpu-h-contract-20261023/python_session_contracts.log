@@ -1,0 +1,28 @@
+EE.
+======================================================================
+ERROR: test_native_prepare_budget_charges_baseline_and_table_cache_once (__main__.LocalFormalEntryTest.test_native_prepare_budget_charges_baseline_and_table_cache_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/ezkl/tests/test_run_hybrid_session_schema.py", line 875, in test_native_prepare_budget_charges_baseline_and_table_cache_once
+    requirements = _native_capacity_requirements(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/ezkl/scripts/run_hybrid_formal.py", line 2448, in _native_capacity_requirements
+    compact_table_header = int(memory["size_of_mv_lookup_compact_table_bytes"])
+                               ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'size_of_mv_lookup_compact_table_bytes'
+
+======================================================================
+ERROR: test_cub_workspace_receipt_and_phase_recheck_are_session_bound (__main__.LocalFormalEntryTest.test_cub_workspace_receipt_and_phase_recheck_are_session_bound)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/ezkl/tests/test_run_hybrid_session_schema.py", line 1028, in test_cub_workspace_receipt_and_phase_recheck_are_session_bound
+    result = _recheck_local_phase_capacity(
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+TypeError: _recheck_local_phase_capacity() got an unexpected keyword argument 'session_dir'
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.005s
+
+FAILED (errors=2)
+Command exited with non-zero status 1
+ELAPSED=0.11 MAXRSS_KB=49360 EXIT=1

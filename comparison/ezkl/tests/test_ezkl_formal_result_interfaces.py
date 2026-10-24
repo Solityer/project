@@ -301,8 +301,20 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
             matrix_path.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
             by_path = {cell["_result_path"]: cell for cell in cells}
 
-            def revalidate_cell(path: Path, *, expected_session_id: str | None = None) -> dict[str, object]:
+            def revalidate_cell(
+                path: Path,
+                *,
+                expected_session_id: str | None = None,
+                expected_source_tree_sha256: str | None = None,
+                expected_resource_manifest_sha256: str | None = None,
+                expected_result_sha256: str | None = None,
+                expected_config_values: dict[str, str] | None = None,
+            ) -> dict[str, object]:
                 self.assertEqual(expected_session_id, session_id)
+                self.assertEqual(expected_source_tree_sha256, source_digest)
+                self.assertEqual(expected_resource_manifest_sha256, resource_digest)
+                self.assertIsNone(expected_result_sha256)
+                self.assertIsNone(expected_config_values)
                 return by_path[path.relative_to(root).as_posix()]
 
             with (
@@ -332,7 +344,15 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
             invalid_result.write_text(json.dumps(required), encoding="utf-8")
             with self.assertRaisesRegex(formal_common.ContractError, "not a verified native result"):
                 collect_results.validate_cell(invalid_result, expected_session_id=session_id)
-            required.update({"status": "VERIFY_OK", "native_backend": formal_common.NATIVE_FORMAL_BACKEND, "formal_session_id": "d" * 32})
+            required.update({
+                "status": "VERIFY_OK",
+                "native_backend": formal_common.NATIVE_FORMAL_BACKEND,
+                "formal_session_id": "d" * 32,
+                "native_pk_read_timing_sha256": "0" * 64,
+                "prove_command_wall_ms": 1,
+                "prove_wall_scope": "fixture",
+                "prove_command_residual_excluding_pk_artifact_read_and_sigma_prepare_ms": 1,
+            })
             invalid_result.write_text(json.dumps(required), encoding="utf-8")
             with self.assertRaisesRegex(formal_common.ContractError, "different formal session"):
                 collect_results.validate_cell(invalid_result, expected_session_id=session_id)

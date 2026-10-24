@@ -1,0 +1,26 @@
+{
+  "files": {
+    "results_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T055946Z_50f6805c7e65/results.csv",
+      "sha256": "656b020f67acb0cf092c999d815f0e1008760e98002b87ee40cd55b82cfc8c5a"
+    },
+    "summary_markdown": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T055946Z_50f6805c7e65/summary.md",
+      "sha256": "63b14e3243ef3f6ac8d0fd883579844a796567c0d08bf7114f4701bd7d287b31"
+    }
+  },
+  "results_csv": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T055946Z_50f6805c7e65/results.csv",
+    "sha256": "656b020f67acb0cf092c999d815f0e1008760e98002b87ee40cd55b82cfc8c5a"
+  },
+  "session_id": "mechanism_20261024T055946Z_50f6805c7e65",
+  "session_status": "preflight_complete",
+  "summary_json": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T055946Z_50f6805c7e65/summary.json",
+    "sha256": "670c8855fab87725909f452c42ad2ce649abc2ad838c625fcc4702c84f04386d"
+  },
+  "summary_markdown": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T055946Z_50f6805c7e65/summary.md",
+    "sha256": "63b14e3243ef3f6ac8d0fd883579844a796567c0d08bf7114f4701bd7d287b31"
+  }
+}

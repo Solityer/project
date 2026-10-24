@@ -1,0 +1,410 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+native ICICLE prerequisites need setup: missing native ICICLE backend manifest: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json
+[ezkl-formal] GPU_BUILD_STAGE=prepare-native-cuda-backend
+[ezkl-formal] GPU_SETUP_STAGE=reset-stale-native-build-directory path=/home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=configure selected_device=index:0 uuid:GPU-3cde57ba-ae43-4452-bd59-7b156b36db71 logical:0 architecture=sm_121 compiler=/usr/local/cuda-13.0/bin/nvcc
+-- The CUDA compiler identification is NVIDIA 13.0.88
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CUDA compiler ABI info
+-- Detecting CUDA compiler ABI info - done
+-- Check for working CUDA compiler: /usr/local/cuda-13.0/bin/nvcc - skipped
+-- Detecting CUDA compile features
+-- Detecting CUDA compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/aarch64-linux-gnu-g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Using multi-threaded CUDA compilation.
+-- Configuring done (1.3s)
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_C_COMPILER
+
+
+-- Build files have been written to: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=compile selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[  6%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/extern.cu.o
+[ 12%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern.cu.o
+[ 18%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/vec_ops/extern.cu.o
+[ 25%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern_mmcs.cu.o
+[ 31%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/h_eval_bn254.cu.o
+[ 37%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon/extern.cu.o
+[ 43%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon2/extern.cu.o
+[ 50%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/extern.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/kernels.cuh(40): warning #940-D: missing return statement at end of non-void function "poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]" at line 46
+            instantiation of "void poseidon2::sbox<S,T>(S *, int) [with S=bn254::scalar_t, T=2]" at line 210
+            instantiation of "void poseidon2::permute_state<S,T>(S *, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 293
+            instantiation of "void poseidon2::absorb_2d_state<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 316
+            instantiation of "void poseidon2::hash_2d_kernel<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, unsigned int, poseidon2::Poseidon2Constants<S>) [with S=bn254::scalar_t, T=2]" at line 54 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/poseidon2.cuh
+            instantiation of "cudaError_t poseidon2::Poseidon2<S>::hash_2d(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 11 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(44): warning #940-D: missing return statement at end of non-void function "poseidon::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::sbox_el(S, int) [with S=bn254::scalar_t]" at line 78
+            instantiation of "S poseidon::full_round<S,T>(S, size_t, int, int, __nv_bool, __nv_bool, __nv_bool, S *, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 103
+            instantiation of "void poseidon::full_rounds<S,T>(S *, size_t, size_t, __nv_bool, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 195
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=5]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=5]" at line 46 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=9]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=9]" at line 47 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=12]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=12]" at line 48 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+[ 56%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/kernel_ntt.cu.o
+[ 62%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials.cu.o
+[ 68%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/cuda_backend/polynomial_cuda_backend.cu.o
+[ 75%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials_c_api.cu.o
+[ 81%] Linking CUDA static library ../../lib/libingo_field_bn254.a
+[ 81%] Built target icicle_field
+[ 87%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/__/msm/extern.cu.o
+[ 93%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/extern.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu: In function ‘cudaError_t msm::bn254_precompute_msm_bases_cuda(bn254::affine_t*, int, int, int, bool, device_context::DeviceContext&, bn254::affine_t*)’:
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu:37:185: warning: ‘cudaError_t msm::precompute_msm_bases(A*, int, int, int, bool, device_context::DeviceContext&, A*) [with A = Affine<Field<bn254::fq_config> >; P = Projective<Field<bn254::fq_config>, Field<bn254::fp_config>, bn254::b, bn254::generator_x, bn254::generator_y>; cudaError_t = cudaError]’ is deprecated: Use precompute_msm_points instead. [-Wdeprecated-declarations]
+   37 |     return precompute_msm_bases<affine_t, projective_t>(
+      |        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~                                                                                                                                ^                                                                                 
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/msm.cu:917:66: note: declared here
+  917 |   [[deprecated("Use precompute_msm_points instead.")]] cudaError_t precompute_msm_bases(
+      |                                                                  ^~~~~~~~~~~~~~~~~~~~
+[100%] Linking CUDA static library ../../lib/libingo_curve_bn254.a
+[100%] Built target icicle_curve
+[ezkl-formal] GPU_SETUP_STAGE=record_identity selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[ezkl-formal] native ICICLE GPU backend identity recorded: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json
+[ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+error[E0106]: missing lifetime specifier
+   --> vendor/halo2/halo2_proofs/src/icicle.rs:431:209
+    |
+431 | ...d: &[Polynomial<F, LagrangeCoeff>], advice: &[Polynomial<F, LagrangeCoeff>], instance: &[Polynomial<F, LagrangeCoeff>]) -> Option<&F> {
+    |       -------------------------------          -------------------------------            -------------------------------            ^ expected named lifetime parameter
+    |
+    = help: this function's return type contains a borrowed value, but the signature does not say whether it is borrowed from `fixed`, `advice`, or `instance`
+help: consider introducing a named lifetime parameter
+    |
+431 | fn query_value<'a, F: PrimeField>(query_kind: u32, column: usize, row: usize, fixed: &'a [Polynomial<F, LagrangeCoeff>], advice: &'a [Polynomial<F, LagrangeCoeff>], instance: &'a [Polynomial<F, LagrangeCoeff>]) -> Option<&'a F> {
+    |                +++                                                                    ++                                          ++                                            ++                                            ++
+
+error[E0425]: cannot find function `try_evaluate_h_program` in module `crate::h_eval`
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:705:35
+    |
+705 | ...   if crate::h_eval::try_evaluate_h_program(&program, fixed, advice, instance, part_index, part_stride, rot_scale, isize, y, &mu...
+    |                         ^^^^^^^^^^^^^^^^^^^^^^ not found in `crate::h_eval`
+    |
+help: consider importing this function
+    |
+  1 + use crate::icicle::try_evaluate_h_program;
+    |
+help: if you import `try_evaluate_h_program`, refer to it directly
+    |
+705 -                 if crate::h_eval::try_evaluate_h_program(&program, fixed, advice, instance, part_index, part_stride, rot_scale, isize, y, &mut values[..]).map_err(super::Error::NativeStorage)? {
+705 +                 if try_evaluate_h_program(&program, fixed, advice, instance, part_index, part_stride, rot_scale, isize, y, &mut values[..]).map_err(super::Error::NativeStorage)? {
+    |
+
+warning: unused import: `ParallelSliceMut`
+  --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:26:23
+   |
+26 |     ParallelIterator, ParallelSliceMut,
+   |                       ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> vendor/halo2/halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:900:63
+    |
+870 | ...pl<F: PrimeField> Compiler<F> {
+    |       - expected this type parameter
+...
+900 | ...          ValueSource::Constant(index) => self.constant(*graph.constants.get(*index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program constant index is invalid"))?),
+    |                                                   -------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected type parameter `F`, found associated type
+    |                                                   |
+    |                                                   arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:908:64
+    |
+870 | ...pl<F: PrimeField> Compiler<F> {
+    |       - expected this type parameter
+...
+908 | ...          ValueSource::Challenge(index) => self.constant(*challenges.get(*index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program challenge index is invalid"))?),
+    |                                                    -------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected type parameter `F`, found associated type
+    |                                                    |
+    |                                                    arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:909:54
+    |
+870 |     impl<F: PrimeField> Compiler<F> {
+    |          - expected this type parameter
+...
+909 |                 ValueSource::Beta() => self.constant(beta),
+    |                                             -------- ^^^^ expected type parameter `F`, found associated type
+    |                                             |
+    |                                             arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:910:55
+    |
+870 |     impl<F: PrimeField> Compiler<F> {
+    |          - expected this type parameter
+...
+910 |                 ValueSource::Gamma() => self.constant(gamma),
+    |                                              -------- ^^^^^ expected type parameter `F`, found associated type
+    |                                              |
+    |                                              arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:911:55
+    |
+870 |     impl<F: PrimeField> Compiler<F> {
+    |          - expected this type parameter
+...
+911 |                 ValueSource::Theta() => self.constant(theta),
+    |                                              -------- ^^^^^ expected type parameter `F`, found associated type
+    |                                              |
+    |                                              arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:912:51
+    |
+870 |     impl<F: PrimeField> Compiler<F> {
+    |          - expected this type parameter
+...
+912 |                 ValueSource::Y() => self.constant(y),
+    |                                          -------- ^ expected type parameter `F`, found associated type
+    |                                          |
+    |                                          arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+error[E0308]: mismatched types
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:913:63
+    |
+870 |     impl<F: PrimeField> Compiler<F> {
+    |          - expected this type parameter
+...
+913 |                 ValueSource::PreviousValue() => self.constant(previous_value),
+    |                                                      -------- ^^^^^^^^^^^^^^ expected type parameter `F`, found associated type
+    |                                                      |
+    |                                                      arguments to this method are incorrect
+    |
+    = note: expected type parameter `F`
+              found associated type `<C as CurveAffine>::ScalarExt`
+    = note: you might be missing a type parameter or trait bound
+note: method defined here
+   --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:878:12
+    |
+878 |         fn constant(&mut self, value: F) -> io::Result<usize> {
+    |            ^^^^^^^^            --------
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: unused variable: `advice_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:692:9
+    |
+692 |         advice_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_advice_values`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:693:9
+    |
+693 |         fixed_values: &[FixedColumnSource<C::Scalar>],
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_values`
+
+warning: unused variable: `instance_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:694:9
+    |
+694 |         instance_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_instance_values`
+
+warning: unused variable: `challenges`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:695:9
+    |
+695 |         challenges: &[C::Scalar],
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenges`
+
+warning: unused variable: `theta`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:707:13
+    |
+707 |             theta,
+    |             ^^^^^ help: try ignoring the field: `theta: _`
+
+warning: variable does not need to be mutable
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:452:13
+    |
+452 |         let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0106, E0308, E0425.
+For more information about an error, try `rustc --explain E0106`.
+warning: `halo2_proofs` (lib) generated 15 warnings
+error: could not compile `halo2_proofs` (lib) due to 9 previous errors; 15 warnings emitted

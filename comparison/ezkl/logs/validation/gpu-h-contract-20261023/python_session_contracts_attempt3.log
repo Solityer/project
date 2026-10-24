@@ -1,0 +1,19 @@
+E.
+======================================================================
+ERROR: test_native_prepare_budget_charges_baseline_and_table_cache_once (__main__.LocalFormalEntryTest.test_native_prepare_budget_charges_baseline_and_table_cache_once)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/ezkl/tests/test_run_hybrid_session_schema.py", line 878, in test_native_prepare_budget_charges_baseline_and_table_cache_once
+    requirements = _native_capacity_requirements(
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/ezkl/scripts/run_hybrid_formal.py", line 2461, in _native_capacity_requirements
+    lookup_group_indices = memory["lookup_argument_table_group_indices"]
+                           ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+KeyError: 'lookup_argument_table_group_indices'
+
+----------------------------------------------------------------------
+Ran 2 tests in 0.001s
+
+FAILED (errors=1)
+Command exited with non-zero status 1
+ELAPSED=0.07 MAXRSS_KB=28480 EXIT=1

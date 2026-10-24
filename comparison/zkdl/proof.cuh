@@ -433,24 +433,59 @@ inline std::array<byte, 32> sha256(const std::vector<byte>& bytes) {
 }
 
 class Transcript {
-    std::vector<byte> state_;
+    Sha256 state_hash_;
     std::uint64_t challenge_counter_;
 
+    void absorb_bytes(const byte* data, size_t len) {
+        if (len != 0) state_hash_.update(data, len);
+    }
+
+    void absorb_u32(std::uint32_t value) {
+        const byte encoded[4] = {
+            static_cast<byte>(value),
+            static_cast<byte>(value >> 8),
+            static_cast<byte>(value >> 16),
+            static_cast<byte>(value >> 24)
+        };
+        state_hash_.update(encoded, sizeof(encoded));
+    }
+
+    void absorb_u64(std::uint64_t value) {
+        const byte encoded[8] = {
+            static_cast<byte>(value),
+            static_cast<byte>(value >> 8),
+            static_cast<byte>(value >> 16),
+            static_cast<byte>(value >> 24),
+            static_cast<byte>(value >> 32),
+            static_cast<byte>(value >> 40),
+            static_cast<byte>(value >> 48),
+            static_cast<byte>(value >> 56)
+        };
+        state_hash_.update(encoded, sizeof(encoded));
+    }
+
     void absorb_tag(const char* tag, size_t len) {
-        append_u32(state_, static_cast<std::uint32_t>(len));
-        state_.insert(state_.end(), tag, tag + len);
+        absorb_u32(static_cast<std::uint32_t>(len));
+        if (len != 0) {
+            absorb_bytes(reinterpret_cast<const byte*>(tag), len);
+        }
+    }
+
+    void absorb_fr(const Fr_t& value) {
+        const FrWire wire = fr_wire(value);
+        for (size_t i = 0; i < wire.size(); ++i) absorb_u32(wire[i]);
     }
 
 public:
     explicit Transcript(const std::string& domain = "zkdl-gat-transcript-v1")
-        : state_(), challenge_counter_(0) {
+        : state_hash_(), challenge_counter_(0) {
         absorb_tag(domain.data(), domain.size());
     }
 
     void absorb(const std::string& label, const std::vector<byte>& message) {
         absorb_tag(label.data(), label.size());
-        append_u64(state_, static_cast<std::uint64_t>(message.size()));
-        state_.insert(state_.end(), message.begin(), message.end());
+        absorb_u64(static_cast<std::uint64_t>(message.size()));
+        if (!message.empty()) absorb_bytes(message.data(), message.size());
     }
 
     void absorb_fr(const std::string& label, const std::vector<Fr_t>& values) {
@@ -461,11 +496,24 @@ public:
     }
 
     Fr_t challenge(const std::string& label) {
-        std::vector<byte> input = state_;
+        Sha256 challenge_hash = state_hash_;
         absorb_tag(label.data(), label.size());
-        append_u64(input, challenge_counter_++);
-        input.insert(input.end(), label.begin(), label.end());
-        const std::array<byte, 32> digest = sha256(input);
+        const std::uint64_t counter = challenge_counter_++;
+        const byte encoded_counter[8] = {
+            static_cast<byte>(counter),
+            static_cast<byte>(counter >> 8),
+            static_cast<byte>(counter >> 16),
+            static_cast<byte>(counter >> 24),
+            static_cast<byte>(counter >> 32),
+            static_cast<byte>(counter >> 40),
+            static_cast<byte>(counter >> 48),
+            static_cast<byte>(counter >> 56)
+        };
+        challenge_hash.update(encoded_counter, sizeof(encoded_counter));
+        if (!label.empty()) {
+            challenge_hash.update(reinterpret_cast<const byte*>(label.data()), label.size());
+        }
+        const std::array<byte, 32> digest = challenge_hash.final();
         FrWire wire{};
         for (size_t i = 0; i < wire.size(); ++i)
             wire[i] = static_cast<std::uint32_t>(digest[4 * i]) |
@@ -474,12 +522,14 @@ public:
                       (static_cast<std::uint32_t>(digest[4 * i + 3]) << 24);
         while (!fr_canonical(wire)) wire = fr_sub_raw(wire, kScalarModulus);
         const Fr_t result = fr_value(wire);
-        append_fr(state_, result);
+        absorb_fr(result);
         return result;
     }
 
-    std::array<byte, 32> digest() const { return sha256(state_); }
-    const std::vector<byte>& bytes() const { return state_; }
+    std::array<byte, 32> digest() const {
+        Sha256 digest_hash = state_hash_;
+        return digest_hash.final();
+    }
 };
 
 struct SumcheckRound {
@@ -1434,12 +1484,28 @@ struct ZkProductNodeProof {
     PedersenProductProof product_proof;
 };
 
+enum class ZkTerminalOpeningMode : std::uint32_t {
+    LegacyPerSegment = 0U,
+    WeightedAggregate = 1U,
+    CrossProviderAggregate = 2U
+};
+
 struct ZkTerminalRelationProof {
-    static const std::uint32_t kVersion = 2U;
+    // The terminal relation wire is nested inside Proof8/PAD2 records.  v2
+    // retains one opening per logical segment; v3 uses one weighted virtual
+    // opening per provider; v4 combines providers into one opening while
+    // retaining every original per-provider scalar commitment.
+    static const std::uint32_t kLegacyVersion = 2U;
+    static const std::uint32_t kAggregateVersion = 3U;
+    static const std::uint32_t kCrossProviderAggregateVersion = 4U;
+    static const std::uint32_t kCrossProviderOpeningIndex = 0x3fffffffU;
+    static const std::uint32_t kCrossProviderEvaluationIndex = 0x7fffffffU;
+    // Existing generic callers intentionally remain on the legacy wire.
+    static const std::uint32_t kVersion = kLegacyVersion;
     static const std::uint32_t kMaxTerminalCommitments = 4096U;
     static const std::uint32_t kMaxProductNodes = 4096U;
     static const std::uint32_t kMaxNestedProofBytes = 1U << 22U;
-    std::uint32_t version = kVersion;
+    std::uint32_t version = kLegacyVersion;
     // Scalar evaluation commitments T_i = eval_i*U + r_i*H.  The matching
     // canonical tensor commitment is carried by each Hyrax opening's xi and
     // is checked against the verifier's authenticated tensor map.
@@ -1649,20 +1715,66 @@ inline bool zk_terminal_relation_shape_valid(const ZkTerminalRelationProof& proo
         if (error) *error = message;
         return false;
     };
-    if (proof.version != ZkTerminalRelationProof::kVersion ||
+    if ((proof.version != ZkTerminalRelationProof::kLegacyVersion &&
+         proof.version != ZkTerminalRelationProof::kAggregateVersion &&
+         proof.version != ZkTerminalRelationProof::kCrossProviderAggregateVersion) ||
         proof.terminal_commitments.empty() ||
         proof.terminal_commitments.size() > ZkTerminalRelationProof::kMaxTerminalCommitments ||
-        proof.terminal_openings.size() != proof.terminal_commitments.size() ||
-        proof.terminal_segment_openings.size() != proof.terminal_commitments.size() ||
         proof.product_nodes.size() > ZkTerminalRelationProof::kMaxProductNodes ||
         !pedersen_context_shape_valid(proof.context, error) ||
         proof.context.basis_digest == std::array<byte, 32U>{{}} ||
         !zk_terminal_g1_nonzero_valid(proof.residual_commitment, error) ||
         !zk_terminal_g1_nonzero_valid(proof.external_claim_commitment, error))
         return fail("invalid Zk terminal relation header");
+    const std::size_t expected_opening_records =
+        proof.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion
+            ? 1U : proof.terminal_commitments.size();
+    if (proof.terminal_openings.size() != expected_opening_records ||
+        proof.terminal_segment_openings.size() != expected_opening_records)
+        return fail("terminal opening record count does not match its version");
+    for (const auto& commitment : proof.terminal_commitments)
+        if (!zk_terminal_g1_nonzero_valid(commitment, error))
+            return fail("terminal scalar commitment is invalid");
+    if (proof.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion) {
+        const auto& opening = proof.terminal_openings.front();
+        const auto& nested_openings = proof.terminal_segment_openings.front();
+        if (nested_openings.size() != 1U ||
+            !hyrax_opening_v3_shape_valid(opening, error) ||
+            opening.commitment_index !=
+                ZkTerminalRelationProof::kCrossProviderOpeningIndex ||
+            opening.evaluation_commitment_index !=
+                ZkTerminalRelationProof::kCrossProviderEvaluationIndex ||
+            opening.descriptor_digest != proof.context.descriptor_digest ||
+            opening.registry_digest != proof.context.registry_digest ||
+            opening.srs_digest != proof.context.srs_digest ||
+            opening.logical_domain == 0U ||
+            (opening.logical_domain & (opening.logical_domain - 1U)) != 0U ||
+            opening.logical_domain / opening.generator_size == 0U ||
+            opening.logical_domain / opening.generator_size > (1U << 12U) ||
+            opening.logical_domain % opening.generator_size != 0U ||
+            opening.segment_index != 0U || opening.logical_offset != 0U ||
+            opening.actual_length != opening.generator_size ||
+            opening.padded_length != opening.generator_size ||
+            !zk_terminal_g1_nonzero_valid(opening.tau, error) ||
+            !zk_terminal_g1_nonzero_valid(opening.xi, error))
+            return fail("cross-provider terminal opening shape is invalid");
+        std::vector<byte> mirror, aggregate_opening;
+        serialize_hyrax_opening_v3(opening, mirror);
+        serialize_hyrax_opening_v3(nested_openings.front(), aggregate_opening);
+        if (mirror != aggregate_opening)
+            return fail("cross-provider terminal opening mirror differs from its aggregate opening");
+    } else if (proof.terminal_openings.size() != proof.terminal_commitments.size() ||
+               proof.terminal_segment_openings.size() != proof.terminal_commitments.size()) {
+        return fail("legacy/provider-aggregate opening record count mismatch");
+    }
     std::vector<std::uint32_t> opening_indices;
     opening_indices.reserve(proof.terminal_openings.size());
+    if (proof.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion) {
+        opening_indices.push_back(proof.terminal_openings.front().commitment_index);
+    }
     for (std::size_t index = 0U; index < proof.terminal_commitments.size(); ++index) {
+        if (proof.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion)
+            break;
         if (!zk_terminal_g1_nonzero_valid(proof.terminal_commitments[index], error) ||
             proof.terminal_segment_openings[index].empty() ||
             !hyrax_opening_v3_shape_valid(proof.terminal_openings[index], error) ||
@@ -1685,8 +1797,13 @@ inline bool zk_terminal_relation_shape_valid(const ZkTerminalRelationProof& proo
             (first_segment.padded_length & (first_segment.padded_length - 1U)) != 0U ||
             first_segment.logical_domain % first_segment.padded_length != 0U ||
             first_segment.logical_domain / first_segment.padded_length > (1U << 12U) ||
-            proof.terminal_segment_openings[index].size() !=
-                first_segment.logical_domain / first_segment.padded_length)
+            (proof.version == ZkTerminalRelationProof::kLegacyVersion &&
+             proof.terminal_segment_openings[index].size() !=
+                first_segment.logical_domain / first_segment.padded_length) ||
+            (proof.version == ZkTerminalRelationProof::kAggregateVersion &&
+             (proof.terminal_segment_openings[index].size() != 1U ||
+              first_segment.actual_length != first_segment.padded_length ||
+              first_segment.generator_size != first_segment.padded_length)))
             return fail("terminal segmented opening capacity/layout is invalid");
         for (std::size_t segment = 0U;
              segment < proof.terminal_segment_openings[index].size(); ++segment) {
@@ -1699,6 +1816,14 @@ inline bool zk_terminal_relation_shape_valid(const ZkTerminalRelationProof& proo
                 opening.segment_index != segment ||
                 (segment == 0U && !zk_terminal_g1_equal(opening.tau, proof.terminal_openings[index].tau)))
                 return fail("terminal segment opening metadata is invalid");
+        }
+        if (proof.version == ZkTerminalRelationProof::kAggregateVersion) {
+            std::vector<byte> mirror, virtual_opening;
+            serialize_hyrax_opening_v3(proof.terminal_openings[index], mirror);
+            serialize_hyrax_opening_v3(
+                proof.terminal_segment_openings[index].front(), virtual_opening);
+            if (mirror != virtual_opening)
+                return fail("aggregate terminal opening mirror differs from its virtual opening");
         }
         const std::uint32_t opening_index = proof.terminal_openings[index].commitment_index;
         if (std::find(opening_indices.begin(), opening_indices.end(), opening_index) !=
@@ -1747,16 +1872,31 @@ inline void serialize_zk_terminal_relation(const ZkTerminalRelationProof& proof,
     append_u32(out, proof.version);
     append_pedersen_context(out, proof.context);
     append_u64(out, static_cast<std::uint64_t>(proof.terminal_commitments.size()));
-    for (std::size_t index = 0U; index < proof.terminal_commitments.size(); ++index) {
-        append_g1(out, proof.terminal_commitments[index]);
+    if (proof.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion) {
+        for (const auto& commitment : proof.terminal_commitments)
+            append_g1(out, commitment);
         std::vector<byte> opening;
-        serialize_hyrax_opening_v3(proof.terminal_openings[index], opening);
+        serialize_hyrax_opening_v3(proof.terminal_openings.front(), opening);
         zk_terminal_append_nested(out, opening);
-        append_u64(out, static_cast<std::uint64_t>(proof.terminal_segment_openings[index].size()));
-        for (const auto& segment_opening : proof.terminal_segment_openings[index]) {
+        append_u64(out, static_cast<std::uint64_t>(
+                            proof.terminal_segment_openings.front().size()));
+        for (const auto& segment_opening : proof.terminal_segment_openings.front()) {
             std::vector<byte> segment;
             serialize_hyrax_opening_v3(segment_opening, segment);
             zk_terminal_append_nested(out, segment);
+        }
+    } else {
+        for (std::size_t index = 0U; index < proof.terminal_commitments.size(); ++index) {
+            append_g1(out, proof.terminal_commitments[index]);
+            std::vector<byte> opening;
+            serialize_hyrax_opening_v3(proof.terminal_openings[index], opening);
+            zk_terminal_append_nested(out, opening);
+            append_u64(out, static_cast<std::uint64_t>(proof.terminal_segment_openings[index].size()));
+            for (const auto& segment_opening : proof.terminal_segment_openings[index]) {
+                std::vector<byte> segment;
+                serialize_hyrax_opening_v3(segment_opening, segment);
+                zk_terminal_append_nested(out, segment);
+            }
         }
     }
     append_u64(out, static_cast<std::uint64_t>(proof.product_nodes.size()));
@@ -1800,6 +1940,9 @@ inline bool deserialize_zk_terminal_relation(const std::vector<byte>& in,
     }
     offset = 4U;
     if (!read_u32(in, offset, parsed.version) ||
+        (parsed.version != ZkTerminalRelationProof::kLegacyVersion &&
+         parsed.version != ZkTerminalRelationProof::kAggregateVersion &&
+         parsed.version != ZkTerminalRelationProof::kCrossProviderAggregateVersion) ||
         !read_pedersen_context(in, offset, parsed.context) ||
         !read_u64(in, offset, count) || count == 0U ||
         count > ZkTerminalRelationProof::kMaxTerminalCommitments) {
@@ -1807,40 +1950,76 @@ inline bool deserialize_zk_terminal_relation(const std::vector<byte>& in,
         return false;
     }
     parsed.terminal_commitments.resize(static_cast<std::size_t>(count));
-    parsed.terminal_openings.resize(static_cast<std::size_t>(count));
-    parsed.terminal_segment_openings.resize(static_cast<std::size_t>(count));
     std::vector<byte> nested;
-    for (std::size_t index = 0U; index < parsed.terminal_commitments.size(); ++index) {
-        if (!read_g1(in, offset, parsed.terminal_commitments[index]) ||
-            !zk_terminal_read_nested(in, offset, nested,
+    if (parsed.version == ZkTerminalRelationProof::kCrossProviderAggregateVersion) {
+        for (auto& commitment : parsed.terminal_commitments)
+            if (!read_g1(in, offset, commitment)) {
+                if (error) *error = "truncated cross-provider terminal commitments";
+                return false;
+            }
+        parsed.terminal_openings.resize(1U);
+        parsed.terminal_segment_openings.resize(1U);
+        if (!zk_terminal_read_nested(in, offset, nested,
                                      ZkTerminalRelationProof::kMaxNestedProofBytes)) {
-            if (error) *error = "truncated terminal opening";
+            if (error) *error = "truncated cross-provider terminal opening";
             return false;
         }
         size_t nested_offset = 0U;
         if (!deserialize_hyrax_opening_v3(nested, nested_offset,
-                                           parsed.terminal_openings[index]) ||
-            nested_offset != nested.size()) {
-            if (error) *error = "invalid nested Hyrax v3 terminal opening";
+                                           parsed.terminal_openings.front()) ||
+            nested_offset != nested.size() ||
+            !read_u64(in, offset, count) || count != 1U) {
+            if (error) *error = "invalid cross-provider terminal opening record";
             return false;
         }
-        if (!read_u64(in, offset, count) || count == 0U ||
-            count > ZkTerminalRelationProof::kMaxTerminalCommitments) {
-            if (error) *error = "invalid terminal segment opening count";
+        parsed.terminal_segment_openings.front().resize(1U);
+        if (!zk_terminal_read_nested(in, offset, nested,
+                                     ZkTerminalRelationProof::kMaxNestedProofBytes)) {
+            if (error) *error = "truncated cross-provider terminal opening mirror";
             return false;
         }
-        parsed.terminal_segment_openings[index].resize(static_cast<std::size_t>(count));
-        for (auto& segment_opening : parsed.terminal_segment_openings[index]) {
-            if (!zk_terminal_read_nested(in, offset, nested,
+        size_t segment_offset = 0U;
+        if (!deserialize_hyrax_opening_v3(
+                nested, segment_offset, parsed.terminal_segment_openings.front().front()) ||
+            segment_offset != nested.size()) {
+            if (error) *error = "invalid cross-provider terminal opening mirror";
+            return false;
+        }
+    } else {
+        parsed.terminal_openings.resize(static_cast<std::size_t>(count));
+        parsed.terminal_segment_openings.resize(static_cast<std::size_t>(count));
+        for (std::size_t index = 0U; index < parsed.terminal_commitments.size(); ++index) {
+            if (!read_g1(in, offset, parsed.terminal_commitments[index]) ||
+                !zk_terminal_read_nested(in, offset, nested,
                                          ZkTerminalRelationProof::kMaxNestedProofBytes)) {
-                if (error) *error = "truncated terminal segment opening";
+                if (error) *error = "truncated terminal opening";
                 return false;
             }
-            size_t segment_offset = 0U;
-            if (!deserialize_hyrax_opening_v3(nested, segment_offset, segment_opening) ||
-                segment_offset != nested.size()) {
-                if (error) *error = "invalid nested Hyrax v3 segment opening";
+            size_t nested_offset = 0U;
+            if (!deserialize_hyrax_opening_v3(nested, nested_offset,
+                                               parsed.terminal_openings[index]) ||
+                nested_offset != nested.size()) {
+                if (error) *error = "invalid nested Hyrax v3 terminal opening";
                 return false;
+            }
+            if (!read_u64(in, offset, count) || count == 0U ||
+                count > ZkTerminalRelationProof::kMaxTerminalCommitments) {
+                if (error) *error = "invalid terminal segment opening count";
+                return false;
+            }
+            parsed.terminal_segment_openings[index].resize(static_cast<std::size_t>(count));
+            for (auto& segment_opening : parsed.terminal_segment_openings[index]) {
+                if (!zk_terminal_read_nested(in, offset, nested,
+                                             ZkTerminalRelationProof::kMaxNestedProofBytes)) {
+                    if (error) *error = "truncated terminal segment opening";
+                    return false;
+                }
+                size_t segment_offset = 0U;
+                if (!deserialize_hyrax_opening_v3(nested, segment_offset, segment_opening) ||
+                    segment_offset != nested.size()) {
+                    if (error) *error = "invalid nested Hyrax v3 segment opening";
+                    return false;
+                }
             }
         }
     }
@@ -2544,14 +2723,99 @@ struct AuthenticatedSortedLookupRelationProof {
     }
 };
 
+struct AuthenticatedSortedLookupProviderGamma {
+    std::string provider_tag;
+    std::uint32_t logical_domain = 0U;
+    std::uint32_t segment_size = 0U;
+    std::uint32_t segment_count = 0U;
+    std::vector<G1Jacobian_t> ordered_segment_commitments;
+};
+
+inline void serialize_authenticated_sorted_lookup_provider_gamma_manifest(
+    const std::vector<AuthenticatedSortedLookupProviderGamma>& manifest,
+    std::vector<byte>& out) {
+    append_u64(out, static_cast<std::uint64_t>(manifest.size()));
+    for (const auto& entry : manifest) {
+        append_string(out, entry.provider_tag);
+        append_u32(out, entry.logical_domain);
+        append_u32(out, entry.segment_size);
+        append_u32(out, entry.segment_count);
+        append_u64(out, static_cast<std::uint64_t>(entry.ordered_segment_commitments.size()));
+        for (const auto& commitment : entry.ordered_segment_commitments)
+            append_g1(out, commitment);
+    }
+}
+
+inline std::vector<std::string> authenticated_sorted_lookup_provider_tags(
+    const AuthenticatedSortedLookupDescriptor& descriptor) {
+    std::vector<std::string> result;
+    std::set<std::string> seen;
+    const auto append_group = [&](const std::vector<std::string>& group) {
+        for (const auto& tag : group)
+            if (seen.insert(tag).second) result.push_back(tag);
+    };
+    append_group({"query_x", "query_y", "query_key", "query_active",
+                  "query_product_prefix", "query_prefix_next", "query_first",
+                  "query_last", "query_endpoint"});
+    append_group({"merge_product_prefix", "merge_prefix_next", "merge_key",
+                  "merge_active", "merge_first"});
+    std::vector<std::string> sorted = {
+        "merge_key", "merge_previous_key", "merge_delta", "merge_active"};
+    const std::uint32_t bit_count = descriptor.x_bits + descriptor.y_bits;
+    for (std::uint32_t bit = 0U; bit < bit_count; ++bit)
+        sorted.push_back("merge_bit_" + std::to_string(bit));
+    for (std::uint32_t bit = 0U; bit < bit_count; ++bit)
+        sorted.push_back("merge_delta_bit_" + std::to_string(bit));
+    sorted.insert(sorted.end(), {"merge_inverse", "merge_nonzero", "merge_marker",
+                                 "merge_first"});
+    append_group(sorted);
+    append_group({"merge_marker", "merge_active"});
+    append_group({"merge_prefix_next", "merge_last", "merge_endpoint"});
+    return result;
+}
+
+inline bool authenticated_sorted_lookup_provider_is_outer(
+    const std::string& tag, std::uint32_t bit_count) {
+    for (const char* outer : {"query_x", "query_y", "query_key", "query_prefix",
+                              "merge_key", "merge_delta", "merge_marker",
+                              "merge_inverse", "merge_prefix"})
+        if (tag == outer) return true;
+    const std::string prefix = "merge_bit_";
+    if (tag.compare(0U, prefix.size(), prefix) != 0) return false;
+    const std::string suffix = tag.substr(prefix.size());
+    if (suffix.empty() || (suffix.size() > 1U && suffix.front() == '0')) return false;
+    std::uint32_t bit = 0U;
+    for (const char digit : suffix) {
+        if (digit < '0' || digit > '9' ||
+            bit > (std::numeric_limits<std::uint32_t>::max() -
+                   static_cast<std::uint32_t>(digit - '0')) / 10U)
+            return false;
+        bit = bit * 10U + static_cast<std::uint32_t>(digit - '0');
+    }
+    return bit < bit_count;
+}
+
+inline std::vector<std::string> authenticated_sorted_lookup_internal_provider_tags(
+    const AuthenticatedSortedLookupDescriptor& descriptor) {
+    const std::uint32_t bit_count = descriptor.x_bits + descriptor.y_bits;
+    std::vector<std::string> result;
+    for (const auto& tag : authenticated_sorted_lookup_provider_tags(descriptor))
+        if (!authenticated_sorted_lookup_provider_is_outer(tag, bit_count))
+            result.push_back(tag);
+    return result;
+}
+
 struct AuthenticatedSortedLookupProof {
-    static const std::uint32_t kVersion = 1U;
+    static const std::uint32_t kVersion = 2U;
     static const std::uint32_t kMaxCommitmentRefs = 256U;
+    static const std::uint32_t kMaxProviderGammaEntries = 256U;
+    static const std::uint32_t kMaxProviderGammaSegments = 1U << 12U;
     static const std::uint32_t kRequiredRelationCount = 5U;
     static const std::uint64_t kMaxProofBytes = 1ULL << 28U;
     std::uint32_t version = kVersion;
     AuthenticatedSortedLookupDescriptor descriptor;
     std::vector<AuthenticatedSortedLookupCommitmentRef> commitments;
+    std::vector<AuthenticatedSortedLookupProviderGamma> provider_gamma_manifest;
     std::vector<AuthenticatedSortedLookupRelationProof> relations;
     // The two hidden endpoints are taken from the corresponding relation's
     // terminal commitment.  Their product is linked to the public table
@@ -2568,12 +2832,37 @@ struct AuthenticatedSortedLookupProof {
     bool valid(std::string* error = nullptr) const {
         if (version != kVersion || !descriptor.valid(error) ||
             commitments.empty() || commitments.size() > kMaxCommitmentRefs ||
+            provider_gamma_manifest.size() > kMaxProviderGammaEntries ||
             relations.size() != kRequiredRelationCount ||
             layout_digest == std::array<byte, 32U>{{}} ||
             commitment_order_digest == std::array<byte, 32U>{{}} ||
             transcript_digest == std::array<byte, 32U>{{}}) {
             if (error && error->empty()) *error = "invalid authenticated sorted-lookup proof header";
             return false;
+        }
+        const auto expected_manifest_tags =
+            authenticated_sorted_lookup_internal_provider_tags(descriptor);
+        if (expected_manifest_tags.size() != provider_gamma_manifest.size()) {
+            if (error) *error = "sorted-lookup provider Gamma manifest count is not canonical";
+            return false;
+        }
+        for (std::size_t index = 0U; index < provider_gamma_manifest.size(); ++index) {
+            const auto& entry = provider_gamma_manifest[index];
+            const std::uint32_t expected_domain =
+                entry.provider_tag.rfind("query_", 0U) == 0U
+                    ? descriptor.query_domain : descriptor.merge_domain;
+            const std::uint32_t expected_count = expected_domain / descriptor.segment_size;
+            if (entry.provider_tag != expected_manifest_tags[index] ||
+                entry.logical_domain != expected_domain ||
+                entry.segment_size != descriptor.segment_size ||
+                entry.segment_count != expected_count || expected_count == 0U ||
+                expected_count > kMaxProviderGammaSegments ||
+                entry.ordered_segment_commitments.size() != expected_count) {
+                if (error) *error = "sorted-lookup provider Gamma manifest tag/layout/order mismatch";
+                return false;
+            }
+            for (const auto& point : entry.ordered_segment_commitments)
+                if (!pedersen_wire_g1_valid(point, error)) return false;
         }
         std::set<std::uint32_t> commitment_indices;
         std::set<std::pair<std::uint32_t, std::uint32_t>> roles;
@@ -2878,7 +3167,7 @@ inline void serialize_authenticated_sorted_lookup(
     std::string error;
     if (!proof.valid(&error))
         throw std::invalid_argument(error.empty() ? "invalid sorted-lookup proof" : error);
-    out.assign({'A', 'S', 'L', '1'});
+    out.assign({'A', 'S', 'L', '2'});
     append_u32(out, proof.version);
     serialize_authenticated_sorted_lookup_descriptor(proof.descriptor, out);
     append_u64(out, static_cast<std::uint64_t>(proof.commitments.size()));
@@ -2890,6 +3179,8 @@ inline void serialize_authenticated_sorted_lookup(
         append_u32(out, ref.segment_size);
         append_u32(out, ref.segment_count);
     }
+    serialize_authenticated_sorted_lookup_provider_gamma_manifest(
+        proof.provider_gamma_manifest, out);
     append_u64(out, static_cast<std::uint64_t>(proof.relations.size()));
     for (const auto& relation : proof.relations) {
         std::vector<byte> encoded;
@@ -2921,7 +3212,7 @@ inline bool deserialize_authenticated_sorted_lookup(
     std::uint64_t max_relation_body_bytes) {
     AuthenticatedSortedLookupProof parsed;
     if (bytes.size() > AuthenticatedSortedLookupProof::kMaxProofBytes || bytes.size() < 8U ||
-        bytes[0] != 'A' || bytes[1] != 'S' || bytes[2] != 'L' || bytes[3] != '1') {
+        bytes[0] != 'A' || bytes[1] != 'S' || bytes[2] != 'L' || bytes[3] != '2') {
         if (error) *error = "invalid authenticated sorted-lookup proof framing";
         return false;
     }
@@ -2943,6 +3234,28 @@ inline bool deserialize_authenticated_sorted_lookup(
             !read_u32(bytes, offset, ref.segment_size) ||
             !read_u32(bytes, offset, ref.segment_count) || !ref.valid(error))
             return false;
+    }
+    if (!read_u64(bytes, offset, count) ||
+        count > AuthenticatedSortedLookupProof::kMaxProviderGammaEntries) {
+        if (error) *error = "invalid sorted-lookup provider Gamma manifest count";
+        return false;
+    }
+    parsed.provider_gamma_manifest.resize(static_cast<std::size_t>(count));
+    for (auto& entry : parsed.provider_gamma_manifest) {
+        std::uint64_t segment_count = 0U;
+        if (!read_string(bytes, offset, entry.provider_tag, 128U) ||
+            !read_u32(bytes, offset, entry.logical_domain) ||
+            !read_u32(bytes, offset, entry.segment_size) ||
+            !read_u32(bytes, offset, entry.segment_count) ||
+            !read_u64(bytes, offset, segment_count) || segment_count == 0U ||
+            segment_count > AuthenticatedSortedLookupProof::kMaxProviderGammaSegments ||
+            segment_count > (bytes.size() - offset) / 48U) {
+            if (error) *error = "truncated sorted-lookup provider Gamma manifest entry";
+            return false;
+        }
+        entry.ordered_segment_commitments.resize(static_cast<std::size_t>(segment_count));
+        for (auto& commitment : entry.ordered_segment_commitments)
+            if (!read_g1(bytes, offset, commitment)) return false;
     }
     if (!read_u64(bytes, offset, count) || count != AuthenticatedSortedLookupProof::kRequiredRelationCount) {
         if (error) *error = "sorted-lookup proof does not carry the required relation set";

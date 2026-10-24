@@ -1,0 +1,303 @@
+warning: virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on edition 2021 which implies `resolver = "2"`
+  |
+  = note: to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+  = note: to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
+  = note: for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `bincode` dependency)
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `log` dependency)
+     Locking 3 packages to latest compatible versions
+      Adding icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+      Adding icicle-core v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-core)
+      Adding icicle-cuda-runtime v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-cuda-runtime)
+   Compiling icicle-cuda-runtime v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-cuda-runtime)
+   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+   Compiling icicle-core v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-core)
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+error[E0433]: failed to resolve: could not find `mv_lookup` in `plonk`
+  --> halo2_proofs/src/poly/query.rs:32:37
+   |
+32 |         source: &'com crate::plonk::mv_lookup::prover::LookupPolynomialSource<C>,
+   |                                     ^^^^^^^^^ could not find `mv_lookup` in `plonk`
+   |
+note: found an item that was configured out
+  --> halo2_proofs/src/plonk.rs:37:16
+   |
+36 | #[cfg(feature = "mv-lookup")]
+   |       --------------------- the item is gated behind the `mv-lookup` feature
+37 | pub(crate) mod mv_lookup;
+   |                ^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `mv_lookup` in `plonk`
+  --> halo2_proofs/src/poly/query.rs:33:29
+   |
+33 |         kind: crate::plonk::mv_lookup::prover::LookupPolynomialKind,
+   |                             ^^^^^^^^^ could not find `mv_lookup` in `plonk`
+   |
+note: found an item that was configured out
+  --> halo2_proofs/src/plonk.rs:37:16
+   |
+36 | #[cfg(feature = "mv-lookup")]
+   |       --------------------- the item is gated behind the `mv-lookup` feature
+37 | pub(crate) mod mv_lookup;
+   |                ^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `mv_lookup` in `plonk`
+   --> halo2_proofs/src/poly/query.rs:175:37
+    |
+175 |         source: &'com crate::plonk::mv_lookup::prover::LookupPolynomialSource<C>,
+    |                                     ^^^^^^^^^ could not find `mv_lookup` in `plonk`
+    |
+note: found an item that was configured out
+   --> halo2_proofs/src/plonk.rs:37:16
+    |
+ 36 | #[cfg(feature = "mv-lookup")]
+    |       --------------------- the item is gated behind the `mv-lookup` feature
+ 37 | pub(crate) mod mv_lookup;
+    |                ^^^^^^^^^
+
+error[E0433]: failed to resolve: could not find `mv_lookup` in `plonk`
+   --> halo2_proofs/src/poly/query.rs:176:29
+    |
+176 |         kind: crate::plonk::mv_lookup::prover::LookupPolynomialKind,
+    |                             ^^^^^^^^^ could not find `mv_lookup` in `plonk`
+    |
+note: found an item that was configured out
+   --> halo2_proofs/src/plonk.rs:37:16
+    |
+ 36 | #[cfg(feature = "mv-lookup")]
+    |       --------------------- the item is gated behind the `mv-lookup` feature
+ 37 | pub(crate) mod mv_lookup;
+    |                ^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `File`
+    --> halo2_proofs/src/poly/spill.rs:2507:25
+     |
+2507 |     use std::fs::{self, File, OpenOptions};
+     |                         ^^^^
+
+warning: unused imports: `NativePermutationAllocationPlan`, `NativeSuccessorStore`, and `NativeSuccessorValidationStats`
+  --> halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |     ^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+error[E0599]: no method named `remove` found for struct `std::sync::MutexGuard<'_, Option<HashMap<usize, NttWorkspace>>>` in the current scope
+    --> halo2_proofs/src/icicle.rs:1009:61
+     |
+1009 |         NTT_WORKSPACES.lock().expect("NTT workspace mutex").remove(&device_id);
+     |                                                             ^^^^^^ method not found in `std::sync::MutexGuard<'_, Option<HashMap<usize, NttWorkspace>>>`
+
+error[E0277]: the type `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+    --> halo2_proofs/src/icicle.rs:1110:88
+     |
+1110 |         let small_fixed = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(fixed[0][..32].to_vec())];
+     |                                                                                        ^^^^ `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+     |
+help: the trait `std::ops::Index<RangeTo<{integer}>>` is not implemented for `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>`
+    --> halo2_proofs/src/poly.rs:91:1
+     |
+  91 | pub struct Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `std::ops::Index<Idx>`
+    --> halo2_proofs/src/poly.rs:122:1
+     |
+ 122 | impl<F, B> Index<usize> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<usize>`
+...
+ 136 | impl<F, B> Index<RangeFrom<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::RangeFrom<usize>>`
+...
+ 150 | impl<F, B> Index<RangeFull> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<RangeFull>`
+...
+ 164 | impl<F, B> Index<Range<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::Range<usize>>`
+
+error[E0282]: type annotations needed
+    --> halo2_proofs/src/icicle.rs:1110:79
+     |
+1110 |         let small_fixed = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(fixed[0][..32].to_vec())];
+     |                                                                               ^^^^^^^^^^^^^^ cannot infer type
+
+error[E0277]: the type `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+    --> halo2_proofs/src/icicle.rs:1111:90
+     |
+1111 |         let small_advice = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(advice[0][..32].to_vec())];
+     |                                                                                          ^^^^ `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+     |
+help: the trait `std::ops::Index<RangeTo<{integer}>>` is not implemented for `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>`
+    --> halo2_proofs/src/poly.rs:91:1
+     |
+  91 | pub struct Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `std::ops::Index<Idx>`
+    --> halo2_proofs/src/poly.rs:122:1
+     |
+ 122 | impl<F, B> Index<usize> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<usize>`
+...
+ 136 | impl<F, B> Index<RangeFrom<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::RangeFrom<usize>>`
+...
+ 150 | impl<F, B> Index<RangeFull> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<RangeFull>`
+...
+ 164 | impl<F, B> Index<Range<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::Range<usize>>`
+
+error[E0282]: type annotations needed
+    --> halo2_proofs/src/icicle.rs:1111:80
+     |
+1111 |         let small_advice = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(advice[0][..32].to_vec())];
+     |                                                                                ^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0277]: the type `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+    --> halo2_proofs/src/icicle.rs:1112:94
+     |
+1112 |         let small_instance = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(instance[0][..32].to_vec())];
+     |                                                                                              ^^^^ `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>` cannot be indexed by `RangeTo<{integer}>`
+     |
+help: the trait `std::ops::Index<RangeTo<{integer}>>` is not implemented for `poly::Polynomial<halo2curves::bn256::Fr, poly::LagrangeCoeff>`
+    --> halo2_proofs/src/poly.rs:91:1
+     |
+  91 | pub struct Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: the following other types implement trait `std::ops::Index<Idx>`
+    --> halo2_proofs/src/poly.rs:122:1
+     |
+ 122 | impl<F, B> Index<usize> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<usize>`
+...
+ 136 | impl<F, B> Index<RangeFrom<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::RangeFrom<usize>>`
+...
+ 150 | impl<F, B> Index<RangeFull> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<RangeFull>`
+...
+ 164 | impl<F, B> Index<Range<usize>> for Polynomial<F, B> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ `poly::Polynomial<F, B>` implements `std::ops::Index<std::ops::Range<usize>>`
+
+error[E0282]: type annotations needed
+    --> halo2_proofs/src/icicle.rs:1112:82
+     |
+1112 |         let small_instance = vec![Polynomial::<Bn256Fr, LagrangeCoeff>::from_vec(instance[0][..32].to_vec())];
+     |                                                                                  ^^^^^^^^^^^^^^^^^ cannot infer type
+
+warning: unused variable: `circuit`
+   --> halo2_proofs/src/plonk/keygen.rs:310:5
+    |
+310 |     circuit: &ConcreteCircuit,
+    |     ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_circuit`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `cell_count`
+  --> halo2_proofs/src/plonk/permutation/keygen.rs:66:13
+   |
+66 |         let cell_count = n
+   |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_cell_count`
+
+warning: unused variable: `max_total_backing_bytes`
+  --> halo2_proofs/src/plonk/permutation.rs:34:31
+   |
+34 |     fn new_for_read(len: u64, max_total_backing_bytes: u64) -> io::Result<Self> {
+   |                               ^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_total_backing_bytes`
+
+warning: unused variable: `raw`
+   --> halo2_proofs/src/plonk/permutation.rs:102:9
+    |
+102 |         raw: &mut Vec<u8>,
+    |         ^^^ help: if this is intentional, prefix it with an underscore: `_raw`
+
+warning: irrefutable `if let` pattern
+   --> halo2_proofs/src/plonk/permutation.rs:130:12
+    |
+130 |         if let Self::Memory(entries) = self {
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: this pattern will always match, so the `if let` is useless
+    = help: consider replacing the `if let` with a `let`
+    = note: `#[warn(irrefutable_let_patterns)]` on by default
+
+warning: unused variable: `max_total_backing_bytes`
+   --> halo2_proofs/src/plonk/permutation.rs:125:40
+    |
+125 |     fn validate(&self, max_cells: u64, max_total_backing_bytes: u64) -> io::Result<()> {
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_total_backing_bytes`
+
+warning: variable does not need to be mutable
+   --> halo2_proofs/src/plonk/permutation.rs:452:13
+    |
+452 |         let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `slot0`
+   --> halo2_proofs/src/icicle.rs:997:13
+    |
+997 |         let slot0 = slot0 + slot0;
+    |             ^^^^^ help: if this is intentional, prefix it with an underscore: `_slot0`
+
+Some errors have detailed explanations: E0277, E0282, E0433, E0599.
+For more information about an error, try `rustc --explain E0277`.
+warning: `halo2_proofs` (lib test) generated 13 warnings
+error: could not compile `halo2_proofs` (lib test) due to 11 previous errors; 13 warnings emitted
+Command exited with non-zero status 101
+	Command being timed: "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo -Z unstable-options test --lockfile-path /home/pzh/project/comparison/ezkl/logs/validation/gpu-h-contract-20261023/Cargo.lock --manifest-path vendor/halo2/Cargo.toml -p halo2_proofs --lib --features formal-gpu-msm --release --no-run --target-dir /home/pzh/project/comparison/ezkl/target/gpu --config patch."https://github.com/ingonyama-zk/icicle"."icicle-core".path="/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-core" --config patch."https://github.com/ingonyama-zk/icicle"."icicle-bn254".path="/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254" --config patch."https://github.com/ingonyama-zk/icicle"."icicle-cuda-runtime".path="/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-cuda-runtime""
+	User time (seconds): 3.35
+	System time (seconds): 0.66
+	Percent of CPU this job got: 105%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.80
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 539688
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 38
+	Minor (reclaiming a frame) page faults: 264228
+	Voluntary context switches: 503
+	Involuntary context switches: 51
+	Swaps: 0
+	File system inputs: 5504
+	File system outputs: 76536
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101
+EXIT=101

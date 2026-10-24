@@ -25,6 +25,8 @@ from formal_common import (
     DATASETS,
     FORMAL_GPU_FEATURES,
     FORMAL_GPU_EXECUTION_POLICY,
+    FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES,
+    FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES,
     FORMAL_PHASE_BACKENDS,
     FORMAL_SESSION_ID,
     NATIVE_FORMAL_BACKEND,
@@ -270,9 +272,12 @@ def _validate_native_ntt_profile(
             if isinstance(observed, bool) or not isinstance(observed, int) or observed != expected:
                 abort(f"{path} {document_name} {key} does not match its authenticated source formula")
     if (
-        prove_budget.get("schema") != "ezkl.native-prove-budget.v5"
+        prove_budget.get("schema") != "ezkl.native-prove-budget.v6"
         or prove_budget.get("native_execution_policy") != FORMAL_GPU_EXECUTION_POLICY
         or prove_budget.get("admission_sha256") != sha256(admission_path)
+        or prove_budget.get("h_workspace_borrows_ntt") is not True
+        or prove_budget.get("h_kernel_local_memory_upper_bytes") != FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+        or prove_budget.get("h_program_metadata_upper_bytes") != FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
     ):
         abort(f"{path} native prove budget does not bind the current GPU NTT Admission profile")
     if prove_budget.get("icicle_msm_workspace_query_schema") != "ezkl.icicle.cub_msm_workspace_query.v3":
@@ -285,6 +290,32 @@ def _validate_native_ntt_profile(
         or query_peak != max(ordinary_peak, prepared_peak)
     ):
         abort(f"{path} native prove budget has inconsistent CUB workspace path peaks")
+    expected_cuda_required = (
+        query_peak
+        + plan["icicle_ntt_device_peak_upper_bytes"]
+        + plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+        + FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+    )
+    host_required = prove_budget.get("host_required_known_bytes")
+    host_available = prove_budget.get("host_available_bytes")
+    integrated_device = prove_budget.get("integrated_device")
+    minimum_host_required = FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES + (
+        expected_cuda_required if integrated_device is True else 0
+    )
+    if (
+        prove_budget.get("cuda_required_workspace_bytes") != expected_cuda_required
+        or isinstance(host_required, bool)
+        or not isinstance(host_required, int)
+        or isinstance(host_available, bool)
+        or not isinstance(host_available, int)
+        or not isinstance(integrated_device, bool)
+        or host_required < minimum_host_required
+        or host_required > host_available
+    ):
+        abort(f"{path} native prove budget omits the fused H CUDA or host metadata reserve")
+    plan["h_kernel_local_memory_upper_bytes"] = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+    plan["h_program_metadata_upper_bytes"] = FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
+    plan["cuda_required_workspace_bytes"] = expected_cuda_required
     return plan
 
 
@@ -428,6 +459,15 @@ def _validate_shplonk_fixed_cache_budget(
         "group_disk_bytes": cache_group_disk,
         "bank_header_bytes": cache_bank_header,
     }
+
+
+def require_positive_finite_duration(result: dict[str, Any], field: str, label: str) -> int | float:
+    if field not in result:
+        abort(f"{label} is missing {field}")
+    value = result[field]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        abort(f"{label} {field} must be a positive finite duration")
+    return value
 
 
 def validate_cell(
@@ -622,10 +662,11 @@ def validate_cell(
     proof_metrics = validate_native_proof_metrics(commitment_path, proof_sha256=result["proof_sha256"])
     if metric["operation"] != proof_metrics["operation"] or metric["included_in"] != proof_metrics["included_in"]:
         abort(f"{path} native commitment measurement scope mismatch")
-    duration = result["commitment_time_ms"]
-    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0 or duration != proof_metrics["commitment_time_ms"]:
+    duration = require_positive_finite_duration(result, "commitment_time_ms", str(path))
+    if duration != proof_metrics["commitment_time_ms"]:
         abort(f"{path} commitment_time_ms does not match the native measured duration")
-    if result["prove_time_ms"] != proof_metrics["prove_time_ms"]:
+    prove_time = require_positive_finite_duration(result, "prove_time_ms", str(path))
+    if prove_time != proof_metrics["prove_time_ms"]:
         abort(f"{path} prove_time_ms does not match native proof timing")
     if not math.isclose(
         float(result["phase_timings_ms"].get("prove", float("nan"))),
@@ -644,7 +685,8 @@ def validate_cell(
     native_verify_metrics = validate_native_verify_metrics(verify_metrics_path, proof_sha256=result["proof_sha256"])
     if verify_metric["operation"] != native_verify_metrics["operation"] or verify_metric["included_in"] != native_verify_metrics["included_in"]:
         abort(f"{path} native verification measurement scope mismatch")
-    if result["verify_time_ms"] != native_verify_metrics["verify_time_ms"]:
+    verify_time = require_positive_finite_duration(result, "verify_time_ms", str(path))
+    if verify_time != native_verify_metrics["verify_time_ms"]:
         abort(f"{path} verify_time_ms does not match native verification timing")
     artifact_manifest = path_from_result(result["artifact_manifest_path"], "artifact identity manifest")
     artifact = validate_artifact_identity(
@@ -699,6 +741,7 @@ def validate_cell(
         prove_budget = load_json(artifact_manifest.parent / native_receipt_names[3], "native proving-key read budget")
         admission_path = artifact_manifest.parent / "admission.json"
         admission = load_json(admission_path, "formal native admission")
+        current_admission_sha256 = sha256(admission_path)
         if any(not isinstance(value, dict) for value in (setup_receipt, keygen_budget, keygen_receipt, prove_budget)):
             abort(f"{path} native resource receipts must be JSON objects")
         native_ntt_plan = _validate_native_ntt_profile(path, admission_path, admission, prove_budget)
@@ -908,7 +951,7 @@ def validate_cell(
         ):
             abort(f"{path} native keygen census exceeds its VK/PK resource caps")
         expected_prove = {
-            "schema": "ezkl.native-prove-budget.v5",
+            "schema": "ezkl.native-prove-budget.v6",
             "session_id": session_id,
             "dataset": dataset,
             "admission_sha256": setup_receipt.get("admission_sha256"),
@@ -924,6 +967,7 @@ def validate_cell(
             "build_receipt_sha256": result["build_receipt_sha256"],
             "build_environment_sha256": result["build_environment_sha256"],
             "native_execution_policy": FORMAL_GPU_EXECUTION_POLICY,
+            "h_workspace_borrows_ntt": True,
             **native_ntt_plan,
         }
         prove_budget_exact_keys = set(expected_prove) | {
@@ -966,6 +1010,9 @@ def validate_cell(
             "native_pk_read_stream_buffer_upper_bytes",
             "host_available_bytes",
             "host_required_known_bytes",
+            "h_kernel_local_memory_upper_bytes",
+            "h_program_metadata_upper_bytes",
+            "cuda_required_workspace_bytes",
             "integrated_device",
             "device_workspace_peak_bytes",
             "backing_scope",
@@ -974,7 +1021,6 @@ def validate_cell(
         require_exact_keys(prove_budget, prove_budget_exact_keys, "native prove budget")
         if any(prove_budget.get(name) != value for name, value in expected_prove.items()):
             abort(f"{path} native prove budget does not bind its setup, keygen, and binary identities")
-        current_admission_sha256 = sha256(admission_path)
         if (
             not isinstance(admission, dict)
             or receipt_digests["admission.json"] != current_admission_sha256
@@ -1105,7 +1151,9 @@ def validate_cell(
             "icicle_msm_precomputed_basis_device_bytes", "icicle_msm_precomputed_basis_device_peak_bytes",
             "msm_operations", "gpu_msm_chunk_calls", "ntt_calls", "cpu_fft_calls", "synchronized_calls", "device_id",
             "gpu_ntt_elements", "ntt_max_size", "ntt_workspace_capacity_bytes", "ntt_domain_capacity_bytes",
-            "ntt_host_staging_capacity_bytes", "ntt_device_peak_upper_bound_bytes", "evidence",
+            "ntt_host_staging_capacity_bytes", "ntt_device_peak_upper_bound_bytes",
+            "gpu_h_eval_groups", "gpu_h_eval_calls", "gpu_h_eval_rows", "gpu_h_eval_fallbacks", "gpu_h_eval_chunks",
+            "gpu_h_eval_syncs", "gpu_h_workspace_high_water_bytes", "gpu_h_local_memory_peak_upper_bytes", "evidence",
         }, "native GPU prover record")
         counts = [record[key] for key in (
             "schema_version", "icicle_msm_max_concurrency", "icicle_msm_precompute_factor", "gpu_msm_precompute_calls",
@@ -1114,11 +1162,14 @@ def validate_cell(
             "icicle_msm_precomputed_basis_device_peak_bytes", "msm_operations", "gpu_msm_chunk_calls", "ntt_calls",
             "cpu_fft_calls", "synchronized_calls", "device_id", "gpu_ntt_elements", "ntt_max_size",
             "ntt_workspace_capacity_bytes", "ntt_domain_capacity_bytes", "ntt_host_staging_capacity_bytes",
-            "ntt_device_peak_upper_bound_bytes",
+            "ntt_device_peak_upper_bound_bytes", "gpu_h_eval_groups", "gpu_h_eval_calls", "gpu_h_eval_rows", "gpu_h_eval_fallbacks",
+            "gpu_h_eval_chunks", "gpu_h_eval_syncs", "gpu_h_workspace_high_water_bytes",
+            "gpu_h_local_memory_peak_upper_bytes",
         )]
         if any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in counts):
             abort("native GPU prover record has invalid device/call counters")
-        calls = record["gpu_msm_chunk_calls"] + record["gpu_msm_precompute_calls"] + record["ntt_calls"]
+        kernel_calls = record["gpu_msm_chunk_calls"] + record["gpu_msm_precompute_calls"] + record["ntt_calls"] + record["gpu_h_eval_chunks"]
+        sync_calls = record["gpu_msm_chunk_calls"] + record["gpu_msm_precompute_calls"] + record["ntt_calls"] + record["gpu_h_eval_syncs"]
         max_size = record["ntt_max_size"]
         plan = native_ntt_plan
         if plan is None:
@@ -1131,7 +1182,7 @@ def validate_cell(
         minimum_ntt_elements = (1 << 16) * record["ntt_calls"]
         maximum_ntt_elements = max_size * record["ntt_calls"]
         if (
-            record["schema_version"] != 3
+            record["schema_version"] != 4
             or record["proof_sha256"] != result["proof_sha256"]
             or record["admission_sha256"] != sha256(proof.parent / "admission.json")
             or record["native_execution_policy"] != FORMAL_GPU_EXECUTION_POLICY
@@ -1152,6 +1203,13 @@ def validate_cell(
             or (record["ntt_calls"] > 0 and max_size < (1 << 16))
             or (record["ntt_calls"] > 0 and record["gpu_ntt_elements"] < minimum_ntt_elements)
             or (record["ntt_calls"] > 0 and record["gpu_ntt_elements"] > maximum_ntt_elements)
+            or record["gpu_h_eval_calls"] <= 0
+            or record["gpu_h_eval_groups"] != record["gpu_h_eval_calls"] + record["gpu_h_eval_fallbacks"]
+            or record["gpu_h_eval_rows"] <= 0
+            or record["gpu_h_eval_chunks"] <= 0
+            or record["gpu_h_eval_syncs"] != record["gpu_h_eval_chunks"]
+            or record["gpu_h_workspace_high_water_bytes"] > plan["icicle_ntt_device_workspace_upper_bytes"]
+            or record["gpu_h_local_memory_peak_upper_bytes"] > plan["h_kernel_local_memory_upper_bytes"]
             or (max_size != 0 and max_size & (max_size - 1) != 0)
             or max_size > plan["icicle_ntt_capacity_elements"]
             or record["ntt_workspace_capacity_bytes"] != expected_workspace
@@ -1162,10 +1220,10 @@ def validate_cell(
             or expected_domain > plan["icicle_ntt_domain_cache_upper_bytes"]
             or expected_device_peak > plan["icicle_ntt_device_peak_upper_bytes"]
             or expected_host > plan["icicle_ntt_host_staging_upper_bytes"]
-            or calls <= 0
-            or record["synchronized_calls"] != calls
+            or kernel_calls <= 0
+            or record["synchronized_calls"] != sync_calls
             or record["evidence"] != result["gpu_evidence"]
-            or result["gpu_evidence"]["gpu_kernel_invocation_count"] != calls
+            or result["gpu_evidence"]["gpu_kernel_invocation_count"] != kernel_calls
         ):
             abort("native GPU prover record is not synchronized and bound to the verified proof")
         if formal:

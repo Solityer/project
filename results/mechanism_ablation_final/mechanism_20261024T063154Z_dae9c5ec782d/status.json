@@ -1,0 +1,14 @@
+{
+  "expected_cell_count": 240,
+  "expected_config_count": 40,
+  "expected_pair_count": 120,
+  "failure_reason": null,
+  "formal_cells_executed": 0,
+  "independent_verify": "not_run",
+  "proofs_generated": 0,
+  "real_input_bundles_generated": 0,
+  "security_ledger": "not_checked",
+  "session_id": "mechanism_20261024T063154Z_dae9c5ec782d",
+  "session_status": "preflight_complete",
+  "updated_utc": "2026-10-24T06:31:55Z"
+}

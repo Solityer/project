@@ -45,11 +45,8 @@ struct NativeRelationWitness {
     std::string registry_path;
     std::array<zkdl::byte, 32> srs_digest{};
     std::array<zkdl::byte, 32> registry_digest{};
-    std::array<zkdl::byte, 32> model_blinder_digest{};
     bool srs_authenticated = false;
     bool registry_authenticated = false;
-    bool model_blinders_authenticated = false;
-    bool model_blinders_present = false;
 };
 
 bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofResult *result, std::string *error);

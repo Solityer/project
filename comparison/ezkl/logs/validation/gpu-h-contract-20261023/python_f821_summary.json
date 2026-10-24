@@ -1,0 +1,6 @@
+{
+  "diagnostic_count": 33,
+  "f821_undefined_count": 0,
+  "f821_undefined_diagnostics": [],
+  "pyflakes_general_exit_code": 1
+}

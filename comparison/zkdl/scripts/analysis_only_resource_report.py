@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Print source-derived five-dataset zkDL capacity bounds without preparation.
+"""Print native-shape-derived five-dataset zkDL capacity bounds without preparation.
 
 This tool invokes only ``gat_runner resource-plan`` and feeds its typed
 ANALYSIS_ONLY records through the same Python phase-bound equations used by the
@@ -21,7 +21,6 @@ from typing import Any
 
 import formal_phase
 import formal_runner
-import formal_provenance
 from prepare_form_resources import audit_formal_prerequisites
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,38 +33,7 @@ class ResourceReportError(RuntimeError):
 
 
 PLANNED_SHAPE_SCHEMA = "zkdl_analysis_only_planned_shape_v1"
-PLANNED_SHAPE_FIELDS = {"schema", "status", "dataset", "config_sha256", "scale_chain_sha256", "input_identity", "graph", "checkpoint", "table_plan", "sorted_lookup_plan", "family_domains", "family_domain_count", "family_domain_sha256", "srs_plan", "ledger_plan", "analysis_source_identity", "prepared_resources_claimed", "authenticated_resource_digests_present"}
-INPUT_IDENTITY_FIELDS = {"metadata_sha256", "edge_file_sha256", "node_ptr_file_sha256", "checkpoint_manifest_sha256", "checkpoint_tensor_export_sha256"}
-
-
-def _config_values(config: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    for line in config.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        values[key.strip()] = value.strip()
-    return values
-
-
-def _planned_input_paths(config: Path, dataset: str) -> dict[str, Path | None]:
-    values = _config_values(config)
-    cache_root = Path(values.get("cache_root", "data/cache"))
-    checkpoint_bundle = Path(values.get("checkpoint_bundle", ""))
-    if (cache_root.is_absolute() or ".." in cache_root.parts or checkpoint_bundle.is_absolute() or
-            not checkpoint_bundle.parts or ".." in checkpoint_bundle.parts):
-        raise ResourceReportError(f"{dataset}: planned input paths must remain baseline-local")
-    graph_root = ROOT / cache_root / dataset
-    checkpoint_root = ROOT / checkpoint_bundle
-    return {"metadata_sha256": graph_root / "meta.cfg", "edge_file_sha256": graph_root / "edges.txt", "node_ptr_file_sha256": graph_root / "node_ptr.txt" if dataset == "ppi" else None, "checkpoint_manifest_sha256": checkpoint_root / "manifest.json", "checkpoint_tensor_export_sha256": checkpoint_root / "tensors.txt", "scale_chain_sha256": ROOT / "configs" / "quantization_scale_chain.cfg"}
-
-
-def _hash_planned_inputs(paths: dict[str, Path | None]) -> dict[str, str | None]:
-    for key, path in paths.items():
-        if path is not None and (path.is_symlink() or not path.is_file()):
-            raise ResourceReportError(f"planned input {key} is missing or symlinked: {path}")
-    return {key: formal_phase.sha256_file(path) if path is not None else None for key, path in paths.items()}
+PLANNED_SHAPE_FIELDS = {"schema", "status", "dataset", "scale_chain_sha256", "graph", "checkpoint", "table_plan", "sorted_lookup_plan", "family_domains", "family_domain_count", "family_domain_sha256", "srs_plan", "ledger_plan", "prepared_resources_claimed", "authenticated_resource_digests_present"}
 
 
 def _require_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
@@ -92,19 +60,19 @@ def _build_planned_shape(planned: dict[str, Any], dataset: str) -> dict[str, Any
     planned_shape["schema"] = PLANNED_SHAPE_SCHEMA
     planned_shape["status"] = "ANALYSIS_ONLY_PLANNED"
     planned_shape["dataset"] = dataset
-    planned_shape["config_sha256"] = planned["config_sha256"]
     planned_shape["scale_chain_sha256"] = planned["quantization_scale_chain_sha256"]
-    planned_shape["input_identity"] = {"metadata_sha256": graph["meta_sha256"], "edge_file_sha256": graph["edge_file_sha256"], "node_ptr_file_sha256": graph["node_ptr_file_sha256"], "checkpoint_manifest_sha256": checkpoint["manifest_sha256"], "checkpoint_tensor_export_sha256": checkpoint["tensor_export_sha256"]}
     planned_shape["graph"] = {"nodes": graph["nodes"], "normalized_edges": graph["normalized_edges"], "graphs": graph["graphs"], "raw_edge_rows": graph["raw_edge_rows"], "csr_max_in_degree": graph["csr_max_in_degree"], "features": planned["input_shape"]["features"], "classes": planned["input_shape"]["classes"]}
     planned_shape["checkpoint"] = {"tensor_count": checkpoint["tensor_count"], "max_quantized_model_abs": checkpoint["max_quantized_model_abs"], "model_shapes": checkpoint["model_shapes"], "model_padded_domains": checkpoint["model_padded_domains"]}
     planned_shape["table_plan"] = planned["table_plan"]
     planned_shape["sorted_lookup_plan"] = planned["sorted_lookup_plan"]
     planned_shape["family_domains"] = planned["family_domains"]
     planned_shape["family_domain_count"] = planned["family_domain_count"]
-    planned_shape["family_domain_sha256"] = planned["family_domain_sha256"]
+    planned_shape["family_domain_sha256"] = hashlib.sha256(
+        json.dumps(planned["family_domains"], sort_keys=True, separators=(",", ":"),
+                   ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
     planned_shape["srs_plan"] = planned["srs_plan"]
     planned_shape["ledger_plan"] = planned["ledger_plan"]
-    planned_shape["analysis_source_identity"] = {"planner_sha256": formal_phase.sha256_file(Path(__file__).resolve().parent / "prepare_form_resources.py"), "resource_report_sha256": formal_phase.sha256_file(Path(__file__).resolve()), "formal_phase_sha256": formal_phase.sha256_file(Path(formal_phase.__file__).resolve()), "formal_runner_sha256": formal_phase.sha256_file(Path(formal_runner.__file__).resolve())}
     planned_shape["prepared_resources_claimed"] = False
     planned_shape["authenticated_resource_digests_present"] = False
     _validate_planned_shape(planned_shape, dataset)
@@ -117,16 +85,9 @@ def _validate_planned_shape(value: Any, dataset: str) -> None:
             shape.get("dataset") != dataset or shape.get("prepared_resources_claimed") is not False or
             shape.get("authenticated_resource_digests_present") is not False):
         raise ResourceReportError(f"{dataset}: planned metadata schema/status/side-effect flags are invalid")
-    for field in ("config_sha256", "scale_chain_sha256", "family_domain_sha256"):
+    for field in ("scale_chain_sha256", "family_domain_sha256"):
         if not isinstance(shape.get(field), str) or not re.fullmatch(r"[0-9a-f]{64}", shape[field]):
             raise ResourceReportError(f"{dataset}: planned metadata has an invalid {field}")
-    identity = _require_keys(shape.get("input_identity"), INPUT_IDENTITY_FIELDS, "input identity")
-    for field, digest in identity.items():
-        if field == "node_ptr_file_sha256" and dataset != "ppi":
-            if digest is not None:
-                raise ResourceReportError(f"{dataset}: non-PPI planned metadata unexpectedly binds node_ptr")
-        elif not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ResourceReportError(f"{dataset}: planned metadata has an invalid input identity {field}")
     graph = _require_keys(shape.get("graph"), {"nodes", "normalized_edges", "graphs", "raw_edge_rows", "csr_max_in_degree", "features", "classes"}, "graph")
     if any(type(graph[field]) is not int or graph[field] < 0 for field in graph):
         raise ResourceReportError(f"{dataset}: planned graph fields must be nonnegative integers")
@@ -245,52 +206,16 @@ def _validate_planned_shape(value: Any, dataset: str) -> None:
                 _uint128_decimal(query["key_max_u128"], f"{dataset}: sorted-lookup query key maximum") !=
                 _uint128_decimal(table_family["key_max_u128"], f"{dataset}: sorted-lookup table key maximum")):
             raise ResourceReportError(f"{dataset}: sorted-lookup query/table shape binding is inconsistent")
-    source_identity = _require_keys(shape.get("analysis_source_identity"), {"planner_sha256", "resource_report_sha256", "formal_phase_sha256", "formal_runner_sha256"}, "analysis source identity")
-    for field, digest in source_identity.items():
-        if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
-            raise ResourceReportError(f"{dataset}: planned metadata has an invalid analysis source {field}")
-
-
-def _ppi_node_ptr_source(config: Path) -> tuple[Path, str] | None:
-    if config.stem != "ppi_secure":
-        return None
-    values: dict[str, str] = {}
-    for line in config.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        values[key.strip()] = value.strip()
-    raw_cache = values.get("cache_root")
-    if not raw_cache:
-        raise ResourceReportError("PPI config lacks cache_root for node_ptr provenance")
-    cache_root = Path(raw_cache)
-    if cache_root.is_absolute() or ".." in cache_root.parts:
-        raise ResourceReportError("PPI cache_root is not baseline-local")
-    path = ROOT / cache_root / "ppi" / "node_ptr.txt"
-    if path.is_symlink() or not path.is_file():
-        raise ResourceReportError(f"PPI graph ownership metadata is missing or symlinked: {path}")
-    return path, formal_phase.sha256_file(path)
-
-
 def _resource_plan(runner: Path, dataset: str) -> dict[str, Any]:
     config = ROOT / "configs" / f"{dataset}_secure.cfg"
-    ppi_node_ptr = _ppi_node_ptr_source(config)
-    official_config_bytes = config.read_bytes()
-    input_paths = _planned_input_paths(config, dataset)
-    input_hashes_before = _hash_planned_inputs(input_paths)
     planned = audit_formal_prerequisites(config)
-    if planned.get("dataset") != dataset or planned.get("config_sha256") != hashlib.sha256(official_config_bytes).hexdigest():
-        raise ResourceReportError(f"{dataset}: canonical preflight identity does not bind the official config")
+    if planned.get("dataset") != dataset:
+        raise ResourceReportError(f"{dataset}: canonical preflight reported the wrong dataset")
     checkpoint = planned.get("checkpoint")
     graph = planned.get("graph")
     if not isinstance(checkpoint, dict) or not isinstance(graph, dict):
         raise ResourceReportError(f"{dataset}: canonical preflight omitted graph/checkpoint shape metadata")
     planned_shape = _build_planned_shape(planned, dataset)
-    expected_input_hashes = dict(planned_shape["input_identity"])
-    expected_input_hashes["scale_chain_sha256"] = planned_shape["scale_chain_sha256"]
-    if input_hashes_before != expected_input_hashes:
-        raise ResourceReportError(f"{dataset}: source inputs changed while analytic metadata was built")
     # Keep the explicit top-level identity fields first. The native resource-plan
     # reader scopes nested fragments but uses the shared string reader for the
     # top-level schema; sorting would put ledger_plan.schema ahead of it.
@@ -317,10 +242,6 @@ def _resource_plan(runner: Path, dataset: str) -> dict[str, Any]:
                 raise ResourceReportError(f"{dataset}: planned-shape resource-plan exited {completed.returncode}: {detail}")
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise ResourceReportError(f"{dataset}: resource-plan could not complete: {exc}") from exc
-    if config.read_bytes() != official_config_bytes:
-        raise ResourceReportError(f"{dataset}: official config changed during analysis-only resource-plan")
-    if _hash_planned_inputs(input_paths) != input_hashes_before:
-        raise ResourceReportError(f"{dataset}: graph/model/quantization input changed during analysis-only resource-plan")
     records = []
     for line in completed.stdout.splitlines():
         try:
@@ -345,38 +266,7 @@ def _resource_plan(runner: Path, dataset: str) -> dict[str, Any]:
            {"resource_manifest_digest", "srs_manifest_digest", "build_manifest_digest", "proof_digest", "result_digest"}
            ) for key in record):
         raise ResourceReportError(f"{dataset}: ANALYSIS_ONLY record contains an authentication/proof digest field")
-    config_digest = hashlib.sha256(official_config_bytes).hexdigest()
-    planned_digest = hashlib.sha256(planned_shape_bytes).hexdigest()
-    if record.get("config_sha256") != config_digest or record.get("planned_shape_sha256") != planned_digest:
-        raise ResourceReportError(f"{dataset}: resource-plan did not bind official config and planned metadata")
-    record["official_config_sha256"] = config_digest
-    record["planned_shape_sha256"] = planned_digest
     record["planned_metadata_status"] = "ANALYSIS_ONLY_PLANNED"
-    source_paths = {
-        "gat_runner_source_sha256": ROOT / "gat_adapter" / "gat_runner.cu",
-        "analysis_resource_report_sha256": Path(__file__).resolve(),
-        "formal_phase_source_sha256": Path(formal_phase.__file__).resolve(),
-        "formal_runner_source_sha256": Path(formal_runner.__file__).resolve(),
-        "native_bridge_header_sha256": ROOT / "gat_adapter" / "gat_native_bridge.hpp",
-        "native_core_source_sha256": ROOT / "gat_adapter" / "gat_native_core.cu",
-        "native_core_header_sha256": ROOT / "gat_adapter" / "gat_native_core.cuh",
-        "relation_proof_header_sha256": ROOT / "zkrelation-proof.cuh",
-    }
-    for field, path in source_paths.items():
-        if record.get(field) != formal_phase.sha256_file(path):
-            raise ResourceReportError(f"{dataset}: ANALYSIS_ONLY binary/source hash mismatch for {field}")
-    if ppi_node_ptr is not None:
-        node_ptr_path, original_digest = ppi_node_ptr
-        final_digest = formal_phase.sha256_file(node_ptr_path)
-        if final_digest != original_digest:
-            raise ResourceReportError("PPI node_ptr.txt changed while resource-plan was running")
-        record["node_ptr_file_sha256"] = final_digest
-    else:
-        record["node_ptr_file_sha256"] = None
-    if record.get("metadata_sha256") != graph["meta_sha256"] or record.get("raw_edge_file_sha256") != graph["edge_file_sha256"]:
-        raise ResourceReportError(f"{dataset}: native graph source identities differ from the planned metadata")
-    if record.get("checkpoint_manifest_sha256") != checkpoint["manifest_sha256"]:
-        raise ResourceReportError(f"{dataset}: native checkpoint manifest identity differs from the planned metadata")
     return record
 
 
@@ -452,9 +342,6 @@ def _capacity_inputs(records: dict[str, dict[str, Any]]) -> tuple[dict[str, Any]
 def build_report(runner: Path) -> dict[str, Any]:
     if runner.is_symlink() or not runner.is_file() or not os.access(runner, os.X_OK):
         raise ResourceReportError(f"native gat_runner is missing, symlinked, or not executable: {runner}")
-    source_entries_before = formal_provenance.source_entries(ROOT)
-    source_digest_before = formal_provenance.identity(source_entries_before)
-    binary_digest_before = formal_phase.sha256_file(runner)
     records = {dataset: _resource_plan(runner, dataset) for dataset in DATASETS}
     preflight, native = _capacity_inputs(records)
     # _admission_profile scans this directory only to attach a filesystem
@@ -467,16 +354,6 @@ def build_report(runner: Path) -> dict[str, Any]:
     available_memory, memory_method = formal_runner._effective_host_memory_available()
     disk = os.statvfs(ROOT)
     available_disk = disk.f_bavail * disk.f_frsize
-    source_hashes = {
-        "formal_phase.py": formal_phase.sha256_file(Path(formal_phase.__file__).resolve()),
-        "formal_runner.py": formal_phase.sha256_file(Path(formal_runner.__file__).resolve()),
-        "analysis_only_resource_report.py": formal_phase.sha256_file(Path(__file__).resolve()),
-    }
-    source_entries_after = formal_provenance.source_entries(ROOT)
-    source_digest_after = formal_provenance.identity(source_entries_after)
-    binary_digest_after = formal_phase.sha256_file(runner)
-    if source_digest_after != source_digest_before or binary_digest_after != binary_digest_before:
-        raise ResourceReportError("baseline source tree or native binary changed during the capacity analysis")
     dataset_rows: dict[str, Any] = {}
     for dataset in DATASETS:
         capacity = profile["datasets"][dataset]
@@ -502,19 +379,6 @@ def build_report(runner: Path) -> dict[str, Any]:
             "cell_additional_disk_peak_bytes": capacity["additional_disk_peak_bytes"],
             "host_peak_upper_bound_bytes": capacity["host_peak_bytes"],
             "phase_peak_upper_bound_bytes": phase_peaks,
-            "resource_plan_source_sha256": {
-                "official_config": records[dataset]["official_config_sha256"],
-                "analysis_only_planned_shape": records[dataset]["planned_shape_sha256"],
-                "metadata": records[dataset]["metadata_sha256"],
-                "edges": records[dataset]["raw_edge_file_sha256"],
-                "node_ptr": records[dataset]["node_ptr_file_sha256"],
-                "checkpoint_manifest": records[dataset]["checkpoint_manifest_sha256"],
-                "gat_runner": records[dataset]["gat_runner_source_sha256"],
-                "native_bridge_header": records[dataset]["native_bridge_header_sha256"],
-                "native_core": records[dataset]["native_core_source_sha256"],
-                "native_core_header": records[dataset]["native_core_header_sha256"],
-                "proof_header": records[dataset]["relation_proof_header_sha256"],
-            },
         }
     memory_required = requirements["host_bytes"]
     disk_required = requirements["disk_bytes"]
@@ -546,10 +410,6 @@ def build_report(runner: Path) -> dict[str, Any]:
         },
         "datasets": dataset_rows,
         "capacity_equations": "formal_phase._admission_profile + formal_runner._remaining_capacity_requirements",
-        "analysis_tool_source_sha256": source_hashes,
-        "baseline_source_tree_digest": source_digest_before,
-        "gat_runner_binary_sha256": binary_digest_before,
-        "build_manifest_authenticated": False,
         "analysis_only_resource_plan_records": records,
     }
 

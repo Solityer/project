@@ -137,15 +137,37 @@ class CompactNativeProofContractTest(unittest.TestCase):
                     admission = {"dataset": dataset, "domain_size": base_domain, "native_memory_model": memory}
                     admission_path = root / f"{dataset}-admission.json"
                     admission_path.write_text(json.dumps(admission, separators=(",", ":")), encoding="utf-8")
+                    query_peak = 3072
+                    h_kernel_local_memory_upper_bytes = formal_common.FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
+                    h_program_metadata_upper_bytes = formal_common.FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
+                    expected_cuda_required = (
+                        query_peak
+                        + plan["icicle_ntt_device_peak_upper_bytes"]
+                        + plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+                        + h_kernel_local_memory_upper_bytes
+                    )
                     budget = {
-                        "schema": "ezkl.native-prove-budget.v5",
+                        "schema": "ezkl.native-prove-budget.v6",
                         "native_execution_policy": formal_common.FORMAL_GPU_EXECUTION_POLICY,
+                        "h_workspace_borrows_ntt": True,
+                        "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper_bytes,
+                        "h_program_metadata_upper_bytes": h_program_metadata_upper_bytes,
+                        "cuda_required_workspace_bytes": expected_cuda_required,
+                        "integrated_device": False,
+                        "host_required_known_bytes": h_program_metadata_upper_bytes,
+                        "host_available_bytes": 2 * h_program_metadata_upper_bytes,
                         "admission_sha256": formal_common.sha256(admission_path),
                         "icicle_msm_workspace_query_schema": "ezkl.icicle.cub_msm_workspace_query.v3",
                         "icicle_msm_ordinary_factor1_device_workspace_peak_bytes": 2048,
                         "icicle_msm_prepared_factor4_device_workspace_peak_bytes": 3072,
-                        "device_workspace_peak_bytes": 3072,
+                        "device_workspace_peak_bytes": query_peak,
                         **plan,
+                    }
+                    expected_plan = {
+                        **plan,
+                        "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper_bytes,
+                        "h_program_metadata_upper_bytes": h_program_metadata_upper_bytes,
+                        "cuda_required_workspace_bytes": expected_cuda_required,
                     }
                     self.assertEqual(
                         collect_results._validate_native_ntt_profile(
@@ -154,7 +176,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                             admission,
                             budget,
                         ),
-                        plan,
+                        expected_plan,
                     )
                     bad_budget = dict(budget)
                     bad_budget["icicle_ntt_device_peak_upper_bytes"] += 1
@@ -166,8 +188,8 @@ class CompactNativeProofContractTest(unittest.TestCase):
                             bad_budget,
                         )
 
-            # The task envelope charges host staging in both memory modes and
-            # adds one MSM plus one NTT device peak only for unified memory.
+            # The task envelope charges host staging/metadata in both memory modes
+            # and adds the complete device allocation envelope only for unified memory.
             plan = _ntt_plan(1 << 25, base_domain=FORMAL_GEOMETRY["cora"][0])
             base = {
                 "proof_nonprepare_heap_host_bytes": 100,
@@ -193,6 +215,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                     msm_device
                     + plan["icicle_ntt_device_peak_upper_bytes"]
                     + plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+                    + formal_common.FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
                     if integrated else 0
                 )
                 initial_available = (
@@ -200,6 +223,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                     + base["proof_nonprepare_hot_mmap_host_bytes"]
                     + base["regular_file_mmap_dirty_pagecache_upper_bytes"]
                     + base["lookup_table_cache_retained_host_bytes"]
+                    + formal_common.FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
                     + base["shplonk_extension_host_upper_bytes"]
                     + base["icicle_msm_host_staging_bytes"]
                     + base["icicle_ntt_host_staging_upper_bytes"]

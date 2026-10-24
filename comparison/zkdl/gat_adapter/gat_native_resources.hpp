@@ -92,7 +92,6 @@ struct AuthenticatedModelRegistry {
     std::string generator_digest;
     std::string config_digest;
     std::string verifier_registry_digest;
-    std::string model_manifest_digest;
     std::string static_table_digest;
     std::string scale_chain_digest;
     std::string integer_bound_ledger_digest;
@@ -100,12 +99,10 @@ struct AuthenticatedModelRegistry {
     bool authenticated = false;
 };
 
-struct AuthenticatedModelBlinders {
+struct ModelBlinders {
     std::string path;
-    std::array<std::uint8_t, 32U> digest{};
     std::array<std::uint8_t, 32U> registry_digest{};
     std::vector<NativeModelBlinderInput> entries;
-    bool authenticated = false;
 };
 
 bool load_authenticated_srs(const Config &config, AuthenticatedSrsResource *resource, std::string *error = nullptr);
@@ -114,7 +111,7 @@ bool select_authenticated_srs_chunk(AuthenticatedSrsResource *resource, const st
                                     const AuthenticatedSrsResource::Chunk **chunk, std::string *error = nullptr);
 bool load_authenticated_model_registry(const Config &config, const AuthenticatedSrsResource &srs, AuthenticatedModelRegistry *resource,
                                        std::string *error = nullptr);
-bool load_authenticated_model_blinders(const Config &config, const AuthenticatedModelRegistry &registry, AuthenticatedModelBlinders *resource,
-                                       std::string *error = nullptr);
+bool load_model_blinders(const Config &config, const AuthenticatedModelRegistry &registry, ModelBlinders *resource,
+                         std::string *error = nullptr);
 
 }

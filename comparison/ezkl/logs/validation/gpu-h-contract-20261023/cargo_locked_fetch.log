@@ -1,0 +1,25 @@
+warning: virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on edition 2021 which implies `resolver = "2"`
+  |
+  = note: to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+  = note: to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
+  = note: for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `bincode` dependency)
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `log` dependency)
+ Downloading crates ...
+error: failed to download `memoffset v0.6.5`
+
+Caused by:
+  unable to get packages from source
+
+Caused by:
+  failed to unpack package `memoffset v0.6.5`
+
+Caused by:
+  failed to create directory `/home/pzh/project/comparison/ezkl/.cargo_local/registry/src/index.crates.io-1949cf8c6b5b557f/memoffset-0.6.5`
+
+Caused by:
+  File exists (os error 17)
+Command exited with non-zero status 101
+ELAPSED=0.12 MAXRSS_KB=51348 EXIT=101

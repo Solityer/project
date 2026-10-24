@@ -1,0 +1,121 @@
+ZKGPT_FORMAL_CHILD_STARTED launch_id=94e69096789b489daa73f9a60dafda44 child_pid=2872712
+ZKGPT_FORMAL_STAGE session_id=fba2a7ab38486b6549b7aac7a351e0f8 stage=native-build dataset=- status=RUNNING
+[native-build] bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
+[native-build] base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
+[native-build] -- Configuring done (0.0s)
+[native-build] -- Generating done (0.0s)
+[native-build] -- Build files have been written to: /home/pzh/project/comparison/zkGPT/build/cpu
+[native-build] [  3%] Built target gen_base.o
+[native-build] [  6%] Built target gen_bint.o
+[native-build] [ 12%] Built target mcl
+[native-build] [ 68%] Built target gpt_lib
+[native-build] [ 93%] Built target gat_adapter
+[native-build] [100%] Built target zkgpt_gat_prover
+[native-build] [  6%] Built target gen_bint.o
+[native-build] [  6%] Built target gen_base.o
+[native-build] [ 12%] Built target mcl
+[native-build] [ 68%] Built target gpt_lib
+[native-build] [ 93%] Built target gat_adapter
+[native-build] [100%] Built target zkgpt_gat_verifier
+[native-build] built zkgpt_gat_prover and zkgpt_gat_verifier (cpu) at /home/pzh/project/comparison/zkGPT/build/cpu/gat_adapter/
+ZKGPT_FORMAL_STAGE session_id=fba2a7ab38486b6549b7aac7a351e0f8 stage=requested-dataset-capacity dataset=- status=RUNNING
+[requested-dataset-capacity] CAPACITY_ADMISSION_BEGIN dataset=ppi backend=cpu
+[requested-dataset-capacity] CAPACITY_NATIVE_LOGS dataset=ppi stdout=results/formal/fba2a7ab38486b6549b7aac7a351e0f8/capacity_logs/ppi-cpu.stdout.log stderr=results/formal/fba2a7ab38486b6549b7aac7a351e0f8/capacity_logs/ppi-cpu.stderr.log
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ppi stage=resource_snapshot
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ppi stage=resource_snapshot host_headroom_bytes=124129734656 shared_disk_available_bytes=1671100514304 same_filesystem=true
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ppi stage=canonical_graph_load
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ppi stage=canonical_graph_load nodes=56944 edges=850576 features=50 graphs=295
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ppi stage=shape_estimate
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3710910464 layer_unary=3329127031 layer_binary=321365849 current_layer=112 elapsed_ms=15008
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9546235904 layer_unary=8727937453 layer_binary=757880867 current_layer=112 elapsed_ms=30014
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ppi stage=shape_estimate host_peak_upper_bytes=24812297488 disk_peak_upper_bytes=0 artifact_bytes_upper=732319942
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ppi stage=gkr_point_shape
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ppi stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=4461765168 touched_index_bytes_upper=4461765168
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ppi stage=canonical_all_value_forward status=DEFERRED_TO_OWNED_FORWARD
+[requested-dataset-capacity] CAPACITY_ADMISSION_END dataset=ppi status=READY point_shape=True all_value_mode=deferred_to_owned_forward_v1 host_peak_bytes=24812297488 disk_peak_bytes=562535906912 artifact_bytes=732319942
+[requested-dataset-capacity] CAPACITY_ADMISSION_BEGIN dataset=ogbn_arxiv backend=cpu
+[requested-dataset-capacity] CAPACITY_NATIVE_LOGS dataset=ogbn_arxiv stdout=results/formal/fba2a7ab38486b6549b7aac7a351e0f8/capacity_logs/ogbn_arxiv-cpu.stdout.log stderr=results/formal/fba2a7ab38486b6549b7aac7a351e0f8/capacity_logs/ogbn_arxiv-cpu.stderr.log
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=resource_snapshot
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=resource_snapshot host_headroom_bytes=123720544256 shared_disk_available_bytes=1671037120512 same_filesystem=true
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=canonical_graph_load
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_graph_load nodes=169343 edges=1335586 features=128 graphs=1
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=shape_estimate
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3652190208 layer_unary=3313220803 layer_binary=227880397 current_layer=112 elapsed_ms=15003
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=8278507520 layer_unary=7602099813 layer_binary=565318699 current_layer=112 elapsed_ms=30016
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=14304673792 layer_unary=13245414162 layer_binary=948170622 current_layer=112 elapsed_ms=45027
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=16222519296 layer_unary=15095668554 layer_binary=1015761734 current_layer=112 elapsed_ms=60035
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=17219715072 layer_unary=16092864330 layer_binary=1015761734 current_layer=112 elapsed_ms=75038
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=18188599296 layer_unary=17061748554 layer_binary=1015761734 current_layer=112 elapsed_ms=90052
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=19152240640 layer_unary=18025389898 layer_binary=1015761734 current_layer=112 elapsed_ms=105062
+[requested-dataset-capacity] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=20150484992 layer_unary=19023634250 layer_binary=1015761734 current_layer=112 elapsed_ms=120077
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=shape_estimate host_peak_upper_bytes=37690001048 disk_peak_upper_bytes=0 artifact_bytes_upper=1123508298
+[requested-dataset-capacity] CAPACITY_STAGE_BEGIN dataset=ogbn_arxiv stage=gkr_point_shape
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=gkr_point_shape status=PASS exact=true layers=113 fconn=54 bitmap_bytes=8837424656 touched_index_bytes_upper=8837424656
+[requested-dataset-capacity] CAPACITY_STAGE_END dataset=ogbn_arxiv stage=canonical_all_value_forward status=DEFERRED_TO_OWNED_FORWARD
+[requested-dataset-capacity] CAPACITY_ADMISSION_END dataset=ogbn_arxiv status=READY point_shape=True all_value_mode=deferred_to_owned_forward_v1 host_peak_bytes=37690001048 disk_peak_bytes=1027188261280 artifact_bytes=1123508298
+[requested-dataset-capacity] FORMAL_PREFLIGHT_PARTIAL
+[requested-dataset-capacity] CAPACITY_BLOCKED dataset=cora: OUT_OF_SCOPE:dataset_not_requested
+[requested-dataset-capacity] CAPACITY_BLOCKED dataset=citeseer: OUT_OF_SCOPE:dataset_not_requested
+[requested-dataset-capacity] CAPACITY_BLOCKED dataset=pubmed: OUT_OF_SCOPE:dataset_not_requested
+ZKGPT_FORMAL_STAGE session_id=fba2a7ab38486b6549b7aac7a351e0f8 stage=cell:ppi dataset=ppi status=RUNNING
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3717201920 layer_unary=3330064393 layer_binary=326719943 current_layer=112 elapsed_ms=15007
+[ppi/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9556721664 layer_unary=8734807435 layer_binary=761496645 current_layer=112 elapsed_ms=30016
+[ppi/prover] gat_adapter_prover_stage: native-initSubset begin
+[ppi/prover] gat_adapter_prover_stage: native-initSubset complete elapsed_ms=1.00027e+06
+[ppi/prover] gat_adapter_prover_stage: canonical-plan-gate-validation begin
+[ppi/prover] gat_adapter_prover_stage: canonical-plan-gate-validation complete elapsed_ms=317936
+[ppi/prover] gat_adapter_prover_stage: canonical-plan-context-metadata-validation begin
+[ppi/prover] gat_adapter_prover_stage: canonical-plan-context-metadata-validation complete elapsed_ms=345258
+[ppi/prover] [zkGPT][forward] canonical_forward_generation_calls=1 canonical_forward_generation_ms=438349
+[ppi/prover] [zkGPT][forward] canonical_forward_value_admission_calls=1 canonical_forward_value_admission_ms=3524.9
+[ppi/prover] gat_adapter_prover_stage: formal-context-write begin
+[ppi/prover] gat_adapter_prover_stage: formal-context-write complete elapsed_ms=1197.85
+[ppi/prover] gat_adapter_prover_stage: native-formal-proof begin
+[ppi/prover] gat_adapter_prover_stage: begin
+[ppi/prover] gat_adapter_prover_stage: lasso-build
+[ppi/prover] gat_adapter_prover_stage: witness
+[ppi/prover] gat_adapter_prover_stage: generators
+[ppi/prover] gat_adapter_prover_stage: lasso-prove
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity begin family=function_elu Q=8388608 T=16384
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity complete family=function_elu Q=8388608 T=16384 elapsed_ms=70839.3
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity begin family=function_exp Q=16777216 T=16384
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity complete family=function_exp Q=16777216 T=16384 elapsed_ms=82110.8
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity begin family=function_lrelu Q=16777216 T=16384
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity complete family=function_lrelu Q=16777216 T=16384 elapsed_ms=82263.5
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity begin family=range_all Q=8589934592 T=2
+[ppi/prover] [zkGPT][native-lasso-family] stage=booleanity complete family=range_all Q=8589934592 T=2 elapsed_ms=765730
+[ppi/prover] gat_adapter_prover_stage: gkr-prove
+[ppi/prover] [zkGPT][gkr] begin layers=113 fconn=54
+[ppi/prover] [zkGPT][gkr] layer=112 begin ty=4 size=1386715504 bits=31 u=34 v=29 phase2=1
+[ppi/prover] [zkGPT][gkr] layer=112 phase1 begin rounds=34
+[ppi/prover] gat_adapter_prover_stage: native-formal-proof complete elapsed_ms=1.28218e+07 status=rejected
+[ppi/prover] FAILED: native masked GKR proof failed: native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=147095588864, bound=147095547904, active=147095538208, page_live=147095538240, file=147095538240, tail=2624)
+ZKGPT_FORMAL_CELL_FAILED dataset=ppi error=ChainError: native prover failed with 1; see baseline-local/runs/formal/fba2a7ab38486b6549b7aac7a351e0f8/ppi/prover.stderr.log
+ZKGPT_FORMAL_STAGE session_id=fba2a7ab38486b6549b7aac7a351e0f8 stage=cell:ogbn_arxiv dataset=ogbn_arxiv status=RUNNING
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3683647488 layer_unary=3333035602 layer_binary=239522878 current_layer=112 elapsed_ms=15006
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=8318353408 layer_unary=7614465721 layer_binary=592798679 current_layer=112 elapsed_ms=30013
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=14372831232 layer_unary=13288328108 layer_binary=973414116 current_layer=112 elapsed_ms=45018
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=16299065344 layer_unary=15172214602 layer_binary=1015761734 current_layer=112 elapsed_ms=60021
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=17316184064 layer_unary=16189333322 layer_binary=1015761734 current_layer=112 elapsed_ms=75021
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=18333302784 layer_unary=17206452042 layer_binary=1015761734 current_layer=112 elapsed_ms=90025
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=19350421504 layer_unary=18223570762 layer_binary=1015761734 current_layer=112 elapsed_ms=105031
+[ogbn_arxiv/prover] NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=20366491648 layer_unary=19239640906 layer_binary=1015761734 current_layer=112 elapsed_ms=120036
+[ogbn_arxiv/prover] gat_adapter_prover_stage: native-initSubset begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: native-initSubset complete elapsed_ms=1.72455e+06
+[ogbn_arxiv/prover] gat_adapter_prover_stage: canonical-plan-gate-validation begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: canonical-plan-gate-validation complete elapsed_ms=440635
+[ogbn_arxiv/prover] gat_adapter_prover_stage: canonical-plan-context-metadata-validation begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: canonical-plan-context-metadata-validation complete elapsed_ms=386174
+[ogbn_arxiv/prover] [zkGPT][forward] canonical_forward_generation_calls=1 canonical_forward_generation_ms=1.7568e+06
+[ogbn_arxiv/prover] [zkGPT][forward] canonical_forward_value_admission_calls=1 canonical_forward_value_admission_ms=4925.61
+[ogbn_arxiv/prover] gat_adapter_prover_stage: formal-context-write begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: formal-context-write complete elapsed_ms=2820.67
+[ogbn_arxiv/prover] gat_adapter_prover_stage: native-formal-proof begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: begin
+[ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-build
+[ogbn_arxiv/prover] gat_adapter_prover_stage: witness
+[ogbn_arxiv/prover] gat_adapter_prover_stage: generators
+[ogbn_arxiv/prover] gat_adapter_prover_stage: lasso-prove
+ZKGPT_FORMAL_STAGE session_id=fba2a7ab38486b6549b7aac7a351e0f8 stage=interrupted dataset=- status=INTERRUPTED
+ZKGPT_FORMAL_INTERRUPTED: active native stage group stopped
+ZKGPT_FORMAL_CHILD_EXIT launch_id=94e69096789b489daa73f9a60dafda44 exit_code=130 status=INTERRUPTED

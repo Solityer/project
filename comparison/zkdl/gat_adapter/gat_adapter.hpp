@@ -76,7 +76,6 @@ struct Config {
     std::filesystem::path cache_root;
     std::filesystem::path checkpoint_bundle;
     std::filesystem::path run_root;
-    std::filesystem::path asset_manifest_path;
     std::filesystem::path static_table_descriptor_path;
     std::filesystem::path sorted_lookup_descriptor_path;
     std::filesystem::path integer_bound_ledger_path;
@@ -100,7 +99,6 @@ struct Config {
     std::string report_unit;
     std::string config_digest;
     std::string config_binding_digest;
-    std::string asset_manifest_digest;
     std::string chunking_rule;
     std::string degree_bound_id;
     std::string srs_type;
@@ -110,7 +108,6 @@ struct Config {
     std::string srs_manifest_digest;
     std::filesystem::path model_registry_path;
     std::filesystem::path model_blinder_sidecar_path;
-    std::string model_blinder_sidecar_digest;
     std::string opening_mode;
     std::string binding_mode;
     std::string security_profile_id;
@@ -158,10 +155,6 @@ struct ModelBundle {
     std::string model_param_id;
     std::string quant_cfg_id;
     std::string static_table_id;
-    std::string manifest_digest;
-    std::string tensors_text_digest;
-    std::string tensors_npz_digest;
-    std::string best_model_digest;
     std::uint64_t tensor_count_manifest = 0;
     std::map<std::string, ModelTensor> tensors;
 };
@@ -295,7 +288,6 @@ struct HiddenHeadTrace {
 };
 
 struct HiddenLayerTrace {
-    Matrix input;
     std::vector<HiddenHeadTrace> heads;
     Matrix concat;
 };
@@ -474,10 +466,6 @@ struct PublicStatement {
     std::string integer_bound_ledger_digest;
     std::string integer_bound_ledger_descriptor_digest;
     std::string config_digest;
-    std::string asset_manifest_digest;
-    std::string checkpoint_manifest_digest;
-    std::string checkpoint_tensors_txt_digest;
-    std::string checkpoint_tensors_npz_digest;
     std::string topology_boundary_digest;
     std::string verifier_registry_digest;
     std::uint64_t total_nodes = 0;
@@ -496,7 +484,6 @@ struct PublicStatement {
 struct ProofEnvelope {
     std::string schema_id = "zkDL_gat_proof_envelope_v1";
     std::string statement_id;
-    std::string proof_id;
     std::string backend;
     std::string proof_scope = "full_gat_forward";
     std::string native_core_api = "zkdl_native_gat_bridge_v1";
@@ -542,7 +529,6 @@ struct RunRecord {
     std::string dataset;
     std::string backend;
     std::string statement_id;
-    std::string proof_id;
     std::string verification_status = "NOT_RUN";
     std::string proof_scope = "full_gat_forward";
     std::string static_table_descriptor_digest;
@@ -575,35 +561,6 @@ struct RunRecord {
 
 Config load_config(const std::filesystem::path &path, bool admission_only = false,
                    bool allow_analysis_only_planned = false);
-struct AssetManifestEntry {
-    std::string path;
-    std::uint64_t bytes = 0;
-    std::string sha256;
-};
-
-struct AssetManifest {
-    std::string schema;
-    std::string dataset;
-    std::string quant_cfg_id;
-    std::string config;
-    std::string scale_chain_digest;
-    std::string static_table_descriptor;
-    std::string static_table_descriptor_digest;
-    std::string sorted_lookup_descriptor;
-    std::string sorted_lookup_descriptor_digest;
-    std::string integer_bound_ledger;
-    std::string integer_bound_ledger_descriptor_digest;
-    std::string srs_path;
-    std::string srs_manifest_digest;
-    std::string model_registry_path;
-    std::string model_registry_digest;
-    std::string model_blinder_sidecar_path;
-    std::string model_blinder_sidecar_digest;
-    std::string digest;
-    std::vector<AssetManifestEntry> files;
-};
-
-AssetManifest load_asset_manifest(const Config &config);
 ModelBundle load_model_bundle(const Config &config);
 ModelBundle load_model_metadata(const Config &config);
 Graph load_graph(const Config &config);

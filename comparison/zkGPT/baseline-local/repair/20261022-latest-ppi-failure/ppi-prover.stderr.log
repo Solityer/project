@@ -1,0 +1,32 @@
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=3717201920 layer_unary=3330064393 layer_binary=326719943 current_layer=112 elapsed_ms=15007
+NATIVE_GKR_SHAPE_CENSUS_PROGRESS gates=9556721664 layer_unary=8734807435 layer_binary=761496645 current_layer=112 elapsed_ms=30016
+gat_adapter_prover_stage: native-initSubset begin
+gat_adapter_prover_stage: native-initSubset complete elapsed_ms=1.00027e+06
+gat_adapter_prover_stage: canonical-plan-gate-validation begin
+gat_adapter_prover_stage: canonical-plan-gate-validation complete elapsed_ms=317936
+gat_adapter_prover_stage: canonical-plan-context-metadata-validation begin
+gat_adapter_prover_stage: canonical-plan-context-metadata-validation complete elapsed_ms=345258
+[zkGPT][forward] canonical_forward_generation_calls=1 canonical_forward_generation_ms=438349
+[zkGPT][forward] canonical_forward_value_admission_calls=1 canonical_forward_value_admission_ms=3524.9
+gat_adapter_prover_stage: formal-context-write begin
+gat_adapter_prover_stage: formal-context-write complete elapsed_ms=1197.85
+gat_adapter_prover_stage: native-formal-proof begin
+gat_adapter_prover_stage: begin
+gat_adapter_prover_stage: lasso-build
+gat_adapter_prover_stage: witness
+gat_adapter_prover_stage: generators
+gat_adapter_prover_stage: lasso-prove
+[zkGPT][native-lasso-family] stage=booleanity begin family=function_elu Q=8388608 T=16384
+[zkGPT][native-lasso-family] stage=booleanity complete family=function_elu Q=8388608 T=16384 elapsed_ms=70839.3
+[zkGPT][native-lasso-family] stage=booleanity begin family=function_exp Q=16777216 T=16384
+[zkGPT][native-lasso-family] stage=booleanity complete family=function_exp Q=16777216 T=16384 elapsed_ms=82110.8
+[zkGPT][native-lasso-family] stage=booleanity begin family=function_lrelu Q=16777216 T=16384
+[zkGPT][native-lasso-family] stage=booleanity complete family=function_lrelu Q=16777216 T=16384 elapsed_ms=82263.5
+[zkGPT][native-lasso-family] stage=booleanity begin family=range_all Q=8589934592 T=2
+[zkGPT][native-lasso-family] stage=booleanity complete family=range_all Q=8589934592 T=2 elapsed_ms=765730
+gat_adapter_prover_stage: gkr-prove
+[zkGPT][gkr] begin layers=113 fconn=54
+[zkGPT][gkr] layer=112 begin ty=4 size=1386715504 bits=31 u=34 v=29 phase2=1
+[zkGPT][gkr] layer=112 phase1 begin rounds=34
+gat_adapter_prover_stage: native-formal-proof complete elapsed_ms=1.28218e+07 status=rejected
+FAILED: native masked GKR proof failed: native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=147095588864, bound=147095547904, active=147095538208, page_live=147095538240, file=147095538240, tail=2624)

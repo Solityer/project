@@ -109,6 +109,61 @@ namespace gatzk::mechanism
             });
         }
 
+        std::vector<std::size_t> metadata_component_ids(const std::string &metadata)
+        {
+            constexpr std::string_view begin_marker = "\"selected_components\":[";
+            constexpr std::string_view end_marker = "],\"node_ptr\":[";
+            const auto begin = metadata.find(begin_marker);
+            const auto end = begin == std::string::npos ? std::string::npos : metadata.find(end_marker, begin + begin_marker.size());
+            require(begin != std::string::npos && end != std::string::npos,
+                    "real mechanism metadata has no canonical selected-component and pointer section");
+            std::vector<std::size_t> ids;
+            auto pos = begin + begin_marker.size();
+            while (pos < end)
+            {
+                constexpr std::string_view id_marker = "\"canonical_id\":";
+                const auto id_pos = metadata.find(id_marker, pos);
+                if (id_pos == std::string::npos || id_pos >= end)
+                    break;
+                const auto value_pos = id_pos + id_marker.size();
+                const auto value_end = metadata.find_first_not_of("0123456789", value_pos);
+                if (value_end == value_pos || value_end == std::string::npos || value_end > end)
+                    throw std::runtime_error("real mechanism metadata contains an invalid canonical component ID");
+                std::size_t value = 0;
+                const auto parsed = std::from_chars(metadata.data() + value_pos, metadata.data() + value_end, value, 10);
+                if (parsed.ec != std::errc{} || parsed.ptr != metadata.data() + value_end)
+                    throw std::runtime_error("real mechanism metadata component ID overflows size_t");
+                ids.push_back(value);
+                pos = value_end;
+            }
+            return ids;
+        }
+
+        std::vector<std::size_t> expected_real_component_ids(const std::string &dataset, std::size_t graphs)
+        {
+            require(internal::valid_real_graph_count(dataset, graphs),
+                    "real mechanism graph count does not match its complete registered component selection");
+            if (dataset != "ppi" || graphs == 1)
+                return {0};
+            std::vector<std::size_t> ids(graphs);
+            for (std::size_t graph = 0; graph < graphs; ++graph)
+                ids[graph] = graph;
+            return ids;
+        }
+
+        std::string metadata_pointer_array(std::string_view name, const std::vector<std::size_t> &values)
+        {
+            std::string out = "\"" + std::string(name) + "\":[";
+            for (std::size_t i = 0; i < values.size(); ++i)
+            {
+                if (i != 0)
+                    out.push_back(',');
+                out += std::to_string(values[i]);
+            }
+            out.push_back(']');
+            return out;
+        }
+
         std::string uint192_decimal(std::array<std::uint64_t, 3> limbs)
         {
             if (limbs[0] == 0 && limbs[1] == 0 && limbs[2] == 0)
@@ -849,20 +904,18 @@ namespace gatzk::mechanism
                                                 const internal::RealMechanismInput &input)
         {
             const auto &w = input.witness;
-            require(input.dataset == "cora" || input.dataset == "citeseer" || input.dataset == "ppi",
-                    "real mechanism input dataset is not registered for formal experiments");
-            const auto expected_n = input.dataset == "ppi" ? 65536U : 4096U;
-            const auto expected_e = input.dataset == "ppi" ? 8388608U : 32768U;
-            require(key.manifest.domain_sizes.at("N") == expected_n && key.manifest.domain_sizes.at("edge") == expected_e,
+            const auto *catalog = internal::registered_real_dataset_catalog(input.dataset);
+            require(catalog != nullptr, "real mechanism input dataset is not registered for formal experiments");
+            require(key.manifest.domain_sizes.at("N") == catalog->node_domain_size &&
+                        key.manifest.domain_sizes.at("edge") == catalog->edge_domain_size,
                     "authenticated SRS domains do not match the real dataset catalog");
-            require((options.mechanism == Mechanism::FeatureFolding &&
-                     (options.width == 1 || options.width == 2 || options.width == 4 || options.width == 8)) ||
+            require((options.mechanism == Mechanism::FeatureFolding && options.width >= 1 && options.width <= 8) ||
                         (options.mechanism == Mechanism::SharedNeighborhood && options.width == 8),
-                    "real mechanism width must match a registered feature-folding prefix or eight-lane shared neighborhood");
+                    "real mechanism width must be 1..8 for feature folding or exactly 8 for shared neighborhood");
             require(w.width == 8 && w.node_count == options.nodes && w.edge_count == options.edges &&
                         w.node_ptr.size() == options.graphs + 1,
                     "real mechanism workload flags disagree with the prepared first-head witness");
-            require(input.input_preprocess_id == "row_normalize" && input.model_arch_id.size() != 0 && input.model_param_id.size() != 0 &&
+            require(input.input_preprocess_id == catalog->input_preprocess_id && input.model_arch_id.size() != 0 && input.model_param_id.size() != 0 &&
                         input.quant_cfg_id.size() != 0 && input.static_table_id.size() != 0,
                     "real mechanism input has incomplete formal model identities");
             require(is_sha256_hex(input.config_sha256) && is_sha256_hex(input.checkpoint_bundle_sha256) &&
@@ -939,13 +992,14 @@ namespace gatzk::mechanism
             }
             else
             {
-                const auto expected_n = s.dataset_id == "ppi" ? 65536U : 4096U;
-                const auto expected_e = s.dataset_id == "ppi" ? 8388608U : 32768U;
-                require((s.dataset_id == "cora" || s.dataset_id == "citeseer" || s.dataset_id == "ppi") &&
-                            s.node_domain_size == expected_n && s.edge_domain_size == expected_e && s.input_preprocess_id == "row_normalize" &&
+                const auto *catalog = internal::registered_real_dataset_catalog(s.dataset_id);
+                require(internal::valid_real_graph_count(s.dataset_id, s.graphs),
+                        "real mechanism statement graph count does not match its complete registered component selection");
+                require(catalog != nullptr && s.node_domain_size == catalog->node_domain_size &&
+                            s.edge_domain_size == catalog->edge_domain_size && s.input_preprocess_id == catalog->input_preprocess_id &&
                             s.source_layer == 0 && s.source_head == 0 && s.formal_head_width == 8 && s.width <= 8 &&
                             (s.mechanism != Mechanism::SharedNeighborhood || s.width == 8) &&
-                            (s.mechanism != Mechanism::FeatureFolding || s.width == 1 || s.width == 2 || s.width == 4 || s.width == 8) &&
+                            (s.mechanism != Mechanism::FeatureFolding || (s.width >= 1 && s.width <= 8)) &&
                             is_sha256_hex(s.real_input_bundle_sha256) && is_sha256_hex(s.real_input_witness_sha256) &&
                             is_sha256_hex(s.real_input_metadata_sha256) && is_sha256_hex(s.checkpoint_bundle_sha256) &&
                             is_sha256_hex(s.input_source_manifest_sha256),
@@ -1004,13 +1058,10 @@ namespace gatzk::mechanism
 
         std::string registered_srs_id(const std::string &dataset)
         {
-            if (dataset == "cora")
-                return "cora_formal_srs";
-            if (dataset == "citeseer")
-                return "citeseer_formal_srs";
-            if (dataset == "ppi")
-                return "ppi_formal_srs";
-            throw std::runtime_error("real mechanism input does not have a registered trusted SRS identity: " + dataset);
+            const auto *catalog = internal::registered_real_dataset_catalog(dataset);
+            if (catalog == nullptr)
+                throw std::runtime_error("real mechanism input does not have a registered trusted SRS identity: " + dataset);
+            return std::string(catalog->srs_id);
         }
 
         std::pair<std::size_t, std::size_t> statement_domain_catalog_prefix(const std::string &bytes)
@@ -1431,23 +1482,23 @@ namespace gatzk::mechanism
             const auto metadata_bytes = internal::read_text_file(options.real_input_metadata_path, 64U << 20);
             real_input->metadata_sha256 = internal::sha256_hex(metadata_bytes);
             const auto dataset = real_input->dataset;
+            const auto *catalog = internal::registered_real_dataset_catalog(dataset);
+            if (catalog == nullptr)
+                throw std::runtime_error("real mechanism bundle dataset is outside the registered formal catalog");
             const auto expected_srs_id = registered_srs_id(dataset);
-            const auto registered_n_domain = dataset == "ppi" ? 65536U : 4096U;
-            const auto registered_e_domain = dataset == "ppi" ? 8388608U : 32768U;
+            const auto registered_n_domain = catalog->node_domain_size;
+            const auto registered_e_domain = catalog->edge_domain_size;
             const auto required_coefficients = 2U * registered_e_domain + 14U;
             const auto bundle_path = json_escape_string(std::filesystem::absolute(options.real_input_path).string());
             const auto g = real_input->witness.node_ptr.size() - 1;
-            const bool has_component_zero = metadata_bytes.find("{\"canonical_id\":0,") != std::string::npos;
-            const bool has_component_nine = metadata_bytes.find("{\"canonical_id\":9,") != std::string::npos;
+            const auto component_ids = expected_real_component_ids(dataset, g);
             const auto checkpoint_marker = metadata_bytes.find("\"checkpoint_bundle\":{\"path\":");
             const auto checkpoint_hash_marker = checkpoint_marker == std::string::npos ? std::string::npos :
                 metadata_bytes.find("\"sha256\":\"" + real_input->checkpoint_bundle_sha256 + "\",\"files\":", checkpoint_marker);
-            if (dataset != "cora" && dataset != "citeseer" && dataset != "ppi")
-                throw std::runtime_error("real mechanism bundle dataset is outside the registered formal catalog");
             if (metadata_bytes.find("\"schema\":\"zkgat_real_mechanism_input_v1\"") == std::string::npos ||
                 metadata_bytes.find("\"dataset\":\"" + dataset + "\"") == std::string::npos ||
                 metadata_bytes.find("\"input_preprocess_id\":\"" + real_input->input_preprocess_id + "\"") == std::string::npos ||
-                real_input->input_preprocess_id != "row_normalize" ||
+                real_input->input_preprocess_id != catalog->input_preprocess_id ||
                 metadata_bytes.find("\"model_arch_id\":\"" + real_input->model_arch_id + "\"") == std::string::npos ||
                 metadata_bytes.find("\"model_param_id\":\"" + real_input->model_param_id + "\"") == std::string::npos ||
                 metadata_bytes.find("\"quant_cfg_id\":\"" + real_input->quant_cfg_id + "\"") == std::string::npos ||
@@ -1460,16 +1511,18 @@ namespace gatzk::mechanism
                 metadata_bytes.find("\"layer\":0,\"head\":0,\"formal_head_width\":8") == std::string::npos ||
                 metadata_bytes.find("\"actual\":{\"N\":" + std::to_string(real_input->witness.node_count) + ",\"E\":" +
                                    std::to_string(real_input->witness.edge_count) + ",\"G\":" + std::to_string(g) + "}") == std::string::npos ||
+                metadata_component_ids(metadata_bytes) != component_ids ||
+                metadata_bytes.find(metadata_pointer_array("node_ptr", real_input->witness.node_ptr)) == std::string::npos ||
+                metadata_bytes.find(metadata_pointer_array("edge_ptr", real_input->witness.edge_ptr)) == std::string::npos ||
                 metadata_bytes.find("\"srs_expectation\":{\"dataset_id\":\"" + dataset + "\",\"srs_id\":\"" +
                                    expected_srs_id + "\",\"n_domain\":" + std::to_string(registered_n_domain) +
                                    ",\"e_domain\":" + std::to_string(registered_e_domain) +
-                                   ",\"required_coefficient_count\":" + std::to_string(required_coefficients) + "}") == std::string::npos ||
-                !has_component_zero || (dataset == "ppi" && g == 2 && !has_component_nine) ||
-                ((dataset != "ppi" || g == 1) && has_component_nine))
+                                   ",\"required_coefficient_count\":" + std::to_string(required_coefficients) + "}") == std::string::npos)
                 throw std::runtime_error("real mechanism metadata does not match the canonical witness bundle and data identity");
         }
-        const auto node_domain_size = real_input.has_value() ? (real_input->dataset == "ppi" ? 65536U : 4096U) : 4096U;
-        const auto edge_domain_size = real_input.has_value() ? (real_input->dataset == "ppi" ? 8388608U : 32768U) : 32768U;
+        const auto *real_catalog = real_input.has_value() ? internal::registered_real_dataset_catalog(real_input->dataset) : nullptr;
+        const auto node_domain_size = real_catalog != nullptr ? real_catalog->node_domain_size : 4096U;
+        const auto edge_domain_size = real_catalog != nullptr ? real_catalog->edge_domain_size : 32768U;
         const auto expected_srs_id = real_input.has_value() ? registered_srs_id(real_input->dataset) : std::string{};
         const auto key = load_mechanism_key(options.srs_path, node_domain_size, edge_domain_size, expected_srs_id);
         const auto statement = real_input.has_value() ? generate_real_statement(options, key, *real_input) : generate_statement(options, key, secret);

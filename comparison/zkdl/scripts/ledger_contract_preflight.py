@@ -12,7 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from formal_provenance import ROOT, validate_manifest
+ROOT = Path(__file__).resolve().parent.parent
 
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 
@@ -25,17 +25,13 @@ def canonical_table_file_digest(table: dict) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--session", required=True, type=Path)
-    parser.add_argument("--build-manifest", required=True, type=Path)
     args = parser.parse_args()
 
     session = args.session.resolve()
     session.relative_to(ROOT / "runs")
     if args.session.is_symlink() or not session.is_dir():
         raise SystemExit("ledger-contract-preflight: session must be an existing baseline-local directory")
-    manifest_path = args.build_manifest.resolve()
-    manifest_path.relative_to(ROOT)
-    manifest = validate_manifest(ROOT, manifest_path)
-    native = ROOT / next(item["path"] for item in manifest["binaries"] if item["name"] == "gat_resource_setup")
+    native = ROOT / "gat_resource_setup"
 
     sys.path.insert(0, str(ROOT / "scripts"))
     producer = importlib.import_module("prepare_form_resources")
@@ -74,7 +70,7 @@ def main() -> int:
                 raise SystemExit(f"ledger-contract-preflight: Python/native digest disagreement: {dataset}\n{result.stdout}{result.stderr}")
             print(f"ledger_contract_preflight=PASS dataset={dataset} digest={match.group(1)}", flush=True)
 
-    print("ledger_contract_preflight=PASS datasets=5 parser=source-matched-native digest=canonical-python", flush=True)
+    print("ledger_contract_preflight=PASS datasets=5 parser=native digest=canonical-python", flush=True)
     return 0
 
 

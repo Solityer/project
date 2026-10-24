@@ -22,6 +22,10 @@ if(EXT_FIELD)
   list(APPEND FIELD_SOURCE ${SRC}/vec_ops/extern_extension.cu)
 endif()
 
+if(DEFINED CURVE AND CURVE STREQUAL "bn254" AND FIELD STREQUAL "bn254")
+  list(APPEND FIELD_SOURCE ${SRC}/fields/h_eval_bn254.cu)
+endif()
+
 set(POLYNOMIAL_SOURCE_FILES 
     ${SRC}/polynomials/polynomials.cu
     ${SRC}/polynomials/cuda_backend/polynomial_cuda_backend.cu

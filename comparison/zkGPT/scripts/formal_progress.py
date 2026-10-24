@@ -104,6 +104,39 @@ def inspect_live_launch(root: Path, launch_id: str, status_path: Path) -> tuple[
     return "LIVE", state, ""
 
 
+def session_for_launch(
+    root: Path, launch_status: dict[str, Any] | None,
+) -> tuple[str | None, dict[str, Any] | None, Path | None]:
+    if launch_status is None:
+        return None, None, None
+    launch_started = launch_status.get("started_unix_ns")
+    scope = launch_status.get("requested_datasets")
+    if isinstance(launch_started, bool) or not isinstance(launch_started, int):
+        return None, None, None
+    try:
+        session_dirs = list((root / "results" / "formal").iterdir())
+    except OSError:
+        return None, None, None
+    candidates: list[tuple[int, str, dict[str, Any], Path]] = []
+    for session_dir in session_dirs:
+        if (not session_dir.is_dir() or session_dir.is_symlink() or
+                len(session_dir.name) != 32):
+            continue
+        session_status = read_json(session_dir / "session_status.json")
+        if not isinstance(session_status, dict) or session_status.get("session_id") != session_dir.name:
+            continue
+        started = session_status.get("started_unix_ns")
+        if isinstance(started, bool) or not isinstance(started, int) or started < launch_started:
+            continue
+        if scope is not None and session_status.get("dataset_scope") != scope:
+            continue
+        candidates.append((started, session_dir.name, session_status, session_dir))
+    if not candidates:
+        return None, None, None
+    _started, session_id, session_status, session_dir = max(candidates, key=lambda item: item[0])
+    return session_id, session_status, session_dir
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--once", action="store_true")
@@ -126,26 +159,33 @@ def main() -> int:
             return 1
         launch_dir = pointer_path.parent / launch_id
         owner_health, status, owner_reason = inspect_live_launch(root, launch_id, launch_dir / "status.json")
-        owner = read_json(root / "baseline-local" / "formal-owner.json")
-        session_id = owner.get("session_id") if owner else None
-        session_status = read_json(
-            root / "results" / "formal" / str(session_id) / "session_status.json"
-        ) if isinstance(session_id, str) else None
-        active_stage = (owner or {}).get("active_stage") or (session_status or {}).get("active_stage")
-        active_dataset = (owner or {}).get("active_dataset")
-        formal_state = "INTERRUPTED" if owner_health == "NO_LIVE_OWNER" else ((owner or {}).get("status") or (session_status or {}).get("status"))
+        session_id, session_status, session_dir = session_for_launch(root, status)
+        active_stage = (session_status or {}).get("active_stage")
+        active_dataset = (session_status or {}).get("active_dataset")
+        formal_state = "INTERRUPTED" if owner_health == "NO_LIVE_OWNER" else (session_status or {}).get("status")
+        if ((status or {}).get("status") in stop_formal.TERMINAL_STATES and
+                formal_state == "RUNNING"):
+            formal_state = "INTERRUPTED"
         dataset_scope = ((status or {}).get("requested_datasets") or
-                         (session_status or {}).get("dataset_scope") or
-                         (owner or {}).get("dataset_scope"))
+                         (session_status or {}).get("dataset_scope"))
         if isinstance(dataset_scope, list) and all(isinstance(item, str) for item in dataset_scope):
             scope_text = ",".join(dataset_scope)
         else:
             scope_text = "all5"
-        log_dir = (root / "baseline-local" / "formal-owner-logs" / session_id
-                   if isinstance(session_id, str) else None)
         active_logs: list[Path] = []
-        if log_dir is not None and log_dir.is_dir():
-            active_logs = sorted(log_dir.glob("*.log"), key=lambda item: item.stat().st_mtime_ns)
+        if session_dir is not None:
+            search_roots = [session_dir]
+            if isinstance(active_dataset, str) and isinstance(session_id, str):
+                search_roots.append(root / "baseline-local" / "runs" / "formal" / session_id / active_dataset)
+            for search_root in search_roots:
+                try:
+                    active_logs.extend(
+                        path for path in search_root.rglob("*.log")
+                        if path.is_file() and not path.is_symlink()
+                    )
+                except OSError:
+                    pass
+        active_logs.sort(key=lambda item: item.stat().st_mtime_ns)
         selected_log = active_logs[-1] if active_logs else None
         selected_tail = tail(selected_log) if selected_log is not None else []
         console_path = launch_dir / "console.log"
@@ -183,6 +223,8 @@ def main() -> int:
                 print(f"CONSOLE {line}", flush=True)
             if owner_health != "LIVE" and owner_health != "TERMINAL":
                 print(f"ZKGPT_PROGRESS_OWNER_CHECK {owner_health} reason={owner_reason}", flush=True)
+            if formal_state == "INTERRUPTED" and owner_health == "TERMINAL":
+                print(f"ZKGPT_PROGRESS_INTERRUPTED launch_id={launch_id} reason=launch ended while formal session remained RUNNING", flush=True)
             previous = snapshot
         if owner_health == "NO_LIVE_OWNER":
             print(f"ZKGPT_PROGRESS_INTERRUPTED launch_id={launch_id} reason={owner_reason}", flush=True)

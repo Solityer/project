@@ -1,0 +1,15 @@
+warning: virtual workspace defaulting to `resolver = "1"` despite one or more workspace members being on edition 2021 which implies `resolver = "2"`
+  |
+  = note: to keep the current resolver, specify `workspace.resolver = "1"` in the workspace root's manifest
+  = note: to use the edition 2021 resolver, specify `workspace.resolver = "2"` in the workspace root's manifest
+  = note: for more details see https://doc.rust-lang.org/cargo/reference/resolver.html#resolver-versions
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `bincode` dependency)
+warning: /home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs/Cargo.toml: `default_features` is deprecated in favor of `default-features` and will not work in the 2024 edition
+(in the `log` dependency)
+error: failed to download `cc v1.6.0`
+
+Caused by:
+  attempting to make an HTTP request, but --offline was specified
+Command exited with non-zero status 101
+ELAPSED=0.11 MAXRSS_KB=51664 EXIT=101

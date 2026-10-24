@@ -1,0 +1,794 @@
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: unused import: `ParallelSliceMut`
+  --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:26:23
+   |
+26 |     ParallelIterator, ParallelSliceMut,
+   |                       ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> vendor/halo2/halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: unused variable: `advice_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:692:9
+    |
+692 |         advice_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_advice_values`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:693:9
+    |
+693 |         fixed_values: &[FixedColumnSource<C::Scalar>],
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_values`
+
+warning: unused variable: `instance_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:694:9
+    |
+694 |         instance_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_instance_values`
+
+warning: unused variable: `challenges`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:695:9
+    |
+695 |         challenges: &[C::Scalar],
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenges`
+
+warning: unused variable: `theta`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:707:13
+    |
+707 |             theta,
+    |             ^^^^^ help: try ignoring the field: `theta: _`
+
+warning: variable does not need to be mutable
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:452:13
+    |
+452 |         let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `write_codes` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:164:19
+    |
+103 | impl PackedIdTape {
+    | ----------------- method in this implementation
+...
+164 |     pub(crate) fn write_codes(&mut self, start_index: usize, codes: &[usize]) -> io::Result<()> {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `from_compact` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:434:19
+    |
+413 | impl<F: PrimeField + Copy> FixedColumnSource<F> {
+    | ----------------------------------------------- associated function in this implementation
+...
+434 |     pub(crate) fn from_compact(codebook: Vec<F>, ids: PackedIdTape) -> io::Result<Self> {
+    |                   ^^^^^^^^^^^^
+
+warning: associated items `read_activation` and `activation_fingerprint` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:73:19
+    |
+ 41 | impl SelectorBitmap {
+    | ------------------- associated items in this implementation
+...
+ 73 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+198 |     pub(crate) fn activation_fingerprint(&self) -> u64 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `read_activation`, `is_activated`, and `encoded_byte_len` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:411:19
+    |
+364 | impl SelectorActivationSet {
+    | -------------------------- associated items in this implementation
+...
+411 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+494 |     pub(crate) fn is_activated(&self, row: usize) -> bool {
+    |                   ^^^^^^^^^^^^
+...
+691 |     pub(crate) fn encoded_byte_len(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `compress_selector_bitmaps` and `directly_convert_selector_bitmaps` are never used
+    --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:3199:19
+     |
+2702 | impl<F: Field> ConstraintSystem<F> {
+     | ---------------------------------- methods in this implementation
+...
+3199 |     pub(crate) fn compress_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+3378 |     pub(crate) fn directly_convert_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `process_bitmaps` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit/compress_selectors.rs:414:15
+    |
+414 | pub(crate) fn process_bitmaps<F: Field, E>(
+    |               ^^^^^^^^^^^^^^^
+
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:63:5
+   |
+43 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+63 |     Y(),
+   |     ^
+64 |     /// Previous value
+65 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `evaluate` is never used
+    --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:2076:12
+     |
+1892 | impl<C: CurveAffine> GraphEvaluator<C> {
+     | -------------------------------------- method in this implementation
+...
+2076 |     pub fn evaluate<B: Basis>(
+     |            ^^^^^^^^
+
+warning: method `pair_at` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:111:8
+    |
+ 33 | impl SuccessorEntries {
+    | --------------------- method in this implementation
+...
+111 |     fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+    |        ^^^^^^^
+
+warning: associated functions `read` and `read_with_native_backing_budget` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:279:19
+    |
+273 | / impl<C: SerdeCurveAffine> ProvingKey<C>
+274 | | where
+275 | |     C::Scalar: Field,
+    | |_____________________- associated functions in this implementation
+...
+279 |       pub(super) fn read<R: io::Read>(
+    |                     ^^^^
+...
+288 |       pub(super) fn read_with_native_backing_budget<R: io::Read>(reader: &mut R, _format: SerdeFormat, domain: &EvaluationDomain<C:...
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `domain_size` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:647:19
+    |
+565 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- method in this implementation
+...
+647 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: variant `Memory` is never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:32:5
+   |
+31 | enum PermutationState {
+   |      ---------------- variant in this enum
+32 |     Memory {
+   |     ^^^^^^
+   |
+   = note: `PermutationState` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `cell_at` and `mapping_at_idx` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:99:8
+    |
+ 54 | impl Assembly {
+    | ------------- methods in this implementation
+...
+ 99 |     fn cell_at(&self, cell: usize) -> (usize, usize) {
+    |        ^^^^^^^
+...
+111 |     fn mapping_at_idx(&mut self, column: usize, row: usize) -> Result<(usize, usize), Error> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:410:15
+    |
+410 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:456:19
+    |
+439 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+456 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:122:19
+    |
+ 61 | impl NativePermutationStore {
+    | --------------------------- associated function in this implementation
+...
+122 |     pub(crate) fn new(cell_count: usize) -> io::Result<Self> {
+    |                   ^^^
+
+warning: method `source_ordinal` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:860:8
+    |
+710 | impl NativeSuccessorReadCache {
+    | ----------------------------- method in this implementation
+...
+860 |     fn source_ordinal(
+    |        ^^^^^^^^^^^^^^
+
+warning: associated items `new` and `source_ordinal` are never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1013:19
+     |
+1012 | impl NativeSuccessorStore {
+     | ------------------------- associated items in this implementation
+1013 |     pub(crate) fn new(len: u64) -> io::Result<Self> {
+     |                   ^^^
+...
+1268 |     fn source_ordinal(&self, source: u64) -> io::Result<Option<u64>> {
+     |        ^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1432:19
+     |
+1429 | impl NativeTargetBitmap {
+     | ----------------------- associated function in this implementation
+...
+1432 |     pub(crate) fn new(bit_count: u64) -> io::Result<Self> {
+     |                   ^^^
+
+warning: method `write_value` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:2357:19
+     |
+2356 | impl<F: Copy> SpillBuilder<F> {
+     | ----------------------------- method in this implementation
+2357 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+     |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: function `read_polynomial_vec` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:125:15
+    |
+125 | pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_polynomial_slice` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:161:15
+    |
+161 | pub(crate) fn write_polynomial_slice<W: io::Write, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `polynomial_slice_byte_length` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:179:15
+    |
+179 | pub(crate) fn polynomial_slice_byte_length<F: PrimeField, B>(slice: &[Polynomial<F, B>]) -> usize {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synchronized_operation` is never used
+   --> vendor/halo2/halo2_proofs/src/icicle.rs:296:4
+    |
+296 | fn synchronized_operation(counter: &AtomicU64) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 44 warnings (run `cargo fix --lib -p halo2_proofs` to apply 14 suggestions)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib test) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 2m 03s
+     Running unittests src/lib.rs (target/gpu/release/deps/ezkl-156473c58f1bdb0a)
+
+running 1 test
+test gat_adapter::gpu::proof_evidence_tests::prove_writes_record_bound_sidecar_and_verify_is_read_only_fail_closed ... [sha256] native file identity: started /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/admission.json (0/652 bytes)
+[sha256] native file identity: complete /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/admission.json (652/652 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json (0/1729 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json (1729/1729 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/CMakeLists.txt (0/1400 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/CMakeLists.txt (1400/1400 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/Doxyfile (0/112820 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/Doxyfile (112820/112820 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/README.md (0/3955 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/README.md (3955/3955 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/Common.cmake (0/2772 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/Common.cmake (2772/2772 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/CurvesCommon.cmake (0/586 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/CurvesCommon.cmake (586/586 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/FieldsCommon.cmake (0/551 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cmake/FieldsCommon.cmake (551/551 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cuda-shell.nix (0/962 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/cuda-shell.nix (962/962 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/babybear.h (0/5773 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/babybear.h (5773/5773 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bls12_377.h (0/6501 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bls12_377.h (6501/6501 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bls12_381.h (0/6501 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bls12_381.h (6501/6501 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bn254.h (0/7222 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bn254.h (7222/7222 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bw6_761.h (0/6281 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/bw6_761.h (6281/6281 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/grumpkin.h (0/4666 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/grumpkin.h (4666/4666 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/hash.h (0/913 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/hash.h (913/913 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/m31.h (0/3609 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/m31.h (3609/3609 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/stark252.h (0/2970 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/stark252.h (2970/2970 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/curve.h (0/687 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/curve.h (687/687 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/curve_g2.h (0/729 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/curve_g2.h (729/729 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/ecntt.h (0/186 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/ecntt.h (186/186 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/msm.h (0/348 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/msm.h (348/348 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/msm_g2.h (0/366 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/curves/msm_g2.h (366/366 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/field.h (0/233 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/field.h (233/233 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/field_ext.h (0/259 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/field_ext.h (259/259 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/ntt.h (0/413 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/ntt.h (413/413 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/ntt_ext.h (0/192 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/ntt_ext.h (192/192 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/poseidon.h (0/1043 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/poseidon.h (1043/1043 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/poseidon2.h (0/1160 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/poseidon2.h (1160/1160 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/tree.h (0/758 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/tree.h (758/758 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/vec_ops.h (0/1044 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/vec_ops.h (1044/1044 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/vec_ops_ext.h (0/1149 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/api/templates/fields/vec_ops_ext.h (1149/1149 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/affine.cuh (0/1115 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/affine.cuh (1115/1115 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/curve_config.cuh (0/912 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/curve_config.cuh (912/912 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/macro.h (0/1752 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/macro.h (1752/1752 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bls12_377.cuh (0/3274 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bls12_377.cuh (3274/3274 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bls12_381.cuh (0/3274 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bls12_381.cuh (3274/3274 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bn254.cuh (0/2352 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bn254.cuh (2352/2352 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bw6_761.cuh (0/3207 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/bw6_761.cuh (3207/3207 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/grumpkin.cuh (0/1067 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/params/grumpkin.cuh (1067/1067 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/projective.cuh (0/15095 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/curves/projective.cuh (15095/15095 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/field.cuh (0/36195 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/field.cuh (36195/36195 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/field_config.cuh (0/1209 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/field_config.cuh (1209/1209 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/h_eval_bn254.h (0/474 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/h_eval_bn254.h (474/474 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/host_math.cuh (0/6490 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/host_math.cuh (6490/6490 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/id.h (0/229 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/id.h (229/229 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/params_gen.cuh (0/6830 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/params_gen.cuh (6830/6830 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/ptx.cuh (0/8832 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/ptx.cuh (8832/8832 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/quadratic_extension.cuh (0/7583 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/quadratic_extension.cuh (7583/7583 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/quartic_extension.cuh (0/9996 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/quartic_extension.cuh (9996/9996 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_377_base.cuh (0/920 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_377_base.cuh (920/920 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_377_scalar.cuh (0/754 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_377_scalar.cuh (754/754 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_381_base.cuh (0/667 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_381_base.cuh (667/667 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_381_scalar.cuh (0/755 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bls12_381_scalar.cuh (755/755 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bn254_base.cuh (0/602 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bn254_base.cuh (602/602 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bn254_scalar.cuh (0/739 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bn254_scalar.cuh (739/739 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bw6_761_base.cuh (0/695 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bw6_761_base.cuh (695/695 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bw6_761_scalar.cuh (0/373 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/bw6_761_scalar.cuh (373/373 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/grumpkin_base.cuh (0/223 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/grumpkin_base.cuh (223/223 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/grumpkin_scalar.cuh (0/369 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/snark_fields/grumpkin_scalar.cuh (369/369 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/babybear.cuh (0/811 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/babybear.cuh (811/811 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/m31.cuh (0/8804 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/m31.cuh (8804/8804 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/stark252.cuh (0/785 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/stark_fields/stark252.cuh (785/785 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/storage.cuh (0/511 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/fields/storage.cuh (511/511 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/device_context.cuh (0/2061 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/device_context.cuh (2061/2061 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/error_handler.cuh (0/6148 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/error_handler.cuh (6148/6148 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/modifiers.cuh (0/322 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/modifiers.cuh (322/322 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/sharedmem.cuh (0/5276 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/gpu-utils/sharedmem.cuh (5276/5276 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/hash/hash.cuh (0/5999 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/hash/hash.cuh (5999/5999 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/hash/keccak/keccak.cuh (0/938 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/hash/keccak/keccak.cuh (938/938 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/matrix/matrix.cuh (0/195 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/matrix/matrix.cuh (195/195 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/merkle-tree/merkle.cuh (0/4501 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/merkle-tree/merkle.cuh (4501/4501 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/msm/msm.cuh (0/11007 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/msm/msm.cuh (11007/11007 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/ntt/ntt.cuh (0/10488 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/ntt/ntt.cuh (10488/10488 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/ntt/ntt_impl.cuh (0/1146 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/ntt/ntt_impl.cuh (1146/1146 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/cuda_backend/polynomial_cuda_backend.cuh (0/892 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/cuda_backend/polynomial_cuda_backend.cuh (892/892 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_abstract_factory.h (0/1892 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_abstract_factory.h (1892/1892 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_backend.h (0/3639 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_backend.h (3639/3639 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_context.h (0/3715 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomial_context.h (3715/3715 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomials.h (0/5854 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/polynomials/polynomials.h (5854/5854 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bls12_377_poseidon.h (0/862741 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bls12_377_poseidon.h (862741/862741 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bls12_381_poseidon.h (0/802545 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bls12_381_poseidon.h (802545/802545 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bn254_poseidon.h (0/862721 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bn254_poseidon.h (862721/862721 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bw6_761_poseidon.h (0/1228983 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/bw6_761_poseidon.h (1228983/1228983 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/constants_template.h (0/901 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/constants_template.h (901/901 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/generate_parameters.py (0/2787 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/generate_parameters.py (2787/2787 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/grumpkin_poseidon.h (0/819616 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/grumpkin_poseidon.h (819616/819616 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/m31_poseidon.h (0/35826 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants/m31_poseidon.h (35826/35826 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants.cuh (0/3890 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/constants.cuh (3890/3890 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh (0/6882 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh (6882/6882 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh (0/3061 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh (3061/3061 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/babybear_poseidon2.h (0/30164 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/babybear_poseidon2.h (30164/30164 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/bn254_poseidon2.h (0/249737 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/bn254_poseidon2.h (249737/249737 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/m31_poseidon2.h (0/30419 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/m31_poseidon2.h (30419/30419 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/poseidon2_rust_params.sage (0/26494 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants/poseidon2_rust_params.sage (26494/26494 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants.cuh (0/1811 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/constants.cuh (1811/1811 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/kernels.cuh (0/9808 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/kernels.cuh (9808/9808 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/poseidon2.cuh (0/6255 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/poseidon2.cuh (6255/6255 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/integrity_pointer.h (0/3583 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/integrity_pointer.h (3583/3583 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/mont.cuh (0/1248 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/mont.cuh (1248/1248 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/test_functions.cuh (0/4472 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/test_functions.cuh (4472/4472 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/utils.h (0/379 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/utils.h (379/379 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/utils_kernels.cuh (0/866 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/utils/utils_kernels.cuh (866/866 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/vec_ops/vec_ops.cuh (0/6043 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/vec_ops/vec_ops.cuh (6043/6043 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/CMakeLists.txt (0/851 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/CMakeLists.txt (851/851 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/extern.cu (0/1655 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/extern.cu (1655/1655 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/extern_g2.cu (0/1723 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/curves/extern_g2.cu (1723/1723 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/CMakeLists.txt (0/1874 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/CMakeLists.txt (1874/1874 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/extern.cu (0/612 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/extern.cu (612/612 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/extern_extension.cu (0/641 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/extern_extension.cu (641/641 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/h_eval_bn254.cu (0/5876 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/fields/h_eval_bn254.cu (5876/5876 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/CMakeLists.txt (0/213 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/CMakeLists.txt (213/213 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/.gitignore (0/28 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/.gitignore (28/28 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/Makefile (0/298 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/Makefile (298/298 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/extern.cu (0/1655 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/extern.cu (1655/1655 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/keccak.cu (0/19847 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/keccak.cu (19847/19847 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/test.cu (0/1992 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/test.cu (1992/1992 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/test_tree.cu (0/3433 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/hash/keccak/test_tree.cu (3433/3433 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/.gitignore (0/12 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/.gitignore (12/12 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/extern.cu (0/761 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/extern.cu (761/761 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/extern_mmcs.cu (0/746 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/extern_mmcs.cu (746/746 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/merkle.cu (0/13941 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/merkle.cu (13941/13941 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/mmcs.cu (0/20335 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/mmcs.cu (20335/20335 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/.gitignore (0/99 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/.gitignore (99/99 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/Makefile (0/1139 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/Makefile (1139/1139 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/test.cu (0/16684 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/test.cu (16684/16684 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/test_poseidon2.cu (0/4857 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/merkle/test_poseidon2.cu (4857/4857 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/.gitignore (0/48 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/.gitignore (48/48 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/Makefile (0/736 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/Makefile (736/736 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/test_poseidon2.cu (0/5415 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/merkle-tree/tests/mmcs/test_poseidon2.cu (5415/5415 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/Makefile (0/235 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/Makefile (235/235 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu (0/2399 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu (2399/2399 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern_g2.cu (0/2467 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern_g2.cu (2467/2467 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/msm.cu (0/48235 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/msm.cu (48235/48235 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/tests/msm_test.cu (0/10082 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/tests/msm_test.cu (10082/10082 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/Makefile (0/405 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/Makefile (405/405 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern.cu (0/2408 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern.cu (2408/2408 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern_ecntt.cu (0/939 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern_ecntt.cu (939/939 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern_extension.cu (0/832 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/extern_extension.cu (832/832 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/kernel_ntt.cu (0/43254 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/kernel_ntt.cu (43254/43254 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/ntt.cu (0/31514 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/ntt.cu (31514/31514 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/tests/verification.cu (0/8033 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/tests/verification.cu (8033/8033 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/thread_ntt.cu (0/22901 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/ntt/thread_ntt.cu (22901/22901 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/cuda_backend/kernels.cuh (0/3015 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/cuda_backend/kernels.cuh (3015/3015 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/cuda_backend/polynomial_cuda_backend.cu (0/47161 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/cuda_backend/polynomial_cuda_backend.cu (47161/47161 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/polynomials.cu (0/6646 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/polynomials.cu (6646/6646 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/polynomials_c_api.cu (0/11726 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/polynomials/polynomials_c_api.cu (11726/11726 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/.gitignore (0/14 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/.gitignore (14/14 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/Makefile (0/281 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/Makefile (281/281 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/constants.cu (0/5418 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/constants.cu (5418/5418 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu (0/2059 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu (2059/2059 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/test.cu (0/104292 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/test.cu (104292/104292 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/test_m31.cu (0/2283 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/test_m31.cu (2283/2283 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/.gitignore (0/35 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/.gitignore (35/35 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/Makefile (0/246 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/Makefile (246/246 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/constants.cu (0/5200 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/constants.cu (5200/5200 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/extern.cu (0/2181 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/extern.cu (2181/2181 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test.cu (0/103916 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test.cu (103916/103916 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test_m31.cu (0/3107 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test_m31.cu (3107/3107 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test_poseidon_m31 (0/6021048 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/test_poseidon_m31 (6021048/6021048 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/extern.cu (0/3182 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/extern.cu (3182/3182 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/extern_extension.cu (0/3173 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/extern_extension.cu (3173/3173 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/vec_ops.cu (0/8590 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/vec_ops/vec_ops.cu (8590/8590 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/CMakeLists.txt (0/1117 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/CMakeLists.txt (1117/1117 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/curve_test.cu (0/7707 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/curve_test.cu (7707/7707 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/device_error_test.cu (0/2843 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/device_error_test.cu (2843/2843 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/error_handler_test.cu (0/1552 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/error_handler_test.cu (1552/1552 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/field_test.cu (0/5103 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/field_test.cu (5103/5103 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/polynomial_test.cu (0/32735 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/polynomial_test.cu (32735/32735 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/runner.cu (0/454 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/tests/runner.cu (454/454 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/lib/libingo_field_bn254.a (0/13887544 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/lib/libingo_field_bn254.a (13887544/13887544 bytes, 0.0s)
+[sha256] native file identity: started /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/lib/libingo_curve_bn254.a (0/2909716 bytes)
+[sha256] native file identity: complete /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/lib/libingo_curve_bn254.a (2909716/2909716 bytes, 0.0s)
+[sha256] native file identity: started /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/proof.json (0/42 bytes)
+[sha256] native file identity: complete /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/proof.json (42/42 bytes, 0.0s)
+[sha256] native file identity: started /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/proof.json (0/42 bytes)
+[sha256] native file identity: complete /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/proof.json (42/42 bytes, 0.0s)
+[sha256] native file identity: started /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/admission.json (0/652 bytes)
+[sha256] native file identity: complete /tmp/ezkl-gpu-proof-evidence-3117026-1792747358949686918/admission.json (652/652 bytes, 0.0s)
+
+thread 'gat_adapter::gpu::proof_evidence_tests::prove_writes_record_bound_sidecar_and_verify_is_read_only_fail_closed' (3117027) panicked at src/../gat_adapter/gpu.rs:547:78:
+called `Result::unwrap()` on an `Err` value: UncategorizedError("native GPU NTT profile lacks valid domain_size")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+
+failures:
+
+failures:
+    gat_adapter::gpu::proof_evidence_tests::prove_writes_record_bound_sidecar_and_verify_is_read_only_fail_closed
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 99 filtered out; finished in 0.06s
+
+error: test failed, to rerun pass `--lib`
+Command exited with non-zero status 101
+	Command being timed: "timeout 600s /home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo test --manifest-path Cargo.toml --offline --locked --release --no-default-features --target-dir /home/pzh/project/comparison/ezkl/target/gpu --features formal-gpu --lib gat_adapter::gpu::proof_evidence_tests::prove_writes_record_bound_sidecar_and_verify_is_read_only_fail_closed -- --exact --nocapture --test-threads=1"
+	User time (seconds): 119.91
+	System time (seconds): 3.74
+	Percent of CPU this job got: 100%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 2:03.62
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 4314512
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 44
+	Minor (reclaiming a frame) page faults: 2312431
+	Voluntary context switches: 1512
+	Involuntary context switches: 3802
+	Swaps: 0
+	File system inputs: 25544
+	File system outputs: 167504
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 101

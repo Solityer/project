@@ -79,7 +79,6 @@ struct NativeSortedLookupProviderInput {
     std::string query_ref;
     std::string merge_ref;
     std::string scratch_path;
-    std::string scratch_digest;
     std::string layout_digest;
     std::vector<std::string> commitment_roles;
     std::uint64_t table_logical_rows = 0U;
@@ -128,10 +127,8 @@ struct NativeRelationWitnessInput {
     std::array<std::uint8_t, 32U> srs_digest{};
     std::array<std::uint8_t, 32U> registry_digest{};
 
-    std::array<std::uint8_t, 32U> model_blinder_digest{};
     bool srs_authenticated = false;
     bool registry_authenticated = false;
-    bool model_blinders_authenticated = false;
 };
 
 }

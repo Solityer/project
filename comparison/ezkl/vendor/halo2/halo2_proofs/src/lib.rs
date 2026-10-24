@@ -42,6 +42,7 @@ mod multicore;
 pub mod plonk;
 pub mod poly;
 pub mod transcript;
+pub(crate) mod h_eval;
 
 pub mod dev;
 mod helpers;

@@ -230,7 +230,8 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     if (active_bytes > std::numeric_limits<std::size_t>::max() - (page - 1U)) throw std::overflow_error("native scratch live prefix alignment overflows");
     const std::size_t aligned_live = std::min(mapping.file_bytes, ((active_bytes + page - 1U) / page) * page);
     const std::size_t aligned_end = mapping.file_bytes - mapping.file_bytes % page;
-    if (aligned_live < aligned_end) {
+    const bool has_reclaimable_tail = aligned_live < aligned_end;
+    if (has_reclaimable_tail) {
 #ifdef FALLOC_FL_PUNCH_HOLE
         // Reclaiming an already sparse tail is valid; physical allocation is checked below.
         if (::fallocate(mapping.fd, FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE, static_cast<off_t>(aligned_live), static_cast<off_t>(aligned_end - aligned_live)) != 0)
@@ -241,28 +242,30 @@ inline ReclaimReport reclaim_tail(void* pointer, std::size_t active_bytes, std::
     }
     const std::uint64_t after = fd_allocated_bytes(mapping.fd);
     const std::size_t trailing_fragment = mapping.file_bytes - aligned_end;
-    const auto round_up = [](std::size_t bytes, std::size_t unit) {
-        if (bytes == 0U) return std::size_t(0);
-        if (bytes > std::numeric_limits<std::size_t>::max() - (unit - 1U))
-            return std::numeric_limits<std::size_t>::max();
-        return ((bytes + unit - 1U) / unit) * unit;
-    };
-    const std::size_t allocated_live_bound = round_up(aligned_live, mapping.allocation_unit_bytes);
-    const std::size_t allocated_tail_bound = round_up(trailing_fragment, mapping.allocation_unit_bytes);
-    const std::size_t expected_bound = allocated_live_bound > std::numeric_limits<std::size_t>::max() - allocated_tail_bound
-        ? std::numeric_limits<std::size_t>::max() : allocated_live_bound + allocated_tail_bound;
-    const std::size_t allocation_margin = mapping.allocation_unit_bytes;
-    if (allocation_margin == 0U || expected_bound > std::numeric_limits<std::size_t>::max() - allocation_margin)
-        throw std::overflow_error("native scratch physical block bound overflows");
-    const std::size_t physical_bound = expected_bound + allocation_margin;
-    if (after > physical_bound &&
-        !detail::punched_range_has_no_allocated_extent(mapping.fd, aligned_live, aligned_end))
-        throw std::runtime_error(
-            "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
-            std::to_string(after) + ", bound=" + std::to_string(physical_bound) +
-            ", active=" + std::to_string(active_bytes) + ", page_live=" +
-            std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
-            ", tail=" + std::to_string(trailing_fragment) + ")");
+    if (has_reclaimable_tail) {
+        const auto round_up = [](std::size_t bytes, std::size_t unit) {
+            if (bytes == 0U) return std::size_t(0);
+            if (bytes > std::numeric_limits<std::size_t>::max() - (unit - 1U))
+                return std::numeric_limits<std::size_t>::max();
+            return ((bytes + unit - 1U) / unit) * unit;
+        };
+        const std::size_t allocated_live_bound = round_up(aligned_live, mapping.allocation_unit_bytes);
+        const std::size_t allocated_tail_bound = round_up(trailing_fragment, mapping.allocation_unit_bytes);
+        const std::size_t expected_bound = allocated_live_bound > std::numeric_limits<std::size_t>::max() - allocated_tail_bound
+            ? std::numeric_limits<std::size_t>::max() : allocated_live_bound + allocated_tail_bound;
+        const std::size_t allocation_margin = mapping.allocation_unit_bytes;
+        if (allocation_margin == 0U || expected_bound > std::numeric_limits<std::size_t>::max() - allocation_margin)
+            throw std::overflow_error("native scratch physical block bound overflows");
+        const std::size_t physical_bound = expected_bound + allocation_margin;
+        if (after > physical_bound &&
+            !detail::punched_range_has_no_allocated_extent(mapping.fd, aligned_live, aligned_end))
+            throw std::runtime_error(
+                "native scratch allocated blocks exceed the live-prefix bound after reclamation (allocated=" +
+                std::to_string(after) + ", bound=" + std::to_string(physical_bound) +
+                ", active=" + std::to_string(active_bytes) + ", page_live=" +
+                std::to_string(aligned_live) + ", file=" + std::to_string(mapping.file_bytes) +
+                ", tail=" + std::to_string(trailing_fragment) + ")");
+    }
     mapping.live_bytes = active_bytes;
     mapping.allocated_bytes = after;
     return {before, after, mapping.bytes, mapping.live_bytes, true};

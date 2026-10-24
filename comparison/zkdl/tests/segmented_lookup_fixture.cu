@@ -170,8 +170,7 @@ bool load_authenticated_test_config(const std::filesystem::path &path,
     std::string canonical = "{";
     bool first = true;
     for (const auto &entry : values) {
-        if (entry.first == "srs_manifest_digest" || entry.first == "verifier_registry_digest" ||
-            entry.first == "model_blinder_sidecar_digest") continue;
+        if (entry.first == "srs_manifest_digest" || entry.first == "verifier_registry_digest") continue;
         if (!first) canonical.push_back(',');
         first = false;
         canonical += quote_config_text(entry.first) + ":" + quote_config_text(entry.second);
@@ -251,327 +250,384 @@ bool prepared_msm_chunk_fixture(
     const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
     std::string* error);
 
-bool qpad_selector_cache_proof_fixture(
-    const std::vector<zkdl::CpuG1Point>& generators,
-    const zkdl::CpuG1Point& h, const zkdl::CpuG1Point& u,
-    const zkdl::CpuIpaBasisContext& authenticated_basis,
-    zkdl::CpuG1MsmSession& msm_session,
-    const RelationStatement& statement, std::string* error) {
-    TensorDescriptor descriptor_a;
-    descriptor_a.id = "fixture/qpad-cache/a";
-    descriptor_a.visibility = 3U;
-    descriptor_a.domain_size = 16U;
-    descriptor_a.logical_shape = {3U, 2U};
-    descriptor_a.padded_shape = {4U, 4U};
-    descriptor_a.mle_order = "row-major-a";
-    descriptor_a.stack_axis = "tensor-a";
-    descriptor_a.mapping = "mapping-a";
-    descriptor_a.padding_rule = "zero-mask";
-    TensorDescriptor descriptor_b = descriptor_a;
-    descriptor_b.id = "fixture/qpad-cache/b";
-    descriptor_b.mle_order = "column-major-b";
-    descriptor_b.stack_axis = "tensor-b";
-    descriptor_b.mapping = "mapping-b";
-    SegmentedTensorProvider provider_a, provider_b;
-    std::array<byte, 32U> digest_a{}, digest_b{};
-    if (!qpad_selector_provider(descriptor_a, generators.size(), provider_a, digest_a, error) ||
-        !qpad_selector_provider(descriptor_b, generators.size(), provider_b, digest_b, error))
-        return fixture_fail("qpad-cache-provider", "multidimensional selector provider failed", error);
-    std::vector<byte> expected_digest_bytes = qpad_selector_digest_header(descriptor_a);
-    const FrWire one = zkdl::fr_from_u32(1U);
-    for (std::uint32_t segment = 0U; segment < provider_a.segment_count(); ++segment) {
-        std::vector<FrWire> values;
-        if (!provider_a.read_segment(segment, values, error))
-            return fixture_fail("qpad-cache-provider", "multidimensional selector range read failed", error);
-        const std::uint64_t offset = static_cast<std::uint64_t>(segment) * provider_a.segment_size();
-        for (std::size_t index = 0U; index < values.size(); ++index) {
-            const std::uint64_t linear = offset + index;
-            const FrWire expected = linear / 4U < 3U && linear % 4U < 2U ? FrWire{} : one;
-            if (values[index] != expected)
-                return fixture_fail("qpad-cache-provider", "row-wise mask differs at a multidimensional or segment boundary", error);
-            append_fr_wire(expected_digest_bytes, expected);
-        }
-    }
-    if (zkdl::sha256(expected_digest_bytes) != digest_a || digest_a == digest_b)
-        return fixture_fail("qpad-cache-digest", "canonical selector digest bytes or per-id binding changed", error);
-    const auto check_selector_shape = [&](TensorDescriptor shape_descriptor,
-                                          std::size_t basis_size,
-                                          const std::vector<FrWire>& expected,
-                                          const char* stage) {
-        SegmentedTensorProvider shape_provider;
-        std::array<byte, 32U> shape_digest{};
-        if (!qpad_selector_provider(shape_descriptor, basis_size,
-                                    shape_provider, shape_digest, error) ||
-            shape_provider.logical_domain() != expected.size())
-            return fixture_fail(stage, "selector shape provider was rejected", error);
-        std::vector<byte> canonical = qpad_selector_digest_header(shape_descriptor);
-        for (std::uint32_t segment = 0U;
-             segment < shape_provider.segment_count(); ++segment) {
-            std::vector<FrWire> values;
-            if (!shape_provider.read_segment(segment, values, error))
-                return fixture_fail(stage, "selector shape range read failed", error);
-            const std::size_t offset = static_cast<std::size_t>(segment) *
-                shape_provider.segment_size();
-            if (!std::equal(values.begin(), values.end(), expected.begin() +
-                                static_cast<std::ptrdiff_t>(offset)))
-                return fixture_fail(stage, "row-wise mask differs at a segment boundary", error);
-            for (const auto& value : values) append_fr_wire(canonical, value);
-        }
-        if (zkdl::sha256(canonical) != shape_digest)
-            return fixture_fail(stage, "selector shape digest changed canonical bytes", error);
-        return true;
-    };
-    TensorDescriptor rank_one = descriptor_a;
-    rank_one.id = "fixture/qpad-cache/rank-one";
-    rank_one.domain_size = 8U;
-    rank_one.logical_shape = {5U};
-    rank_one.padded_shape = {8U};
-    std::vector<FrWire> rank_one_expected(8U, one);
-    std::fill_n(rank_one_expected.begin(), 5U, FrWire{});
-    if (!check_selector_shape(rank_one, 4U, rank_one_expected,
-                              "qpad-cache-rank-one")) return false;
-    TensorDescriptor split_row = descriptor_a;
-    split_row.id = "fixture/qpad-cache/split-row";
-    split_row.domain_size = 64U;
-    split_row.logical_shape = {1U, 32U};
-    split_row.padded_shape = {2U, 32U};
-    std::vector<FrWire> split_row_expected(64U, one);
-    std::fill_n(split_row_expected.begin(), 32U, FrWire{});
-    if (!check_selector_shape(split_row, 8U, split_row_expected,
-                              "qpad-cache-split-row")) return false;
-    TensorDescriptor invalid_tail = split_row;
-    invalid_tail.id = "fixture/qpad-cache/invalid-tail";
-    invalid_tail.domain_size = 128U;
-    SegmentedTensorProvider rejected_tail_provider;
-    std::array<byte, 32U> rejected_tail_digest{};
-    std::string shape_error;
-    if (qpad_selector_provider(invalid_tail, 8U, rejected_tail_provider,
-                               rejected_tail_digest, &shape_error))
-        return fixture_fail("qpad-cache-invalid-tail", "domain beyond padded-shape product was accepted", error);
-    ZkRelationSegmentLayout layout;
-    std::uint32_t generator_count = 0U;
-    if (!zktr_segment_layout(descriptor_a.domain_size, generators.size(), layout, error) ||
-        !checked_relation_u32(generators.size(), generator_count, "Qpad fixture generator count", error))
-        return fixture_fail("qpad-cache-key", "cannot derive authenticated selector layout", error);
-    const std::uint32_t padded_generator_count = zkdl::cpu_ipa_padded_size(generator_count);
-    const auto basis_digest = zktr_basis_digest_for_prefix(
-        generators, h, u, generator_count, padded_generator_count, &authenticated_basis);
-    const auto recipe_a = qpad_selector_cache_recipe_key(
-        descriptor_a, layout, generator_count, padded_generator_count,
-        basis_digest, statement.srs_digest);
-    const auto recipe_b = qpad_selector_cache_recipe_key(
-        descriptor_b, layout, generator_count, padded_generator_count,
-        basis_digest, statement.srs_digest);
-    TensorDescriptor rule_variant = descriptor_a;
-    rule_variant.padding_rule = "zero-mask-v2";
-    auto other_srs = statement.srs_digest;
-    other_srs[0U] ^= 1U;
-    if (recipe_a != recipe_b ||
-        recipe_a == qpad_selector_cache_recipe_key(
-            rule_variant, layout, generator_count, padded_generator_count,
-            basis_digest, statement.srs_digest) ||
-        recipe_a == qpad_selector_cache_recipe_key(
-            descriptor_a, layout, generator_count, padded_generator_count,
-            basis_digest, other_srs))
-        return fixture_fail("qpad-cache-key", "semantic recipe, metadata exclusion, or SRS isolation is incorrect", error);
-    QpadSelectorXiCache selector_cache;
-    PreparedQpadSelector prepared_a, prepared_b;
-    std::uint64_t provider_reads_a = 0U;
-    std::uint64_t provider_reads_b = 0U;
-    CommitmentWire selector_wire_a, selector_wire_b;
-    SegmentCommitmentMaterial selector_material_a, selector_material_b;
-    SegmentCommitmentValidationReceipt selector_receipt_a, selector_receipt_b;
-    if (!QpadSelectorCommitmentBuilder::prepare(
-            descriptor_a, generators.size(), prepared_a, error,
-            &provider_reads_a) ||
-        !QpadSelectorCommitmentBuilder::build(
-            prepared_a, generators, h, u, statement, &authenticated_basis,
-            &msm_session, selector_cache, selector_wire_a, selector_material_a,
-            &selector_receipt_a, error) ||
-        !QpadSelectorCommitmentBuilder::prepare(
-            descriptor_b, generators.size(), prepared_b, error,
-            &provider_reads_b) ||
-        !QpadSelectorCommitmentBuilder::build(
-            prepared_b, generators, h, u, statement, &authenticated_basis,
-            &msm_session, selector_cache, selector_wire_b, selector_material_b,
-            &selector_receipt_b, error))
-        return fixture_fail("qpad-cache-build", "cold/hot selector commitment build failed", error);
-    QpadSelectorXiCache cold_cache;
-    PreparedQpadSelector cold_prepared_b;
-    std::uint64_t provider_reads_cold_b = 0U;
-    CommitmentWire cold_wire_b;
-    SegmentCommitmentMaterial cold_material_b;
-    SegmentCommitmentValidationReceipt cold_receipt_b;
-    if (!QpadSelectorCommitmentBuilder::prepare(
-            descriptor_b, generators.size(), cold_prepared_b, error,
-            &provider_reads_cold_b) ||
-        !QpadSelectorCommitmentBuilder::build(
-            cold_prepared_b, generators, h, u, statement, &authenticated_basis,
-            &msm_session, cold_cache, cold_wire_b, cold_material_b,
-            &cold_receipt_b, error))
-        return fixture_fail("qpad-cache-build", "cold selector replay failed", error);
-    const std::uint64_t expected_provider_reads = provider_a.segment_count();
-    if (provider_reads_a != expected_provider_reads ||
-        provider_reads_b != expected_provider_reads ||
-        provider_reads_cold_b != expected_provider_reads)
-        return fixture_fail("qpad-cache-provider-reads", "Qpad cache miss did not fuse its scan or hit reread segments for commitment", error);
-    std::clog << "segmented_fixture stage=qpad-cache-provider-reads status=PASS miss_fused="
-              << provider_reads_a << " hot_hit_digest_only=" << provider_reads_b
-              << " cold_replay_fused=" << provider_reads_cold_b
-              << " segments=" << expected_provider_reads << '\n';
-    std::vector<byte> hot_wire_bytes, cold_wire_bytes;
-    append_commitment(hot_wire_bytes, selector_wire_b);
-    append_commitment(cold_wire_bytes, cold_wire_b);
-    if (!prepared_a.selector_digest_ready() || !prepared_b.selector_digest_ready() ||
-        prepared_b.selector_digest() != cold_prepared_b.selector_digest() ||
-        hot_wire_bytes != cold_wire_bytes ||
-        selector_material_b.blinders != cold_material_b.blinders ||
-        selector_material_b.commitments.size() != cold_material_b.commitments.size() ||
-        selector_cache.peak_live_bytes() > kQpadSelectorXiCacheMaxBytes)
-        return fixture_fail("qpad-cache-equivalence", "hot/cold digest, commitment wire, material, or cache bound differs", error);
-    for (std::size_t index = 0U; index < selector_material_b.commitments.size(); ++index)
-        if (!zkdl::cpu_g1_equal(selector_material_b.commitments[index], cold_material_b.commitments[index]))
-            return fixture_fail("qpad-cache-equivalence", "hot/cold Xi point differs", error);
-    if (!selector_receipt_b.matches_context(
-            "qpad/" + descriptor_b.id, 1U, provider_b, generators, h, u,
-            &authenticated_basis, selector_wire_b, selector_material_b, error) ||
-        !cold_receipt_b.matches_context(
-            "qpad/" + descriptor_b.id, 1U, provider_b, generators, h, u,
-            &authenticated_basis, cold_wire_b, cold_material_b, error))
-        return fixture_fail("qpad-cache-receipt", "hot/cold ID-specific receipt does not match its wire", error);
-    std::string mutation_error;
-    if (selector_receipt_a.matches_context(
-            "qpad/" + descriptor_b.id, 1U, provider_b, generators, h, u,
-            &authenticated_basis, selector_wire_b, selector_material_b, &mutation_error))
-        return fixture_fail("qpad-cache-receipt", "receipt from another tensor ID was accepted", error);
-    CommitmentWire changed_wire = selector_wire_b;
-    changed_wire.segment_commitment_digest[0U] ^= 1U;
-    mutation_error.clear();
-    if (selector_receipt_b.matches_context(
-            "qpad/" + descriptor_b.id, 1U, provider_b, generators, h, u,
-            &authenticated_basis, changed_wire, selector_material_b, &mutation_error))
-        return fixture_fail("qpad-cache-receipt", "tampered segment digest was accepted by hot receipt", error);
 
-    TensorWitness tensor_a, tensor_b;
-    tensor_a.id = descriptor_a.id;
-    tensor_b.id = descriptor_b.id;
-    tensor_a.visibility = tensor_b.visibility = 3U;
-    tensor_a.domain_size = tensor_b.domain_size = 16U;
-    for (std::uint32_t index = 0U; index < 16U; ++index) {
-        const FrWire value = index / 4U < 3U && index % 4U < 2U
-            ? zkdl::fr_from_u32(index + 1U) : FrWire{};
-        tensor_a.values.push_back(value);
-        tensor_b.values.push_back(value);
+bool qpad_same_mask_group_fixture(std::string* error = nullptr) {
+    constexpr std::uint32_t kDomain = 16U;
+    constexpr std::uint32_t kBasisSize = 8U;
+    std::vector<zkdl::CpuG1Point> generators;
+    generators.reserve(kBasisSize);
+    for (std::uint32_t index = 0U; index < kBasisSize; ++index)
+        generators.push_back(zkdl::cpu_g1_mul(
+            zkdl::cpu_g1_generator(), zkdl::fr_from_u32(index + 2U)));
+    const auto h = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(101U));
+    const auto u = zkdl::cpu_g1_mul(
+        zkdl::cpu_g1_generator(), zkdl::fr_from_u32(103U));
+    zkdl::CpuIpaBasisContext basis;
+    if (!zkdl::CpuIpaBasisContext::authenticate(
+            std::move(generators), h, u, basis, error))
+        return fixture_fail("qpad-basis", "small authenticated basis was rejected", error);
+    const auto& owned_generators = basis.generators();
+    zkdl::CpuG1MsmSession msm_session(basis);
+
+    RelationStatement base_statement;
+    base_statement.statement_digest = zkdl::sha256(std::vector<byte>{'s'});
+    base_statement.model_digest = zkdl::sha256(std::vector<byte>{'m'});
+    base_statement.table_digest = zkdl::sha256(std::vector<byte>{'t'});
+    base_statement.ledger_digest = zkdl::sha256(std::vector<byte>{'l'});
+    base_statement.srs_digest = zkdl::sha256(std::vector<byte>{'p'});
+    base_statement.registry_digest = zkdl::sha256(std::vector<byte>{'r'});
+
+    TensorDescriptor descriptor_a;
+    descriptor_a.id = "fixture/qpad-rlc/a";
+    descriptor_a.visibility = 3U;
+    descriptor_a.domain_size = kDomain;
+    descriptor_a.logical_shape = {5U};
+    descriptor_a.padded_shape = {kDomain};
+    descriptor_a.mle_order = "row-major";
+    descriptor_a.stack_axis = "first-axis";
+    descriptor_a.mapping = "input-a";
+    descriptor_a.padding_rule = "all-padding-zero-mask";
+    TensorDescriptor descriptor_b = descriptor_a;
+    descriptor_b.id = "fixture/qpad-rlc/b";
+    descriptor_b.mle_order = "different-text-order";
+    descriptor_b.stack_axis = "different-text-axis";
+    descriptor_b.mapping = "different-text-mapping";
+    TensorDescriptor descriptor_c = descriptor_a;
+    descriptor_c.id = "fixture/qpad-rlc/c";
+    descriptor_c.logical_shape = {6U};
+    descriptor_c.mapping = "different-mask";
+    const std::vector<TensorDescriptor> descriptors{
+        descriptor_a, descriptor_b, descriptor_c};
+
+    for (const auto& descriptor : descriptors) {
+        SegmentedTensorProvider selector;
+        if (!qpad_selector_provider_unhashed(
+                descriptor, owned_generators.size(), selector, error))
+            return fixture_fail("qpad-public-selector", "public selector construction failed", error);
+        std::uint64_t offset = 0U;
+        for (std::uint32_t segment = 0U; segment < selector.segment_count(); ++segment) {
+            std::vector<FrWire> mask;
+            if (!selector.read_segment(segment, mask, error))
+                return fixture_fail("qpad-public-selector", "public selector segment read failed", error);
+            for (const FrWire& value : mask) {
+                const FrWire expected = offset < descriptor.logical_shape.front()
+                    ? FrWire{} : zkdl::fr_from_u32(1U);
+                if (value != expected)
+                    return fixture_fail("qpad-public-selector", "row-major mask enumeration differs from the logical prefix", error);
+                std::vector<FrWire> msb_point(log2_exact(kDomain), FrWire{});
+                for (std::size_t bit = 0U; bit < msb_point.size(); ++bit) {
+                    const std::size_t lsb = msb_point.size() - 1U - bit;
+                    if (((offset >> lsb) & 1U) != 0U)
+                        msb_point[bit] = zkdl::fr_from_u32(1U);
+                }
+                if (qpad_selector_mle_from_point(descriptor, msb_point) != expected)
+                    return fixture_fail("qpad-public-selector", "verifier Boolean MLE disagrees with the enumerated row-major mask", error);
+                ++offset;
+            }
+        }
+        if (offset != kDomain)
+            return fixture_fail("qpad-public-selector", "selector enumeration did not cover the padded domain", error);
     }
-    const FrWire blinder_a = zkdl::fr_from_u32(31U);
-    const FrWire blinder_b = zkdl::fr_from_u32(37U);
+    fixture_pass("qpad-public-selector", "enumerated selector and verifier Boolean MLE agree over the complete padded domain");
+
+    const auto make_witnesses = [](const std::vector<TensorDescriptor>& members,
+                                   bool cancel_padding) {
+        std::vector<TensorWitness> witnesses;
+        witnesses.reserve(members.size());
+        for (std::size_t member = 0U; member < members.size(); ++member) {
+            TensorWitness tensor;
+            tensor.id = members[member].id;
+            tensor.visibility = members[member].visibility;
+            tensor.domain_size = members[member].domain_size;
+            tensor.values.reserve(tensor.domain_size);
+            for (std::uint32_t index = 0U; index < tensor.domain_size; ++index) {
+                if (index < members[member].logical_shape.front()) {
+                    tensor.values.push_back(
+                        zkdl::fr_from_u32(index + 1U + 10U * member));
+                } else if (cancel_padding && index == tensor.domain_size - 1U &&
+                           member < 2U) {
+                    const FrWire value = zkdl::fr_from_u32(17U);
+                    tensor.values.push_back(member == 0U
+                        ? value : zkdl::fr_neg(value));
+                } else {
+                    tensor.values.push_back(FrWire{});
+                }
+            }
+            witnesses.push_back(std::move(tensor));
+        }
+        return witnesses;
+    };
+
+    const auto build_set = [&](const std::vector<TensorDescriptor>& members,
+                               const std::vector<TensorWitness>& witnesses,
+                               RelationStatement& statement,
+                               std::vector<CommitmentWire>& commitments,
+                               std::map<std::string, const TensorWitness*>& tensor_map,
+                               std::map<std::string, FrWire>& blinders,
+                               std::map<std::string, std::vector<FrWire>>& segment_blinders,
+                               std::map<std::string, SegmentCommitmentValidationReceipt>& receipts) {
+        if (members.size() != witnesses.size()) {
+            if (error) *error = "Qpad fixture witness/descriptor count mismatch";
+            return false;
+        }
+        commitments.clear();
+        tensor_map.clear();
+        blinders.clear();
+        segment_blinders.clear();
+        receipts.clear();
+        commitments.reserve(members.size());
+        for (std::size_t index = 0U; index < members.size(); ++index) {
+            const auto& descriptor = members[index];
+            const auto& tensor = witnesses[index];
+            if (!descriptor.valid(error) || !tensor.metadata_valid(error) ||
+                tensor.id != descriptor.id || tensor.domain_size != descriptor.domain_size ||
+                tensor.visibility != descriptor.visibility) {
+                if (error && error->empty())
+                    *error = "Qpad fixture witness does not match its descriptor";
+                return false;
+            }
+            SegmentedTensorProvider provider;
+            if (!tensor.segmented(owned_generators.size(), provider, error)) return false;
+            const FrWire blinder = zkdl::fr_from_u32(
+                static_cast<std::uint32_t>(193U + 2U * index));
+            CommitmentWire wire;
+            SegmentCommitmentMaterial material;
+            SegmentCommitmentValidationReceipt receipt;
+            if (!zktr_build_segment_commitment_material(
+                    tensor.id, tensor.visibility, provider, owned_generators, h, u,
+                    blinder, statement, wire, material, error, nullptr, 0U, nullptr,
+                    &basis, &msm_session, &receipt) ||
+                !receipt.valid()) return false;
+            tensor_map.emplace(tensor.id, &tensor);
+            blinders.emplace(tensor.id, blinder);
+            segment_blinders.emplace(tensor.id, material.blinders);
+            receipts.emplace(tensor.id, std::move(receipt));
+            commitments.push_back(std::move(wire));
+        }
+        statement.segment_commitments_digest =
+            relation_commitment_vector_digest(statement, commitments);
+        return relation_segment_commitments_valid(statement, commitments, error);
+    };
+
+    const auto make_prover_context = [&](const std::vector<TensorDescriptor>& members,
+                                         const std::map<std::string, FrWire>& blinders) {
+        ProverContext context;
+        context.tensor_descriptors = members;
+        context.ipa_generators = basis;
+        context.ipa_blinding_generator = h;
+        context.ipa_u_generator = u;
+        context.blinding_scalars = blinders;
+        return context;
+    };
+    const auto make_verifier_context = [&](const std::vector<TensorDescriptor>& members) {
+        VerifierContext context;
+        context.tensor_descriptors = members;
+        context.ipa_generators = basis;
+        context.ipa_blinding_generator = h;
+        context.ipa_u_generator = u;
+        return context;
+    };
+
+    auto valid_witnesses = make_witnesses(descriptors, false);
+    RelationStatement statement = base_statement;
     std::vector<CommitmentWire> commitments;
-    SegmentCommitmentMaterial tensor_material_a, tensor_material_b;
-    SegmentCommitmentValidationReceipt tensor_receipt_a, tensor_receipt_b;
-    SegmentedTensorProvider tensor_provider_a, tensor_provider_b;
-    if (!tensor_a.segmented(generators.size(), tensor_provider_a, error) ||
-        !tensor_b.segmented(generators.size(), tensor_provider_b, error))
-        return fixture_fail("qpad-cache-proof", "private tensor provider construction failed", error);
-    CommitmentWire tensor_wire_a, tensor_wire_b;
-    if (!zktr_build_segment_commitment_material(
-            tensor_a.id, tensor_a.visibility, tensor_provider_a, generators, h, u,
-            blinder_a, statement, tensor_wire_a, tensor_material_a, error, nullptr,
-            0U, nullptr, &authenticated_basis, &msm_session, &tensor_receipt_a) ||
-        !zktr_build_segment_commitment_material(
-            tensor_b.id, tensor_b.visibility, tensor_provider_b, generators, h, u,
-            blinder_b, statement, tensor_wire_b, tensor_material_b, error, nullptr,
-            0U, nullptr, &authenticated_basis, &msm_session, &tensor_receipt_b))
-        return fixture_fail("qpad-cache-proof", "private input commitment build failed", error);
-    commitments = {tensor_wire_a, tensor_wire_b};
-    std::map<std::string, const TensorWitness*> tensor_map{
-        {tensor_a.id, &tensor_a}, {tensor_b.id, &tensor_b}};
-    std::map<std::string, FrWire> blinders{
-        {tensor_a.id, blinder_a}, {tensor_b.id, blinder_b}};
-    std::map<std::string, std::vector<FrWire>> segment_blinders{
-        {tensor_a.id, tensor_material_a.blinders},
-        {tensor_b.id, tensor_material_b.blinders}};
-    std::map<std::string, SegmentCommitmentValidationReceipt> input_receipts;
-    input_receipts.emplace(tensor_a.id, std::move(tensor_receipt_a));
-    input_receipts.emplace(tensor_b.id, std::move(tensor_receipt_b));
-    QpadSelectorXiCache proof_cache;
-    const std::string transcript_domain = "fixture.qpad-selector-cache";
+    std::map<std::string, const TensorWitness*> tensor_map;
+    std::map<std::string, FrWire> blinders;
+    std::map<std::string, std::vector<FrWire>> segment_blinders;
+    std::map<std::string, SegmentCommitmentValidationReceipt> receipts;
+    if (!build_set(descriptors, valid_witnesses, statement, commitments,
+                   tensor_map, blinders, segment_blinders, receipts))
+        return fixture_fail("qpad-original-commitments", "original input commitments or receipts failed", error);
+
+    std::vector<QpadGroupPlan> groups;
+    if (!qpad_build_group_plans(
+            descriptors, owned_generators.size(), &statement, &owned_generators,
+            &h, &u, &basis, groups, error) ||
+        groups.size() != 2U ||
+        !std::any_of(groups.begin(), groups.end(), [](const QpadGroupPlan& group) {
+            return group.members.size() == 2U &&
+                   group.members[0]->id == "fixture/qpad-rlc/a" &&
+                   group.members[1]->id == "fixture/qpad-rlc/b";
+        }))
+        return fixture_fail("qpad-group-plan", "same-mask tensors did not group or distinct mask did not split", error);
+    const std::uint64_t family_count = descriptors.size();
+    std::uint64_t opening_segments = 0U;
+    for (const auto& group : groups) opening_segments += group.segment_count;
+    if (family_count != 3U || groups.size() != 2U || opening_segments != 4U ||
+        std::any_of(groups.begin(), groups.end(), [](const QpadGroupPlan& group) {
+            return group.segment_count != 2U;
+        }))
+        return fixture_fail("qpad-group-count", "Qpad fixture did not create two groups over two source segments", error);
+
+    ProverContext prover_context = make_prover_context(descriptors, blinders);
+    const std::string transcript_domain = "fixture.qpad.same-mask-rlc.v2";
     zkdl::Transcript prover_transcript(transcript_domain);
-    PaddingProofRecord record_a, record_b;
-    if (!prove_padding_record(
-            descriptor_a, 0U, tensor_map, blinders, generators, h, u,
-            commitments, statement, prover_transcript, record_a, error,
-            &segment_blinders, &authenticated_basis, &msm_session,
-            &input_receipts, nullptr, &proof_cache))
-        return fixture_fail("qpad-cache-proof", "cold-cache Qpad record proof failed", error);
-    const std::vector<byte> record_a_bytes = record_a.serialize();
-    prover_transcript.absorb("gat.relation.padding", record_a_bytes);
-    if (!prove_padding_record(
-            descriptor_b, 1U, tensor_map, blinders, generators, h, u,
-            commitments, statement, prover_transcript, record_b, error,
-            &segment_blinders, &authenticated_basis, &msm_session,
-            &input_receipts, nullptr, &proof_cache))
-        return fixture_fail("qpad-cache-proof", "hot-cache Qpad record proof failed", error);
-    const std::vector<byte> record_b_bytes = record_b.serialize();
-    prover_transcript.absorb("gat.relation.padding", record_b_bytes);
-    PaddingProofRecord decoded_a, decoded_b;
-    if (!PaddingProofRecord::deserialize(record_a_bytes, decoded_a, error) ||
-        !PaddingProofRecord::deserialize(record_b_bytes, decoded_b, error) ||
-        decoded_a.serialize() != record_a_bytes || decoded_b.serialize() != record_b_bytes ||
-        record_a.selector_digest == record_b.selector_digest ||
-        record_a.selector_digest != prepared_a.selector_digest() ||
-        record_b.selector_digest != prepared_b.selector_digest())
-        return fixture_fail("qpad-cache-proof-wire", "per-ID digest or record wire roundtrip changed", error);
-    QpadSelectorXiCache verify_cache;
+    absorb_statement(prover_transcript, statement, commitments);
+    std::vector<PaddingProofRecord> records;
+    if (!prove_padding_records(
+            prover_context, statement, tensor_map, commitments, prover_transcript,
+            records, error, &segment_blinders, &msm_session, &receipts,
+            groups.size()) || records.size() != groups.size())
+        return fixture_fail("qpad-group-prove", "same-mask aggregate proof generation failed", error);
+    std::uint64_t record_opening_segments = 0U;
+    for (const auto& record : records) {
+        if (record.member_tensor_ids.empty() ||
+            record.relation.terminal_relation.terminal_segment_openings.size() != 1U)
+            return fixture_fail("qpad-group-opening-count", "a Qpad group did not emit exactly one terminal tensor opening", error);
+        record_opening_segments += record.relation.terminal_relation
+            .terminal_segment_openings.front().size();
+    }
+    if (record_opening_segments != groups.size() ||
+        record_opening_segments >= family_count)
+        return fixture_fail("qpad-group-opening-count", "multi-segment groups did not reduce terminal openings to one each", error);
+
+    Proof proof;
+    proof.statement = statement;
+    proof.commitments = commitments;
+    for (const auto& record : records) {
+        const std::vector<byte> encoded = record.serialize();
+        PaddingProofRecord decoded;
+        if (!PaddingProofRecord::deserialize(encoded, decoded, error) ||
+            decoded.serialize() != encoded)
+            return fixture_fail("qpad-record-wire", "PAD2 group record did not survive its wire roundtrip", error);
+        proof.padding_records.push_back(std::move(decoded));
+    }
+    if (proof.padding_records.size() != records.size())
+        return fixture_fail("qpad-record-wire", "serialized group records were not retained");
+
+    VerifierContext verifier_context = make_verifier_context(descriptors);
     zkdl::Transcript verifier_transcript(transcript_domain);
-    if (!verify_padding_record(
-            decoded_a, descriptor_a, 0U, commitments, generators, h, u,
-            statement, verifier_transcript, error, &authenticated_basis,
-            &msm_session, &verify_cache))
-        return fixture_fail("qpad-cache-independent-verify", "fresh verifier rejected cold-cache record", error);
-    verifier_transcript.absorb("gat.relation.padding", record_a_bytes);
-    if (!verify_padding_record(
-            decoded_b, descriptor_b, 1U, commitments, generators, h, u,
-            statement, verifier_transcript, error, &authenticated_basis,
-            &msm_session, &verify_cache))
-        return fixture_fail("qpad-cache-independent-verify", "fresh verifier rejected hot-cache record", error);
-    verifier_transcript.absorb("gat.relation.padding", record_b_bytes);
-    const auto reject_hot_record = [&](const PaddingProofRecord& candidate,
-                                       const std::vector<CommitmentWire>& wires,
-                                       const char* stage) {
-        QpadSelectorXiCache tamper_cache;
-        zkdl::Transcript tamper_transcript(transcript_domain);
+    absorb_statement(verifier_transcript, statement, commitments);
+    if (!verify_padding_records(
+            verifier_context, proof, verifier_transcript, error, &msm_session))
+        return fixture_fail("qpad-serialized-independent-verify", "fresh verifier rejected serialized PAD2 group records", error);
+    fixture_pass("qpad-serialized-independent-verify", "fresh verifier accepted serialized aggregate records against all original commitment wires");
+
+    const auto rejects_record = [&](const PaddingProofRecord& candidate,
+                                    const std::vector<CommitmentWire>& candidate_commitments,
+                                    const char* stage) {
+        Proof altered = proof;
+        altered.commitments = candidate_commitments;
+        altered.padding_records[0] = candidate;
+        zkdl::Transcript transcript(transcript_domain);
+        absorb_statement(transcript, altered.statement, altered.commitments);
         std::string tamper_error;
-        if (!verify_padding_record(
-                decoded_a, descriptor_a, 0U, wires, generators, h, u,
-                statement, tamper_transcript, &tamper_error,
-                &authenticated_basis, &msm_session, &tamper_cache))
-            return fixture_fail(stage, "valid first record failed before tamper check", &tamper_error);
-        tamper_transcript.absorb("gat.relation.padding", record_a_bytes);
-        tamper_error.clear();
-        if (verify_padding_record(
-                candidate, descriptor_b, 1U, wires, generators, h, u,
-                statement, tamper_transcript, &tamper_error,
-                &authenticated_basis, &msm_session, &tamper_cache))
-            return fixture_fail(stage, "tampered hot-cache record was accepted", &tamper_error);
+        if (verify_padding_records(
+                verifier_context, altered, transcript, &tamper_error, &msm_session))
+            return fixture_fail(stage, "tampered Qpad group record was accepted", &tamper_error);
         return true;
     };
-    PaddingProofRecord changed_record = decoded_b;
-    changed_record.selector_digest[0U] ^= 1U;
-    if (!reject_hot_record(changed_record, commitments, "qpad-cache-tamper-digest")) return false;
-    changed_record = decoded_b;
-    changed_record.tensor_id = descriptor_a.id;
-    if (!reject_hot_record(changed_record, commitments, "qpad-cache-tamper-id")) return false;
-    changed_record = decoded_b;
-    const auto opening_xi = zkdl::cpu_g1_from_native(
-        changed_record.relation.terminal_relation.terminal_segment_openings[1U][0U].xi);
-    const auto changed_xi = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(opening_xi, h));
-    changed_record.relation.terminal_relation.terminal_segment_openings[1U][0U].xi = changed_xi;
-    changed_record.relation.terminal_relation.terminal_openings[1U].xi = changed_xi;
-    if (!reject_hot_record(changed_record, commitments, "qpad-cache-tamper-opening")) return false;
+    PaddingProofRecord changed = proof.padding_records[0];
+    std::swap(changed.member_tensor_ids[0], changed.member_tensor_ids[1]);
+    std::swap(changed.member_commitment_indices[0], changed.member_commitment_indices[1]);
+    if (!rejects_record(changed, commitments, "qpad-member-order")) return false;
+    changed = proof.padding_records[0];
+    changed.member_tensor_ids[1] = changed.member_tensor_ids[0];
+    if (!rejects_record(changed, commitments, "qpad-member-duplicate")) return false;
+    changed = proof.padding_records[0];
+    changed.member_tensor_ids.pop_back();
+    changed.member_commitment_indices.pop_back();
+    if (!rejects_record(changed, commitments, "qpad-member-omission")) return false;
+    changed = proof.padding_records[0];
+    changed.group_key[0U] ^= 1U;
+    if (!rejects_record(changed, commitments, "qpad-group-key-tamper")) return false;
+    changed = proof.padding_records[0];
+    auto opening = zkdl::cpu_g1_from_native(
+        changed.relation.terminal_relation.terminal_segment_openings[0][0].xi);
+    auto changed_xi = zkdl::cpu_g1_to_native(zkdl::cpu_g1_add(opening, h));
+    changed.relation.terminal_relation.terminal_segment_openings[0][0].xi = changed_xi;
+    changed.relation.terminal_relation.terminal_openings[0].xi = changed_xi;
+    if (!rejects_record(changed, commitments, "qpad-terminal-xi-tamper")) return false;
     auto changed_commitments = commitments;
-    changed_commitments[1U].segment_commitment_digest[0U] ^= 1U;
-    if (!reject_hot_record(decoded_b, changed_commitments, "qpad-cache-tamper-segment-digest")) return false;
-    fixture_pass("qpad-selector-cache", "multidimensional cold/hot commitments, receipts, per-ID digest, independent Verify, and tamper rejection passed");
+    changed_commitments[0].segment_commitment_digest[0U] ^= 1U;
+    if (!rejects_record(proof.padding_records[0], changed_commitments,
+                        "qpad-original-segment-binding")) return false;
+
+    std::vector<byte> old_record = proof.padding_records[0].serialize();
+    old_record[4U] = 1U;
+    old_record[5U] = old_record[6U] = old_record[7U] = 0U;
+    PaddingProofRecord old_decoded;
+    std::string old_error;
+    if (PaddingProofRecord::deserialize(old_record, old_decoded, &old_error))
+        return fixture_fail("qpad-old-record-version", "PAD1 record version was accepted", error);
+    const std::vector<byte> old_outer{'G', 'A', 'T', 'R', 7U, 0U, 0U, 0U};
+    Proof old_proof;
+    old_error.clear();
+    if (Proof::deserialize(old_outer, old_proof, &old_error))
+        return fixture_fail("qpad-old-proof-version", "Proof7 was accepted by the Proof8 parser", error);
+    fixture_pass("qpad-wire-tamper", "member order/omission/duplication, group key, Xi, original wire, PAD1, and Proof7 are rejected");
+
+    const std::vector<TensorDescriptor> cancel_descriptors{
+        descriptor_a, descriptor_b};
+    auto invalid_witnesses = make_witnesses(cancel_descriptors, true);
+    RelationStatement invalid_statement = base_statement;
+    std::vector<CommitmentWire> invalid_commitments;
+    std::map<std::string, const TensorWitness*> invalid_tensor_map;
+    std::map<std::string, FrWire> invalid_blinders;
+    std::map<std::string, std::vector<FrWire>> invalid_segment_blinders;
+    std::map<std::string, SegmentCommitmentValidationReceipt> invalid_receipts;
+    if (!build_set(cancel_descriptors, invalid_witnesses, invalid_statement,
+                   invalid_commitments, invalid_tensor_map, invalid_blinders,
+                   invalid_segment_blinders, invalid_receipts))
+        return fixture_fail("qpad-canceling-invalid", "invalid padded witness commitments failed", error);
+    std::vector<QpadGroupPlan> invalid_groups;
+    if (!qpad_build_group_plans(
+            cancel_descriptors, owned_generators.size(), &invalid_statement,
+            &owned_generators, &h, &u, &basis, invalid_groups, error) ||
+        invalid_groups.size() != 1U || invalid_groups.front().members.size() != 2U)
+        return fixture_fail("qpad-canceling-invalid", "invalid fixture did not form a two-member group", error);
+    bool distinct_alpha_domain_found = false;
+    std::string invalid_transcript_domain;
+    for (std::uint32_t attempt = 0U; attempt < 16U; ++attempt) {
+        const std::string candidate_domain =
+            "fixture.qpad.canceling-invalid.v2." + std::to_string(attempt);
+        zkdl::Transcript candidate_transcript(candidate_domain);
+        absorb_statement(candidate_transcript, invalid_statement, invalid_commitments);
+        std::vector<std::uint32_t> indices;
+        std::vector<FrWire> alphas;
+        if (!qpad_group_randomizers(
+                invalid_groups.front(), invalid_commitments, invalid_statement,
+                candidate_transcript,
+                qpad_group_operation_context(invalid_groups.front()),
+                indices, alphas, error) || alphas.size() != 2U)
+            return fixture_fail("qpad-canceling-invalid", "cannot derive the cancellation test coefficients", error);
+        if (alphas[0] != alphas[1]) {
+            invalid_transcript_domain = candidate_domain;
+            distinct_alpha_domain_found = true;
+            break;
+        }
+    }
+    if (!distinct_alpha_domain_found)
+        return fixture_fail("qpad-canceling-invalid", "test could not obtain distinct Fiat-Shamir coefficients", error);
+    ProverContext invalid_prover = make_prover_context(
+        cancel_descriptors, invalid_blinders);
+    zkdl::Transcript invalid_prover_transcript(invalid_transcript_domain);
+    absorb_statement(invalid_prover_transcript, invalid_statement,
+                     invalid_commitments);
+    std::vector<PaddingProofRecord> invalid_records;
+    std::string invalid_error;
+    const bool invalid_proved = prove_padding_records(
+        invalid_prover, invalid_statement, invalid_tensor_map,
+        invalid_commitments, invalid_prover_transcript, invalid_records,
+        &invalid_error, &invalid_segment_blinders, &msm_session,
+        &invalid_receipts, invalid_groups.size());
+    if (invalid_proved) {
+        Proof invalid_proof;
+        invalid_proof.statement = invalid_statement;
+        invalid_proof.commitments = invalid_commitments;
+        invalid_proof.padding_records = std::move(invalid_records);
+        VerifierContext invalid_verifier = make_verifier_context(cancel_descriptors);
+        zkdl::Transcript invalid_verifier_transcript(invalid_transcript_domain);
+        absorb_statement(invalid_verifier_transcript, invalid_statement,
+                         invalid_commitments);
+        std::string verify_error;
+        if (verify_padding_records(
+                invalid_verifier, invalid_proof, invalid_verifier_transcript,
+                &verify_error, &msm_session))
+            return fixture_fail("qpad-canceling-invalid", "+/- padding violations canceled under aggregation and were accepted", &verify_error);
+    }
+    fixture_pass("qpad-canceling-invalid", "opposite nonzero padding values cannot cancel under distinct nonzero Fiat-Shamir coefficients");
     return true;
 }
 
@@ -630,50 +686,6 @@ bool prepared_msm_receipt_fixture(
             changed_material, &mutation_error))
         return fixture_fail("prepared-msm-mutation", "mutated material was accepted by receipt", error);
     fixture_pass("prepared-msm-receipt", "raw bytes match; scalar and material mutations are rejected");
-
-    TensorDescriptor qpad_descriptor;
-    qpad_descriptor.id = "fixture/qpad-selector";
-    qpad_descriptor.visibility = 3U;
-    qpad_descriptor.domain_size = 8U;
-    qpad_descriptor.logical_shape = {3U};
-    qpad_descriptor.padded_shape = {8U};
-    qpad_descriptor.mle_order = "fixture-order";
-    qpad_descriptor.stack_axis = "fixture-axis";
-    qpad_descriptor.mapping = "fixture-qpad";
-    qpad_descriptor.padding_rule = "zero-mask";
-    SegmentedTensorProvider selector_provider;
-    std::array<byte, 32U> selector_digest{};
-    if (!qpad_selector_provider(qpad_descriptor, owned_generators.size(),
-                                selector_provider, selector_digest, error))
-        return fixture_fail("qpad-selector", "canonical Qpad selector provider failed", error);
-    CommitmentWire selector_wire;
-    SegmentCommitmentMaterial selector_material;
-    if (!zktr_build_segment_commitment_material(
-            "fixture/qpad-selector", 1U, selector_provider, owned_generators,
-            h, u, FrWire{}, statement, selector_wire, selector_material,
-            error, nullptr, 0U, nullptr, &authenticated_basis, &session) ||
-        !zkdl::cpu_g1_equal(
-            zktr_segmented_commitment(selector_provider, owned_generators,
-                                      h, FrWire{}, error),
-            zkdl::cpu_g1_from_native(selector_wire.commitment)))
-        return fixture_fail("qpad-selector", "single-build selector commitment changed aggregate", error);
-    zkdl::Sha256 old_digest, fixed_digest;
-    for (std::uint32_t segment = 0U; segment < selector_provider.segment_count(); ++segment) {
-        std::vector<FrWire> values;
-        if (!selector_provider.read_segment(segment, values, error))
-            return fixture_fail("qpad-selector", "selector digest range read failed", error);
-        std::vector<byte> old_encoding;
-        for (const auto& value : values) append_fr_wire(old_encoding, value);
-        old_digest.update(old_encoding.data(), old_encoding.size());
-        zktr_update_fr_wire_digest(fixed_digest, values.data(), values.size());
-    }
-    if (old_digest.final() != fixed_digest.final())
-        return fixture_fail("qpad-selector", "fixed-buffer digest changed canonical FrWire stream", error);
-    fixture_pass("qpad-selector", "one segment-material build retains exact aggregate and scalar digest bytes");
-
-    if (!qpad_selector_cache_proof_fixture(
-            owned_generators, h, u, authenticated_basis, session,
-            statement, error)) return false;
 
     return prepared_msm_chunk_fixture(h, u, error);
 }
@@ -850,8 +862,8 @@ bool relation_artifact_roundtrip(const std::vector<zkdl::CpuG1Point> &generators
 }
 
 bool small_shared_segment_terminal_fixture() {
-    constexpr std::uint32_t kDomain = 8U;
-    constexpr std::uint32_t kSharedSegment = 4U;
+    constexpr std::uint32_t kDomain = 16U;
+    constexpr std::uint32_t kSharedSegment = 8U;
     constexpr std::uint32_t kBasis = 8U;
     std::vector<zkdl::CpuG1Point> generators;
     generators.reserve(kBasis);
@@ -887,7 +899,7 @@ bool small_shared_segment_terminal_fixture() {
         return fixture_fail("shared-small-layout", "canonical shared-S layout was rejected", &error);
     if (zktr_segment_layout_for_size(kDomain, generators.size(), 3U, layout, &error))
         return fixture_fail("shared-small-negative", "non-power-of-two shared segment was accepted", &error);
-    fixture_pass("shared-small-layout", "logical domain 8 uses canonical shared segment size 4 across two segments");
+    fixture_pass("shared-small-layout", "logical domain 16 uses canonical shared segment size 8 across two segments");
 
     RelationStatement statement;
     statement.statement_digest = zkdl::sha256(std::vector<zkdl::byte>{'s'});
@@ -928,7 +940,7 @@ bool small_shared_segment_terminal_fixture() {
     if (zktr_build_segment_commitment_material(
             "fixture/small-shared-mismatch", 3U, natural_provider, generators,
             h, u, tensor_blinder, statement, rejected_wire, rejected_material,
-            &error, nullptr, kSharedSegment) ||
+            &error, nullptr, kSharedSegment / 2U) ||
         error.find("authenticated shared layout") == std::string::npos)
         return fixture_fail("shared-small-negative", "natural provider was not rejected for the shared-S layout", &error);
     fixture_pass("shared-small-commitment", "both segments committed using the declared common S");
@@ -938,7 +950,7 @@ bool small_shared_segment_terminal_fixture() {
     descriptor.degree = 1U;
     descriptor.terms.push_back(Monomial{zkdl::fr_from_u32(1U), {0U}});
     std::vector<FrWire> point{zkdl::fr_from_u32(2U), zkdl::fr_from_u32(3U),
-                              zkdl::fr_from_u32(5U)};
+                              zkdl::fr_from_u32(5U), zkdl::fr_from_u32(7U)};
     FrWire expected_value{};
     if (!provider.evaluate_mle(point, expected_value, &error))
         return fixture_fail("shared-small-terminal", "small shared-S MLE evaluation failed", &error);
@@ -962,11 +974,20 @@ bool small_shared_segment_terminal_fixture() {
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
             external_blinder, FrWire{}, context, prover_transcript, terminal,
             &error, &terminal_materials, kSharedSegment, nullptr,
-            &authenticated_basis, &msm_session, &terminal_receipts))
+            &authenticated_basis, &msm_session, &terminal_receipts,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate))
         return fixture_fail("shared-small-prove", "small shared-S terminal proof failed", &error);
     if (terminal.proof.terminal_segment_openings.size() != 1U ||
-        terminal.proof.terminal_segment_openings.front().size() != 2U)
-        return fixture_fail("shared-small-prove", "terminal proof omitted a shared-S segment opening");
+        terminal.proof.version != zkdl::ZkTerminalRelationProof::kAggregateVersion ||
+        terminal.proof.terminal_segment_openings.front().size() != 1U ||
+        terminal.proof.terminal_segment_openings.front().front().logical_domain != kDomain ||
+        terminal.proof.terminal_segment_openings.front().front().logical_offset != 0U ||
+        terminal.proof.terminal_segment_openings.front().front().actual_length != kSharedSegment ||
+        terminal.proof.terminal_segment_openings.front().front().padded_length != kSharedSegment ||
+        terminal.proof.terminal_segment_openings.front().front().generator_size != kSharedSegment ||
+        terminal.proof.terminal_segment_openings.front().front().padded_generator_size !=
+            zkdl::cpu_ipa_padded_size(kSharedSegment))
+        return fixture_fail("shared-small-prove", "terminal proof did not aggregate both source segments into one virtual opening");
     std::vector<zkdl::byte> encoded;
     zkdl::serialize_zk_terminal_relation(terminal.proof, encoded);
     zkdl::ZkTerminalRelationProof fresh;
@@ -978,7 +999,8 @@ bool small_shared_segment_terminal_fixture() {
             fresh, descriptor, canonical_commitments, commitment_indices, point,
             generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
-            FrWire{}, context, verifier_transcript, verified, &error,
+            FrWire{}, context, verifier_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
             &commitment_wires, kSharedSegment))
         return fixture_fail("shared-small-independent-verify", "fresh shared-S verifier rejected valid wire", &error);
     fixture_pass("shared-small-independent-verify", "canonical shared-S terminal proof survived fresh serialization and independent verification");
@@ -995,7 +1017,8 @@ bool small_shared_segment_terminal_fixture() {
             tampered, descriptor, canonical_commitments, commitment_indices,
             point, generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
-            FrWire{}, context, tamper_transcript, verified, &error,
+            FrWire{}, context, tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
             &commitment_wires, kSharedSegment))
         return fixture_fail("shared-small-tamper", "tampered shared-S segment opening was accepted");
     fixture_pass("shared-small-tamper", "mutated first-segment Hyrax commitment rejected");
@@ -1011,26 +1034,259 @@ bool small_shared_segment_terminal_fixture() {
             tampered, descriptor, canonical_commitments, commitment_indices,
             point, generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
-            FrWire{}, context, aggregate_tamper_transcript, verified, &error,
+            FrWire{}, context, aggregate_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
             &commitment_wires, kSharedSegment))
         return fixture_fail("shared-small-tamper", "tampered aggregate terminal commitment was accepted");
     fixture_pass("shared-small-tamper", "aggregate terminal commitment must match all weighted segment taus");
 
     tampered = fresh;
-    const auto second_segment_tau = zkdl::cpu_g1_from_native(
-        tampered.terminal_segment_openings[0][1].tau);
-    tampered.terminal_segment_openings[0][1].tau = zkdl::cpu_g1_to_native(
-        zkdl::cpu_g1_add(second_segment_tau, h));
+    const auto aggregate_tau = zkdl::cpu_g1_from_native(
+        tampered.terminal_segment_openings[0][0].tau);
+    const auto changed_tau = zkdl::cpu_g1_to_native(
+        zkdl::cpu_g1_add(aggregate_tau, h));
+    tampered.terminal_segment_openings[0][0].tau = changed_tau;
+    tampered.terminal_openings[0].tau = changed_tau;
+    tampered.terminal_commitments[0] = changed_tau;
     zkdl::Transcript segment_tau_tamper_transcript(context);
     error.clear();
     if (verify_zk_terminal_relation(
             tampered, descriptor, canonical_commitments, commitment_indices,
             point, generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
-            FrWire{}, context, segment_tau_tamper_transcript, verified, &error,
+            FrWire{}, context, segment_tau_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
             &commitment_wires, kSharedSegment))
-        return fixture_fail("shared-small-tamper", "tampered second-segment tau opening was accepted");
-    fixture_pass("shared-small-tamper", "mutated nonzero-index segment tau rejected by fresh verifier");
+        return fixture_fail("shared-small-tamper", "tampered aggregate tau opening was accepted");
+    fixture_pass("shared-small-tamper", "mutated aggregate tau rejected by fresh verifier");
+
+    tampered = fresh;
+    tampered.version = zkdl::ZkTerminalRelationProof::kLegacyVersion;
+    zkdl::Transcript version_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            tampered, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, version_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "aggregate proof with legacy version was accepted");
+    fixture_pass("shared-small-tamper", "nested version is bound to the expected aggregate mode");
+
+    zkdl::Transcript mode_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            fresh, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, mode_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::LegacyPerSegment, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "aggregate proof was accepted when caller required legacy mode");
+    fixture_pass("shared-small-tamper", "proof cannot choose the verifier opening mode");
+
+    tampered = fresh;
+    tampered.terminal_openings[0].logical_domain = 32U;
+    tampered.terminal_segment_openings[0][0].logical_domain = 32U;
+    zkdl::Transcript domain_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            tampered, descriptor, canonical_commitments, commitment_indices,
+            point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, domain_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "virtual opening with changed source logical domain was accepted");
+    fixture_pass("shared-small-tamper", "virtual logical domain remains tied to trusted source layout");
+
+    std::vector<FrWire> changed_point = point;
+    changed_point.front() = zkdl::fr_add(changed_point.front(), zkdl::fr_from_u32(1U));
+    zkdl::Transcript weight_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            fresh, descriptor, canonical_commitments, commitment_indices,
+            changed_point, generators, h, u, statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, weight_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
+            &commitment_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "aggregate opening reused with changed high/low evaluation point was accepted");
+    fixture_pass("shared-small-tamper", "aggregate weights and opening point remain transcript-bound");
+
+    std::vector<CommitmentWire> reordered_commitments = commitment_wires;
+    std::swap(reordered_commitments[0].segment_commitments[0].commitment,
+              reordered_commitments[0].segment_commitments[1].commitment);
+    reordered_commitments[0].segment_commitment_digest =
+        segment_commitment_digest(reordered_commitments[0]);
+    RelationStatement reordered_statement = statement;
+    reordered_statement.segment_commitments_digest =
+        relation_commitment_vector_digest(reordered_statement, reordered_commitments);
+    const std::vector<zkdl::CpuG1Point> reordered_canonical{
+        zkdl::cpu_g1_from_native(reordered_commitments[0].commitment)};
+    zkdl::Transcript order_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            fresh, descriptor, reordered_canonical, commitment_indices,
+            point, generators, h, u, reordered_statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, order_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
+            &reordered_commitments, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "aggregate opening accepted a reordered source Xi vector");
+    fixture_pass("shared-small-tamper", "ordered original segment Xi vector is authenticated before aggregate verification");
+
+    std::vector<FrWire> changed_values = values;
+    changed_values[0U] = zkdl::fr_add(changed_values[0U], zkdl::fr_from_u32(1U));
+    SegmentedTensorProvider changed_provider;
+    CommitmentWire changed_wire;
+    SegmentCommitmentMaterial changed_material;
+    if (!SegmentedTensorProvider::from_values(
+            changed_values, owned_generators.size(), changed_provider, &error) ||
+        !zktr_build_segment_commitment_material(
+            "fixture/small-shared", 3U, changed_provider, owned_generators,
+            h, u, tensor_blinder, statement, changed_wire, changed_material,
+            &error, nullptr, kSharedSegment, nullptr, &authenticated_basis,
+            &msm_session))
+        return fixture_fail("shared-small-tamper", "changed-source-value commitment setup failed", &error);
+    std::vector<CommitmentWire> changed_value_wires{changed_wire};
+    RelationStatement changed_value_statement = statement;
+    changed_value_statement.segment_commitments_digest =
+        relation_commitment_vector_digest(changed_value_statement, changed_value_wires);
+    const std::vector<zkdl::CpuG1Point> changed_value_canonical{
+        zkdl::cpu_g1_from_native(changed_wire.commitment)};
+    zkdl::Transcript value_tamper_transcript(context);
+    error.clear();
+    if (verify_zk_terminal_relation(
+            fresh, descriptor, changed_value_canonical, commitment_indices,
+            point, generators, h, u, changed_value_statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
+            FrWire{}, context, value_tamper_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::WeightedAggregate, &error,
+            &changed_value_wires, kSharedSegment))
+        return fixture_fail("shared-small-tamper", "aggregate opening accepted a changed original segment value commitment");
+    fixture_pass("shared-small-tamper", "changed source value commitment is rejected by the authenticated aggregate context");
+
+    std::vector<FrWire> second_values(values.size());
+    for (std::size_t index = 0U; index < second_values.size(); ++index)
+        second_values[index] = zkdl::fr_from_u32(
+            static_cast<std::uint32_t>(17U + 3U * index));
+    SegmentedTensorProvider second_provider;
+    if (!SegmentedTensorProvider::from_values(
+            second_values, owned_generators.size(), second_provider, &error))
+        return fixture_fail("cross-provider-setup", "second provider construction failed", &error);
+    const FrWire second_blinder = zkdl::fr_from_u32(199U);
+    RelationStatement cross_commitment_statement = statement;
+    cross_commitment_statement.segment_commitments_digest = {};
+    CommitmentWire second_wire;
+    SegmentCommitmentMaterial second_material;
+    SegmentCommitmentValidationReceipt second_receipt;
+    if (!zktr_build_segment_commitment_material(
+            "fixture/small-shared-second", 3U, second_provider,
+            owned_generators, h, u, second_blinder, cross_commitment_statement,
+            second_wire, second_material, &error, nullptr, kSharedSegment,
+            nullptr, &authenticated_basis, &msm_session, &second_receipt) ||
+        !second_receipt.valid())
+        return fixture_fail("cross-provider-setup", "second provider commitment failed", &error);
+    std::vector<CommitmentWire> cross_wires{wire, second_wire};
+    RelationStatement cross_statement = statement;
+    cross_statement.segment_commitments_digest =
+        relation_commitment_vector_digest(cross_statement, cross_wires);
+    ConstraintDescriptor cross_descriptor;
+    cross_descriptor.id = "fixture/small-cross-provider-terminal";
+    cross_descriptor.degree = 1U;
+    cross_descriptor.terms = {
+        Monomial{zkdl::fr_from_u32(1U), {0U}},
+        Monomial{zkdl::fr_from_u32(1U), {1U}}};
+    FrWire second_expected{};
+    if (!second_provider.evaluate_mle(point, second_expected, &error))
+        return fixture_fail("cross-provider-setup", "second provider evaluation failed", &error);
+    const FrWire cross_expected = zkdl::fr_add(expected_value, second_expected);
+    const FrWire cross_external_blinder = zkdl::fr_from_u32(211U);
+    const auto cross_external_commitment = zkdl::cpu_pedersen_scalar_commit(
+        cross_expected, cross_external_blinder, h, u);
+    const std::vector<zkdl::CpuG1Point> cross_canonical{
+        zkdl::cpu_g1_from_native(wire.commitment),
+        zkdl::cpu_g1_from_native(second_wire.commitment)};
+    const std::vector<FrWire> cross_blinders{tensor_blinder, second_blinder};
+    const std::vector<std::uint32_t> cross_indices{0U, 1U};
+    const std::vector<SegmentedTensorProvider> cross_providers{
+        provider, second_provider};
+    const std::vector<SegmentCommitmentMaterial> cross_materials{
+        material, second_material};
+    const std::vector<const SegmentCommitmentValidationReceipt*> cross_receipts{
+        &validation_receipt, &second_receipt};
+    const std::string cross_context = "fixture.small-cross-provider-terminal";
+    zkdl::Transcript cross_prover_transcript(cross_context);
+    ZkTerminalRelationProverResult cross_terminal;
+    if (!prove_zk_terminal_relation_segmented(
+            cross_descriptor, cross_providers, cross_canonical, cross_blinders,
+            cross_indices, point, owned_generators, h, u, cross_statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
+            cross_external_commitment, cross_external_blinder, FrWire{},
+            cross_context, cross_prover_transcript, cross_terminal, &error,
+            &cross_materials, kSharedSegment, nullptr, &authenticated_basis,
+            &msm_session, &cross_receipts,
+            zkdl::ZkTerminalOpeningMode::CrossProviderAggregate))
+        return fixture_fail("cross-provider-prove", "two-provider v4 opening failed", &error);
+    if (cross_terminal.proof.version !=
+            zkdl::ZkTerminalRelationProof::kCrossProviderAggregateVersion ||
+        cross_terminal.proof.terminal_commitments.size() != 2U ||
+        cross_terminal.proof.terminal_openings.size() != 1U ||
+        cross_terminal.proof.terminal_segment_openings.size() != 1U ||
+        cross_terminal.proof.terminal_segment_openings.front().size() != 1U ||
+        cross_terminal.proof.terminal_segment_openings.front().front().logical_domain != kDomain ||
+        cross_terminal.proof.terminal_segment_openings.front().front().generator_size !=
+            kSharedSegment)
+        return fixture_fail("cross-provider-prove", "v4 did not preserve N tau values and emit one opening");
+    std::vector<zkdl::byte> cross_encoded;
+    zkdl::serialize_zk_terminal_relation(cross_terminal.proof, cross_encoded);
+    zkdl::ZkTerminalRelationProof cross_fresh;
+    if (!zkdl::deserialize_zk_terminal_relation(cross_encoded, cross_fresh, &error))
+        return fixture_fail("cross-provider-wire", "v4 wire roundtrip failed", &error);
+    zkdl::Transcript cross_verifier_transcript(cross_context);
+    ZkTerminalRelationVerifierResult cross_verified;
+    if (!verify_zk_terminal_relation(
+            cross_fresh, cross_descriptor, cross_canonical, cross_indices, point,
+            owned_generators, h, u, cross_statement,
+            zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
+            cross_external_commitment, FrWire{}, cross_context,
+            cross_verifier_transcript, cross_verified,
+            zkdl::ZkTerminalOpeningMode::CrossProviderAggregate, &error,
+            &cross_wires, kSharedSegment, &authenticated_basis, &msm_session))
+        return fixture_fail("cross-provider-independent-verify",
+                            "fresh verifier rejected two-provider v4 wire", &error);
+    fixture_pass("cross-provider-independent-verify",
+                 "v4 Prove/wire/fresh Verify combined two providers across two source segments into one opening");
+
+    std::vector<FrWire> changed_second_values = second_values;
+    changed_second_values[0U] = zkdl::fr_add(
+        changed_second_values[0U], zkdl::fr_from_u32(1U));
+    SegmentedTensorProvider changed_second_provider;
+    if (!SegmentedTensorProvider::from_values(
+            changed_second_values, owned_generators.size(),
+            changed_second_provider, &error))
+        return fixture_fail("cross-provider-value-tamper",
+                            "changed second source provider setup failed", &error);
+    const std::vector<SegmentedTensorProvider> changed_cross_providers{
+        provider, changed_second_provider};
+    zkdl::Transcript changed_source_transcript(cross_context);
+    ZkTerminalRelationProverResult changed_source_result;
+    error.clear();
+    if (prove_zk_terminal_relation_segmented(
+            cross_descriptor, changed_cross_providers, cross_canonical,
+            cross_blinders, cross_indices, point, owned_generators, h, u,
+            cross_statement, zkdl::ZkTerminalClaimLinkKind::ExternalEquality,
+            cross_external_commitment, cross_external_blinder, FrWire{},
+            cross_context, changed_source_transcript, changed_source_result,
+            &error, &cross_materials, kSharedSegment, nullptr,
+            &authenticated_basis, &msm_session, &cross_receipts,
+            zkdl::ZkTerminalOpeningMode::CrossProviderAggregate))
+        return fixture_fail("cross-provider-value-tamper",
+                            "v4 prover accepted changed source values under original authenticated commitments");
+    fixture_pass("cross-provider-value-tamper",
+                 "v4 first/second pass rejects source-value changes against original commitments");
     return true;
 }
 
@@ -1279,7 +1535,8 @@ bool authenticated_shared_segment_proof_fixture(const std::filesystem::path &con
             fresh_terminal, descriptor, canonical_commitments, commitment_indices,
             point, generators, h, u, statement,
             zkdl::ZkTerminalClaimLinkKind::ExternalEquality, external_commitment,
-            FrWire{}, context, verifier_transcript, verified, &error,
+            FrWire{}, context, verifier_transcript, verified,
+            zkdl::ZkTerminalOpeningMode::LegacyPerSegment, &error,
             &commitment_wires, kSharedSegment))
         return fixture_fail("segmented-opening-independent-verify", "fresh verifier rejected the serialized two-segment opening", &error);
     fixture_pass("segmented-opening-independent-verify", "serialized two-segment MLE opening verified against authenticated Cora SRS and commitment wire");
@@ -1293,6 +1550,13 @@ int main(int argc, char **argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--authenticated-srs-config") {
             return zkdl_gat::relation::fixture::authenticated_shared_segment_proof_fixture(argv[2]) ? 0 : 1;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--qpad-rlc-only") {
+            std::string error;
+            return zkdl_gat::relation::fixture::qpad_same_mask_group_fixture(
+                       &error)
+                       ? 0
+                       : 1;
         }
         if (argc == 2 && std::string(argv[1]) == "--sorted-receipt-only") {
             std::vector<zkdl::CpuG1Point> generators;
@@ -1321,7 +1585,7 @@ int main(int argc, char **argv) {
                        : 1;
         }
         if (argc != 1) {
-            std::cerr << "usage: segmented_lookup_fixture [--authenticated-srs-config CONFIG | --sorted-receipt-only | --msm-only]\n";
+            std::cerr << "usage: segmented_lookup_fixture [--authenticated-srs-config CONFIG | --qpad-rlc-only | --sorted-receipt-only | --msm-only]\n";
             return 2;
         }
         if (!zkdl_gat::relation::fixture::descriptor_backing_cow_fixture()) return 1;

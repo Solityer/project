@@ -79,6 +79,7 @@ use thiserror::Error;
 use tract_onnx::prelude::IntoTensor;
 use tract_onnx::prelude::Tensor as TractTensor;
 
+
 lazy_static! {
     #[derive(Debug)]
     /// The path to the ezkl related data.
@@ -2712,20 +2713,101 @@ fn public_instances_from_statement(
     Ok(vec![circuit.prepare_public_inputs(&witness)?])
 }
 
+struct FormalProofReferencePaths {
+    root: PathBuf,
+    statement: PathBuf,
+    public_output: PathBuf,
+    artifact_manifest: PathBuf,
+}
+
+/// Resolve the public-reference files only after validating their baseline-local
+/// spelling.  Keep the relative paths for the regular-file guard, then use the
+/// resulting canonical cell root for reads and digest calculation.
+fn formal_proof_reference_paths(
+    run_dir: &Path,
+    proof_path: Option<&Path>,
+) -> Result<FormalProofReferencePaths, EZKLError> {
+    let baseline_root = std::env::current_dir()?;
+    let run_relative = formal_run_relative_path(run_dir, &baseline_root)?;
+    require_formal_local_path(&run_relative, "formal run directory")?;
+
+    let canonical_baseline = baseline_root.canonicalize()?;
+    let root = canonical_baseline.join(&run_relative).canonicalize()?;
+    if root.strip_prefix(&canonical_baseline).is_err() {
+        return Err(format!("formal run directory escapes baseline: {}", run_dir.display()).into());
+    }
+
+    let statement_relative = run_relative.join("statement.json");
+    let output_relative = run_relative.join("public_output.json");
+    let manifest_relative = run_relative.join("artifact_manifest.json");
+    for (path, label) in [
+        (&statement_relative, "public statement"),
+        (&output_relative, "public output"),
+        (&manifest_relative, "artifact manifest"),
+    ] {
+        require_formal_regular_file(path, label)?;
+        let canonical_path = path.canonicalize()?;
+        if canonical_path.parent() != Some(root.as_path()) {
+            return Err(format!("{} is outside the canonical formal cell directory", label).into());
+        }
+    }
+
+    if let Some(proof_path) = proof_path {
+        require_formal_local_path(proof_path, "formal proof output")?;
+        if proof_path.file_name().and_then(|name| name.to_str()) != Some("proof.json") {
+            return Err("formal compact proof output must be named proof.json".into());
+        }
+        let proof_parent = proof_path
+            .parent()
+            .ok_or_else(|| "formal proof path has no parent".to_string())?;
+        if proof_parent.canonicalize()? != root {
+            return Err("compact formal proof and its public reference files must share one cell directory".into());
+        }
+        match std::fs::symlink_metadata(proof_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err("formal proof output must be a regular non-symlink file when it already exists".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+
+    Ok(FormalProofReferencePaths {
+        statement: root.join("statement.json"),
+        public_output: root.join("public_output.json"),
+        artifact_manifest: root.join("artifact_manifest.json"),
+        root,
+    })
+}
+
+fn validate_formal_prove_paths(
+    run_dir: &Path,
+    proof_path: &Path,
+    pk_path: &Path,
+) -> Result<FormalProofReferencePaths, EZKLError> {
+    let paths = formal_proof_reference_paths(run_dir, Some(proof_path))?;
+    let pk_parent = pk_path
+        .parent()
+        .ok_or_else(|| "formal proving key has no parent directory".to_string())?;
+    if pk_parent.canonicalize()? != paths.root {
+        return Err("formal proving key, proof output, and public references must share one cell directory".into());
+    }
+    Ok(paths)
+}
+
 fn formal_proof_instances_ref(run_dir: &Path, proof_path: &Path, instances: &[Vec<Fr>]) -> Result<ProofInstancesRefV1, EZKLError> {
-    let root = std::fs::canonicalize(run_dir)?;
-    let proof_parent = proof_path.parent().ok_or_else(|| "formal proof path has no parent".to_string())?;
-    if std::fs::canonicalize(proof_parent)? != root { return Err("compact formal proof and its public reference files must share one cell directory".into()); }
-    let statement_path = root.join("statement.json");
-    let output_path = root.join("public_output.json");
-    let manifest_path = root.join("artifact_manifest.json");
-    require_formal_regular_file(&statement_path, "public statement")?;
-    require_formal_regular_file(&output_path, "public output")?;
-    require_formal_regular_file(&manifest_path, "artifact manifest")?;
-    let artifact = ArtifactManifest::load(&manifest_path).map_err(EZKLError::from)?;
+    let paths = formal_proof_reference_paths(run_dir, Some(proof_path))?;
+    if paths.statement.parent() != Some(paths.root.as_path())
+        || paths.public_output.parent() != Some(paths.root.as_path())
+        || paths.artifact_manifest.parent() != Some(paths.root.as_path())
+    {
+        return Err("formal public references do not share the canonical cell directory".into());
+    }
+    let artifact = ArtifactManifest::load(&paths.artifact_manifest).map_err(EZKLError::from)?;
     artifact.validate().map_err(EZKLError::from)?;
-    let statement_sha256 = get_file_hash(&statement_path)?;
-    let public_output_sha256 = get_file_hash(&output_path)?;
+    let statement_sha256 = get_file_hash(&paths.statement)?;
+    let public_output_sha256 = get_file_hash(&paths.public_output)?;
     if artifact.statement_sha256 != statement_sha256 { return Err("compact proof statement reference disagrees with authenticated artifact manifest".into()); }
     for (name, digest) in [("statement.json", statement_sha256.as_str()), ("public_output.json", public_output_sha256.as_str())] {
         let record = artifact.files.iter().find(|file| file.path == name).ok_or_else(|| format!("artifact manifest has no {} reference", name))?;
@@ -6137,7 +6219,7 @@ fn authenticated_native_prove_backing_budget(
     let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
         .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
     let expected_budget = [
-        ("schema", "ezkl.native-prove-budget.v5"),
+        ("schema", "ezkl.native-prove-budget.v6"),
         ("session_id", session_id.as_str()),
         ("setup_receipt_sha256", setup_sha256.as_str()),
         ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
@@ -6232,7 +6314,48 @@ fn authenticated_native_prove_backing_budget(
         .get("device_workspace_peak_bytes")
         .and_then(JsonValue::as_u64)
         .ok_or("native prove budget lacks its two-path MSM workspace peak")?;
-    if halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY != "halo2_icicle-bn254-gpu-ntt-16-25-msm-lagrange-resident-f4-v4"
+    let h_kernel_local_memory_upper = prove_budget
+        .get("h_kernel_local_memory_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its fused H kernel-local memory reserve")?;
+    let h_program_metadata_upper = prove_budget
+        .get("h_program_metadata_upper_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its fused H program metadata reserve")?;
+    let h_workspace_borrows_ntt = prove_budget
+        .get("h_workspace_borrows_ntt")
+        .and_then(JsonValue::as_bool);
+    let cuda_required_workspace = prove_budget
+        .get("cuda_required_workspace_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its combined CUDA allocation requirement")?;
+    let expected_cuda_required_workspace = msm_workspace_peak
+        .checked_add(ntt_device_peak)
+        .and_then(|bytes| bytes.checked_add(msm_cache_upper))
+        .and_then(|bytes| bytes.checked_add(halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64))
+        .ok_or("native fused H CUDA requirement overflow")?;
+    let host_available = prove_budget
+        .get("host_available_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its shared host-memory snapshot")?;
+    let host_required = prove_budget
+        .get("host_required_known_bytes")
+        .and_then(JsonValue::as_u64)
+        .ok_or("native prove budget lacks its known shared host-memory requirement")?;
+    let integrated_device = prove_budget
+        .get("integrated_device")
+        .and_then(JsonValue::as_bool)
+        .ok_or("native prove budget lacks its integrated-device memory identity")?;
+    let minimum_host_required = (halo2_proofs::icicle::FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES as u64)
+        .checked_add(if integrated_device { expected_cuda_required_workspace } else { 0 })
+        .ok_or("native fused H host-memory requirement overflow")?;
+    if halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY != "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5"
+        || h_kernel_local_memory_upper != halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64
+        || h_program_metadata_upper != halo2_proofs::icicle::FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES as u64
+        || h_workspace_borrows_ntt != Some(true)
+        || cuda_required_workspace != expected_cuda_required_workspace
+        || host_required < minimum_host_required
+        || host_required > host_available
         || halo2_proofs::icicle::FORMAL_GPU_NTT_MIN_SIZE != (1usize << 16)
         || halo2_proofs::icicle::FORMAL_GPU_NTT_MAX_SIZE != (1usize << 25)
         || halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY != 1
@@ -6269,7 +6392,7 @@ fn authenticated_native_prove_backing_budget(
         || msm_prepared_workspace_peak == 0
         || msm_workspace_peak != msm_ordinary_workspace_peak.max(msm_prepared_workspace_peak)
     {
-        return Err("native prove budget does not match the current fixed GPU NTT/MSM execution profile".into());
+        return Err("native prove budget does not match the current fixed GPU H/NTT/MSM execution profile".into());
     }
     let grand_product_sets_per_instance = memory_model
         .get("shplonk_permutation_product_set_count")
@@ -6513,14 +6636,6 @@ fn authenticated_native_prove_backing_budget(
         .get("native_pk_read_stream_buffer_upper_bytes")
         .and_then(JsonValue::as_u64)
         .ok_or("native prove budget lacks its bounded PK stream-reader buffer bound")?;
-    let host_available = prove_budget
-        .get("host_available_bytes")
-        .and_then(JsonValue::as_u64)
-        .ok_or("native prove budget lacks its shared host-memory snapshot")?;
-    let host_required = prove_budget
-        .get("host_required_known_bytes")
-        .and_then(JsonValue::as_u64)
-        .ok_or("native prove budget lacks its known shared host-memory requirement")?;
     let memory_u64 = |name: &str| -> Result<u64, EZKLError> {
         memory_model
             .get(name)
@@ -6854,7 +6969,7 @@ fn write_native_pk_read_timing_receipt(
     let settings_sha256 = required_string("settings_sha256")?;
     let compiled_circuit_sha256 = required_string("compiled_circuit_sha256")?;
     let vk_sha256 = required_string("vk_sha256")?;
-    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v5")
+    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v6")
         || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
         || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
         || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
@@ -6936,8 +7051,13 @@ pub(crate) fn prove(
     check_mode: CheckMode,
 ) -> Result<Snark<Fr, G1Affine>, EZKLError> {
     let native_prove_command_started = Instant::now();
-    let formal_srs_sha256 = if let Ok(run_dir) = std::env::var("EZKL_GAT_RUN_DIR") {
-        validate_formal_producer_run(Path::new(&run_dir))?;
+    let formal_run_dir = std::env::var("EZKL_GAT_RUN_DIR").ok().map(PathBuf::from);
+    let formal_srs_sha256 = if let Some(run_dir) = formal_run_dir.as_deref() {
+        let proof_path = proof_path
+            .as_deref()
+            .ok_or("formal GAT proving requires an explicit proof output path")?;
+        validate_formal_producer_run(run_dir)?;
+        validate_formal_prove_paths(run_dir, proof_path, &pk_path)?;
         let path = srs_path
             .as_deref()
             .ok_or("formal GAT proving requires an explicit authenticated SRS path")?;
@@ -6980,6 +7100,21 @@ pub(crate) fn prove(
 
     let pretty_public_inputs = if formal_srs_sha256.is_some() { None } else { circuit.pretty_public_inputs(&data)? };
     let public_inputs = circuit.prepare_public_inputs(&data)?;
+    let early_formal_instances_ref = if formal_srs_sha256.is_some() {
+        let run_dir = formal_run_dir
+            .as_deref()
+            .ok_or("formal compact proof requires EZKL_GAT_RUN_DIR")?;
+        let proof_path = proof_path
+            .as_deref()
+            .ok_or("formal GAT proving requires an explicit proof output path")?;
+        Some(formal_proof_instances_ref(
+            run_dir,
+            proof_path,
+            std::slice::from_ref(&public_inputs),
+        )?)
+    } else {
+        None
+    };
 
     let circuit_settings = circuit.settings().clone();
 
@@ -7109,8 +7244,16 @@ pub(crate) fn prove(
         let native_proof_artifact_finalize_started = Instant::now();
         let mut native_proof_metrics_document: Option<JsonValue> = None;
         if formal_srs_sha256.is_some() {
-            let run_dir = std::env::var("EZKL_GAT_RUN_DIR").map(PathBuf::from).map_err(|_| "formal compact proof requires EZKL_GAT_RUN_DIR")?;
-            let instances_ref = formal_proof_instances_ref(&run_dir, &proof_path, &snark.instances)?;
+            let run_dir = formal_run_dir
+                .as_deref()
+                .ok_or("formal compact proof requires EZKL_GAT_RUN_DIR")?;
+            let instances_ref = formal_proof_instances_ref(run_dir, &proof_path, &snark.instances)?;
+            let early_instances_ref = early_formal_instances_ref
+                .as_ref()
+                .ok_or("formal compact proof has no pre-create public-instance anchor")?;
+            if early_instances_ref != &instances_ref {
+                return Err("formal public-instance reference changed during proof creation".into());
+            }
             snark.save_compact_v2(&proof_path, instances_ref)?;
         } else {
             snark.save(&proof_path)?;
@@ -8033,5 +8176,108 @@ mod native_geometry_diagnostics {
             "keys_generated": false,
         });
         println!("EZKL_NATIVE_CORA_GEOMETRY_JSON={}", report);
+    }
+}
+
+#[cfg(test)]
+mod formal_proof_path_contract_tests {
+    use super::*;
+
+    #[test]
+    fn retained_cora_paths_are_baseline_bound_before_proving() {
+        let baseline_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .canonicalize()
+            .expect("canonical baseline root");
+        assert_eq!(
+            std::env::current_dir()
+                .expect("test current directory")
+                .canonicalize()
+                .expect("canonical test current directory"),
+            baseline_root,
+            "run this production path check from the EZKL package root",
+        );
+
+        let cora_run = PathBuf::from("runs/formal/cora");
+        let absolute_cora_run = baseline_root.join(&cora_run);
+        let cora_proof = cora_run.join("proof.json");
+        let cora_pk = cora_run.join("pk.key");
+        let proof_existed_before = cora_proof.exists();
+        for name in ["statement.json", "public_output.json", "artifact_manifest.json"] {
+            assert!(cora_run.join(name).is_file(), "retained Cora file missing: {name}");
+        }
+
+        let relative = validate_formal_prove_paths(&cora_run, &cora_proof, &cora_pk)
+            .expect("relative retained Cora path");
+        let absolute = validate_formal_prove_paths(&absolute_cora_run, &cora_proof, &cora_pk)
+            .expect("absolute retained Cora path");
+        assert_eq!(relative.root, absolute.root);
+        assert_eq!(relative.statement, absolute.statement);
+        assert_eq!(relative.public_output, absolute.public_output);
+        assert_eq!(relative.artifact_manifest, absolute.artifact_manifest);
+
+        let traversal_error = validate_formal_prove_paths(
+            Path::new("../runs/formal/cora"),
+            &cora_proof,
+            &cora_pk,
+        )
+        .err()
+        .expect("parent traversal must be rejected");
+        assert!(traversal_error.to_string().contains("baseline-local"));
+
+        let outside_run = baseline_root.parent().expect("baseline root parent");
+        let outside_error =
+            validate_formal_prove_paths(outside_run, &cora_proof, &cora_pk)
+                .err()
+                .expect("outside-baseline run directory must be rejected");
+        assert!(outside_error.to_string().contains("escapes baseline"));
+
+        let citeseer_run = PathBuf::from("runs/formal/citeseer");
+        assert!(citeseer_run.is_dir(), "retained CiteSeer cell directory missing");
+        let wrong_proof_parent = citeseer_run.join("proof.json");
+        let proof_parent_error = validate_formal_prove_paths(
+            &cora_run,
+            &wrong_proof_parent,
+            &cora_pk,
+        )
+        .err()
+        .expect("proof parent from another dataset must be rejected");
+        assert!(proof_parent_error
+            .to_string()
+            .contains("compact formal proof and its public reference files must share one cell directory"));
+
+        let wrong_pk_parent = PathBuf::from("./Cargo.toml");
+        assert!(wrong_pk_parent.is_file(), "baseline Cargo.toml missing");
+        let pk_parent_error =
+            validate_formal_prove_paths(&cora_run, &cora_proof, &wrong_pk_parent)
+                .err()
+                .expect("proving-key parent from another dataset must be rejected");
+        assert!(pk_parent_error
+            .to_string()
+            .contains("formal proving key, proof output, and public references must share one cell directory"));
+
+        assert_eq!(cora_proof.exists(), proof_existed_before, "path validation must not create a proof");
+
+        let previous_run_dir = std::env::var_os("EZKL_GAT_RUN_DIR");
+        std::env::set_var("EZKL_GAT_RUN_DIR", &absolute_cora_run);
+        let missing_output_error = match prove(
+            PathBuf::new(),
+            PathBuf::new(),
+            PathBuf::new(),
+            None,
+            None,
+            CheckMode::UNSAFE,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("formal prove without an output path must fail before loading inputs"),
+        };
+        if let Some(previous) = previous_run_dir {
+            std::env::set_var("EZKL_GAT_RUN_DIR", previous);
+        } else {
+            std::env::remove_var("EZKL_GAT_RUN_DIR");
+        }
+        assert!(missing_output_error
+            .to_string()
+            .contains("formal GAT proving requires an explicit proof output path"));
+        assert_eq!(cora_proof.exists(), proof_existed_before, "early rejection must not create a proof");
     }
 }

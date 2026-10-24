@@ -186,6 +186,12 @@ if(GATZK_BUILD_MECHANISM_SECURITY_REGRESSION)
     target_link_libraries(gatzk_mechanism_security_regression PRIVATE gatzkml)
 endif()
 
+option(GATZK_BUILD_MECHANISM_ABLATION_PROOF_REGRESSION "Build test-only complete mechanism proof/verify regression" OFF)
+if(GATZK_BUILD_MECHANISM_ABLATION_PROOF_REGRESSION)
+    add_executable(gatzk_mechanism_ablation_proof_regression EXCLUDE_FROM_ALL tests/mechanism_ablation_proof_regression.cpp)
+    target_link_libraries(gatzk_mechanism_ablation_proof_regression PRIVATE gatzkml)
+endif()
+
 option(GATZK_BUILD_REAL_MECHANISM_INPUT_REGRESSION "Build real mechanism input relation and codec regression" OFF)
 if(GATZK_BUILD_REAL_MECHANISM_INPUT_REGRESSION)
     add_executable(gatzk_real_mechanism_input_regression EXCLUDE_FROM_ALL tests/real_mechanism_input_regression.cpp)

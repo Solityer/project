@@ -128,9 +128,36 @@ int main() {
         const auto reclaimed = zkgpt::native_storage::reclaim_tail(fields.data(), active_bytes, virtual_bytes);
         const std::uint64_t after = zkgpt::native_storage::physical_bytes(fields.data(), virtual_bytes);
         assert(reclaimed.mapped && reclaimed.mapping_bytes == original_bytes && reclaimed.live_bytes == active_bytes);
+        assert(fields.front() == F(7) && fields[active_bytes / sizeof(F) - 1U] == F(7));
         assert(before >= original_bytes - (std::size_t(1) << 20) && after < before);
         assert(before - after >= active_bytes - (std::size_t(1) << 20) && after <= active_bytes + (std::size_t(1) << 20));
         std::cout << "NATIVE_STORAGE_RECLAIM blocks_before_bytes=" << before << " blocks_after_bytes=" << after << " mapping_bytes=" << original_bytes << " live_bytes=" << active_bytes << '\n';
+    }
+    {
+        constexpr std::size_t original_bytes = std::size_t(16) << 20;
+        const std::size_t page = zkgpt::native_storage::page_size();
+        assert(original_bytes % page == 0U && original_bytes > page);
+        void* near_full = zkgpt::native_storage::allocate(original_bytes, alignof(F));
+        auto* bytes = static_cast<unsigned char*>(near_full);
+        bytes[0] = 0x4aU;
+        bytes[original_bytes - 64U] = 0x6bU;
+        const auto mapping = zkgpt::native_storage::mappings.at(near_full);
+        const std::uint64_t allocated_before = zkgpt::native_storage::fd_allocated_bytes(mapping.fd);
+        const std::array<std::size_t, 4> active_prefixes = {
+            original_bytes,
+            original_bytes - 1U,
+            original_bytes - 32U,
+            original_bytes - page + 1U};
+        for (const std::size_t active_bytes : active_prefixes) {
+            const auto reclaimed = zkgpt::native_storage::reclaim_tail(near_full, active_bytes, original_bytes);
+            const auto& recorded = zkgpt::native_storage::mappings.at(near_full);
+            assert(reclaimed.mapped && reclaimed.before_bytes == allocated_before &&
+                   reclaimed.after_bytes == allocated_before && reclaimed.mapping_bytes == original_bytes &&
+                   reclaimed.live_bytes == active_bytes);
+            assert(recorded.live_bytes == active_bytes && recorded.allocated_bytes == reclaimed.after_bytes);
+            assert(bytes[0] == 0x4aU && bytes[original_bytes - 64U] == 0x6bU);
+        }
+        zkgpt::native_storage::deallocate(near_full, alignof(F));
     }
     {
         constexpr std::size_t original_bytes = std::size_t(16) << 20;

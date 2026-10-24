@@ -63,8 +63,8 @@ int main() {
         ConstraintDescriptor decoded;
         std::size_t offset = 0U;
         require(read_constraint(encoded, offset, decoded) && offset == encoded.size() && decoded.logical_shape == inverse.logical_shape && decoded.padded_shape == inverse.padded_shape, "active shape descriptor wire");
-        require(Proof::kVersion == 7U && pointwise_sumcheck_descriptor(inverse, 2U).degree == 4U, "new protocol/degree");
-        std::cout << "pointwise_algebra_check=PASS canceling_slots=REJECT padded_constants=MASKED padding_cancel=REJECT free_residual=REJECT terminal_mle=MATCH protocol=GATR7\n";
+        require(Proof::kVersion == 8U && pointwise_sumcheck_descriptor(inverse, 2U).degree == 4U, "new protocol/degree");
+        std::cout << "pointwise_algebra_check=PASS canceling_slots=REJECT padded_constants=MASKED padding_cancel=REJECT free_residual=REJECT terminal_mle=MATCH protocol=GATR8\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

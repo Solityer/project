@@ -223,7 +223,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "num_shuffle_arguments": 1,
                 "num_permutation_columns": 2,
                 "fixed_column_count_post_compression": 5,
-                "permutation_copy_call_count": 4,
+                "permutation_copy_call_count_upper": 4,
                 "permutation_successor_entry_count_upper": 8,
             },
             "native_memory_model": {
@@ -260,7 +260,20 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "custom_gate_dependency_columns": [2],
                 "lookup_dependency_columns": [2, 2],
                 "lookup_query_polynomial_counts": [1, 1],
+                "lookup_argument_table_group_indices": [0, 0],
                 "shuffle_dependency_columns": [2],
+                "advice_column_phase_ids": [0, 0, 0, 0],
+                "advice_event_assignment_counts_upper": [16, 16, 16, 16],
+                "gat_transient_witness_bytes_upper": 128,
+                "advice_event_record_bytes_upper": 41,
+                "advice_event_reservation_chunk_bytes": 1 << 20,
+                "advice_event_pending_batch_bytes_upper": 8192 * 64,
+                "advice_event_flush_scratch_bytes_upper": 8192 * (48 + 40) + 24,
+                "advice_event_read_buffer_bytes_upper": 1_300_000,
+                "advice_event_column_metadata_bytes_upper": 512,
+                "advice_event_writer_buffer_bytes_upper": 8192,
+                "advice_event_column_bytes_upper": 512 + 41,
+                "advice_event_latest_element_bytes": 8,
                 "size_of_fr_bytes": 32,
                 "size_of_assigned_fr_bytes": 40,
                 "size_of_option_fr_bytes": 48,
@@ -278,6 +291,10 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "size_of_mv_lookup_prepared_bytes": 120,
                 "size_of_mv_lookup_prepared_table_bytes": 48,
                 "size_of_mv_lookup_committed_bytes": 96,
+                "size_of_mv_lookup_compact_table_bytes": 256,
+                "size_of_mv_lookup_id_tape_bytes": 64,
+                "size_of_mv_lookup_source_bytes": 512,
+                "size_of_fixed_column_source_bytes": 64,
                 "size_of_shplonk_commitment_extension_bytes": 128,
                 "size_of_shplonk_rotation_set_extension_bytes": 48,
                 "size_of_coeff_polynomial_header_bytes": 48,
@@ -288,6 +305,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "shplonk_unique_opening_point_count": 3,
                 "shplonk_max_commitments_per_rotation_set": 8,
                 "shplonk_permutation_product_set_count": 2,
+                "permutation_grand_product_bank_mapped_bytes_upper": 2 * 1 * 16 * 32,
                 "shplonk_advice_query_polynomial_count": 2,
                 "shplonk_fixed_query_polynomial_count": 2,
                 "shplonk_lookup_argument_count": 2,
@@ -300,8 +318,13 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "size_of_fft_stage_bytes": 24,
                 "graph_witness_scalar_element_count": 0,
                 "size_of_graph_witness_scalar_bytes": 32,
+                "selector_activation_storage_bytes_upper": 136,
+                "selector_cache_encoded_bytes": 13,
                 "selector_activation_bitmap_bytes": 100,
                 "fixed_polynomial_read_heap_scratch_bytes_upper": 4096,
+                "native_pk_read_buffer_capacity_bytes": 8000,
+                "native_successor_read_cache_bytes": 4 * 1024 * 1024,
+                "native_target_bitmap_fixed_cache_bytes": 1024 * 1024,
                 "lookup_table_cardinality_upper_bounds": [4],
             },
         }
@@ -887,12 +910,15 @@ class LocalFormalEntryTest(unittest.TestCase):
             msm_workspace
             + requirements["icicle_ntt_device_peak_upper_bytes"]
             + requirements["icicle_msm_precomputed_basis_device_upper_bytes"]
+            + formal_common.FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
         )
         expected_taskcap = 7 * minimum_task
         initial_available = (
             requirements["proof_nonprepare_heap_host_bytes"]
             + requirements["proof_nonprepare_hot_mmap_host_bytes"]
+            + requirements["regular_file_mmap_dirty_pagecache_upper_bytes"]
             + requirements["lookup_table_cache_retained_host_bytes"]
+            + formal_common.FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
             + requirements["shplonk_extension_host_upper_bytes"]
             + requirements["icicle_msm_host_staging_bytes"]
             + requirements["icicle_ntt_host_staging_upper_bytes"]
@@ -911,6 +937,7 @@ class LocalFormalEntryTest(unittest.TestCase):
         self.assertEqual(
             budget["future_phase_increment_bytes"],
             budget["tablecache_bytes"]
+            + budget["h_program_metadata_upper_bytes"]
             + budget["shplonk_extensions_bytes"]
             + budget["icicle_staging_bytes"]
             + budget["icicle_ntt_host_staging_upper_bytes"]
@@ -1025,7 +1052,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             result = _recheck_local_phase_capacity(
                 "cora", {"host_known_bytes": 1}, output_root=Path("/formal"),
                 remaining_known_disk_bytes=1, phase="setup", receipt={"query": query},
-                session_dir=Path("/session"), session_id="a" * 32, selected_device=selected,
+                session_id="a" * 32, selected_device=selected,
                 gpu_identity={}, build_environment={},
             )
         self.assertEqual(result["phase"], "setup")

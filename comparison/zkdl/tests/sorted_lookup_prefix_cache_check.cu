@@ -320,7 +320,10 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                               bool expect_valid,
                               const std::vector<zkdl::CpuG1Point>& generators,
                               const zkdl::CpuG1Point& h,
-                              const zkdl::CpuG1Point& u) {
+                              const zkdl::CpuG1Point& u,
+                              std::uint32_t key_offset = 0U,
+                              bool force_zero_first_delta = false,
+                              bool expect_bad_first_delta = false) {
     std::vector<zkdl::CpuG1Point> authenticated_points = generators;
     zkdl::CpuIpaBasisContext authenticated_basis;
     std::string error;
@@ -344,7 +347,7 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     const auto put_zero = [&](const std::string& name, std::uint32_t size) {
         values[name].assign(size, FrWire{});
     };
-    put("table_keys", {0U, 3U, 4U, 0U});
+    put("table_keys", {key_offset, key_offset + 3U, key_offset + 4U, 0U});
     put("table_active", {1U, 1U, 1U, 0U});
     constexpr std::uint32_t query_domain = 4U;
     std::vector<std::uint32_t> query_x(query_domain, 0U);
@@ -375,7 +378,10 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     std::vector<std::uint32_t> merge_scratch(8U, 0U);
     std::uint32_t distinct = 0U;
     for (std::size_t index = 0U; index < merged_keys.size(); ++index) {
-        if (index != 0U) merge_delta[index] = merged_keys[index] - merged_keys[index - 1U];
+        if (index == 0U)
+            merge_delta[index] = force_zero_first_delta ? 0U : merged_keys[index];
+        else
+            merge_delta[index] = merged_keys[index] - merged_keys[index - 1U];
         merge_marker[index] = index == 0U || merged_keys[index] != merged_keys[index - 1U];
         if (merge_marker[index] != 0U) ++distinct;
         merge_scratch[index] = distinct;
@@ -500,7 +506,7 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     descriptor.merge_segment_count = 4U;
     descriptor.x_bits = 1U;
     descriptor.y_bits = 2U;
-    descriptor.key_max = zkdl::fr_from_u32(4U);
+    descriptor.key_max = zkdl::fr_from_u32(key_offset + 4U);
     descriptor.table_unique_rows = 3U;
 
     const auto require_provider_state = [&](const char* stage) {
@@ -618,6 +624,11 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
         : prove_authenticated_sorted_lookup(
               descriptor, providers, refs, outer_commitments, outer_blinders,
               outer_materials, owned_generators, h, u, statement, proof, &error);
+    if (expect_bad_first_delta) {
+        require(!proved && !error.empty(),
+                "sorted-lookup accepted the old zero first-delta sentinel for a nonzero first key");
+        return;
+    }
     if (!expect_valid) {
         if (proved) {
             const auto encoded = proof.serialize();
@@ -652,8 +663,36 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                     std::numeric_limits<std::uint32_t>::max() &&
                 decoded.relations[1].provider_tags[0U] == "merge_product_prefix" &&
                 decoded.relations[1].outer_commitment_indices[0U] ==
-                    std::numeric_limits<std::uint32_t>::max(),
-            "challenge products were not represented by internal relation commitments");
+                    std::numeric_limits<std::uint32_t>::max() &&
+                decoded.version == zkdl::AuthenticatedSortedLookupProof::kVersion &&
+                decoded.provider_gamma_manifest.size() ==
+                    zkdl::authenticated_sorted_lookup_internal_provider_tags(descriptor).size() &&
+                decoded.provider_gamma_manifest.front().segment_count > 1U,
+            "sorted-lookup v2 manifest or internal relation commitments are not canonical");
+    auto bad_asl_version = decoded;
+    --bad_asl_version.version;
+    require(!bad_asl_version.valid(&error),
+            "sorted-lookup accepted an old top-level wire version");
+    for (const auto& relation : decoded.relations)
+        require(relation.terminal_relation.version ==
+                    zkdl::ZkTerminalRelationProof::kCrossProviderAggregateVersion &&
+                    relation.terminal_relation.terminal_commitments.size() ==
+                        relation.provider_tags.size() &&
+                    relation.terminal_relation.terminal_openings.size() == 1U &&
+                    relation.terminal_relation.terminal_segment_openings.size() == 1U &&
+                    relation.terminal_relation.terminal_segment_openings.front().size() == 1U &&
+                    relation.terminal_relation.terminal_openings.front().logical_domain ==
+                        relation.logical_domain &&
+                    relation.terminal_relation.terminal_openings.front().logical_offset == 0U &&
+                    relation.terminal_relation.terminal_openings.front().actual_length ==
+                        relation.segment_size &&
+                    relation.terminal_relation.terminal_openings.front().padded_length ==
+                        relation.segment_size &&
+                    relation.terminal_relation.terminal_openings.front().generator_size ==
+                        relation.segment_size &&
+                    relation.terminal_relation.terminal_openings.front().padded_generator_size ==
+                        zkdl::cpu_ipa_padded_size(relation.segment_size),
+                "sorted-lookup relation did not use one v4 opening with all provider taus");
     require(std::any_of(refs.begin(), refs.end(), [](const auto& ref) {
                 return ref.role == zkdl::kSortedLookupCommitmentQueryPrefix;
             }) &&
@@ -707,6 +746,92 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
             throw std::runtime_error(std::string(message) + ": proof accepted");
     };
 
+    auto bad_manifest_point = decoded;
+    auto& manifest_point = bad_manifest_point.provider_gamma_manifest.front()
+                               .ordered_segment_commitments.front();
+    const auto original_manifest_point = zkdl::cpu_g1_from_native(manifest_point);
+    require(zkdl::cpu_g1_point_valid(original_manifest_point),
+            "sorted-lookup manifest source point is invalid");
+    const auto changed_manifest_point = zkdl::cpu_g1_add(original_manifest_point, h);
+    require(zkdl::cpu_g1_point_valid(changed_manifest_point),
+            "native G1 addition rejected valid manifest source point plus H");
+    manifest_point = zkdl::cpu_g1_to_native(changed_manifest_point);
+    require_verifier_rejects(bad_manifest_point,
+                             "sorted-lookup accepted a changed internal source Gamma");
+
+    auto bad_manifest_order = decoded;
+    std::swap(bad_manifest_order.provider_gamma_manifest[0U],
+              bad_manifest_order.provider_gamma_manifest[1U]);
+    require_verifier_rejects(bad_manifest_order,
+                             "sorted-lookup accepted a reordered Gamma manifest");
+    auto bad_manifest_missing = decoded;
+    bad_manifest_missing.provider_gamma_manifest.pop_back();
+    require_verifier_rejects(bad_manifest_missing,
+                             "sorted-lookup accepted a missing Gamma manifest entry");
+    auto bad_manifest_extra = decoded;
+    bad_manifest_extra.provider_gamma_manifest.push_back(
+        bad_manifest_extra.provider_gamma_manifest.front());
+    require_verifier_rejects(bad_manifest_extra,
+                             "sorted-lookup accepted an extra Gamma manifest entry");
+    auto bad_manifest_domain = decoded;
+    ++bad_manifest_domain.provider_gamma_manifest.front().logical_domain;
+    require_verifier_rejects(bad_manifest_domain,
+                             "sorted-lookup accepted a changed manifest logical domain");
+
+    auto bad_external_xi = decoded;
+    auto& external_terminal = bad_external_xi.relations[0U].terminal_relation;
+    const auto original_external_xi = zkdl::cpu_g1_from_native(
+        external_terminal.terminal_openings[0U].xi);
+    const auto changed_external_xi = zkdl::cpu_g1_add(original_external_xi, h);
+    require(zkdl::cpu_g1_point_valid(changed_external_xi),
+            "native G1 addition rejected valid external Xi plus H");
+    external_terminal.terminal_openings[0U].xi =
+        zkdl::cpu_g1_to_native(changed_external_xi);
+    external_terminal.terminal_segment_openings[0U][0U].xi =
+        zkdl::cpu_g1_to_native(changed_external_xi);
+    require_verifier_rejects(bad_external_xi,
+                             "sorted-lookup accepted a changed cross-provider Xi");
+
+    auto bad_provider_tau = decoded;
+    auto& provider_tau = bad_provider_tau.relations[0U].terminal_relation
+                             .terminal_commitments[0U];
+    const auto original_provider_tau = zkdl::cpu_g1_from_native(provider_tau);
+    const auto changed_provider_tau = zkdl::cpu_g1_add(original_provider_tau, h);
+    require(zkdl::cpu_g1_point_valid(changed_provider_tau),
+            "native G1 addition rejected valid provider tau plus H");
+    provider_tau = zkdl::cpu_g1_to_native(changed_provider_tau);
+    require_verifier_rejects(bad_provider_tau,
+                             "sorted-lookup accepted a changed provider tau");
+
+    auto bad_aggregate_point = decoded;
+    auto& aggregate_opening =
+        bad_aggregate_point.relations[0U].terminal_relation.terminal_openings[0U];
+    require(!aggregate_opening.inner_point.empty(),
+            "sorted-lookup aggregate opening omitted its low evaluation point");
+    aggregate_opening.inner_point[0U] = zkdl::fr_value(zkdl::fr_add(
+        zkdl::fr_wire(aggregate_opening.inner_point[0U]), zkdl::fr_from_u32(1U)));
+    bad_aggregate_point.relations[0U].terminal_relation
+        .terminal_segment_openings[0U][0U].inner_point = aggregate_opening.inner_point;
+    require_verifier_rejects(bad_aggregate_point,
+                             "sorted-lookup accepted a changed aggregate opening point");
+
+    auto bad_opening_mode = decoded;
+    bad_opening_mode.relations[0U].terminal_relation.version =
+        zkdl::ZkTerminalRelationProof::kAggregateVersion;
+    require_verifier_rejects(bad_opening_mode,
+                             "sorted-lookup accepted a weighted per-provider opening mode");
+
+    auto bad_provider_index = decoded;
+    bad_provider_index.relations[0U].commitment_indices[0U] = 1U;
+    require_verifier_rejects(bad_provider_index,
+                             "sorted-lookup accepted a reordered provider commitment index");
+
+    auto bad_provider_order = decoded;
+    std::swap(bad_provider_order.relations[0U].provider_tags[0U],
+              bad_provider_order.relations[0U].provider_tags[1U]);
+    require_verifier_rejects(bad_provider_order,
+                             "sorted-lookup accepted a reordered provider rho binding");
+
     auto bad_alias_id = decoded;
     auto& bad_alias_node = bad_alias_id.relations[0U].terminal_relation
                                .product_nodes[square_node_index];
@@ -755,47 +880,27 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
                              "sorted-lookup accepted a changed square output claim");
 
     auto tampered = decoded;
-    std::size_t product_prefix_relation = tampered.relations.size();
-    std::size_t product_prefix_tensor = 0U;
-    for (std::size_t relation_index = 0U;
-         relation_index < tampered.relations.size(); ++relation_index) {
-        const auto& tags = tampered.relations.at(relation_index).provider_tags;
-        const auto tag = std::find(tags.begin(), tags.end(), "merge_product_prefix");
-        if (tag == tags.end()) continue;
-        require(product_prefix_relation == tampered.relations.size(),
-                "merge product-prefix tag is ambiguous across relations");
-        product_prefix_relation = relation_index;
-        product_prefix_tensor = static_cast<std::size_t>(tag - tags.begin());
-        require(std::find(tag + 1, tags.end(), "merge_product_prefix") == tags.end(),
-                "merge product-prefix tag is duplicated within a relation");
-    }
-    require(product_prefix_relation < tampered.relations.size(),
+    auto& internal_relation = tampered.relations.at(1U);
+    require(std::find(internal_relation.provider_tags.begin(),
+                      internal_relation.provider_tags.end(), "merge_product_prefix") !=
+                internal_relation.provider_tags.end(),
             "internal merge product-prefix provider tag is absent");
-    auto& prefix_relation = tampered.relations.at(product_prefix_relation);
-    require(product_prefix_tensor < prefix_relation.terminal_relation
-                                             .terminal_segment_openings.size() &&
-                product_prefix_tensor < prefix_relation.outer_commitment_indices.size() &&
-                prefix_relation.outer_commitment_indices.at(product_prefix_tensor) ==
-                    std::numeric_limits<std::uint32_t>::max(),
-            "merge product-prefix tag does not map to an internal terminal provider");
-    auto& prefix_segments = prefix_relation.terminal_relation
-                                .terminal_segment_openings.at(product_prefix_tensor);
-    require(!prefix_segments.empty() && prefix_segments.at(0U).segment_index == 0U,
-            "internal merge product-prefix segment zero opening is absent");
-    const auto original_prefix_xi =
-        zkdl::cpu_g1_from_native(prefix_segments.at(0U).xi);
-    require(zkdl::cpu_g1_point_valid(original_prefix_xi),
-            "internal product-prefix terminal xi is not a valid G1 point");
-    const auto changed = zkdl::cpu_g1_add(original_prefix_xi, h);
-    require(zkdl::cpu_g1_point_valid(changed),
-            "native G1 addition rejected valid product-prefix xi plus H");
-    prefix_segments.at(0U).xi = zkdl::cpu_g1_to_native(changed);
+    auto& internal_opening = internal_relation.terminal_relation.terminal_openings.front();
+    const auto original_internal_xi = zkdl::cpu_g1_from_native(internal_opening.xi);
+    require(zkdl::cpu_g1_point_valid(original_internal_xi),
+            "internal cross-provider terminal Xi is not a valid G1 point");
+    const auto changed_internal_xi = zkdl::cpu_g1_add(original_internal_xi, h);
+    require(zkdl::cpu_g1_point_valid(changed_internal_xi),
+            "native G1 addition rejected valid internal aggregate Xi plus H");
+    internal_opening.xi = zkdl::cpu_g1_to_native(changed_internal_xi);
+    internal_relation.terminal_relation.terminal_segment_openings.front().front().xi =
+        zkdl::cpu_g1_to_native(changed_internal_xi);
     error.clear();
     if (verify_authenticated_sorted_lookup(
             descriptor, providers.table_keys, providers.table_active,
             refs, outer_commitments, outer_wires, generators, h, u,
             statement, tampered, &error))
-        throw std::runtime_error("sorted-lookup accepted a tampered internal product-prefix opening");
+        throw std::runtime_error("sorted-lookup accepted a tampered internal cross-provider opening");
 
     values["query_prefix"][0U] = zkdl::fr_from_u32(2U);
     error.clear();
@@ -883,6 +988,11 @@ int main() {
                                  proof_generators, proof_h, proof_u);
         check_tiny_sorted_lookup({4U, 3U}, {0U, 3U, 3U, 4U, 4U}, true,
                                  proof_generators, proof_h, proof_u);
+        check_tiny_sorted_lookup({4U, 5U}, {1U, 4U, 4U, 5U, 5U}, true,
+                                 proof_generators, proof_h, proof_u,
+                                 1U, true, true);
+        check_tiny_sorted_lookup({4U, 5U}, {1U, 4U, 4U, 5U, 5U}, true,
+                                 proof_generators, proof_h, proof_u, 1U);
         check_tiny_sorted_lookup({2U, 4U}, {0U, 2U, 3U, 4U, 4U}, false,
                                  proof_generators, proof_h, proof_u);
 

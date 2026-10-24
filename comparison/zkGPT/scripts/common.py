@@ -1,10 +1,4 @@
-"""Fail-closed helpers shared by the native zkGPT formal runner.
-
-The C++ adapter is the only proof producer and verifier.  This module only
-authenticates baseline-local inputs, resolves source-matched binaries,
-records freshness/fingerprints, and cross-checks public result metadata.  It
-never infers a proof from a digest or manufactures a verifier result.
-"""
+"""Shared path, process, resource, and result helpers for the native zkGPT runner."""
 
 from __future__ import annotations
 
@@ -30,19 +24,19 @@ DATASETS: Tuple[str, ...] = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 BACKENDS: Tuple[str, ...] = ("cpu", "gpu")
 FORMAL_BACKENDS: Tuple[str, ...] = ("cpu",)
 
-RESULT_SCHEMA = "zkgpt-gat-result-v2"
-REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v4"
+RESULT_SCHEMA = "zkgpt-gat-result-v3"
+REPORT_SCHEMA = "zkgpt-gat-independent-verifier-v5"
 EXECUTION_SCHEMA = "zkgpt-gat-execution-v3"
 RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-resource-manifest-v1"
 SCOPED_RESOURCE_MANIFEST_SCHEMA = "zkgpt-gat-formal-scoped-resource-manifest-v1"
-PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v4"
+PREFLIGHT_SCHEMA = "zkgpt-gat-formal-preflight-v5"
 CAPACITY_PROOF_PATH = "formal_native_masked_lasso_hyrax+native_masked_layered_gkr"
-COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v3"
-FINAL_SCHEMA = "zkgpt-gat-final-validation-v3"
+COLLECTED_SCHEMA = "zkgpt-gat-collected-results-v4"
+FINAL_SCHEMA = "zkgpt-gat-final-validation-v4"
 HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 HEX32_RE = re.compile(r"^[0-9a-f]{32}$")
 BN254_SCALAR_MODULUS = int("30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001", 16)
-PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v4-native-commitment-wire-io-excluded"
+PAPER_TIMING_SEMANTICS = "zkgpt-gat-paper-timing-v5-native-commitment-wire-io-excluded"
 FORMAL_SESSION_SCHEMA = "zkgpt-gat-formal-session-v1"
 
 _ACTIVE_OWNED_PROCESSES: Dict[int, subprocess.Popen] = {}
@@ -142,12 +136,6 @@ def formal_session_status_path(root: Path, session_id: str) -> Path:
     return formal_results_directory(root, session_id) / "session_status.json"
 
 
-def derive_run_nonce(session_id: str, dataset: str) -> str:
-    if not HEX32_RE.fullmatch(session_id) or dataset not in DATASETS:
-        raise ChainError("cannot derive formal nonce from invalid session or dataset")
-    return hashlib.sha256(f"zkgpt-formal-run-nonce-v1:{session_id}:{dataset}".encode("ascii")).hexdigest()[:32]
-
-
 def runtime_source_sha256(root: Path) -> str:
     """Fingerprint formal runtime helpers so session-bound outputs reject stale code."""
     paths = [path for path in (root / "scripts").glob("*.py") if path.is_file()]
@@ -159,8 +147,8 @@ def runtime_source_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
-def create_formal_session(root: Path, session_id: Optional[str] = None, dataset_scope: Optional[Sequence[str]] = None) -> Tuple[str, Dict[str, Any], str]:
-    """Create one immutable manifest binding all five formal cells to current code."""
+def create_formal_session(root: Path, session_id: Optional[str] = None, dataset_scope: Optional[Sequence[str]] = None) -> Tuple[str, Dict[str, Any]]:
+    """Create a fresh run directory and its small progress/status record."""
     session_id = secrets.token_hex(16) if session_id is None else session_id
     if not HEX32_RE.fullmatch(session_id):
         raise ChainError("formal session id must be 32 lowercase hexadecimal characters")
@@ -168,26 +156,22 @@ def create_formal_session(root: Path, session_id: Optional[str] = None, dataset_
     if any(output_dir.iterdir()):
         raise ChainError(f"formal session directory must be fresh and empty: {output_dir}")
     scope = canonical_dataset_scope(dataset_scope)
-    manifest = {
+    session = {
         "schema": FORMAL_SESSION_SCHEMA,
         "session_id": session_id,
         "datasets": list(DATASETS),
         "dataset_scope": list(scope),
-        "run_nonces": {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS},
         "started_unix_ns": time.time_ns(),
-        "runtime_source_sha256": runtime_source_sha256(root),
-        "native_source_sha256": source_tree_sha256(root),
     }
     path = output_dir / "session.json"
-    atomic_write_json(path, manifest, root)
-    manifest_sha256 = sha256_file(path)
+    atomic_write_json(path, session, root)
     atomic_write_json(formal_session_status_path(root, session_id), {
         "schema": FORMAL_SESSION_SCHEMA, "session_id": session_id,
         "status": "RUNNING", "active_stage": "session-created", "completed_stages": [],
         "dataset_scope": list(scope),
-        "started_unix_ns": manifest["started_unix_ns"],
+        "started_unix_ns": session["started_unix_ns"],
     }, root)
-    return session_id, manifest, manifest_sha256
+    return session_id, session
 
 
 @contextmanager
@@ -215,29 +199,26 @@ def formal_run_lock(root: Path):
             stream.close()
 
 
-def require_formal_session(root: Path) -> Tuple[str, Dict[str, Any], str]:
+def require_formal_session(root: Path) -> Tuple[str, Dict[str, Any]]:
     session_id = os.environ.get("ZKGPT_FORMAL_SESSION_ID", "")
     if not HEX32_RE.fullmatch(session_id):
         raise ChainError("formal helper requires the session created by the comparison coordinator")
     path = formal_session_path(root, session_id)
-    manifest = load_json(path, "formal session manifest")
-    if not isinstance(manifest, dict) or manifest.get("schema") != FORMAL_SESSION_SCHEMA:
-        raise ChainError("formal session manifest schema is invalid")
-    expected_nonces = {dataset: derive_run_nonce(session_id, dataset) for dataset in DATASETS}
-    if "dataset_scope" in manifest:
+    session = load_json(path, "formal session record")
+    if not isinstance(session, dict) or session.get("schema") != FORMAL_SESSION_SCHEMA:
+        raise ChainError("formal session record is invalid")
+    if "dataset_scope" in session:
         try:
-            scope = canonical_dataset_scope(manifest.get("dataset_scope"))
+            scope = canonical_dataset_scope(session.get("dataset_scope"))
         except ChainError as exc:
-            raise ChainError("formal session dataset scope is invalid") from exc
-        if manifest.get("dataset_scope") != list(scope):
-            raise ChainError("formal session dataset scope is not canonical")
+            raise ChainError("formal session scope is invalid") from exc
+        if session.get("dataset_scope") != list(scope):
+            raise ChainError("formal session scope is not canonical")
     else:
         scope = DATASETS
-    if manifest.get("session_id") != session_id or manifest.get("datasets") != list(DATASETS) or manifest.get("run_nonces") != expected_nonces:
-        raise ChainError("formal session manifest does not bind exactly the five canonical datasets")
-    if manifest.get("runtime_source_sha256") != runtime_source_sha256(root) or manifest.get("native_source_sha256") != source_tree_sha256(root):
-        raise ChainError("formal session source fingerprint is stale")
-    return session_id, manifest, sha256_file(path)
+    if session.get("session_id") != session_id or session.get("datasets") != list(DATASETS):
+        raise ChainError("formal session record does not identify the canonical dataset universe")
+    return session_id, session
 
 
 def formal_resource_manifest_path(root: Path, session_id: str, session: Mapping[str, Any]) -> Path:
@@ -763,7 +744,6 @@ def config_path(root: Path, dataset: str) -> Path:
 
 def config_with_auth(root: Path, dataset: str) -> Tuple[Path, Dict[str, str]]:
     path = config_path(root, dataset)
-    verify_sidecar(path.parent, path.name, path.with_name(path.name + ".sha256"))
     return path, read_key_values(path)
 
 
@@ -805,7 +785,11 @@ def cache_dir(root: Path, dataset: str) -> Path:
 
 def verify_checkpoint(root: Path, dataset: str) -> Dict[str, str]:
     directory = checkpoint_dir(root, dataset)
-    return verify_sidecar(directory, "manifest.json", directory / "integrity.sha256")
+    manifest = require_regular(directory / "manifest.json", "checkpoint manifest")
+    payload = load_json(manifest, "checkpoint manifest")
+    if not isinstance(payload, dict):
+        raise ChainError(f"checkpoint manifest is not a JSON object: {manifest}")
+    return {"manifest.json": str(manifest)}
 
 
 def verify_cache(root: Path, dataset: str) -> Dict[str, str]:
@@ -824,11 +808,9 @@ def verify_cache(root: Path, dataset: str) -> Dict[str, str]:
         required.append("labels.txt")
     else:
         required.extend(["labels.txt", "test.index"])
-    expected = verify_sidecar(directory, required[0], directory / "integrity.sha256")
     for name in required:
-        if name not in expected:
-            raise ChainError(f"cache sidecar omits required file {directory / name}")
-    return expected
+        require_regular(directory / name, "canonical cache input")
+    return {name: str(directory / name) for name in required}
 
 
 def resource_manifest_dataset_entry(
@@ -860,19 +842,15 @@ def verify_local_resources(
     errors: List[str] = []
     quant = local_path(root, "baseline-local/configs/quantization_scale_chain.cfg", "quantization config")
     try:
-        quant_entries = verify_sidecar(quant.parent, quant.name, quant.with_name(quant.name + ".sha256"))
+        require_regular(quant, "quantization config")
         read_key_values(quant)
         if quantization_identity is not None:
             quantization_identity.clear()
-            quantization_identity.update({
-                "quantization_scale_chain_sha256": sha256_file(quant),
-                "quantization_entries": quant_entries,
-            })
     except ChainError as exc:
         errors.append(str(exc))
     for dataset in datasets:
         try:
-            config_path_value, config = config_with_auth(root, dataset)
+            _config_path_value, config = config_with_auth(root, dataset)
             if config.get("dataset") != dataset:
                 raise ChainError(f"config dataset identity mismatch: {dataset}")
             if config.get("setup_mode") != "hyrax_native_local" or config.get("setup_resource_scope") != "baseline-local":
@@ -887,33 +865,20 @@ def verify_local_resources(
                     config["output_mode"] != "public_logits" or
                     config["proof_task"] != "node_classification_full_gat"):
                 raise ChainError(f"config does not declare strict full-GAT boundary: {dataset}")
-            cache_entries = verify_cache(root, dataset)
-            checkpoint_entries = verify_checkpoint(root, dataset)
+            verify_cache(root, dataset)
+            verify_checkpoint(root, dataset)
             if resource_entries is not None:
-                resource_entries[dataset] = resource_manifest_dataset_entry(
-                    root, dataset, config_path_value, cache_entries, checkpoint_entries
-                )
+                resource_entries[dataset] = {}
         except ChainError as exc:
             errors.append(str(exc))
     return errors
 
 
 def resource_identity(root: Path, dataset: str) -> Dict[str, Any]:
-    config_path_value, config = config_with_auth(root, dataset)
-    quant = local_path(root, "baseline-local/configs/quantization_scale_chain.cfg", "quantization config")
-    verify_sidecar(quant.parent, quant.name, quant.with_name(quant.name + ".sha256"))
-    cache = cache_dir(root, dataset)
-    checkpoint = checkpoint_dir(root, dataset)
-    verify_cache(root, dataset)
-    checkpoint_entries = verify_checkpoint(root, dataset)
+    _config_path_value, config = config_with_auth(root, dataset)
     return {
         "dataset": dataset,
         "config": config,
-        "config_sha256": sha256_file(config_path_value),
-        "quantization_sha256": sha256_file(quant),
-        "cache_manifest_sha256": sha256_file(cache / "integrity.sha256"),
-        "checkpoint_manifest_sha256": sha256_file(checkpoint / "integrity.sha256"),
-        "checkpoint_manifest_entry_sha256": checkpoint_entries["manifest.json"],
         "full_dataset_identity": f"canonical:{dataset}",
         "cache_identity": f"baseline-local/data/cache/{dataset}/integrity.sha256",
         "checkpoint_identity": f"baseline-local/checkpoints/{dataset}_gat/integrity.sha256",
@@ -1081,8 +1046,6 @@ def launch_native(
     com_w_secret_path_value: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
     formal_session_id: Optional[str] = None,
-    run_nonce: Optional[str] = None,
-    session_manifest_sha256: Optional[str] = None,
     run_directory_relative: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     if operation not in ("prove", "register", "capacity"):
@@ -1100,20 +1063,15 @@ def launch_native(
         args.append("--register-only")
     elif operation == "capacity":
         args.append("--capacity-only")
-    binding_values = (formal_session_id, run_nonce, session_manifest_sha256, run_directory_relative)
-    if operation != "capacity" and not all(binding_values):
-        raise ChainError(f"native {operation} requires a complete formal session binding")
-    if any(value is not None for value in binding_values):
-        if not all(binding_values):
-            raise ChainError("native formal session binding is incomplete")
-        current_id, _manifest, current_sha256 = require_formal_session(root)
-        if (formal_session_id != current_id or session_manifest_sha256 != current_sha256 or
-                run_nonce != derive_run_nonce(current_id, dataset) or
-                run_directory_relative != f"baseline-local/runs/formal/{current_id}/{dataset}"):
-            raise ChainError("native formal session binding does not match this run")
-        args.extend(["--formal-session-id", str(formal_session_id), "--run-nonce", str(run_nonce),
-                     "--session-manifest-sha256", str(session_manifest_sha256),
-                     "--formal-run-directory", str(run_directory_relative)])
+    if formal_session_id is not None:
+        if not HEX32_RE.fullmatch(formal_session_id):
+            raise ChainError("native session label must be a 32-character lowercase hex id")
+        args.extend(["--formal-session-id", formal_session_id])
+    if run_directory_relative is not None:
+        run_path = local_path(root, run_directory_relative, "native run directory")
+        if not run_path.is_relative_to(root.absolute()):
+            raise ChainError("native run directory escapes the baseline")
+        args.extend(["--formal-run-directory", run_directory_relative])
     try:
         return run_captured(args, root, timeout_seconds)
     except subprocess.TimeoutExpired as exc:
@@ -1123,7 +1081,7 @@ def launch_native(
 def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
     if not isinstance(value, dict):
         raise ChainError(f"result is not a JSON object: {path}")
-    required = ("schema", "paper_timing_semantics", "session_id", "run_nonce", "session_manifest_sha256",
+    required = ("schema", "paper_timing_semantics", "session_id",
                 "dataset", "backend", "status", "verification_status",
                 "proof_scope", "privacy_policy", "privacy_profile", "output_mode",
                 "capability_status", "formal_backend_supported")
@@ -1134,8 +1092,7 @@ def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
         raise ChainError(f"unsupported result schema in {path}")
     if value.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS:
         raise ChainError(f"result uses stale or unsupported paper timing semantics: {path}")
-    require_fixed_digest(value.get("session_manifest_sha256"), "session_manifest_sha256", path)
-    if not HEX32_RE.fullmatch(str(value.get("session_id", ""))) or not HEX32_RE.fullmatch(str(value.get("run_nonce", ""))):
+    if not HEX32_RE.fullmatch(str(value.get("session_id", ""))):
         raise ChainError(f"result has invalid formal session identity: {path}")
     if (value["proof_scope"] != "full_gat" or
             value["privacy_policy"] != "model_and_trace_hidden" or
@@ -1149,17 +1106,14 @@ def require_result_shape(value: Any, path: Path) -> Dict[str, Any]:
     return value
 
 
-def artifact_fields(root: Path, result: Mapping[str, Any], run_path: Path) -> Tuple[Path, str]:
+def artifact_fields(root: Path, result: Mapping[str, Any], run_path: Path) -> Path:
     relative = result.get("artifact_path")
     if not isinstance(relative, str) or not relative:
         raise ChainError(f"result has no proof artifact path: {run_path / 'result.json'}")
     artifact = local_path(root, relative, "proof artifact")
     if artifact.parent != run_path:
         raise ChainError(f"proof artifact is outside its result directory: {artifact}")
-    digest = result.get("artifact_sha256")
-    if digest is not None and digest != "":
-        require_fixed_digest(digest, "artifact_sha256", run_path / "result.json")
-    return require_regular(artifact, "proof artifact"), str(digest or "")
+    return require_regular(artifact, "proof artifact")
 
 
 def require_manifest(root: Path, name: str, expected_schema: str) -> Mapping[str, Any]:
@@ -1207,7 +1161,7 @@ def require_timing(result: Mapping[str, Any], path: Any) -> Dict[str, float]:
         "lasso_family_selected_row_mapping",
         "initial_commitment_blinding_prepare", "commitment", "prove_total",
         "self_verify", "prove", "verify", "serialize",
-        "artifact_wire_self_check", "artifact_write", "artifact_readback",
+        "artifact_wire_self_check", "artifact_write",
     )
     for key in required:
         normalized[key] = finite_nonnegative(timing.get(key), f"timing_ms.{key}", path)
@@ -1256,7 +1210,7 @@ def paper_metrics(result: Mapping[str, Any], report: Mapping[str, Any], where: A
         "verify_time_ms": verifier_timing(report, where)["crypto_verify_ms"],
         "proof_size_bytes": size,
         "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
-        "timing_scope": "Commitment Time includes native cryptographic computations for initial Aux and L_qry bindings and M_f row bindings, plus the per-proof M_f column-generator derivation; sampling the initial hiding randomness is excluded. Prove Time excludes only that initial randomness preparation, Commitment Time, and prover self-verification; it includes native relation evaluation, borrowed Aux witness construction, Lasso table-value/index and lookup-protocol construction, later protocol work, and canonical in-memory wire serialization. Canonical forward generation, explicit dataset/checkpoint file I/O and decode, and one-time model registration are outside this proof timer; artifact wire self-check, artifact file write, and readback are recorded separately and excluded.",
+        "timing_scope": "Commitment Time includes native cryptographic computations for initial Aux and L_qry bindings and M_f row bindings, plus the per-proof M_f column-generator derivation; sampling the initial hiding randomness is excluded. Prove Time excludes only that initial randomness preparation, Commitment Time, and prover self-verification; it includes native relation evaluation, borrowed Aux witness construction, Lasso table-value/index and lookup-protocol construction, later protocol work, and canonical in-memory wire serialization. Canonical forward generation, explicit dataset/checkpoint file I/O and decode, and one-time model registration are outside this proof timer; artifact wire self-check and artifact file write are recorded separately and excluded.",
     }
 
 

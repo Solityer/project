@@ -4,7 +4,6 @@
   "generator_digest": "394afe54b38e8f0565cd11b75b7f106871b20f837c0245ff6424177d87382ffe",
   "integer_bound_ledger_digest": "b23ca4f5dd6dc7788bc3ec7c0f85e08f4cfc62824679284e2242ce3d8e1c8c1c",
   "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c7_TEST_FIXTURE_zgb3e0rl",
-  "model_manifest_digest": "97f59d8faa8e1dfebe212c2d5a62d9ab7c60055f9aac885b81b959a3de67e17b",
   "model_param_id": "cora_planetoid_seed11_TEST_FIXTURE_zgb3e0rl",
   "model_tensors": [
     {

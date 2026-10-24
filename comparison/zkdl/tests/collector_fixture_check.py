@@ -10,7 +10,6 @@ those records.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
@@ -25,12 +24,7 @@ sys.path.insert(0, str(SCRIPTS))
 from result_artifacts import (  # noqa: E402
     DATASETS,
     FIXTURE_PROOF_SCOPE,
-    fixture_statement_id,
 )
-
-
-def digest_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
 
 
 def write_kv(path: Path, values: dict[str, object]) -> None:
@@ -50,35 +44,32 @@ def invoke(command: list[str], expected: int) -> subprocess.CompletedProcess[str
     return result
 
 
-def make_records(root: Path, artifact: Path, evidence: str) -> str:
-    artifact_bytes = artifact.read_bytes()
-    artifact_digest = digest_bytes(artifact_bytes)
-    if not artifact_bytes.startswith(b"GATR"):
+def make_records(root: Path, artifact: Path, evidence: str) -> int:
+    artifact_size = artifact.stat().st_size
+    with artifact.open("rb") as stream:
+        magic = stream.read(4)
+    if artifact_size < 4 or magic != b"GATR":
         raise RuntimeError("input artifact is not a native GATR artifact")
     evidence_text = (
         evidence.strip() + "\n" +
         f"source_artifact={artifact.resolve()}\n" +
-        f"artifact_sha256={artifact_digest}\n" +
         "independent_verify=PASS\n"
     )
-    evidence_digest = digest_bytes(evidence_text.encode("utf-8"))
     runs = root / "runs"
     runs.mkdir()
     for dataset in DATASETS:
         run_dir = runs / f"{dataset}-fixture"
         run_dir.mkdir()
-        (run_dir / "proof.bin").write_bytes(artifact_bytes)
+        shutil.copyfile(artifact, run_dir / "proof.bin")
         (run_dir / "public_Y.txt").write_text("fixture-public-output\n", encoding="utf-8")
         (run_dir / "independent_verify.evidence").write_text(evidence_text, encoding="utf-8")
-        proof_digest = artifact_digest
-        statement_id = fixture_statement_id(dataset, proof_digest, evidence_digest)
+        statement_id = f"fixture-statement-{dataset}"
         record = {
             "schema": "zkDL_gat_run_record_v2",
             "fixture_mode": 1,
             "dataset": dataset,
             "backend": "cpu",
             "statement_id": statement_id,
-            "proof_id": proof_digest,
             "verification_status": "VERIFIED",
             "proof_scope": FIXTURE_PROOF_SCOPE,
             "proof_size_bytes": len(artifact_bytes),
@@ -91,7 +82,6 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "gpu_kernel_executed": 0,
             "silent_fallback": 0,
             "output_bound": 1,
-            "fixture_evidence_digest": evidence_digest,
         }
         envelope = {
             "schema_id": "zkDL_gat_proof_envelope_v1",
@@ -101,8 +91,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "backend": "cpu",
             "proof_scope": FIXTURE_PROOF_SCOPE,
             "statement_id": statement_id,
-            "proof_id": proof_digest,
-            "proof_size_bytes": len(artifact_bytes),
+            "proof_size_bytes": artifact_size,
             "commitment_size_bytes": 0,
             "commitment_time_semantics": "native_tensor_commitments",
             "commitment_time_seconds": "0",
@@ -112,14 +101,12 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "gpu_kernel_executed": 0,
             "silent_fallback": 0,
             "output_bound": 1,
-            "fixture_evidence_digest": evidence_digest,
         }
         statement = {
             "schema": "zkDL_gat_statement_v1",
             "fixture_mode": 1,
             "dataset": dataset,
             "statement_id": statement_id,
-            "proof_id": proof_digest,
             "proof_scope": FIXTURE_PROOF_SCOPE,
             "verifier_reads_witness": 0,
             "gpu_kernel_executed": 0,
@@ -127,7 +114,6 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "output_bound": 1,
             "privacy_policy": "fixture_cpu_only",
             "public_output_path": "public_Y.txt",
-            "fixture_evidence_digest": evidence_digest,
         }
         verification = {
             "schema": "zkDL_gat_verification_result_v1",
@@ -135,12 +121,9 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "status": "VERIFIED",
             "backend": "cpu",
             "statement_id": statement_id,
-            "proof_id": proof_digest,
-            "proof_artifact_sha256": proof_digest,
             "independent_verify": "PASS",
             "gpu_kernel_executed": 0,
             "silent_fallback": 0,
-            "fixture_evidence_digest": evidence_digest,
         }
         write_kv(run_dir / "run.record", record)
         write_kv(run_dir / "proof.meta", envelope)
@@ -148,7 +131,6 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
             "schema_id": "zkDL_gat_proof_timing_v1",
             "status": "PROVED",
             "statement_id": statement_id,
-            "proof_id": proof_digest,
             "commitment_time_seconds": "0",
             "prove_time_seconds": "0",
             "proof_auxiliary_construction_seconds": "0",
@@ -163,7 +145,7 @@ def make_records(root: Path, artifact: Path, evidence: str) -> str:
         write_kv(run_dir / "statement.txt", statement)
         write_kv(run_dir / "verification.result", verification)
         (run_dir / "independent_verify.evidence").chmod(0o600)
-    return artifact_digest
+    return artifact_size
 
 
 def main() -> int:
@@ -179,7 +161,7 @@ def main() -> int:
         raise SystemExit("collector-fixture: evidence must contain independent_verify=PASS")
     with tempfile.TemporaryDirectory(prefix="zkdl-collector-fixture-") as raw_root:
         root = Path(raw_root)
-        artifact_digest = make_records(root, artifact, args.evidence)
+        artifact_size = make_records(root, artifact, args.evidence)
         common = ["--root", str(root), "--runs-dir", "runs"]
         collect = [sys.executable, str(SCRIPTS / "collect_results.py"),
                    *common, "--output", "results/collected.json",
@@ -240,7 +222,7 @@ def main() -> int:
         invoke(collect, 0)
         final_after = invoke(final, 0)
         print(
-            f"collector_fixture PASS artifact_sha256={artifact_digest} "
+            f"collector_fixture PASS artifact_bytes={artifact_size} "
             f"{collected.stdout.strip()} {validated.stdout.strip()} "
             f"formal_reject={formal_reject.returncode} "
             f"negative_checks={','.join(label for label, _ in checks)},summary_mismatch,summary_missing "

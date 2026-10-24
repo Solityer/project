@@ -14,11 +14,16 @@ use crate::{
     },
 };
 
+#[cfg(feature = "icicle_gpu")]
+use crate::h_eval::{GateProgram, GateQuery, GATE_OP_ADD, GATE_OP_DOUBLE, GATE_OP_FOLD, GATE_OP_LOAD_CONST, GATE_OP_LOAD_QUERY, GATE_OP_MUL, GATE_OP_NEGATE, GATE_OP_SQUARE, GATE_OP_SUB};
 use group::ff::{Field, PrimeField, WithSmallOrderMulGroup};
 #[cfg(feature = "mv-lookup")]
 use maybe_rayon::iter::{IndexedParallelIterator, ParallelIterator};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(feature = "icicle_gpu")]
+use std::collections::HashMap;
 use std::io;
+use std::time::Instant;
 
 use super::{shuffle, ConstraintSystem, Expression};
 
@@ -533,32 +538,490 @@ fn load_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
     Ok(cosets)
 }
 
+#[derive(Default)]
+struct CosetRefreshCounts {
+    transforms_loaded: usize,
+    transforms_reused: usize,
+}
+
+#[derive(Default)]
+struct FixedCosetRefreshCounts {
+    transforms_loaded: usize,
+    transforms_reused: usize,
+    constant_fills_loaded: usize,
+    constant_fills_reused: usize,
+}
+
+#[derive(Default)]
+struct GateCosetCacheSummary {
+    groups: usize,
+    advice: CosetRefreshCounts,
+    instance: CosetRefreshCounts,
+    fixed: FixedCosetRefreshCounts,
+}
+
+#[derive(Default)]
+struct GateGroupEvalSummary {
+    rows: usize,
+    gpu_rows: usize,
+    cpu_rows: usize,
+    gpu_fallback_rows: usize,
+    gpu_groups: usize,
+    cpu_groups: usize,
+    gpu_fallback_groups: usize,
+    coset_prepare_ms: f64,
+    program_compile_ms: f64,
+    gpu_or_cpu_eval_wall_ms: f64,
+    gpu_h_call_ms: f64,
+    cpu_eval_ms: f64,
+}
+
+struct GateGroupEvalTiming {
+    gpu_executed: bool,
+    gpu_fallback: bool,
+    program_compile_ms: f64,
+    gpu_h_call_ms: f64,
+    cpu_eval_ms: f64,
+}
+
+fn empty_coset_cache<F>(column_count: usize) -> Vec<Polynomial<F, LagrangeCoeff>> {
+    (0..column_count)
+        .map(|_| Polynomial::from_vec(Vec::new()))
+        .collect()
+}
+
+/// Drop the previous group's inactive columns before loading any columns for
+/// the next group. The three source classes are evicted together by the caller
+/// so the live coset union never exceeds the current dependency budget.
+fn evict_inactive_cosets<F>(
+    cosets: &mut [Polynomial<F, LagrangeCoeff>],
+    previous_columns: &BTreeSet<usize>,
+    next_columns: &BTreeSet<usize>,
+) -> io::Result<()> {
+    for &column in previous_columns.difference(next_columns) {
+        let coset = cosets.get_mut(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "coset cache has inconsistent dimensions",
+            )
+        })?;
+        *coset = Polynomial::from_vec(Vec::new());
+    }
+    Ok(())
+}
+
+fn load_missing_cosets<F: WithSmallOrderMulGroup<3>>(
+    domain: &EvaluationDomain<F>,
+    polys: &[Polynomial<F, Coeff>],
+    columns: &BTreeSet<usize>,
+    extended_omega_factor: F,
+    cosets: &mut [Polynomial<F, LagrangeCoeff>],
+) -> io::Result<CosetRefreshCounts> {
+    let mut counts = CosetRefreshCounts::default();
+    for &column in columns {
+        let poly = polys.get(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "constraint references an absent polynomial",
+            )
+        })?;
+        let coset = cosets.get_mut(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "coset cache has inconsistent dimensions",
+            )
+        })?;
+        if coset.is_empty() {
+            *coset = domain.coeff_to_extended_part_spilled(poly, extended_omega_factor)?;
+            counts.transforms_loaded += 1;
+        } else {
+            counts.transforms_reused += 1;
+        }
+    }
+    Ok(counts)
+}
+
+fn load_missing_fixed_cosets<F: WithSmallOrderMulGroup<3>>(
+    domain: &EvaluationDomain<F>,
+    sources: &[FixedColumnSource<F>],
+    columns: &BTreeSet<usize>,
+    extended_omega_factor: F,
+    cosets: &mut [Polynomial<F, LagrangeCoeff>],
+) -> io::Result<FixedCosetRefreshCounts> {
+    let mut counts = FixedCosetRefreshCounts::default();
+    for &column in columns {
+        let source = sources.get(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "constraint references an absent fixed source",
+            )
+        })?;
+        let coset = cosets.get_mut(column).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "coset cache has inconsistent dimensions",
+            )
+        })?;
+        if let Some(value) = source.constant_value() {
+            let n = domain.get_n() as usize;
+            if source.len() != n {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "constant fixed source has inconsistent dimensions",
+                ));
+            }
+            if coset.is_empty() {
+                *coset = Polynomial::mapped_filled(n, value)?;
+                counts.constant_fills_loaded += 1;
+            } else {
+                counts.constant_fills_reused += 1;
+            }
+        } else if coset.is_empty() {
+            let lagrange = source.materialize_lagrange()?;
+            let coeff = domain.lagrange_to_coeff(lagrange).spill()?;
+            *coset = domain.coeff_to_extended_part(coeff, extended_omega_factor);
+            counts.transforms_loaded += 1;
+        } else {
+            counts.transforms_reused += 1;
+        }
+    }
+    Ok(counts)
+}
+
 #[allow(clippy::too_many_arguments)]
-fn evaluate_graph_group<C: CurveAffine>(graph: &GraphEvaluator<C>, fixed: &[Polynomial<C::ScalarExt, LagrangeCoeff>], advice: &[Polynomial<C::ScalarExt, LagrangeCoeff>], instance: &[Polynomial<C::ScalarExt, LagrangeCoeff>], challenges: &[C::ScalarExt], values: &mut Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>, y: C::ScalarExt, beta: C::ScalarExt, gamma: C::ScalarExt, theta: C::ScalarExt, rot_scale: i32, isize: i32, part_index: usize, part_stride: usize) {
+fn evaluate_graph_group<C: CurveAffine>(graphs: &[GraphEvaluator<C>], fixed: &[Polynomial<C::ScalarExt, LagrangeCoeff>], advice: &[Polynomial<C::ScalarExt, LagrangeCoeff>], instance: &[Polynomial<C::ScalarExt, LagrangeCoeff>], challenges: &[C::ScalarExt], values: &mut Polynomial<C::ScalarExt, ExtendedLagrangeCoeff>, y: C::ScalarExt, beta: C::ScalarExt, gamma: C::ScalarExt, theta: C::ScalarExt, rot_scale: i32, isize: i32, part_index: usize, part_stride: usize) -> Result<GateGroupEvalTiming, super::Error> {
+    #[cfg(feature = "icicle_gpu")]
+    let (program_compile_ms, gpu_h_call_ms, gpu_fallback) = {
+        if crate::icicle::native_prove_ntt_scope_active()
+            && std::env::var_os("ENABLE_ICICLE_GPU").is_some()
+        {
+            crate::icicle::record_gpu_h_eval_group();
+            let compile_started = Instant::now();
+            let previous_value = C::ScalarExt::ZERO;
+            let program = compile_gate_program(graphs, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize).map_err(super::Error::NativeStorage)?;
+            let program_compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
+            if let Some(program) = program {
+                let gpu_call_started = Instant::now();
+                if crate::icicle::try_evaluate_h_program(&program, fixed, advice, instance, part_index, part_stride, rot_scale, isize, y, &mut values[..]).map_err(super::Error::NativeStorage)? {
+                    return Ok(GateGroupEvalTiming { gpu_executed: true, gpu_fallback: false, program_compile_ms, gpu_h_call_ms: gpu_call_started.elapsed().as_secs_f64() * 1000.0, cpu_eval_ms: 0.0 });
+                }
+                (program_compile_ms, gpu_call_started.elapsed().as_secs_f64() * 1000.0, true)
+            } else {
+                crate::icicle::record_gpu_h_eval_fallback();
+                (program_compile_ms, 0.0, true)
+            }
+        } else {
+            (0.0, 0.0, false)
+        }
+    };
+    #[cfg(not(feature = "icicle_gpu"))]
+    let (program_compile_ms, gpu_h_call_ms, gpu_fallback) = (0.0, 0.0, false);
+    let cpu_eval_started = Instant::now();
+    let scratch_intermediates = graphs
+        .iter()
+        .map(|graph| graph.num_intermediates)
+        .max()
+        .unwrap_or(0);
+    let scratch_rotations = graphs
+        .iter()
+        .map(|graph| graph.rotations.len())
+        .max()
+        .unwrap_or(0);
     parallelize(&mut values[..], |h, start| {
-        let mut data = graph.instance();
+        let mut data = EvaluationData {
+            intermediates: vec![C::ScalarExt::ZERO; scratch_intermediates],
+            rotations: vec![0usize; scratch_rotations],
+        };
         for (offset, value) in h.iter_mut().enumerate() {
             let row = start + offset;
             let idx = row * part_stride + part_index;
-            let contribution = graph.evaluate_part(
-                &mut data,
-                fixed,
-                advice,
-                instance,
-                challenges,
-                &beta,
-                &gamma,
-                &theta,
-                &y,
-                &C::ScalarExt::ZERO,
-                idx,
-                rot_scale,
-                isize,
-                part_stride,
-            );
-            *value = *value * y + contribution;
+            let mut accumulated = *value;
+            for graph in graphs {
+                let contribution = graph.evaluate_part(
+                    &mut data,
+                    fixed,
+                    advice,
+                    instance,
+                    challenges,
+                    &beta,
+                    &gamma,
+                    &theta,
+                    &y,
+                    &C::ScalarExt::ZERO,
+                    idx,
+                    rot_scale,
+                    isize,
+                    part_stride,
+                );
+                accumulated = accumulated * y + contribution;
+            }
+            *value = accumulated;
         }
     });
+    Ok(GateGroupEvalTiming { gpu_executed: false, gpu_fallback, program_compile_ms, gpu_h_call_ms, cpu_eval_ms: cpu_eval_started.elapsed().as_secs_f64() * 1000.0 })
+}
+
+#[cfg(feature = "icicle_gpu")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum GateProgramNodeKey {
+    Query(u32),
+    Constant(u32),
+    Unary(u32, usize),
+    Binary(u32, usize, usize),
+}
+
+#[cfg(feature = "icicle_gpu")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct GateProgramQueryKey {
+    kind: u32,
+    column: usize,
+    rotation: i32,
+}
+
+#[cfg(feature = "icicle_gpu")]
+#[derive(Clone, Copy, Debug)]
+enum GateProgramStep {
+    Compute(usize),
+    Fold(usize),
+}
+
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_METADATA_BYTES: u128 = 64 * 1024 * 1024;
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_NODES: usize = 65_536;
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_INSTRUCTIONS: usize = 65_536;
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_QUERIES: usize = 4_096;
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_CONSTANTS: usize = 8_192;
+#[cfg(feature = "icicle_gpu")]
+const MAX_GPU_H_PROGRAM_SCRATCH_SLOTS: usize = 128;
+
+#[cfg(feature = "icicle_gpu")]
+fn add_gate_program_bound(bound: &mut usize, value: usize) -> bool {
+    match bound.checked_add(value) { Some(total) => { *bound = total; true }, None => false }
+}
+
+#[cfg(feature = "icicle_gpu")]
+fn count_gate_program_source(source: &ValueSource, queries: &mut usize, constants: &mut usize) -> bool {
+    match source {
+        ValueSource::Fixed(_, _) | ValueSource::Advice(_, _) | ValueSource::Instance(_, _) => add_gate_program_bound(queries, 1),
+        ValueSource::Constant(_) | ValueSource::Challenge(_) | ValueSource::Beta() | ValueSource::Gamma() | ValueSource::Theta() | ValueSource::Y() | ValueSource::PreviousValue() => add_gate_program_bound(constants, 1),
+        ValueSource::Intermediate(_) => true,
+    }
+}
+
+#[cfg(feature = "icicle_gpu")]
+fn gate_program_bounds<C: CurveAffine>(graphs: &[GraphEvaluator<C>]) -> Option<(usize, usize, usize, usize, usize)> {
+    let mut queries = 0;
+    let mut constants = 0;
+    let mut operations = 0;
+    let mut max_intermediates = 0;
+    for graph in graphs {
+        max_intermediates = max_intermediates.max(graph.num_intermediates);
+        for calc in &graph.calculations {
+            let valid = match &calc.calculation {
+                Calculation::Add(a, b) | Calculation::Sub(a, b) | Calculation::Mul(a, b) => count_gate_program_source(a, &mut queries, &mut constants) && count_gate_program_source(b, &mut queries, &mut constants) && add_gate_program_bound(&mut operations, 1),
+                Calculation::Square(value) | Calculation::Double(value) | Calculation::Negate(value) => count_gate_program_source(value, &mut queries, &mut constants) && add_gate_program_bound(&mut operations, 1),
+                Calculation::Horner(start, parts, factor) => {
+                    let mut valid = count_gate_program_source(start, &mut queries, &mut constants) && count_gate_program_source(factor, &mut queries, &mut constants);
+                    for part in parts { valid &= count_gate_program_source(part, &mut queries, &mut constants); }
+                    parts.len().checked_mul(2).map(|count| valid && add_gate_program_bound(&mut operations, count)).unwrap_or(false)
+                }
+                Calculation::Store(value) => count_gate_program_source(value, &mut queries, &mut constants),
+            };
+            if !valid { return None; }
+        }
+    }
+    constants = constants.checked_add(1)?;
+    let nodes = queries.checked_add(constants)?.checked_add(operations)?;
+    let instructions = nodes.checked_add(graphs.len())?;
+    Some((nodes, instructions, queries, constants, max_intermediates))
+}
+
+#[cfg(feature = "icicle_gpu")]
+fn gate_program_metadata_upper<F: PrimeField>(nodes: usize, instructions: usize, queries: usize, constants: usize, graph_count: usize, max_intermediates: usize) -> u128 {
+    let n = nodes as u128;
+    let i = instructions as u128;
+    let q = queries as u128;
+    let c = constants as u128;
+    let g = graph_count as u128;
+    let m = max_intermediates as u128;
+    let vector_bytes = n * std::mem::size_of::<GateProgramNodeKey>() as u128 + i * (std::mem::size_of::<GateProgramStep>() + std::mem::size_of::<[u32; 8]>()) as u128 + q * std::mem::size_of::<GateQuery>() as u128 * 2 + c * std::mem::size_of::<F>() as u128 * 2 + n * (std::mem::size_of::<usize>() * 4) as u128 + g * (std::mem::size_of::<usize>() * 2) as u128 + m * std::mem::size_of::<Option<usize>>() as u128;
+    let hash_bytes = n * (std::mem::size_of::<GateProgramNodeKey>() + std::mem::size_of::<usize>() + 32) as u128 * 2 + q * (std::mem::size_of::<GateProgramQueryKey>() + std::mem::size_of::<u32>() + 32) as u128 * 2;
+    vector_bytes + hash_bytes
+}
+
+#[cfg(feature = "icicle_gpu")]
+fn gate_program_index(index: usize, what: &str) -> io::Result<u32> {
+    u32::try_from(index).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, format!("GPU H program {what} exceeds u32")))
+}
+
+#[cfg(feature = "icicle_gpu")]
+fn compile_gate_program<C: CurveAffine>(graphs: &[GraphEvaluator<C>], challenges: &[C::ScalarExt], beta: C::ScalarExt, gamma: C::ScalarExt, theta: C::ScalarExt, y: C::ScalarExt, previous_value: C::ScalarExt, rot_scale: i32, isize: i32) -> io::Result<Option<GateProgram<C::ScalarExt>>> {
+    struct Compiler<F: PrimeField> {
+        constants: Vec<F>,
+        queries: Vec<GateQuery>,
+        query_indices: HashMap<GateProgramQueryKey, u32>,
+        nodes: Vec<GateProgramNodeKey>,
+        node_indices: HashMap<GateProgramNodeKey, usize>,
+    }
+    impl<F: PrimeField> Compiler<F> {
+        fn intern(&mut self, key: GateProgramNodeKey) -> usize {
+            if let Some(index) = self.node_indices.get(&key) { return *index; }
+            let index = self.nodes.len();
+            self.nodes.push(key);
+            self.node_indices.insert(key, index);
+            index
+        }
+        fn constant(&mut self, value: F) -> io::Result<usize> {
+            let index = match self.constants.iter().position(|candidate| *candidate == value) {
+                Some(index) => index,
+                None => { let index = self.constants.len(); self.constants.push(value); index }
+            };
+            Ok(self.intern(GateProgramNodeKey::Constant(gate_program_index(index, "constant table")?)))
+        }
+        fn query(&mut self, kind: u32, column: usize, rotation: i32) -> io::Result<usize> {
+            let key = GateProgramQueryKey { kind, column, rotation };
+            let index = match self.query_indices.get(&key) {
+                Some(index) => *index,
+                None => { let index = gate_program_index(self.queries.len(), "query table")?; self.queries.push(GateQuery { kind, column, rotation }); self.query_indices.insert(key, index); index }
+            };
+            Ok(self.intern(GateProgramNodeKey::Query(index)))
+        }
+        fn unary(&mut self, opcode: u32, source: usize) -> usize { self.intern(GateProgramNodeKey::Unary(opcode, source)) }
+        fn binary(&mut self, opcode: u32, mut lhs: usize, mut rhs: usize) -> usize {
+            if (opcode == GATE_OP_ADD || opcode == GATE_OP_MUL) && rhs < lhs { std::mem::swap(&mut lhs, &mut rhs); }
+            self.intern(GateProgramNodeKey::Binary(opcode, lhs, rhs))
+        }
+        fn source<C: CurveAffine<ScalarExt = F>>(&mut self, source: &ValueSource, graph: &GraphEvaluator<C>, intermediates: &[Option<usize>], challenges: &[F], beta: F, gamma: F, theta: F, y: F, previous_value: F, rot_scale: i32, isize: i32) -> io::Result<usize> {
+            match source {
+                ValueSource::Constant(index) => self.constant(*graph.constants.get(*index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program constant index is invalid"))?),
+                ValueSource::Intermediate(index) => intermediates.get(*index).and_then(|node| *node).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program intermediate is not topologically available")),
+                ValueSource::Fixed(column, rotation) | ValueSource::Advice(column, rotation) | ValueSource::Instance(column, rotation) => {
+                    if rot_scale <= 0 || isize <= 0 || isize % rot_scale != 0 { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program rotation geometry is invalid")); }
+                    let rotation = graph.rotations.get(*rotation).copied().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program rotation index is invalid"))?.rem_euclid(isize / rot_scale);
+                    let kind = match source { ValueSource::Fixed(_, _) => 0, ValueSource::Advice(_, _) => 1, _ => 2 };
+                    self.query(kind, *column, rotation)
+                }
+                ValueSource::Challenge(index) => self.constant(*challenges.get(*index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program challenge index is invalid"))?),
+                ValueSource::Beta() => self.constant(beta),
+                ValueSource::Gamma() => self.constant(gamma),
+                ValueSource::Theta() => self.constant(theta),
+                ValueSource::Y() => self.constant(y),
+                ValueSource::PreviousValue() => self.constant(previous_value),
+            }
+        }
+    }
+    if rot_scale <= 0 || isize <= 0 || isize % rot_scale != 0 { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program rotation geometry is invalid")); }
+    let Some((node_upper, instruction_upper, query_upper, constant_upper, max_intermediates)) = gate_program_bounds(graphs) else { return Ok(None); };
+    if node_upper > MAX_GPU_H_PROGRAM_NODES || instruction_upper > MAX_GPU_H_PROGRAM_INSTRUCTIONS || query_upper > MAX_GPU_H_PROGRAM_QUERIES || constant_upper > MAX_GPU_H_PROGRAM_CONSTANTS || max_intermediates > MAX_GPU_H_PROGRAM_NODES || gate_program_metadata_upper::<C::ScalarExt>(node_upper, instruction_upper, query_upper, constant_upper, graphs.len(), max_intermediates) > MAX_GPU_H_PROGRAM_METADATA_BYTES { return Ok(None); }
+    let mut compiler = Compiler { constants: Vec::with_capacity(constant_upper), queries: Vec::with_capacity(query_upper), query_indices: HashMap::with_capacity(query_upper), nodes: Vec::with_capacity(node_upper), node_indices: HashMap::with_capacity(node_upper) };
+    let mut roots = Vec::with_capacity(graphs.len());
+    let mut graph_node_ends = Vec::with_capacity(graphs.len());
+    for graph in graphs {
+        let mut intermediates = vec![None; graph.num_intermediates];
+        for calc in &graph.calculations {
+            let node = match &calc.calculation {
+                Calculation::Add(a, b) => { let lhs = compiler.source(a, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; let rhs = compiler.source(b, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.binary(GATE_OP_ADD, lhs, rhs) }
+                Calculation::Sub(a, b) => { let lhs = compiler.source(a, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; let rhs = compiler.source(b, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.binary(GATE_OP_SUB, lhs, rhs) }
+                Calculation::Mul(a, b) => { let lhs = compiler.source(a, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; let rhs = compiler.source(b, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.binary(GATE_OP_MUL, lhs, rhs) }
+                Calculation::Square(value) => { let value = compiler.source(value, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.unary(GATE_OP_SQUARE, value) }
+                Calculation::Double(value) => { let value = compiler.source(value, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.unary(GATE_OP_DOUBLE, value) }
+                Calculation::Negate(value) => { let value = compiler.source(value, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; compiler.unary(GATE_OP_NEGATE, value) }
+                Calculation::Horner(start, parts, factor) => {
+                    let mut value = compiler.source(start, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?;
+                    let factor = compiler.source(factor, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?;
+                    for part in parts { let part = compiler.source(part, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?; let product = compiler.binary(GATE_OP_MUL, value, factor); value = compiler.binary(GATE_OP_ADD, product, part); }
+                    value
+                }
+                Calculation::Store(value) => compiler.source(value, graph, &intermediates, challenges, beta, gamma, theta, y, previous_value, rot_scale, isize)?,
+            };
+            let target = intermediates.get_mut(calc.target).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program calculation target is invalid"))?;
+            *target = Some(node);
+        }
+        let root = match graph.calculations.last() { Some(calc) => intermediates.get(calc.target).and_then(|node| *node).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program root is unavailable"))?, None => compiler.constant(C::ScalarExt::ZERO)? };
+        roots.push(root);
+        graph_node_ends.push(compiler.nodes.len());
+    }
+    let mut steps = Vec::with_capacity(instruction_upper);
+    let mut node_start = 0;
+    for (root, node_end) in roots.iter().copied().zip(graph_node_ends.iter().copied()) {
+        steps.extend((node_start..node_end).map(GateProgramStep::Compute));
+        steps.push(GateProgramStep::Fold(root));
+        node_start = node_end;
+    }
+    let mut last_use = vec![0usize; compiler.nodes.len()];
+    let mut remaining_uses = vec![0usize; compiler.nodes.len()];
+    for (step_index, step) in steps.iter().enumerate() {
+        match step {
+            GateProgramStep::Compute(node) => { last_use[*node] = step_index; match compiler.nodes[*node] {
+                GateProgramNodeKey::Unary(_, source) => { last_use[source] = step_index; remaining_uses[source] += 1; }
+                GateProgramNodeKey::Binary(_, lhs, rhs) => { last_use[lhs] = step_index; last_use[rhs] = step_index; remaining_uses[lhs] += 1; remaining_uses[rhs] += 1; }
+                GateProgramNodeKey::Query(_) | GateProgramNodeKey::Constant(_) => {}
+            } }
+            GateProgramStep::Fold(root) => { last_use[*root] = step_index; remaining_uses[*root] += 1; }
+        }
+    }
+    let mut node_slots = vec![0usize; compiler.nodes.len()];
+    let mut free_slots = Vec::with_capacity(compiler.nodes.len());
+    let mut instructions = Vec::with_capacity(steps.len());
+    let mut scratch_slots = 0usize;
+    for (step_index, step) in steps.iter().enumerate() {
+        match step {
+            GateProgramStep::Compute(node) => {
+                let key = compiler.nodes[*node];
+                let sources = match key { GateProgramNodeKey::Unary(_, source) => [Some(source), None], GateProgramNodeKey::Binary(_, lhs, rhs) => [Some(lhs), Some(rhs)], _ => [None, None] };
+                let mut destination = None;
+                for source in sources.iter().flatten().copied() {
+                    if sources.iter().flatten().filter(|candidate| **candidate == source).count() == remaining_uses[source]
+                        && last_use[source] == step_index
+                    {
+                        destination = Some(node_slots[source]);
+                        break;
+                    }
+                }
+                let destination = destination.or_else(|| free_slots.pop()).unwrap_or_else(|| { let slot = scratch_slots; scratch_slots += 1; slot });
+                let dst = gate_program_index(destination, "scratch slot")?;
+                let instruction = match key {
+                    GateProgramNodeKey::Query(query) => [GATE_OP_LOAD_QUERY, dst, query, 0, 0, 0, 0, 0],
+                    GateProgramNodeKey::Constant(constant) => [GATE_OP_LOAD_CONST, dst, constant, 0, 0, 0, 0, 0],
+                    GateProgramNodeKey::Unary(opcode, source) => [opcode, dst, gate_program_index(node_slots[source], "scratch slot")?, 0, 0, 0, 0, 0],
+                    GateProgramNodeKey::Binary(opcode, lhs, rhs) => [opcode, dst, gate_program_index(node_slots[lhs], "scratch slot")?, gate_program_index(node_slots[rhs], "scratch slot")?, 0, 0, 0, 0],
+                };
+                instructions.push(instruction);
+                node_slots[*node] = destination;
+                let mut released = [None, None];
+                let mut released_len = 0;
+                for source in sources.iter().flatten().copied() {
+                    if released[..released_len].contains(&Some(source)) { continue; }
+                    released[released_len] = Some(source);
+                    released_len += 1;
+                    let uses_here = sources.iter().flatten().filter(|candidate| **candidate == source).count();
+                    remaining_uses[source] = remaining_uses[source].checked_sub(uses_here).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program use count underflow"))?;
+                    if remaining_uses[source] == 0 && node_slots[source] != destination {
+                        free_slots.push(node_slots[source]);
+                    }
+                }
+                if remaining_uses[*node] == 0 { free_slots.push(destination); }
+            }
+            GateProgramStep::Fold(root) => {
+                let slot = node_slots[*root];
+                instructions.push([GATE_OP_FOLD, gate_program_index(slot, "scratch slot")?, 0, 0, 0, 0, 0, 0]);
+                remaining_uses[*root] = remaining_uses[*root].checked_sub(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H program fold use count underflow"))?;
+                if remaining_uses[*root] == 0 { free_slots.push(slot); }
+            }
+        }
+    }
+    if remaining_uses.iter().any(|uses| *uses != 0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "GPU H program liveness scan left unconsumed node uses",
+        ));
+    }
+    if scratch_slots > MAX_GPU_H_PROGRAM_SCRATCH_SLOTS { return Ok(None); }
+    Ok(Some(GateProgram { instructions, constants: compiler.constants, queries: compiler.queries, scratch_slots, fold_count: roots.len() }))
 }
 
 impl<C: CurveAffine> Evaluator<C> {
@@ -792,13 +1255,22 @@ impl<C: CurveAffine> Evaluator<C> {
                 Polynomial::mapped_filled(part_size, C::ScalarExt::ZERO)
                     .map_err(super::Error::NativeStorage)?;
 
-            for (((advice, instance), lookup_sets), (shuffle_sets, permutation)) in advice_polys
+            for (proof_instance_index, (((advice, instance), lookup_sets), (shuffle_sets, permutation))) in advice_polys
                 .iter()
                 .zip(instance_polys.iter())
                 .zip(lookups.iter())
                 .zip(shuffles.iter().zip(permutations.iter()))
+                .enumerate()
             {
                 // Custom gate polynomials are folded in their existing native order.
+                let mut fixed_cosets = empty_coset_cache::<C::ScalarExt>(pk.fixed_values.len());
+                let mut advice_cosets = empty_coset_cache::<C::ScalarExt>(advice.len());
+                let mut instance_cosets = empty_coset_cache::<C::ScalarExt>(instance.len());
+                let mut previous_fixed_columns = BTreeSet::new();
+                let mut previous_advice_columns = BTreeSet::new();
+                let mut previous_instance_columns = BTreeSet::new();
+                let mut cache_summary = GateCosetCacheSummary::default();
+                let mut gate_eval_summary = GateGroupEvalSummary::default();
                 let mut gate_start = 0;
                 while gate_start < self.custom_gates.len() {
                     let mut dependencies = self.custom_gates[gate_start].column_dependencies();
@@ -812,15 +1284,75 @@ impl<C: CurveAffine> Evaluator<C> {
                         gate_end += 1;
                     }
                     {
-                        let fixed = load_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed, extended_omega_factor).map_err(super::Error::NativeStorage)?;
-                        let advice_cosets = load_cosets(domain, advice, &dependencies.advice, extended_omega_factor).map_err(super::Error::NativeStorage)?;
-                        let instance_cosets = load_cosets(domain, instance, &dependencies.instance, extended_omega_factor).map_err(super::Error::NativeStorage)?;
-                        for graph in &self.custom_gates[gate_start..gate_end] {
-                            evaluate_graph_group(graph, &fixed, &advice_cosets, &instance_cosets, challenges, &mut part_values, y, beta, gamma, theta, rot_scale, isize, part_index, part_stride);
-                        }
+                        // Evict all source classes before loading any missing
+                        // columns, keeping the transient live union within the
+                        // existing dependency budget.
+                        evict_inactive_cosets(&mut fixed_cosets, &previous_fixed_columns, &dependencies.fixed).map_err(super::Error::NativeStorage)?;
+                        evict_inactive_cosets(&mut advice_cosets, &previous_advice_columns, &dependencies.advice).map_err(super::Error::NativeStorage)?;
+                        evict_inactive_cosets(&mut instance_cosets, &previous_instance_columns, &dependencies.instance).map_err(super::Error::NativeStorage)?;
+
+                        let source_conversion_started = Instant::now();
+                        let fixed_counts = load_missing_fixed_cosets(domain, &pk.fixed_values, &dependencies.fixed, extended_omega_factor, &mut fixed_cosets).map_err(super::Error::NativeStorage)?;
+                        let advice_counts = load_missing_cosets(domain, advice, &dependencies.advice, extended_omega_factor, &mut advice_cosets).map_err(super::Error::NativeStorage)?;
+                        let instance_counts = load_missing_cosets(domain, instance, &dependencies.instance, extended_omega_factor, &mut instance_cosets).map_err(super::Error::NativeStorage)?;
+                        gate_eval_summary.coset_prepare_ms += source_conversion_started.elapsed().as_secs_f64() * 1000.0;
+
+                        cache_summary.groups += 1;
+                        cache_summary.fixed.transforms_loaded += fixed_counts.transforms_loaded;
+                        cache_summary.fixed.transforms_reused += fixed_counts.transforms_reused;
+                        cache_summary.fixed.constant_fills_loaded += fixed_counts.constant_fills_loaded;
+                        cache_summary.fixed.constant_fills_reused += fixed_counts.constant_fills_reused;
+                        cache_summary.advice.transforms_loaded += advice_counts.transforms_loaded;
+                        cache_summary.advice.transforms_reused += advice_counts.transforms_reused;
+                        cache_summary.instance.transforms_loaded += instance_counts.transforms_loaded;
+                        cache_summary.instance.transforms_reused += instance_counts.transforms_reused;
+
+                        let timing = evaluate_graph_group(&self.custom_gates[gate_start..gate_end], &fixed_cosets, &advice_cosets, &instance_cosets, challenges, &mut part_values, y, beta, gamma, theta, rot_scale, isize, part_index, part_stride)?;
+                        gate_eval_summary.rows += part_values.len();
+                        if timing.gpu_executed { gate_eval_summary.gpu_groups += 1; gate_eval_summary.gpu_rows += part_values.len(); }
+                        else { gate_eval_summary.cpu_groups += 1; gate_eval_summary.cpu_rows += part_values.len(); }
+                        if timing.gpu_fallback { gate_eval_summary.gpu_fallback_groups += 1; gate_eval_summary.gpu_fallback_rows += part_values.len(); }
+                        gate_eval_summary.program_compile_ms += timing.program_compile_ms;
+                        gate_eval_summary.gpu_or_cpu_eval_wall_ms += timing.gpu_h_call_ms + timing.cpu_eval_ms;
+                        gate_eval_summary.gpu_h_call_ms += timing.gpu_h_call_ms;
+                        gate_eval_summary.cpu_eval_ms += timing.cpu_eval_ms;
                     }
+                    previous_fixed_columns = dependencies.fixed;
+                    previous_advice_columns = dependencies.advice;
+                    previous_instance_columns = dependencies.instance;
                     gate_start = gate_end;
                 }
+                if cache_summary.groups != 0 {
+                    eprintln!(
+                        "EZKL_NATIVE_CACHE_SUMMARY stage=custom_gate_cosets part_index={} instance_index={} groups={} advice_coeff_to_extended_loaded={} advice_coeff_to_extended_reused={} instance_coeff_to_extended_loaded={} instance_coeff_to_extended_reused={} fixed_nonconstant_cosets_loaded={} fixed_nonconstant_cosets_reused={} fixed_constant_fills_loaded={} fixed_constant_fills_reused={} rows={} gpu_h_groups={} gpu_h_rows={} cpu_groups={} cpu_rows={} gpu_fallback_groups={} gpu_fallback_rows={} coset_prepare_ms={:.3} program_compile_ms={:.3} gpu_or_cpu_eval_wall_ms={:.3} gpu_h_call_ms={:.3} cpu_eval_ms={:.3}",
+                        part_index,
+                        proof_instance_index,
+                        cache_summary.groups,
+                        cache_summary.advice.transforms_loaded,
+                        cache_summary.advice.transforms_reused,
+                        cache_summary.instance.transforms_loaded,
+                        cache_summary.instance.transforms_reused,
+                        cache_summary.fixed.transforms_loaded,
+                        cache_summary.fixed.transforms_reused,
+                        cache_summary.fixed.constant_fills_loaded,
+                        cache_summary.fixed.constant_fills_reused,
+                        gate_eval_summary.rows,
+                        gate_eval_summary.gpu_groups,
+                        gate_eval_summary.gpu_rows,
+                        gate_eval_summary.cpu_groups,
+                        gate_eval_summary.cpu_rows,
+                        gate_eval_summary.gpu_fallback_groups,
+                        gate_eval_summary.gpu_fallback_rows,
+                        gate_eval_summary.coset_prepare_ms,
+                        gate_eval_summary.program_compile_ms,
+                        gate_eval_summary.gpu_or_cpu_eval_wall_ms,
+                        gate_eval_summary.gpu_h_call_ms,
+                        gate_eval_summary.cpu_eval_ms,
+                    );
+                }
+                drop(fixed_cosets);
+                drop(advice_cosets);
+                drop(instance_cosets);
 
                 // Permutation boundary and copy constraints.
                 let sets = &permutation.sets;
@@ -1706,7 +2238,7 @@ pub fn evaluate<F: Field, B: Basis>(
 
 #[cfg(test)]
 mod tests {
-    use super::{native_evaluation_resource_shape, native_shplonk_resource_shape};
+    use super::*;
     use crate::{
         halo2curves::bn256::G1Affine,
         plonk::ConstraintSystem,
@@ -1811,5 +2343,670 @@ mod tests {
         assert_eq!(shape.unique_opening_point_count, 3);
         assert_eq!(shape.permutation_product_set_count, 3);
         let _ = instance;
+    }
+
+    fn cache_fixture_gate(instance_column: usize, next_group: bool) -> GraphEvaluator<G1Affine> {
+        let mut graph = GraphEvaluator::default();
+        let (fixed_rotation, second_fixed_rotation, advice_rotation, instance_rotation) =
+            if next_group {
+                (Rotation::next(), Rotation::prev(), Rotation::cur(), Rotation::next())
+            } else {
+                (Rotation::cur(), Rotation::next(), Rotation::prev(), Rotation::cur())
+            };
+        let fixed = ValueSource::Fixed(0, graph.add_rotation(&fixed_rotation));
+        let fixed_constant = ValueSource::Fixed(1, graph.add_rotation(&second_fixed_rotation));
+        let advice = ValueSource::Advice(0, graph.add_rotation(&advice_rotation));
+        let instance = ValueSource::Instance(instance_column, graph.add_rotation(&instance_rotation));
+
+        let sum = graph.add_calculation(Calculation::Add(fixed, advice));
+        let difference = graph.add_calculation(Calculation::Sub(fixed_constant, instance));
+        let product = graph.add_calculation(Calculation::Mul(sum, difference));
+        let horner = graph.add_calculation(Calculation::Horner(
+            ValueSource::Constant(0),
+            vec![product, fixed, advice],
+            ValueSource::Y(),
+        ));
+        let negated = graph.add_calculation(Calculation::Negate(product));
+        let combined = graph.add_calculation(Calculation::Add(horner, negated));
+        let with_beta = graph.add_calculation(Calculation::Add(combined, ValueSource::Beta()));
+        graph.add_calculation(Calculation::Store(with_beta));
+        graph
+    }
+
+    fn cache_fixture_coefficients(seed: u64, size: usize) -> Polynomial<halo2curves::bn256::Fr, Coeff> {
+        Polynomial::from_vec(
+            (0..size)
+                .map(|index| halo2curves::bn256::Fr::from(seed + (index as u64 + 1) * 17))
+                .collect(),
+        )
+    }
+
+    fn legacy_evaluate_one_gate(
+        graph: &GraphEvaluator<G1Affine>,
+        fixed: &[Polynomial<halo2curves::bn256::Fr, LagrangeCoeff>],
+        advice: &[Polynomial<halo2curves::bn256::Fr, LagrangeCoeff>],
+        instance: &[Polynomial<halo2curves::bn256::Fr, LagrangeCoeff>],
+        values: &mut Polynomial<halo2curves::bn256::Fr, ExtendedLagrangeCoeff>,
+        y: halo2curves::bn256::Fr,
+        beta: halo2curves::bn256::Fr,
+        rot_scale: i32,
+        isize: i32,
+        part_index: usize,
+        part_stride: usize,
+    ) {
+        parallelize(&mut values[..], |h, start| {
+            let mut data = graph.instance();
+            for (offset, value) in h.iter_mut().enumerate() {
+                let row = start + offset;
+                let idx = row * part_stride + part_index;
+                let contribution = graph.evaluate_part(
+                    &mut data,
+                    fixed,
+                    advice,
+                    instance,
+                    &[],
+                    &beta,
+                    &halo2curves::bn256::Fr::ZERO,
+                    &halo2curves::bn256::Fr::ZERO,
+                    &y,
+                    &halo2curves::bn256::Fr::ZERO,
+                    idx,
+                    rot_scale,
+                    isize,
+                    part_stride,
+                );
+                *value = *value * y + contribution;
+            }
+        });
+    }
+
+    #[cfg(feature = "icicle_gpu")]
+    fn compiler_fixture_gate() -> GraphEvaluator<G1Affine> {
+        use halo2curves::bn256::Fr;
+
+        let mut graph = GraphEvaluator::default();
+        let constant = graph.add_constant(&Fr::from(43));
+        let next = graph.add_rotation(&Rotation::next());
+        let previous = graph.add_rotation(&Rotation::prev());
+        let current = graph.add_rotation(&Rotation::cur());
+
+        let fixed_next = ValueSource::Fixed(0, next);
+        let fixed_previous = ValueSource::Fixed(0, previous);
+        let advice_current = ValueSource::Advice(0, current);
+        let instance_next = ValueSource::Instance(0, next);
+        let sum = graph.add_calculation(Calculation::Add(fixed_next, advice_current));
+        let stored = graph.add_calculation(Calculation::Store(fixed_previous));
+        let difference = graph.add_calculation(Calculation::Sub(instance_next, constant));
+        let product = graph.add_calculation(Calculation::Mul(sum, difference));
+        let square = graph.add_calculation(Calculation::Square(product));
+        let doubled = graph.add_calculation(Calculation::Double(stored));
+        let negated = graph.add_calculation(Calculation::Negate(advice_current));
+        let horner = graph.add_calculation(Calculation::Horner(
+            ValueSource::Challenge(0),
+            vec![
+                sum,
+                difference,
+                product,
+                square,
+                doubled,
+                negated,
+                ValueSource::PreviousValue(),
+                ValueSource::Beta(),
+                ValueSource::Gamma(),
+                ValueSource::Theta(),
+                ValueSource::Y(),
+            ],
+            ValueSource::Challenge(1),
+        ));
+        let with_square = graph.add_calculation(Calculation::Add(square, horner));
+        let with_product = graph.add_calculation(Calculation::Add(with_square, product));
+        graph.add_calculation(Calculation::Store(with_product));
+        let repeated_operand = graph.add_calculation(Calculation::Mul(with_product, with_product));
+        graph.add_calculation(Calculation::Store(repeated_operand));
+        graph
+    }
+
+    #[cfg(feature = "icicle_gpu")]
+    fn interpret_gate_program_row<F: PrimeField>(
+        program: &GateProgram<F>,
+        fixed: &[Polynomial<F, LagrangeCoeff>],
+        advice: &[Polynomial<F, LagrangeCoeff>],
+        instance: &[Polynomial<F, LagrangeCoeff>],
+        row_index: usize,
+        part_index: usize,
+        part_stride: usize,
+        rot_scale: i32,
+        isize: i32,
+        y: F,
+        initial: F,
+    ) -> F {
+        let mut scratch = vec![F::ZERO; program.scratch_slots];
+        let mut accumulator = initial;
+        for instruction in &program.instructions {
+            let dst = instruction[1] as usize;
+            match instruction[0] {
+                GATE_OP_LOAD_QUERY => {
+                    let query = program.queries[instruction[2] as usize];
+                    let idx = row_index * part_stride + part_index;
+                    let row = get_rotation_idx(idx, query.rotation, rot_scale, isize) / part_stride;
+                    scratch[dst] = match query.kind {
+                        0 => fixed[query.column][row],
+                        1 => advice[query.column][row],
+                        2 => instance[query.column][row],
+                        _ => unreachable!("compiler emitted an unsupported query kind"),
+                    };
+                }
+                GATE_OP_LOAD_CONST => scratch[dst] = program.constants[instruction[2] as usize],
+                GATE_OP_ADD => {
+                    let lhs = scratch[instruction[2] as usize];
+                    let rhs = scratch[instruction[3] as usize];
+                    scratch[dst] = lhs + rhs;
+                }
+                GATE_OP_SUB => {
+                    let lhs = scratch[instruction[2] as usize];
+                    let rhs = scratch[instruction[3] as usize];
+                    scratch[dst] = lhs - rhs;
+                }
+                GATE_OP_MUL => {
+                    let lhs = scratch[instruction[2] as usize];
+                    let rhs = scratch[instruction[3] as usize];
+                    scratch[dst] = lhs * rhs;
+                }
+                GATE_OP_SQUARE => {
+                    let value = scratch[instruction[2] as usize];
+                    scratch[dst] = value.square();
+                }
+                GATE_OP_DOUBLE => {
+                    let value = scratch[instruction[2] as usize];
+                    scratch[dst] = value.double();
+                }
+                GATE_OP_NEGATE => {
+                    let value = scratch[instruction[2] as usize];
+                    scratch[dst] = -value;
+                }
+                GATE_OP_FOLD => accumulator = accumulator * y + scratch[dst],
+                opcode => unreachable!("compiler emitted unknown opcode {opcode}"),
+            }
+        }
+        accumulator
+    }
+
+    #[cfg(feature = "icicle_gpu")]
+    #[test]
+    fn gpu_gate_program_compiler_matches_graph_oracle_across_parts_and_instances() {
+        use halo2curves::bn256::Fr;
+
+        let first = compiler_fixture_gate();
+        let repeated_root = first.clone();
+        let mut later_root = first.clone();
+        let first_root = later_root.calculations.last().unwrap().target;
+        later_root.add_calculation(Calculation::Add(
+            ValueSource::Intermediate(first_root),
+            ValueSource::PreviousValue(),
+        ));
+        let graphs = vec![first, repeated_root, later_root];
+
+        let part_stride = 8usize;
+        let part_size = 4usize;
+        let rot_scale = part_stride as i32;
+        let isize = (part_stride * part_size) as i32;
+        for proof_instance in 0..2u64 {
+            let challenges = [Fr::from(101 + proof_instance), Fr::from(131 + proof_instance)];
+            let y = Fr::from(151 + proof_instance);
+            let beta = Fr::from(173 + proof_instance);
+            let gamma = Fr::from(197 + proof_instance);
+            let theta = Fr::from(211 + proof_instance);
+            let program = compile_gate_program(
+                &graphs,
+                &challenges,
+                beta,
+                gamma,
+                theta,
+                y,
+                Fr::ZERO,
+                rot_scale,
+                isize,
+            )
+            .expect("compile the bounded gate fixture")
+            .expect("fixture fits the GPU H program bounds");
+            assert_eq!(program.fold_count, graphs.len());
+            assert!(program.queries.iter().any(|query| query.kind == 0));
+            assert!(program.queries.iter().any(|query| query.kind == 1));
+            assert!(program.queries.iter().any(|query| query.kind == 2));
+            assert!(program.queries.iter().any(|query| query.rotation == (-1i32).rem_euclid(4)));
+            assert!(program.queries.iter().any(|query| query.rotation == 1));
+            let fold_slots = program
+                .instructions
+                .iter()
+                .filter(|instruction| instruction[0] == GATE_OP_FOLD)
+                .map(|instruction| instruction[1])
+                .collect::<Vec<_>>();
+            assert_eq!(fold_slots.len(), graphs.len());
+            assert_eq!(fold_slots[0], fold_slots[1], "identical roots should share one live DAG node");
+            let final_fold_index = program
+                .instructions
+                .iter()
+                .rposition(|instruction| instruction[0] == GATE_OP_FOLD)
+                .expect("fixture emits a final fold");
+            let final_root_instruction = program.instructions[final_fold_index - 1];
+            assert_eq!(final_root_instruction[0], GATE_OP_ADD);
+            assert!(
+                fold_slots[2] == final_root_instruction[2]
+                    || fold_slots[2] == final_root_instruction[3],
+                "the final root should reuse one of its last-use input slots"
+            );
+            assert!(program.instructions.iter().any(|instruction| {
+                instruction[0] == GATE_OP_MUL
+                    && instruction[1] == instruction[2]
+                    && instruction[2] == instruction[3]
+            }), "repeated lhs/rhs should be consumed safely in-place");
+            let separate_instruction_count = graphs
+                .iter()
+                .map(|graph| {
+                    compile_gate_program(
+                        std::slice::from_ref(graph),
+                        &challenges,
+                        beta,
+                        gamma,
+                        theta,
+                        y,
+                        Fr::ZERO,
+                        rot_scale,
+                        isize,
+                    )
+                    .expect("compile each bounded graph")
+                    .expect("single graph fits program bounds")
+                    .instructions
+                    .len()
+                })
+                .sum::<usize>();
+            assert!(program.instructions.len() < separate_instruction_count);
+            for opcode in [
+                GATE_OP_LOAD_QUERY,
+                GATE_OP_LOAD_CONST,
+                GATE_OP_ADD,
+                GATE_OP_SUB,
+                GATE_OP_MUL,
+                GATE_OP_SQUARE,
+                GATE_OP_DOUBLE,
+                GATE_OP_NEGATE,
+                GATE_OP_FOLD,
+            ] {
+                assert!(program.instructions.iter().any(|instruction| instruction[0] == opcode));
+            }
+
+            for part_index in 0..part_stride {
+                let make_coset = |seed: u64| -> Polynomial<Fr, LagrangeCoeff> {
+                    Polynomial::from_vec(
+                        (0..part_size)
+                            .map(|row| Fr::from(seed + (row as u64 + 1) * 19))
+                            .collect(),
+                    )
+                };
+                let fixed = vec![make_coset(17 + proof_instance * 101 + part_index as u64 * 7)];
+                let advice = vec![make_coset(31 + proof_instance * 103 + part_index as u64 * 11)];
+                let instance = vec![make_coset(47 + proof_instance * 107 + part_index as u64 * 13)];
+                let initial = (0..part_size)
+                    .map(|row| Fr::from(233 + proof_instance * 109 + part_index as u64 * 17 + row as u64))
+                    .collect::<Vec<_>>();
+                let mut compiled = initial.clone();
+
+                // Three-row chunks deliberately leave a one-row tail, matching
+                // the evaluator's per-row behavior without invoking CUDA here.
+                for chunk_start in (0..part_size).step_by(3) {
+                    let chunk_end = (chunk_start + 3).min(part_size);
+                    for row in chunk_start..chunk_end {
+                        compiled[row] = interpret_gate_program_row(
+                            &program,
+                            &fixed,
+                            &advice,
+                            &instance,
+                            row,
+                            part_index,
+                            part_stride,
+                            rot_scale,
+                            isize,
+                            y,
+                            initial[row],
+                        );
+                    }
+                }
+
+                let mut legacy = initial;
+                for row in 0..part_size {
+                    let idx = row * part_stride + part_index;
+                    let mut accumulator = legacy[row];
+                    for graph in &graphs {
+                        let mut data = graph.instance();
+                        let contribution = graph.evaluate_part(
+                            &mut data,
+                            &fixed,
+                            &advice,
+                            &instance,
+                            &challenges,
+                            &beta,
+                            &gamma,
+                            &theta,
+                            &y,
+                            &Fr::ZERO,
+                            idx,
+                            rot_scale,
+                            isize,
+                            part_stride,
+                        );
+                        accumulator = accumulator * y + contribution;
+                    }
+                    legacy[row] = accumulator;
+                }
+                assert_eq!(compiled, legacy, "part {part_index}, instance {proof_instance}");
+            }
+        }
+    }
+
+    #[test]
+    fn native_gate_group_fusion_and_coset_cache_match_legacy() {
+        use halo2curves::bn256::Fr;
+
+        let domain = EvaluationDomain::<Fr>::new(3, 4);
+        let n = domain.get_n() as usize;
+        let extended_size = domain.extended_len();
+        let part_stride = (extended_size / n) as usize;
+        assert_eq!(part_stride, 2);
+        let rot_scale = part_stride as i32;
+        let isize = extended_size as i32;
+        let fixed_sources = vec![
+            FixedColumnSource::from_polynomial(Polynomial::<Fr, LagrangeCoeff>::from_vec(
+                (0..n).map(|row| Fr::from((row * 3 + 1) as u64)).collect(),
+            ))
+            .expect("build nonconstant fixed source"),
+            FixedColumnSource::from_polynomial(Polynomial::<Fr, LagrangeCoeff>::from_vec(
+                vec![Fr::from(7); n],
+            ))
+            .expect("build compact constant fixed source"),
+        ];
+        assert!(fixed_sources[0].constant_value().is_none());
+        assert!(fixed_sources[1].constant_value().is_some());
+
+        let gates = vec![
+            cache_fixture_gate(0, false),
+            cache_fixture_gate(1, true),
+            cache_fixture_gate(1, true),
+        ];
+        let max_gate_dependencies = gates
+            .iter()
+            .map(|graph| graph.column_dependencies().column_count())
+            .max()
+            .expect("fixture has gates");
+        assert_eq!(max_gate_dependencies, 4);
+
+        let mut group_ranges = Vec::new();
+        let mut gate_start = 0;
+        while gate_start < gates.len() {
+            let mut dependencies = gates[gate_start].column_dependencies();
+            let mut gate_end = gate_start + 1;
+            while gate_end < gates.len() {
+                let next = gates[gate_end].column_dependencies();
+                if dependencies.column_count().saturating_add(next.additional_column_count(&dependencies))
+                    > max_gate_dependencies
+                {
+                    break;
+                }
+                dependencies.extend(&next);
+                gate_end += 1;
+            }
+            group_ranges.push((gate_start, gate_end));
+            gate_start = gate_end;
+        }
+        assert_eq!(group_ranges, vec![(0, 1), (1, 3)]);
+        assert_eq!(
+            gates[0]
+                .column_dependencies()
+                .column_count()
+                .saturating_add(
+                    gates[1]
+                        .column_dependencies()
+                        .additional_column_count(&gates[0].column_dependencies()),
+                ),
+            max_gate_dependencies + 1,
+        );
+
+        let y = Fr::from(13);
+        let beta = Fr::from(19);
+        let mut total_groups = 0;
+        let mut total_advice_loaded = 0;
+        let mut total_advice_reused = 0;
+        let mut total_instance_loaded = 0;
+        let mut total_fixed_loaded = 0;
+        let mut total_fixed_reused = 0;
+        let mut total_constant_loaded = 0;
+        let mut total_constant_reused = 0;
+
+        for part_index in 0..part_stride {
+            let extended_omega_factor = domain
+                .get_extended_omega()
+                .pow_vartime([part_index as u64]);
+            let mut fused_values = Polynomial::from_vec(vec![Fr::ZERO; n]);
+            let mut legacy_values = Polynomial::from_vec(vec![Fr::ZERO; n]);
+
+            for proof_instance_index in 0..2 {
+                let advice = vec![cache_fixture_coefficients(23 + proof_instance_index as u64, n)];
+                let instance = vec![
+                    cache_fixture_coefficients(47 + proof_instance_index as u64, n),
+                    cache_fixture_coefficients(71 + proof_instance_index as u64, n),
+                ];
+                let mut fixed_cosets = empty_coset_cache::<Fr>(fixed_sources.len());
+                let mut advice_cosets = empty_coset_cache::<Fr>(advice.len());
+                let mut instance_cosets = empty_coset_cache::<Fr>(instance.len());
+                let mut previous_fixed_columns = BTreeSet::new();
+                let mut previous_advice_columns = BTreeSet::new();
+                let mut previous_instance_columns = BTreeSet::new();
+                let mut instance_advice_loaded = 0;
+                let mut instance_advice_reused = 0;
+                let mut instance_columns_loaded = 0;
+                let mut instance_fixed_loaded = 0;
+                let mut instance_fixed_reused = 0;
+                let mut instance_constant_loaded = 0;
+                let mut instance_constant_reused = 0;
+
+                for &(start, end) in &group_ranges {
+                    let mut dependencies = gates[start].column_dependencies();
+                    for graph in &gates[start + 1..end] {
+                        dependencies.extend(&graph.column_dependencies());
+                    }
+
+                    evict_inactive_cosets(
+                        &mut fixed_cosets,
+                        &previous_fixed_columns,
+                        &dependencies.fixed,
+                    )
+                    .expect("evict inactive fixed cosets");
+                    evict_inactive_cosets(
+                        &mut advice_cosets,
+                        &previous_advice_columns,
+                        &dependencies.advice,
+                    )
+                    .expect("evict inactive advice cosets");
+                    evict_inactive_cosets(
+                        &mut instance_cosets,
+                        &previous_instance_columns,
+                        &dependencies.instance,
+                    )
+                    .expect("evict inactive instance cosets");
+
+                    let fixed_counts = load_missing_fixed_cosets(
+                        &domain,
+                        &fixed_sources,
+                        &dependencies.fixed,
+                        extended_omega_factor,
+                        &mut fixed_cosets,
+                    )
+                    .expect("load missing fixed cosets");
+                    let advice_counts = load_missing_cosets(
+                        &domain,
+                        &advice,
+                        &dependencies.advice,
+                        extended_omega_factor,
+                        &mut advice_cosets,
+                    )
+                    .expect("load missing advice cosets");
+                    let instance_counts = load_missing_cosets(
+                        &domain,
+                        &instance,
+                        &dependencies.instance,
+                        extended_omega_factor,
+                        &mut instance_cosets,
+                    )
+                    .expect("load missing instance cosets");
+
+                    let live_fixed = fixed_cosets.iter().filter(|coset| !coset.is_empty()).count();
+                    let live_advice = advice_cosets.iter().filter(|coset| !coset.is_empty()).count();
+                    let live_instance = instance_cosets.iter().filter(|coset| !coset.is_empty()).count();
+                    assert_eq!(
+                        live_fixed + live_advice + live_instance,
+                        dependencies.column_count(),
+                    );
+                    assert!(live_fixed + live_advice + live_instance <= max_gate_dependencies);
+                    assert!(fixed_cosets.iter().enumerate().all(|(column, coset)| {
+                        dependencies.fixed.contains(&column) || coset.is_empty()
+                    }));
+                    assert!(advice_cosets.iter().enumerate().all(|(column, coset)| {
+                        dependencies.advice.contains(&column) || coset.is_empty()
+                    }));
+                    assert!(instance_cosets.iter().enumerate().all(|(column, coset)| {
+                        dependencies.instance.contains(&column) || coset.is_empty()
+                    }));
+
+                    let legacy_fixed = load_fixed_cosets(
+                        &domain,
+                        &fixed_sources,
+                        &dependencies.fixed,
+                        extended_omega_factor,
+                    )
+                    .expect("legacy fixed conversion");
+                    let legacy_advice = load_cosets(
+                        &domain,
+                        &advice,
+                        &dependencies.advice,
+                        extended_omega_factor,
+                    )
+                    .expect("legacy advice conversion");
+                    let legacy_instance = load_cosets(
+                        &domain,
+                        &instance,
+                        &dependencies.instance,
+                        extended_omega_factor,
+                    )
+                    .expect("legacy instance conversion");
+                    for &column in &dependencies.fixed {
+                        assert_eq!(&fixed_cosets[column][..], &legacy_fixed[column][..]);
+                    }
+                    for &column in &dependencies.advice {
+                        assert_eq!(&advice_cosets[column][..], &legacy_advice[column][..]);
+                    }
+                    for &column in &dependencies.instance {
+                        assert_eq!(&instance_cosets[column][..], &legacy_instance[column][..]);
+                    }
+
+                    evaluate_graph_group(
+                        &gates[start..end],
+                        &fixed_cosets,
+                        &advice_cosets,
+                        &instance_cosets,
+                        &[],
+                        &mut fused_values,
+                        y,
+                        beta,
+                        Fr::ZERO,
+                        Fr::ZERO,
+                        rot_scale,
+                        isize,
+                        part_index,
+                        part_stride,
+                    ).expect("evaluate native gate group");
+                    for graph in &gates[start..end] {
+                        let graph_dependencies = graph.column_dependencies();
+                        let graph_fixed = load_fixed_cosets(
+                            &domain,
+                            &fixed_sources,
+                            &graph_dependencies.fixed,
+                            extended_omega_factor,
+                        )
+                        .expect("legacy per-gate fixed conversion");
+                        let graph_advice = load_cosets(
+                            &domain,
+                            &advice,
+                            &graph_dependencies.advice,
+                            extended_omega_factor,
+                        )
+                        .expect("legacy per-gate advice conversion");
+                        let graph_instance = load_cosets(
+                            &domain,
+                            &instance,
+                            &graph_dependencies.instance,
+                            extended_omega_factor,
+                        )
+                        .expect("legacy per-gate instance conversion");
+                        legacy_evaluate_one_gate(
+                            graph,
+                            &graph_fixed,
+                            &graph_advice,
+                            &graph_instance,
+                            &mut legacy_values,
+                            y,
+                            beta,
+                            rot_scale,
+                            isize,
+                            part_index,
+                            part_stride,
+                        );
+                    }
+
+                    instance_fixed_loaded += fixed_counts.transforms_loaded;
+                    instance_fixed_reused += fixed_counts.transforms_reused;
+                    instance_constant_loaded += fixed_counts.constant_fills_loaded;
+                    instance_constant_reused += fixed_counts.constant_fills_reused;
+                    instance_advice_loaded += advice_counts.transforms_loaded;
+                    instance_advice_reused += advice_counts.transforms_reused;
+                    instance_columns_loaded += instance_counts.transforms_loaded;
+                    total_groups += 1;
+                    previous_fixed_columns = dependencies.fixed;
+                    previous_advice_columns = dependencies.advice;
+                    previous_instance_columns = dependencies.instance;
+                }
+
+                // Production drops these caches before entering the next
+                // permutation/lookup/shuffle phase.
+                drop(fixed_cosets);
+                drop(advice_cosets);
+                drop(instance_cosets);
+
+                assert_eq!(instance_fixed_loaded, 1);
+                assert_eq!(instance_fixed_reused, 1);
+                assert_eq!(instance_constant_loaded, 1);
+                assert_eq!(instance_constant_reused, 1);
+                assert_eq!(instance_advice_loaded, 1);
+                assert_eq!(instance_advice_reused, 1);
+                assert_eq!(instance_columns_loaded, 2);
+                total_fixed_loaded += instance_fixed_loaded;
+                total_fixed_reused += instance_fixed_reused;
+                total_constant_loaded += instance_constant_loaded;
+                total_constant_reused += instance_constant_reused;
+                total_advice_loaded += instance_advice_loaded;
+                total_advice_reused += instance_advice_reused;
+                total_instance_loaded += instance_columns_loaded;
+            }
+            assert_eq!(&fused_values[..], &legacy_values[..]);
+        }
+
+        // Two groups per part/proof instance prove that each cache is reset at
+        // both lifecycle boundaries while cross-group columns are reused.
+        assert_eq!(total_groups, 8);
+        assert_eq!(total_advice_loaded, 4);
+        assert_eq!(total_advice_reused, 4);
+        assert_eq!(total_instance_loaded, 8);
+        assert_eq!(total_fixed_loaded, 4);
+        assert_eq!(total_fixed_reused, 4);
+        assert_eq!(total_constant_loaded, 4);
+        assert_eq!(total_constant_reused, 4);
     }
 }

@@ -236,27 +236,6 @@ bool file_digest(const std::filesystem::path &path, std::array<zkdl::byte, 32> &
     return true;
 }
 
-bool streaming_file_digest(const std::filesystem::path &path, std::array<zkdl::byte, 32> &digest, std::string *error) {
-    std::ifstream input(path, std::ios::binary);
-    if (!input) {
-        if (error) *error = "cannot open authenticated scratch for hashing: " + path.string();
-        return false;
-    }
-    zkdl::Sha256 hash;
-    std::array<zkdl::byte, 1U << 16U> buffer{};
-    while (input) {
-        input.read(reinterpret_cast<char *>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
-        const std::streamsize count = input.gcount();
-        if (count > 0) hash.update(buffer.data(), static_cast<std::size_t>(count));
-    }
-    if (!input.eof()) {
-        if (error) *error = "cannot read authenticated scratch for hashing: " + path.string();
-        return false;
-    }
-    digest = hash.final();
-    return true;
-}
-
 bool contains(const std::vector<zkdl::byte> &bytes, const std::string &needle) {
     if (needle.empty() || bytes.size() < needle.size()) return false;
     return std::search(bytes.begin(), bytes.end(), needle.begin(), needle.end()) != bytes.end();
@@ -487,29 +466,28 @@ bool resource_admission(const Config &config, NativeRelationWitness &witness, bo
         }
     }
     if (require_model_blinders) {
-        AuthenticatedModelBlinders blinders;
-        if (!load_authenticated_model_blinders(config, registry, &blinders, error)) return false;
-        if (!witness.model_blinders_authenticated || witness.model_blinder_digest != blinders.digest ||
-            witness.blinding_scalars.size() != blinders.entries.size()) {
-            if (error) *error = "BLOCKED: native model blinder sidecar identity is not authenticated";
+        ModelBlinders blinders;
+        if (!load_model_blinders(config, registry, &blinders, error)) return false;
+        if (witness.blinding_scalars.size() != blinders.entries.size()) {
+            if (error) *error = "BLOCKED: native model blinder set does not match the sidecar";
             return false;
         }
         std::set<std::string> blinder_ids;
         for (const auto &entry : blinders.entries) {
             const auto found = witness.blinding_scalars.find(entry.tensor_id);
             if (found == witness.blinding_scalars.end() || !blinder_ids.insert(entry.tensor_id).second || found->second != entry.blinder) {
-                if (error) *error = "BLOCKED: native model blinder does not match authenticated sidecar: " + entry.tensor_id;
+                if (error) *error = "BLOCKED: native model blinder does not match sidecar: " + entry.tensor_id;
                 return false;
             }
         }
-    } else if (witness.model_blinders_present || witness.model_blinders_authenticated) {
+    } else if (!witness.blinding_scalars.empty()) {
         if (error) *error = "BLOCKED: independent verifier context carries prover-only model blinders";
         return false;
     }
     return true;
 }
 
-bool statement_from_adapter(const Config &config, const Graph &graph, const ModelBundle &model, const StaticTables &tables, const RelationPlan &plan,
+bool statement_from_adapter(const Config &config, const Graph &graph, const StaticTables &tables, const RelationPlan &plan,
                             const PublicStatement &statement, const NativeRelationWitness &witness, relation::RelationStatement &out, std::string *error) {
     if (statement.proof_scope != kProofScope || plan.proof_scope != kProofScope) {
         if (error) *error = "relation statement/proof scope mismatch";
@@ -531,7 +509,7 @@ bool statement_from_adapter(const Config &config, const Graph &graph, const Mode
         if (error) *error = "adapter statement/resource identity is not bound to authenticated tables/ledger/plan";
         return false;
     }
-    if (!parse_digest(statement.statement_id, out.statement_digest) || !parse_digest(model.manifest_digest, out.model_digest) ||
+    if (!parse_digest(statement.statement_id, out.statement_digest) ||
         !parse_digest(tables.digest, out.table_digest) || !parse_digest(plan.integer_bound_ledger.digest, out.ledger_digest) ||
         !parse_digest(config.verifier_registry_digest, out.registry_digest)) {
         if (error) *error = "adapter statement/resource identity is not canonical SHA-256";
@@ -541,6 +519,7 @@ bool statement_from_adapter(const Config &config, const Graph &graph, const Mode
         if (error) *error = "native witness SRS/registry identity is missing or mismatched";
         return false;
     }
+    out.model_digest = witness.registry_digest;
     out.srs_digest = witness.srs_digest;
     const auto public_it = std::find_if(witness.tensors.begin(), witness.tensors.end(),
                                         [](const relation::TensorWitness &tensor) { return tensor.id == "public_Y" && tensor.visibility == 1U; });
@@ -2647,7 +2626,7 @@ bool shape_contract_from_witness(const RelationPlan &plan, const NativeRelationW
 
 bool graph_public_descriptor_id(const std::string &id) {
     const auto suffix = [&](const std::string &value) { return id.size() >= value.size() && id.compare(id.size() - value.size(), value.size(), value) == 0U; };
-    return id == "input_features" || (id.rfind("hidden/layer0/head", 0U) == 0U && suffix("/trace/input")) || id == "sparse_route" || id == "group_selectors" || id == "node_ptr" || id == "edge_ptr" || id == "node_edge_ptr" ||
+    return id == "input_features" || id == "sparse_route" || id == "group_selectors" || id == "node_ptr" || id == "edge_ptr" || id == "node_edge_ptr" ||
            suffix("/view/group_new") || suffix("/view/group_end");
 }
 
@@ -2682,7 +2661,7 @@ bool graph_public_provider(const Graph &graph, const relation::TensorDescriptor 
     const auto from_u64 = [](std::uint64_t value) {
         return zkdl::fr_from_u32(checked_native_u32(value, "public graph index", nullptr, true));
     };
-    if (descriptor.id == "input_features" || (descriptor.id.rfind("hidden/layer0/head", 0U) == 0U && descriptor.id.size() >= 12U && descriptor.id.compare(descriptor.id.size() - 12U, 12U, "/trace/input") == 0U)) {
+    if (descriptor.id == "input_features") {
         if (descriptor.logical_shape != std::vector<std::uint64_t>{graph.nodes, graph.features} || graph.feature_values.rows != graph.nodes || graph.feature_values.cols != graph.features) { if (error) *error = "public input_features shape differs from graph feature material"; return false; }
         return public_logical_provider(descriptor, basis_size, [&graph](std::uint64_t index) { return relation::fr_from_signed_i64(graph.feature_values.at(index / graph.features, index % graph.features)); }, provider, error);
     }
@@ -3259,20 +3238,6 @@ bool sorted_lookup_build_prover_context(const Config &config, const StaticTables
             if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch layout is not plan-bound";
             return false;
         }
-        std::array<zkdl::byte, 32U> expected_scratch{}, actual_scratch{};
-        if (!parse_digest(input.scratch_digest, expected_scratch)) {
-            if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch digest mismatch";
-            return false;
-        }
-        const auto scratch_digest_start = std::chrono::steady_clock::now();
-        const bool scratch_digest_read = streaming_file_digest(layout.path, actual_scratch, error);
-        if (context.provider_file_io_decode_time_seconds != nullptr)
-            *context.provider_file_io_decode_time_seconds += std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - scratch_digest_start).count();
-        if (!scratch_digest_read || expected_scratch != actual_scratch) {
-            if (error && error->empty()) *error = "BLOCKED: sorted-lookup scratch digest mismatch";
-            return false;
-        }
         relation::SegmentedTensorProvider table_keys, table_active;
         const auto plan_operation = sorted_lookup_plan_operation(plan, query.operation_id);
         if (plan_operation == nullptr || !sorted_lookup_public_table_providers(tables, *plan_operation, query, table_keys, table_active, error)) return false;
@@ -3427,11 +3392,8 @@ bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelati
     output.registry_path = input.registry_path;
     output.srs_digest = input.srs_digest;
     output.registry_digest = input.registry_digest;
-    output.model_blinder_digest = input.model_blinder_digest;
     output.srs_authenticated = input.srs_authenticated;
     output.registry_authenticated = input.registry_authenticated;
-    output.model_blinders_authenticated = input.model_blinders_authenticated;
-    output.model_blinders_present = !input.model_blinders.empty();
 
     if (!input.hiding_commitment_records.empty()) {
         if (error) *error = "BLOCKED: formal GATR rejects legacy hiding-record ABI payloads";
@@ -3479,7 +3441,7 @@ bool decode_native_witness(const NativeRelationWitnessInput &input, NativeRelati
     }
     output.sorted_lookup_providers = input.sorted_lookup_providers;
     for (const auto &provider : output.sorted_lookup_providers) {
-        if (provider.operation_id.empty() || provider.scratch_path.empty() || provider.scratch_digest.empty() || provider.layout_digest.empty() ||
+        if (provider.operation_id.empty() || provider.scratch_path.empty() || provider.layout_digest.empty() ||
             provider.segment_size == 0U || provider.table_domain == 0U || provider.query_domain == 0U || provider.merge_domain == 0U ||
             provider.commitment_roles.empty() || !provider.owner_only || !provider.active_prefix || !provider.canonical_padding) {
             if (error) *error = "BLOCKED: native sorted-lookup provider metadata is incomplete";
@@ -3570,7 +3532,7 @@ bool context_from_request(const NativeProveRequest &request, relation::ProverCon
         ? *context.provider_file_io_decode_time_seconds : 0.0;
     const auto relation_context_start = std::chrono::steady_clock::now();
     if (!resource_admission(*request.config, witness, true, error)) return false;
-    if (!statement_from_adapter(*request.config, *request.graph, *request.model, *request.tables, *request.relation, *request.statement, witness,
+    if (!statement_from_adapter(*request.config, *request.graph, *request.tables, *request.relation, *request.statement, witness,
                                 context.statement, error))
         return false;
     context.tensors = std::move(witness.tensors);
@@ -3743,13 +3705,13 @@ bool context_from_verify(const NativeVerifyRequest &request, relation::VerifierC
         return false;
     }
     if (!parse_digest(request.statement->statement_id, context.statement.statement_digest) ||
-        !parse_digest(request.statement->checkpoint_manifest_digest, context.statement.model_digest) ||
         !parse_digest(request.statement->static_table_digest, context.statement.table_digest) ||
         !parse_digest(request.statement->integer_bound_ledger_digest, context.statement.ledger_digest) ||
         !parse_digest(request.statement->verifier_registry_digest, context.statement.registry_digest)) {
         if (error) *error = "independent verifier statement identity is not canonical SHA-256";
         return false;
     }
+    context.statement.model_digest = context.statement.registry_digest;
     context.statement.srs_digest = supplied.srs_digest;
     const auto public_y = std::find_if(supplied.tensors.begin(), supplied.tensors.end(),
                                        [](const relation::TensorWitness &tensor) { return tensor.id == "public_Y" && tensor.visibility == 1U; });
@@ -4132,26 +4094,55 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     };
     const auto record_terminal_hyrax_openings = [&](std::uint64_t logical_domain,
                                                      std::uint64_t segment_size,
+                                                     std::uint64_t relation_count,
                                                      std::uint64_t provider_count,
+                                                     bool weighted_aggregate,
+                                                     bool cross_provider_aggregate,
                                                      std::uint64_t *category_counter,
                                                      const char *label) -> bool {
-        if (provider_count == 0U || segment_size == 0U ||
+        if (relation_count == 0U || provider_count == 0U || segment_size == 0U ||
             logical_domain % segment_size != 0U) {
             if (error) *error = std::string("native terminal opening shape is invalid: ") + label;
             return false;
         }
         const std::uint64_t segments = logical_domain / segment_size;
-        std::uint64_t computed = 0U, retained_per_provider = 0U, retained = 0U;
-        if (!checked_mul_wire(provider_count, segments, computed,
-                              "terminal Hyrax computed openings") ||
-            !checked_add_wire(segments, 1U, retained_per_provider,
-                              "terminal Hyrax mirrored opening count") ||
-            !checked_mul_wire(provider_count, retained_per_provider, retained,
-                              "terminal Hyrax retained objects") ||
+        const std::uint64_t openings_per_provider =
+            (weighted_aggregate || cross_provider_aggregate) ? 1U : segments;
+        std::uint64_t computed_per_relation = 0U;
+        std::uint64_t retained_per_relation = 0U;
+        std::uint64_t mirrors_per_relation = 0U;
+        if (cross_provider_aggregate) {
+            // A v4 cross-provider relation has one shared opening and its
+            // serialized terminal mirror, independent of provider count.
+            computed_per_relation = 1U;
+            retained_per_relation = 2U;
+            mirrors_per_relation = 1U;
+        } else {
+            std::uint64_t retained_per_provider = 0U;
+            if (!checked_mul_wire(provider_count, openings_per_provider,
+                                  computed_per_relation,
+                                  "terminal Hyrax computed openings") ||
+                !checked_add_wire(openings_per_provider, 1U,
+                                  retained_per_provider,
+                                  "terminal Hyrax mirrored opening count") ||
+                !checked_mul_wire(provider_count, retained_per_provider,
+                                  retained_per_relation,
+                                  "terminal Hyrax retained provider objects"))
+                return false;
+            mirrors_per_relation = provider_count;
+        }
+        std::uint64_t computed = 0U, retained = 0U, terminal_mirrors = 0U;
+        if (!checked_mul_wire(relation_count, computed_per_relation, computed,
+                              "terminal Hyrax relation openings") ||
+            !checked_mul_wire(relation_count, retained_per_relation, retained,
+                              "terminal Hyrax retained relation objects") ||
+            !checked_mul_wire(relation_count, mirrors_per_relation,
+                              terminal_mirrors,
+                              "terminal Hyrax relation mirrors") ||
             category_counter == nullptr ||
             !add(category_counter, computed, label)) return false;
         return record_hyrax_opening_shape(
-            logical_domain, segment_size, computed, retained, provider_count);
+            logical_domain, segment_size, computed, retained, terminal_mirrors);
     };
     const auto hyrax_wire_bytes_for_segment = [&](std::uint64_t domain,
                                       std::uint64_t segment_size,
@@ -4174,8 +4165,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         std::uint32_t fold_bits = 0U;
         std::uint64_t padded = 1U;
         while (padded < segment_size + 1U) { padded <<= 1U; ++fold_bits; }
+        // HYX3 serializes both the segment-local inner point and full-domain outer point.
         std::uint64_t point_bits = 0U, round_bytes = 0U;
-        if (!checked_add_wire(inner_bits, domain_bits - inner_bits, point_bits,
+        if (!checked_add_wire(inner_bits, domain_bits, point_bits,
                               "Hyrax point bits") ||
             !checked_mul_wire(32U, point_bits, round_bytes, "Hyrax point bytes") ||
             !checked_add_wire(556U, round_bytes, bytes, "Hyrax fixed/point bytes")) return false;
@@ -4224,6 +4216,8 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                                          std::uint64_t segment_size,
                                          std::uint64_t references,
                                          std::uint64_t product_nodes,
+                                         bool weighted_aggregate,
+                                         bool cross_provider_aggregate,
                                          const std::string &label,
                                          std::uint64_t &bytes) -> bool {
         std::uint64_t opening = 0U, segments = 0U;
@@ -4240,22 +4234,33 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 ", product_nodes=" + std::to_string(product_nodes) + ")";
             return false;
         }
-        // ZkTerminalRelationProof serializes one mirrored first opening and
-        // every segment opening per provider, plus the product DAG and link.
+        // v4 stores N provider tau values plus one cross-provider opening;
+        // v3 stores one aggregate opening per provider, and v2 stores each
+        // legacy per-segment opening per provider.
+        const std::uint64_t opening_count =
+            (weighted_aggregate || cross_provider_aggregate) ? 1U : segments;
         std::uint64_t per_reference = 64U, segment_frame = 8U + opening;
-        if (!checked_add_wire(per_reference, opening, per_reference,
-                              "terminal mirrored opening") ||
-            !checked_mul_wire(segments, segment_frame, segment_frame,
-                              "terminal segment openings") ||
-            !checked_add_wire(per_reference, segment_frame, per_reference,
-                              "terminal segment openings")) return false;
         std::uint64_t references_bytes = 0U, products_bytes = 0U;
+        if (!cross_provider_aggregate &&
+            (!checked_add_wire(per_reference, opening, per_reference,
+                               "terminal mirrored opening") ||
+             !checked_mul_wire(opening_count, segment_frame, segment_frame,
+                               "terminal segment openings") ||
+             !checked_add_wire(per_reference, segment_frame, per_reference,
+                               "terminal segment openings"))) return false;
         if (!checked_mul_wire(references, per_reference, references_bytes,
                               "terminal provider records") ||
             !checked_mul_wire(product_nodes, 604U, products_bytes,
                               "terminal product nodes") ||
             !checked_add_wire(644U, references_bytes, bytes,
                               "terminal fixed/provider bytes") ||
+            (cross_provider_aggregate &&
+             (!checked_mul_wire(2U, opening, segment_frame,
+                                "cross-provider aggregate opening mirrors") ||
+              !checked_add_wire(segment_frame, 24U, segment_frame,
+                                "cross-provider aggregate opening framing") ||
+              !checked_add_wire(bytes, segment_frame, bytes,
+                                "cross-provider aggregate opening bytes"))) ||
             !checked_add_wire(bytes, products_bytes, bytes,
                               "terminal product bytes")) return false;
         return true;
@@ -4263,11 +4268,14 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     const auto terminal_wire_bytes = [&](std::uint64_t domain,
                                          std::uint64_t references,
                                          std::uint64_t product_nodes,
+                                         bool weighted_aggregate,
+                                         bool cross_provider_aggregate,
                                          const std::string &label,
                                          std::uint64_t &bytes) -> bool {
         return terminal_wire_bytes_for_segment(
             domain, std::min(domain, kSegmentSize), references,
-            product_nodes, label, bytes);
+            product_nodes, weighted_aggregate, cross_provider_aggregate,
+            label, bytes);
     };
     const auto product_node_count = [](const relation::ConstraintDescriptor &descriptor,
                                        std::uint64_t &count) {
@@ -4289,7 +4297,8 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         const std::string typed_label = operation_context + "/" + descriptor.id;
         if (!product_node_count(descriptor, products) ||
             !sumcheck_wire_bytes(operation_context, domain, descriptor.degree + 2U, sumcheck) ||
-            !terminal_wire_bytes(domain, references, products, typed_label, terminal)) return false;
+            !terminal_wire_bytes(domain, references, products, true, true,
+                                 typed_label, terminal)) return false;
         std::uint64_t indices = 0U, body = encoded_descriptor.size();
         if (!checked_mul_wire(references, 4U, indices, "constraint opening-index vectors") ||
             !checked_add_wire(body, 16U, body, "constraint opening-index counts") ||
@@ -4351,11 +4360,16 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         for (const auto domain : sizes) {
             std::uint64_t one_opening = 0U, segments = 0U, one_bytes = 0U;
             if (!hyrax_wire_bytes(domain, one_opening, segments) ||
-                segments > (1U << 12U) ||
-                !checked_mul_wire(one_opening, segments, one_bytes,
-                                  "hidden-matmul segmented openings") ||
-                !checked_add_wire(opening_bytes, one_bytes, opening_bytes,
-                                  "hidden-matmul segmented openings")) {
+                segments > (1U << 12U)) {
+                if (error && error->empty()) *error = "native hidden-matmul opening exceeds strict segment limits: " + operation.id;
+                return false;
+            }
+            // ZMH3 keeps each provider's ordered source Gamma vector in the
+            // outer commitment statement and emits one weighted opening for
+            // the provider's full logical domain.
+            one_bytes = one_opening;
+            if (!checked_add_wire(opening_bytes, one_bytes, opening_bytes,
+                                  "hidden-matmul aggregate openings")) {
                 if (error && error->empty()) *error = "native hidden-matmul opening exceeds strict segment limits: " + operation.id;
                 return false;
             }
@@ -4424,6 +4438,55 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                  family.logical_shape, family.padded_shape,
                  family.visibility == "public") &&
              !add(&metrics->padding_family_count, 1U, "padding family count"))) return false;
+    }
+    std::vector<relation::TensorDescriptor> qpad_metric_descriptors;
+    qpad_metric_descriptors.reserve(
+        static_cast<std::size_t>(metrics->padding_family_count));
+    for (const auto &family : plan.tensor_families) {
+        if (!relation::qpad_record_required(
+                family.logical_shape, family.padded_shape,
+                family.visibility == "public")) continue;
+        const auto domain_it = domains.find(family.id);
+        if (domain_it == domains.end() || domain_it->second == 0U ||
+            domain_it->second > std::numeric_limits<std::uint32_t>::max()) {
+            if (error) *error = "native Qpad group plan has no canonical tensor domain: " + family.id;
+            return false;
+        }
+        relation::TensorDescriptor descriptor;
+        descriptor.id = family.id;
+        descriptor.visibility = family.visibility == "public" ? 1U
+            : (family.visibility == "witness" ? 3U : 2U);
+        descriptor.domain_size = static_cast<std::uint32_t>(domain_it->second);
+        descriptor.logical_shape = family.logical_shape;
+        descriptor.padded_shape = family.padded_shape;
+        descriptor.mle_order = family.mle_order;
+        descriptor.stack_axis = family.stack_axis;
+        descriptor.mapping = family.mapping;
+        descriptor.padding_rule = family.padding_rule;
+        // The resource planner only needs the same selector/layout predicate
+        // as proving.  Registry binding remains checked against the actual
+        // descriptors in prove/verify; this non-empty shape-only value is not
+        // included in Qpad grouping identity.
+        if (descriptor.visibility == 2U) descriptor.registry_id = family.id;
+        qpad_metric_descriptors.push_back(std::move(descriptor));
+    }
+    std::vector<relation::QpadGroupPlan> qpad_metric_groups;
+    std::string qpad_group_error;
+    if (!relation::qpad_build_group_plans(
+            qpad_metric_descriptors, 1U << 18U, nullptr, nullptr, nullptr,
+            nullptr, nullptr, qpad_metric_groups, &qpad_group_error)) {
+        if (error) *error = "native Qpad typed resource grouping failed: " +
+            qpad_group_error;
+        return false;
+    }
+    metrics->padding_group_count = qpad_metric_groups.size();
+    std::uint64_t qpad_grouped_member_count = 0U;
+    for (const auto &group : qpad_metric_groups)
+        if (!add(&qpad_grouped_member_count, group.members.size(),
+                 "Qpad grouped member count")) return false;
+    if (qpad_grouped_member_count != metrics->padding_family_count) {
+        if (error) *error = "native Qpad group planner disagrees with the authenticated padding-member count";
+        return false;
     }
     std::vector<relation::OperationDescriptor> operations;
     if (analysis_only_shape) {
@@ -4539,7 +4602,17 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                     std::min<std::uint64_t>(std::max<std::uint64_t>(2U, route_source_domain),
                                             kSegmentSize), true, 2U)) return false;
         }
-        for (const auto &binding : operation.fac_bindings) {
+        std::vector<relation::FacLine8GroupPlan> fac_groups;
+        if (!operation.fac_bindings.empty() &&
+            !relation::fac_line8_build_groups(operation, fac_groups, error))
+            return false;
+        for (const auto &group : fac_groups) {
+            if (group.member_indices.empty()) {
+                if (error) *error = "native FAC route group has no members: " + operation.id;
+                return false;
+            }
+            const auto &binding =
+                operation.fac_bindings[group.member_indices.front()];
             std::uint64_t source_domain = 0U, output_domain = 0U;
             std::uint64_t factor_elements = 0U;
             if (!checked_mul_u64(binding.canonical_outer_domain,
@@ -4555,6 +4628,26 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 domains.at(binding.view_ref) != output_domain) {
                 if (error) *error = "native FAC route dimensions do not match canonical families: " + operation.id;
                 return false;
+            }
+            std::uint64_t target_input_segments = 0U;
+            for (const auto member_index : group.member_indices) {
+                const auto &member = operation.fac_bindings[member_index];
+                std::uint64_t member_output_domain = 0U;
+                if (!checked_mul_u64(member.view_outer_domain,
+                                     member.view_feature_domain,
+                                     member_output_domain) ||
+                    member.canonical_ref != binding.canonical_ref ||
+                    member_output_domain != output_domain ||
+                    domains.find(member.view_ref) == domains.end() ||
+                    domains.at(member.view_ref) != member_output_domain ||
+                    !checked_add_u64(target_input_segments,
+                                     member_output_domain /
+                                         std::min<std::uint64_t>(member_output_domain,
+                                                                 kSegmentSize),
+                                     target_input_segments)) {
+                    if (error) *error = "native FAC route group member dimensions differ: " + operation.id;
+                    return false;
+                }
             }
             metrics->maximum_route_source_domain =
                 std::max(metrics->maximum_route_source_domain, source_domain);
@@ -4574,7 +4667,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 !add(&metrics->fac_selector_opening_count, 2U,
                      "FAC selector Hyrax opening count") ||
                 !checked_add_u64(source_domain / source_segment,
-                                 output_domain / output_segment,
+                                 target_input_segments,
                                  route_input_segments) ||
                 !add(&metrics->route_aggregate_input_segment_count,
                      route_input_segments, "FAC aggregate input segments") ||
@@ -4601,9 +4694,11 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 const std::uint64_t segments = (found->second + kSegmentSize - 1U) / kSegmentSize;
                 const std::uint64_t segment_size =
                     std::min<std::uint64_t>(found->second, kSegmentSize);
-                if (!add(&metrics->primitive_opening_segment_count, segments, "primitive opening segment count") ||
+                const std::uint64_t opening_count = primitive.kind == 2U
+                    ? 1U : segments;
+                if (!add(&metrics->primitive_opening_segment_count, opening_count, "primitive opening segment count") ||
                     !record_hyrax_opening_shape(found->second, segment_size,
-                                                segments, segments, 0U)) return false;
+                                                opening_count, opening_count, 0U)) return false;
             }
         }
 
@@ -4641,20 +4736,25 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                               "operation route body")) return false;
 
         std::uint64_t fac_bytes = 0U;
-        if (!operation.fac_bindings.empty()) {
-            fac_bytes = 368U;
-            for (std::size_t binding_index = 0U;
-                 binding_index < operation.fac_bindings.size(); ++binding_index) {
-                const auto &binding = operation.fac_bindings[binding_index];
-                const std::string selector_id = operation.id +
-                    "/fac4dnn-line8/selector/" + std::to_string(binding_index);
+        if (!fac_groups.empty()) {
+            fac_bytes = 16U;
+            for (std::size_t group_index = 0U;
+                 group_index < fac_groups.size(); ++group_index) {
+                const auto &group = fac_groups[group_index];
+                const auto &binding =
+                    operation.fac_bindings[group.member_indices.front()];
+                const std::string selector_id = group.member_indices.size() > 1U
+                    ? operation.id + "/fac4dnn-line8/group/" +
+                          std::to_string(group_index)
+                    : operation.id + "/fac4dnn-line8/selector/" +
+                          std::to_string(group.member_indices.front());
                 std::uint64_t binding_route = 0U, framed = 0U;
                 if (!route_wire_bytes(selector_id, binding.view_outer_domain,
                                       binding.canonical_outer_domain,
                                       binding.view_feature_domain,
                                       binding.canonical_feature_domain, binding_route) ||
                     binding_route > zkdl::ZkSumcheckProof::kMaxNestedProofBytes ||
-                    !checked_add_wire(8U, binding_route, framed,
+                    !checked_add_wire(20U, binding_route, framed,
                                       "FAC selector-route frame") ||
                     !checked_add_wire(fac_bytes, framed, fac_bytes,
                                       "FAC selector-route records")) {
@@ -4751,7 +4851,10 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             if (!record_terminal_hyrax_openings(
                     relation_domain,
                     std::min<std::uint64_t>(relation_domain, kSegmentSize),
+                    1U,
                     operation.tensor_refs.size(),
+                    true,
+                    true,
                     &metrics->constraint_opening_segment_count,
                     "batched constraint Hyrax opening segments")) return false;
         }
@@ -4812,16 +4915,12 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                 }
                 const std::uint64_t segment_size =
                     std::min<std::uint64_t>(relation_domain, kSegmentSize);
-                std::uint64_t terminal_provider_count = 0U;
-                if (!checked_mul_u64(operation.constraints.size(),
-                                     operation.tensor_refs.size(),
-                                     terminal_provider_count)) {
-                    if (error) *error = "native constraint terminal provider count overflows: " + operation.id;
-                    return false;
-                }
                 if (!record_terminal_hyrax_openings(
                         relation_domain, segment_size,
-                        terminal_provider_count,
+                        operation.constraints.size(),
+                        operation.tensor_refs.size(),
+                        true,
+                        true,
                         &metrics->constraint_opening_segment_count,
                         "constraint Hyrax opening segments")) return false;
             }
@@ -4882,7 +4981,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                                   "sorted-lookup relation tags")) return false;
         if (!sumcheck_wire_bytes(context, domain, 4U, sumcheck) ||
             !terminal_wire_bytes_for_segment(domain, segment_size,
-                                              tags.size(), product_nodes, typed_label,
+                                              tags.size(), product_nodes, false, true, typed_label,
                                               terminal)) return false;
         std::uint64_t ref_bytes = 0U;
         if (!checked_mul_wire(tags.size(), 8U, ref_bytes,
@@ -4923,11 +5022,11 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             products = 0U;
             montgomery_terms = 0U;
             if (kind == 1U) {
-                tags = {"query_x", "query_y", "query_key", "query_active", "query_prefix",
+                tags = {"query_x", "query_y", "query_key", "query_active", "query_product_prefix",
                         "query_prefix_next", "query_first", "query_last", "query_endpoint"};
                 products = 7U; montgomery_terms = 18U; domain = query.query_domain;
             } else if (kind == 2U) {
-                tags = {"merge_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
+                tags = {"merge_product_prefix", "merge_prefix_next", "merge_key", "merge_active", "merge_first"};
                 products = 4U; montgomery_terms = 9U; domain = query.merge_domain;
             } else if (kind == 3U) {
                 tags = {"merge_key", "merge_previous_key", "merge_delta", "merge_active"};
@@ -4953,6 +5052,14 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             return true;
         };
         std::uint64_t relation_section_bytes = 8U;
+        // Use the wire producer's canonical provider ordering/filter so the
+        // planner accounts every internal ordered Gamma manifest entry.
+        zkdl::AuthenticatedSortedLookupDescriptor manifest_descriptor;
+        manifest_descriptor.x_bits = query.x_bits;
+        manifest_descriptor.y_bits = query.y_bits;
+        const auto sorted_internal_manifest_tags =
+            zkdl::authenticated_sorted_lookup_internal_provider_tags(
+                manifest_descriptor);
         for (std::uint32_t kind = 1U; kind <= 5U; ++kind) {
             std::vector<std::string> tags;
             std::uint64_t products = 0U, montgomery_terms = 0U;
@@ -4972,7 +5079,9 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                     weighted_tensor_count, domain, query.segment_size, false,
                     montgomery_terms, eqmask_table_peak_bytes) ||
                 !record_terminal_hyrax_openings(
-                    domain, query.segment_size, tags.size(),
+                    domain, query.segment_size, 1U, tags.size(),
+                    false,
+                    true,
                     &metrics->sorted_lookup_opening_segment_count,
                     "sorted-lookup Hyrax opening segments") ||
                 !sorted_relation_wire_bytes(kind, query.operation_id, tags, domain, query.segment_size,
@@ -4988,12 +5097,47 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             query.operation_id.size() + query.table_ref.size() +
             query.query_ref.size() + query.merge_ref.size();
         std::uint64_t ref_bytes = 0U, lookup_bytes = descriptor_bytes;
+        std::uint64_t gamma_manifest_bytes = 8U;
+        if (sorted_internal_manifest_tags.size() >
+            zkdl::AuthenticatedSortedLookupProof::kMaxProviderGammaEntries) {
+            if (error) *error = "native sorted-lookup Gamma manifest exceeds its typed parser entry limit: " + query.operation_id;
+            return false;
+        }
+        for (const auto &tag : sorted_internal_manifest_tags) {
+            const std::uint64_t domain = tag.compare(0U, 6U, "query_") == 0
+                ? query.query_domain : query.merge_domain;
+            const std::uint64_t segments = domain / query.segment_size;
+            std::uint64_t entry_bytes = 0U, commitment_bytes = 0U;
+            if (segments == 0U ||
+                segments > zkdl::AuthenticatedSortedLookupProof::kMaxProviderGammaSegments ||
+                !checked_add_wire(8U, static_cast<std::uint64_t>(tag.size()),
+                                  entry_bytes,
+                                  "sorted-lookup Gamma manifest tag") ||
+                !checked_add_wire(entry_bytes, 12U, entry_bytes,
+                                  "sorted-lookup Gamma manifest shape") ||
+                !checked_add_wire(entry_bytes, 8U, entry_bytes,
+                                  "sorted-lookup Gamma manifest commitment count") ||
+                !checked_mul_wire(segments, 48U, commitment_bytes,
+                                  "sorted-lookup ordered Gamma manifest") ||
+                !checked_add_wire(entry_bytes, commitment_bytes, entry_bytes,
+                                  "sorted-lookup Gamma manifest entry") ||
+                !checked_add_wire(gamma_manifest_bytes, entry_bytes,
+                                  gamma_manifest_bytes,
+                                  "sorted-lookup Gamma manifest bytes")) {
+                if (error && error->empty())
+                    *error = "native sorted-lookup Gamma manifest exceeds its typed parser segment limit: " +
+                             query.operation_id;
+                return false;
+            }
+        }
         if (!checked_mul_wire(commitment_refs, 24U, ref_bytes,
                               "sorted-lookup outer commitment references") ||
             !checked_add_wire(8U, ref_bytes, ref_bytes,
                               "sorted-lookup commitment vector") ||
             !checked_add_wire(lookup_bytes, ref_bytes, lookup_bytes,
                               "sorted-lookup descriptor/reference section") ||
+            !checked_add_wire(lookup_bytes, gamma_manifest_bytes, lookup_bytes,
+                              "sorted-lookup ordered Gamma manifest") ||
             !checked_add_wire(lookup_bytes, relation_section_bytes, lookup_bytes,
                               "sorted-lookup relation section") ||
             !checked_add_wire(lookup_bytes, 1056U, lookup_bytes,
@@ -5038,41 +5182,152 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
                                   query.merge_domain)) return false;
     }
 
-    // Qpad records exist only for non-public padded families.  The two
-    // providers are the actual family and its public selector, both on this
-    // family's authenticated padded domain.
-    for (const auto &family : plan.tensor_families) {
-        if (!relation::qpad_record_required(
-                family.logical_shape, family.padded_shape,
-                family.visibility == "public")) continue;
-        const std::uint64_t domain = domains.at(family.id);
-        const std::uint64_t segment_size =
-            std::min<std::uint64_t>(domain, kSegmentSize);
+    // PAD2 emits one proof record per deterministic same-selector group.  Its
+    // Sumcheck has four providers (aggregate Y, selector, Eqmask, active),
+    // while the terminal relation opens only aggregate Y.
+    for (const auto &group : qpad_metric_groups) {
+        const std::uint64_t domain = group.domain_size;
+        const std::uint64_t segment_size = group.segment_size;
+        const std::uint64_t segment_count = group.segment_count;
+        if (group.members.empty() || domain == 0U || segment_size == 0U ||
+            segment_count == 0U ||
+            segment_size > std::numeric_limits<std::uint64_t>::max() /
+                               sizeof(FrWire)) {
+            if (error) *error = "native Qpad group has an invalid resource shape";
+            return false;
+        }
         std::uint32_t qpad_bits = 0U;
         std::uint64_t eqmask_table_peak_bytes = 0U;
-        std::uint64_t qpad_auxiliary_peak_bytes = 0U;
+        std::uint64_t segment_buffer_bytes = 0U;
+        std::uint64_t scratch_read_bytes = 0U;
+        std::uint64_t persistent_group_bytes_per_segment = 0U;
+        std::uint64_t persistent_group_bytes = 0U;
+        std::uint64_t qpad_sumcheck_auxiliary_bytes = 0U;
+        std::uint64_t qpad_construction_peak_bytes = 0U;
         if (!log2_domain(domain, qpad_bits) ||
             !relation::pointwise_eqmask_weight_table_peak_bytes(
                 qpad_bits, eqmask_table_peak_bytes) ||
-            !checked_add_u64(eqmask_table_peak_bytes,
-                             relation::kQpadSelectorXiCacheMaxBytes,
-                             qpad_auxiliary_peak_bytes)) {
-            if (error) *error = "native Qpad eqmask table live-memory bound overflows: " + family.id;
+            !checked_mul_wire(segment_size, sizeof(FrWire),
+                              segment_buffer_bytes,
+                              "Qpad aggregate segment buffer") ||
+            !relation::zksc_spill_round_up(
+                segment_buffer_bytes,
+                relation::kZkSumcheckSpillIoAlignment,
+                scratch_read_bytes) ||
+            !checked_add_wire(sizeof(relation::SegmentCommitmentWire),
+                              sizeof(FrWire),
+                              persistent_group_bytes_per_segment,
+                              "Qpad aggregate persistent segment bytes") ||
+            !checked_add_wire(persistent_group_bytes_per_segment,
+                              sizeof(zkdl::CpuG1Point),
+                              persistent_group_bytes_per_segment,
+                              "Qpad aggregate persistent material bytes") ||
+            !checked_add_wire(persistent_group_bytes_per_segment, 96U,
+                              persistent_group_bytes_per_segment,
+                              "Qpad aggregate digest bytes") ||
+            !checked_mul_wire(segment_count,
+                              persistent_group_bytes_per_segment,
+                              persistent_group_bytes,
+                              "Qpad aggregate persistent group bytes") ||
+            !checked_add_wire(persistent_group_bytes, eqmask_table_peak_bytes,
+                              qpad_sumcheck_auxiliary_bytes,
+                              "Qpad Sumcheck Eqmask/group live bytes") ||
+            !checked_add_wire(qpad_sumcheck_auxiliary_bytes,
+                              scratch_read_bytes,
+                              qpad_sumcheck_auxiliary_bytes,
+                              "Qpad Sumcheck scratch read bytes") ||
+            !checked_add_wire(qpad_sumcheck_auxiliary_bytes,
+                              relation::kZkSumcheckSpillIoAlignment,
+                              qpad_sumcheck_auxiliary_bytes,
+                              "Qpad Sumcheck scratch staging bytes") ||
+            !checked_mul_wire(segment_buffer_bytes, 2U,
+                              qpad_construction_peak_bytes,
+                              "Qpad aggregate construction buffers") ||
+            !checked_add_wire(qpad_construction_peak_bytes,
+                              relation::kZkSumcheckSpillIoAlignment,
+                              qpad_construction_peak_bytes,
+                              "Qpad aggregate construction staging") ||
+            !checked_add_wire(qpad_construction_peak_bytes,
+                              persistent_group_bytes,
+                              qpad_construction_peak_bytes,
+                              "Qpad aggregate construction persistent material")) {
+            if (error) *error = "native Qpad group live-memory bound overflows";
             return false;
         }
+        ordinary_segmented_sumcheck_peak = std::max(
+            ordinary_segmented_sumcheck_peak, qpad_construction_peak_bytes);
         if (!record_segmented_sumcheck_peak(
-                4U, domain, segment_size, 1U, qpad_auxiliary_peak_bytes) ||
+                4U, domain, segment_size, 1U,
+                qpad_sumcheck_auxiliary_bytes) ||
             !record_sumcheck_shape(4U, domain, segment_size, false, 1U,
-                                   qpad_auxiliary_peak_bytes) ||
+                                   qpad_sumcheck_auxiliary_bytes) ||
             !record_terminal_hyrax_openings(
-                domain, segment_size, 2U,
+                domain, segment_size, 1U, 1U,
+                true,
+                false,
                 &metrics->padding_opening_segment_count,
                 "Qpad Hyrax opening segments"))
             return false;
-        const auto descriptor = relation::qpad_constraint_descriptor(family.id);
-        std::uint64_t relation_bytes = 0U, record_bytes = 64U + family.id.size();
-        if (!constraint_wire_bytes(descriptor, domain, 2U,
-                                   "gat.relation.padding." + descriptor.id,
+        // The aggregate Y scratch file remains live while Sumcheck spills its
+        // folded state.  Admission tracks their simultaneous disk footprint.
+        std::uint64_t qpad_y_file_logical_bytes = 0U;
+        std::uint64_t qpad_y_file_disk_bytes = 0U;
+        std::uint64_t folded_state_peak = 0U;
+        std::uint64_t montgomery_plan_peak = 0U;
+        std::uint64_t cached_state_peak = 0U;
+        if (!checked_mul_wire(domain, sizeof(FrWire),
+                              qpad_y_file_logical_bytes,
+                              "Qpad aggregate Y scratch file") ||
+            !relation::zksc_spill_round_up(
+                qpad_y_file_logical_bytes,
+                relation::kZkSumcheckSpillIoAlignment,
+                qpad_y_file_disk_bytes) ||
+            !relation::zksc_folded_state_peak_bytes(
+                4U, domain, segment_size, folded_state_peak) ||
+            !relation::zksc_montgomery_constraint_plan_peak_bytes(
+                1U, true, montgomery_plan_peak) ||
+            !checked_add_wire(folded_state_peak, montgomery_plan_peak,
+                              cached_state_peak,
+                              "Qpad cached Sumcheck state") ||
+            !checked_add_wire(cached_state_peak,
+                              qpad_sumcheck_auxiliary_bytes,
+                              cached_state_peak,
+                              "Qpad cached Sumcheck live set")) {
+            if (error) *error = "native Qpad aggregate spill bound overflows";
+            return false;
+        }
+        std::uint64_t qpad_concurrent_disk_peak = qpad_y_file_disk_bytes;
+        if (cached_state_peak > relation::kZkSumcheckFoldedStateBudgetBytes) {
+            std::uint64_t sumcheck_spill_disk_bytes = 0U;
+            if (!relation::zksc_spilled_state_disk_peak_bytes(
+                    4U, domain, sumcheck_spill_disk_bytes) ||
+                !checked_add_wire(qpad_concurrent_disk_peak,
+                                  sumcheck_spill_disk_bytes,
+                                  qpad_concurrent_disk_peak,
+                                  "Qpad plus Sumcheck spill disk peak")) {
+                if (error) *error = "native Qpad concurrent spill disk bound overflows";
+                return false;
+            }
+        }
+        metrics->sumcheck_max_spill_disk_peak_bytes_upper_bound = std::max(
+            metrics->sumcheck_max_spill_disk_peak_bytes_upper_bound,
+            qpad_concurrent_disk_peak);
+
+        const auto descriptor = relation::qpad_constraint_descriptor(group);
+        std::uint64_t relation_bytes = 0U;
+        std::uint64_t record_bytes = 64U;
+        for (const auto *member : group.members) {
+            if (member == nullptr || member->id.empty() ||
+                !checked_add_wire(record_bytes, 12U, record_bytes,
+                                  "Qpad member wire framing") ||
+                !checked_add_wire(record_bytes, member->id.size(), record_bytes,
+                                  "Qpad member tensor id")) {
+                if (error) *error = "native Qpad group has an invalid wire member";
+                return false;
+            }
+        }
+        if (!constraint_wire_bytes(descriptor, domain, 1U,
+                                   relation::qpad_group_operation_context(group),
                                    relation_bytes) ||
             !checked_add_wire(record_bytes, relation_bytes, record_bytes,
                               "Qpad record body") ||
@@ -5084,7 +5339,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         metrics->padding_record_body_max_bytes =
             std::max(metrics->padding_record_body_max_bytes, record_bytes - 8U);
         if (record_bytes - 8U > zkdl::ZkTerminalRelationProof::kMaxNestedProofBytes) {
-            if (error) *error = "native typed Qpad record exceeds the strict 4 MiB parser limit: " + family.id;
+            if (error) *error = "native typed Qpad record exceeds the strict 4 MiB parser limit";
             return false;
         }
     }
@@ -5141,9 +5396,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
         !checked_add_wire(proof_bytes, 392U, proof_bytes,
                           "proof public output opening/binding framing") ||
         !checked_add_wire(proof_bytes, public_y_openings, proof_bytes,
-                          "proof public output opening") ||
-        !checked_add_wire(proof_bytes, 32U, proof_bytes,
-                          "proof transcript digest")) return false;
+                          "proof public output opening")) return false;
     metrics->proof_wire_bytes_upper_bound = proof_bytes;
 
     // The canonical context owns interned selector backing while deserialization
@@ -5390,11 +5643,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     }
     for (std::size_t layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
         const std::uint64_t width = config.architecture.hidden_heads[layer] * config.architecture.hidden_dims[layer];
-        const std::uint64_t input_width = layer == 0U ? graph.features :
-            config.architecture.hidden_heads[layer - 1U] * config.architecture.hidden_dims[layer - 1U];
-        if (!add_shape_elements(&trace_i64_elements, graph.nodes, input_width, 1U,
-                                "hidden layer input matrix") ||
-            !add_shape_elements(&trace_i64_elements, graph.nodes, width, 1U,
+        if (!add_shape_elements(&trace_i64_elements, graph.nodes, width, 1U,
                                 "hidden layer concat matrix")) return false;
     }
     // Output heads own six node matrices (y_prime, aggregate_pre/num,
@@ -5443,7 +5692,7 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
     if (!add(&trace_payload, metrics->trace_field_payload_bytes, "trace payload bytes") ||
         !add(&trace_payload, metrics->trace_u8_payload_bytes, "trace payload bytes") ||
         !add(&trace_payload, trace_metadata, "trace payload object metadata")) return false;
-    // run_forward's actual overlap: current is a copy of graph input / the
+    // run_forward's actual overlap: current aliases graph input / the
     // previous concat; at concat, head_outputs copies every aggregate and
     // concat/current coexist; an active head retains projected while its
     // h_prime copy is in trace and attention_scores returns one E-vector.
@@ -5992,7 +6241,6 @@ bool zkdl_gat_native_core_prove(const NativeProveRequest &request, NativeProofRe
     }
     result->envelope.native_core_api = kBridgeApi;
     result->envelope.statement_id = request.statement->statement_id;
-    result->envelope.proof_id = digest_hex(zkdl::sha256(result->proof_bytes));
     result->envelope.backend = backend_name(request.backend);
     result->envelope.proof_scope = request.statement->proof_scope;
     result->envelope.status = "PROVED";
@@ -6096,37 +6344,73 @@ bool zkdl_gat_native_core_verify(const NativeVerifyRequest &request, std::string
                       "independent proof bytes exceed the authenticated typed wire upper bound",
                       request.config, request.statement, request.backend);
     }
-    std::vector<std::string> expected_qpad_ids;
-    for (const auto &descriptor : context.tensor_descriptors) {
-        if (relation::qpad_record_required(
-                descriptor.logical_shape, descriptor.padded_shape,
-                descriptor.visibility == 1U))
-            expected_qpad_ids.push_back(descriptor.id);
+    std::vector<relation::QpadGroupPlan> expected_qpad_group_plans;
+    std::string qpad_group_error;
+    if (!relation::qpad_build_group_plans(
+            context.tensor_descriptors, context.ipa_generators.size(),
+            nullptr, nullptr, nullptr, nullptr, nullptr,
+            expected_qpad_group_plans, &qpad_group_error)) {
+        return reject(nullptr, error,
+                      "independent verifier Qpad group context is invalid: " +
+                          qpad_group_error,
+                      request.config, request.statement, request.backend);
     }
-    if (expected_qpad_ids.size() != typed_plan_metrics.padding_family_count) {
+    std::vector<std::vector<std::string>> expected_qpad_groups;
+    expected_qpad_groups.reserve(expected_qpad_group_plans.size());
+    std::uint64_t expected_qpad_member_count = 0U;
+    std::uint64_t expected_qpad_opening_segments = 0U;
+    for (const auto &group : expected_qpad_group_plans) {
+        std::vector<std::string> member_ids;
+        member_ids.reserve(group.members.size());
+        for (const auto *member : group.members) {
+            if (member == nullptr || member->id.empty() ||
+                expected_qpad_member_count ==
+                    std::numeric_limits<std::uint64_t>::max()) {
+                return reject(nullptr, error,
+                              "independent verifier Qpad group has an invalid member",
+                              request.config, request.statement, request.backend);
+            }
+            member_ids.push_back(member->id);
+            ++expected_qpad_member_count;
+        }
+        constexpr std::uint64_t kAggregateQpadOpeningsPerGroup = 1U;
+        if (kAggregateQpadOpeningsPerGroup >
+            std::numeric_limits<std::uint64_t>::max() -
+                expected_qpad_opening_segments) {
+            return reject(nullptr, error,
+                          "independent verifier Qpad opening segment count overflows",
+                          request.config, request.statement, request.backend);
+        }
+        expected_qpad_opening_segments += kAggregateQpadOpeningsPerGroup;
+        expected_qpad_groups.push_back(std::move(member_ids));
+    }
+    if (expected_qpad_member_count != typed_plan_metrics.padding_family_count ||
+        expected_qpad_groups.size() != typed_plan_metrics.padding_group_count ||
+        expected_qpad_opening_segments !=
+            typed_plan_metrics.padding_opening_segment_count) {
         return reject(nullptr, error,
                       "independent verifier Qpad context disagrees with authenticated plan metrics",
                       request.config, request.statement, request.backend);
     }
     context.gpu_backend = request.backend == Backend::Gpu;
     const std::uint64_t gpu_kernel_before = zkdl::gpu_crypto_kernel_invocations();
-    // Include verifier-facing proof parsing/canonical decoding and package
-    // identity checks.  Resource loading and verifier-context construction
-    // above remain outside this cryptographic verification interval.
+    // Include verifier-facing proof parsing and canonical decoding.  Resource
+    // loading and verifier-context construction above remain outside this
+    // cryptographic verification interval.
     const auto verify_start = std::chrono::steady_clock::now();
     NativeProgressScope parse_progress("proof_wire_parse");
     relation::Proof proof;
     std::string parse_error;
     if (!relation::Proof::deserialize(*request.proof_bytes, proof,
-                                      expected_qpad_ids,
+                                      expected_qpad_groups,
                                       typed_plan_metrics.padding_record_body_max_bytes,
                                       typed_plan_metrics.terminal_relation_body_max_bytes,
                                       typed_plan_metrics.sorted_lookup_relation_body_max_bytes,
                                       &parse_error))
         return reject(nullptr, error, "native GAT relation proof parse failed: " + parse_error, request.config, request.statement, request.backend);
     parse_progress.pass("proof_bytes=" + std::to_string(request.proof_bytes->size()));
-    if (request.envelope->proof_size_bytes != request.proof_bytes->size() || request.envelope->proof_id != digest_hex(zkdl::sha256(*request.proof_bytes))) {
-        return reject(nullptr, error, "proof envelope size/id is not bound to native proof bytes", request.config, request.statement, request.backend);
+    if (request.envelope->proof_size_bytes != request.proof_bytes->size()) {
+        return reject(nullptr, error, "proof envelope size is not bound to native proof bytes", request.config, request.statement, request.backend);
     }
     NativeProgressScope verify_progress("independent_relation_verify");
     const bool verified = relation::verify(

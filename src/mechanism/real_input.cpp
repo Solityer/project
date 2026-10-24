@@ -303,15 +303,6 @@ namespace gatzk::mechanism
             return out;
         }
 
-        std::pair<std::size_t, std::size_t> registered_domains(const std::string &dataset)
-        {
-            if (dataset == "cora" || dataset == "citeseer")
-                return {4096, 32768};
-            if (dataset == "ppi")
-                return {65536, 8388608};
-            throw std::runtime_error("real mechanism input does not have a registered trusted domain catalog: " + dataset);
-        }
-
         std::string scales_json(const Layer0Head0MechanismWitness &w)
         {
             return "{\"S_input\":" + std::to_string(w.s_input) + ",\"S_weight\":" + std::to_string(w.s_w_hidden) +
@@ -323,6 +314,48 @@ namespace gatzk::mechanism
 
     namespace internal
     {
+        const RealDatasetCatalog *registered_real_dataset_catalog(std::string_view dataset) noexcept
+        {
+            static constexpr std::array<RealDatasetCatalog, 5> catalogs{{
+                {"cora", "row_normalize", "cora_formal_srs", 4096, 32768},
+                {"citeseer", "row_normalize", "citeseer_formal_srs", 4096, 32768},
+                {"pubmed", "row_normalize", "pubmed_formal_srs", 32768, 262144},
+                {"ppi", "row_normalize", "ppi_formal_srs", 65536, 8388608},
+                {"ogbn_arxiv", "ogbn_arxiv_raw_float32", "ogbn_arxiv_formal_srs", 262144, 16777216},
+            }};
+            for (const auto &catalog : catalogs)
+                if (catalog.dataset == dataset)
+                    return &catalog;
+            return nullptr;
+        }
+
+        bool valid_real_graph_count(std::string_view dataset, std::size_t graphs) noexcept
+        {
+            if (registered_real_dataset_catalog(dataset) == nullptr)
+                return false;
+            if (dataset == "ppi")
+                return graphs == 1 || graphs == 295;
+            return graphs == 1;
+        }
+
+        bool valid_real_component_selection(std::string_view dataset, const std::vector<std::size_t> &components) noexcept
+        {
+            if (components.empty() || !std::is_sorted(components.begin(), components.end()) ||
+                std::adjacent_find(components.begin(), components.end()) != components.end())
+                return false;
+            if (dataset != "ppi")
+                return registered_real_dataset_catalog(dataset) != nullptr && components.size() == 1 && components.front() == 0;
+            if (components.size() == 1 && components.front() == 0)
+                return true;
+            constexpr std::size_t kPpiGraphCount = 295;
+            if (components.size() != kPpiGraphCount)
+                return false;
+            for (std::size_t graph = 0; graph < kPpiGraphCount; ++graph)
+                if (components[graph] != graph)
+                    return false;
+            return true;
+        }
+
         std::vector<std::uint8_t> encode_real_mechanism_input(const RealMechanismInput &input)
         {
             const auto &w = input.witness;
@@ -697,13 +730,13 @@ namespace gatzk::mechanism
         config.data_root = resolve_under_project(project_root, config.data_root).string();
         config.cache_root = resolve_under_project(project_root, config.cache_root).string();
         config.checkpoint_bundle = resolve_under_project(project_root, config.checkpoint_bundle).string();
-        if (config.dataset != "cora" && config.dataset != "citeseer" && config.dataset != "ppi")
-            throw std::runtime_error("prepare-real supports only Cora, Citeseer, and PPI");
-        if ((config.dataset == "cora" || config.dataset == "citeseer") && options.selected_components != std::vector<std::size_t>{0})
-            throw std::runtime_error("Cora and Citeseer require the one complete graph component ID 0");
-        if (config.dataset == "ppi" && options.selected_components != std::vector<std::size_t>{0} &&
-            options.selected_components != std::vector<std::size_t>{0, 9})
-            throw std::runtime_error("PPI uses only the preselected eligible canonical components [0] or [0,9]");
+        const auto *catalog = internal::registered_real_dataset_catalog(config.dataset);
+        if (catalog == nullptr)
+            throw std::runtime_error("prepare-real dataset is outside the registered trusted dataset catalog: " + config.dataset);
+        if (config.input_preprocess_id != catalog->input_preprocess_id || config.srs_id != catalog->srs_id || config.srs_type != "trusted_srs")
+            throw std::runtime_error("formal config preprocessing or trusted SRS identity differs from the registered dataset catalog");
+        if (!internal::valid_real_component_selection(config.dataset, options.selected_components))
+            throw std::runtime_error("real mechanism input requires one complete graph, PPI component 0, or all canonical PPI components 0..294");
 
         auto dataset = data::load_dataset(config);
         auto local = data::normalize_graph_input(dataset, config, options.selected_components);
@@ -786,7 +819,8 @@ namespace gatzk::mechanism
         std::filesystem::create_directories(options.metadata_out.parent_path().empty() ? "." : options.metadata_out.parent_path());
         internal::write_binary_file(options.bundle_out, bundle_bytes);
 
-        const auto [n_domain, e_domain] = registered_domains(config.dataset);
+        const auto n_domain = catalog->node_domain_size;
+        const auto e_domain = catalog->edge_domain_size;
         if (e_domain > (std::numeric_limits<std::size_t>::max() - 14) / 2)
             throw std::runtime_error("registered edge domain overflows coefficient ledger capacity");
         const auto required_coefficients = 2 * e_domain + 14;

@@ -275,6 +275,72 @@ void check_index_map_wire_and_capacity() {
             "strict operation reader rejected legal selector/FAC maps above 4096: " +
                 strict_error);
 
+    OperationDescriptor empty_route;
+    empty_route.id = "hidden/layer0/head0/sparse_route";
+    empty_route.kind = RelationKind::SparseRoute;
+    empty_route.degree = 2U;
+    empty_route.source_refs = {"sparse_route", "source", "output"};
+    empty_route.tensor_refs = {"output"};
+    empty_route.mapping = "public-selector-mle:src-dst";
+    empty_route.padding = "fixed-zero-padding;public-equality-selector-mle;fac4dnn-line8";
+    empty_route.terminal_claim = "output";
+    empty_route.terminal_point = "output";
+    empty_route.public_route = true;
+    empty_route.requires_reindex = true;
+    empty_route.selector_edge_domain = 4U;
+    empty_route.selector_node_domain = 4U;
+    empty_route.selector_feature_domain = 2U;
+    empty_route.selector_source_feature_domain = 2U;
+    empty_route.selector_src = {0U, 1U, 0U, 0U};
+    empty_route.selector_dst = {1U, 0U, 0U, 0U};
+    empty_route.selector_active = {1U, 1U, 0U, 0U};
+    empty_route.selector_feature_map = {0U, 1U};
+    empty_route.selector_source_ref = "source";
+    empty_route.selector_output_ref = "output";
+    require(empty_route.valid(&strict_error),
+            "canonical empty-body SparseRoute descriptor rejected: " + strict_error);
+    std::vector<byte> empty_route_wire;
+    append_operation(empty_route_wire, empty_route);
+    std::size_t empty_route_offset = 0U;
+    OperationDescriptor decoded_empty_route;
+    require(read_operation_strict(empty_route_wire, empty_route_offset,
+                                  decoded_empty_route) &&
+                empty_route_offset == empty_route_wire.size() &&
+                decoded_empty_route.constraints.empty() &&
+                decoded_empty_route.primitives.empty(),
+            "strict reader rejected a canonical empty-body SparseRoute: " +
+                strict_error);
+
+    auto out_of_bounds_route = empty_route;
+    out_of_bounds_route.selector_src[0U] = out_of_bounds_route.selector_node_domain;
+    std::vector<byte> out_of_bounds_route_wire;
+    append_operation(out_of_bounds_route_wire, out_of_bounds_route);
+    std::size_t out_of_bounds_route_offset = 0U;
+    OperationDescriptor decoded_out_of_bounds_route;
+    require(!read_operation_strict(out_of_bounds_route_wire,
+                                   out_of_bounds_route_offset,
+                                   decoded_out_of_bounds_route),
+            "strict reader accepted a route index outside the node domain");
+
+    OperationDescriptor ordinary_empty;
+    ordinary_empty.id = "fixture/ordinary-empty";
+    ordinary_empty.kind = RelationKind::Projection;
+    ordinary_empty.degree = 1U;
+    ordinary_empty.source_refs = {"source"};
+    ordinary_empty.tensor_refs = {"output"};
+    ordinary_empty.mapping = "ordinary";
+    ordinary_empty.padding = "fixed-zero-padding";
+    ordinary_empty.terminal_claim = "output";
+    ordinary_empty.terminal_point = "output";
+    std::vector<byte> ordinary_empty_wire;
+    append_operation(ordinary_empty_wire, ordinary_empty);
+    std::size_t ordinary_empty_offset = 0U;
+    OperationDescriptor decoded_ordinary_empty;
+    require(!read_operation_strict(ordinary_empty_wire,
+                                   ordinary_empty_offset,
+                                   decoded_ordinary_empty),
+            "strict reader accepted an ordinary empty-body descriptor");
+
     std::vector<byte> current_wire, legacy_wire;
     append_operation(current_wire, descriptor);
     append_legacy_operation(legacy_wire, descriptor);

@@ -7,6 +7,7 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,9 +18,21 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import formal_preflight  # noqa: E402
+import gat_zkgpt_experiment  # noqa: E402
+from common import (  # noqa: E402
+    PAPER_TIMING_SEMANTICS,
+    REPORT_SCHEMA,
+    RESULT_SCHEMA,
+    artifact_fields,
+    load_json,
+    paper_metrics,
+    require_result_shape,
+    resource_identity,
+)
 
-
-PROVER = ROOT / "build" / "cpu-tests" / "gat_adapter" / "zkgpt_gat_prover"
+PROVER = ROOT / "build" / "cpu" / "gat_adapter" / "zkgpt_gat_prover"
+VERIFIER = ROOT / "build" / "cpu" / "gat_adapter" / "zkgpt_gat_verifier"
+NATIVE_TIMEOUT_SECONDS = 120
 def _authenticated(directory: Path, names: list[str]) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     entries = [f"{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n" for name in names]
@@ -124,13 +137,17 @@ def _write_resources(root: Path) -> None:
 class T2CapacityConsumerSmoke(unittest.TestCase):
     def test_formal_consumer_accepts_compact_t2_profile_from_native_cli(self) -> None:
         self.assertTrue(PROVER.is_file(), f"build the source-matched CPU prover first: {PROVER}")
+        self.assertTrue(VERIFIER.is_file(), f"build the source-matched CPU verifier first: {VERIFIER}")
         with tempfile.TemporaryDirectory(prefix="zkgpt-t2-capacity-") as temporary:
             root = Path(temporary)
             _write_resources(root)
             with mock.patch.object(formal_preflight, "build_binary", return_value=PROVER), \
                     contextlib.redirect_stderr(io.StringIO()):
-                payload = formal_preflight.run_capacity(root, "cora", "cpu", root / "logs")
-            self.assertEqual(payload["schema"], "zkgpt-gat-capacity-v11")
+                payload = formal_preflight.run_capacity(
+                    root, "cora", "cpu", root / "logs",
+                    timeout_seconds=NATIVE_TIMEOUT_SECONDS,
+                )
+            self.assertEqual(payload["schema"], "zkgpt-gat-capacity-v12")
             self.assertEqual(payload["status"], "READY", payload.get("reason"))
             self.assertIs(payload["forward_value_admission_ready"], False)
             self.assertEqual(payload["forward_value_admission_mode"], "deferred_to_owned_forward_v1")
@@ -156,6 +173,93 @@ class T2CapacityConsumerSmoke(unittest.TestCase):
             self.assertGreater(expected_lut_bytes, 0)
             self.assertEqual(payload["hyrax_l_qry_tensor_columns"], l_query_columns)
             self.assertEqual(payload["hyrax_l_qry_binary_lut_workspace_bytes"], expected_lut_bytes)
+
+            session_id = "a" * 32
+            run_relative = f"baseline-local/runs/formal/{session_id}/cora"
+            run_dir = root / run_relative
+            run_dir.mkdir(parents=True)
+            config_relative = "baseline-local/configs/cora_secure.cfg"
+            registration_relative = f"{run_relative}/model_registration.json"
+            secret_relative = f"{run_relative}/com_W.prover.secret"
+
+            def run_native(command: list[str], stage: str) -> subprocess.CompletedProcess[str]:
+                completed = subprocess.run(
+                    command, cwd=root, text=True, capture_output=True,
+                    timeout=NATIVE_TIMEOUT_SECONDS, check=False,
+                )
+                self.assertEqual(
+                    completed.returncode, 0,
+                    f"native {stage} failed: stdout={completed.stdout}\nstderr={completed.stderr}",
+                )
+                return completed
+
+            common_args = [
+                "--dataset", "cora", "--backend", "cpu",
+                "--baseline-root", str(root), "--config", config_relative,
+                "--formal-session-id", session_id,
+                "--formal-run-directory", run_relative,
+            ]
+            run_native([
+                str(PROVER), *common_args, "--register-only",
+                "--registration", registration_relative,
+                "--com-w-secret", secret_relative,
+            ], "model registration")
+            self.assertTrue((root / registration_relative).is_file())
+            self.assertTrue((root / secret_relative).is_file())
+
+            run_native([
+                str(PROVER), *common_args,
+                "--registration", registration_relative,
+                "--com-w-secret", secret_relative,
+                "--defer-self-verify",
+            ], "deferred proof")
+            result_path = run_dir / "result.json"
+            result = require_result_shape(load_json(result_path, "native result"), result_path)
+            self.assertEqual(result["schema"], RESULT_SCHEMA)
+            self.assertEqual(result["paper_timing_semantics"], PAPER_TIMING_SEMANTICS)
+            self.assertEqual(result["session_id"], session_id)
+            self.assertEqual(result["status"], "PROOF_GENERATED_PENDING_VERIFY")
+            self.assertNotIn("run_nonce", result)
+            self.assertNotIn("session_manifest_sha256", result)
+            self.assertNotIn("artifact_sha256", result)
+            self.assertNotIn("artifact_readback", result["timing_ms"])
+            artifact = artifact_fields(root, result, run_dir)
+            artifact_size = artifact.stat().st_size
+            self.assertGreater(artifact_size, 0)
+            self.assertEqual(result["proof_size_bytes"], artifact_size)
+
+            report_path = run_dir / "verifier_report.json"
+            if report_path.exists():
+                report_path.unlink()
+            run_native([
+                str(VERIFIER), "--baseline-root", str(root),
+                "--verifier-context", result["verifier_context_path"],
+                "--public-logits", result["public_logits_path"],
+                "--artifact", result["artifact_path"],
+                "--report", f"{run_relative}/verifier_report.json",
+            ], "independent verification")
+            report = load_json(report_path, "independent verifier report")
+            self.assertEqual(report["schema"], REPORT_SCHEMA)
+            self.assertEqual(report["status"], "VERIFY_OK")
+            self.assertIs(report["independent"], True)
+            self.assertIs(report["masked_full"], True)
+            self.assertEqual(report["artifact_size_bytes"], artifact_size)
+            self.assertEqual(report["proof_digest"], result["proof_digest"])
+            self.assertNotIn("artifact_sha256", report)
+            paths = {
+                "artifact": result["artifact_path"],
+                "context": result["verifier_context_path"],
+                "logits": result["public_logits_path"],
+                "statement": result["statement_path"],
+            }
+            gat_zkgpt_experiment._validate_report(
+                report, result, "cora", "cpu", resource_identity(root, "cora"),
+                paths, artifact_size, report_path,
+            )
+            self.assertEqual(
+                paper_metrics(result, report, report_path)["proof_size_bytes"],
+                artifact_size,
+            )
 
 
 if __name__ == "__main__":

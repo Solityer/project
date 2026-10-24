@@ -1,23 +1,32 @@
 # Running the zkGPT GAT comparison
 
-The unique five-dataset formal command is:
+Start the complete five-dataset experiment in the background:
 
 ```bash
-cd /home/pzh/project/comparison/zkGPT && ./run_zkgpt_cpu_formal.sh
+cd /home/pzh/project/comparison/zkGPT
+./scripts/run_formal_detached.sh
 ```
 
-Current status: all five formal capacities are **BLOCKED** by `unsupported_native_masked_lookup_capacity`. The native masked Hyrax opening sends a full-domain Schnorr response, and the standard masked Lasso opens its dense one-hot matrix. Even Cora requires at least 647 GB of response encoding, exceeding the authenticated native vector and 1 GiB artifact limits. The existing source has no compatible compressed masked opening. This cannot be repaired by more RAM, lifting allocation limits, or using the incomplete virtual sparse path. The command stops at preflight; it currently cannot produce the five formal results. The current capacity evidence is in `results/formal_preflight/cpu/`.
-
-The command authenticates baseline-local resources, builds native CPU prover and verifier, checks execution preconditions, registers each model when needed and upgrades recognized older registration schemas through validated staged native writes, generates each real full-GAT proof, invokes the independent verifier, collects five results and validates the matrix by independently verifying every proof again. GPU is unsupported for the formal `masked_full` relation and is rejected.
-
-Execution preflight checks resources, build provenance, native capabilities and all five capacity plans. It reports `readiness_scope=formal_execution_preconditions` and `formal_results_complete=false`; it is separate from development proof checks and does not establish protocol success. Formal build and execution do not depend on `tests/`.
-
-Results and proofs are in `baseline-local/runs/{cora,citeseer,pubmed,ppi,ogbn_arxiv}_secure/cpu/`. Each successful cell contains `result.json`, `proof.artifact`, `verifier_report.json` and `execution.json`. The matrix is `results/collected_results.json`; final acceptance is `results/final_validation.json` with `status=VALIDATED`, `cells_validated=5`, and terminal `FINAL_VALIDATION_OK cells=5` followed by `ALL_FIVE_DATASETS_COMPLETED`. The main log is `logs/zkgpt_cpu_formal_*.log`.
-
-For a single dataset, after resource preparation, CPU build and successful execution preflight:
+To run only selected datasets, pass `--datasets` and their names. For example:
 
 ```bash
-python3 scripts/gat_zkgpt_experiment.py --datasets cora --backends cpu
+./scripts/run_formal_detached.sh --datasets ppi ogbn_arxiv
 ```
 
-The runner preserves current valid long-lived `model_registration.json` and owner-only `com_W.prover.secret`; it removes only allowlisted stale inference outputs. An incomplete registration pair or any rejected native proof fails closed. Collection and final validation recheck current resources, native build provenance and the exact independently verified artifacts.
+The launcher creates a fresh session directory, builds the CPU prover and verifier, runs resource and capacity admission, then processes the requested datasets serially. A dataset failure is recorded and later selected datasets are still attempted. Each successful cell produces a full-GAT proof and runs the independent native verifier once. Only an exact five-dataset run with five verified cells is reported as complete; a subset result always records `full_five_complete=false`. GPU is unsupported for the formal `masked_full` relation.
+
+Follow the latest launch, or take one read-only snapshot:
+
+```bash
+./scripts/formal_progress.sh
+./scripts/formal_progress.sh --once
+```
+
+Stop the latest launch safely, or specify its exact launch ID printed by the launcher:
+
+```bash
+python3 scripts/stop_formal.py
+python3 scripts/stop_formal.py --launch-id <launch_id>
+```
+
+Session logs and aggregate results are under `results/formal/<session_id>/`; per-dataset proof artifacts, native results, and verifier reports are under `baseline-local/runs/formal/<session_id>/<dataset>/`. The detached console and status are under `baseline-local/formal-detached/<launch_id>/`.

@@ -9934,7 +9934,7 @@ bool detail::formal_capacity_report_matches_plan(
         const std::string quant_digest = canonical_quant_digest(quant);
         const std::string formal_path =
             "formal_native_masked_lasso_hyrax+native_masked_layered_gkr";
-        if (capacity.schema != "zkgpt-gat-capacity-v11" ||
+        if (capacity.schema != "zkgpt-gat-capacity-v12" ||
             capacity.forward_value_admission_ready || capacity.forward_value_admission_mode != "deferred_to_owned_forward_v1" ||
             capacity.symbolic_analysis_profile_complete ||
             !capacity.gkr_point_shape_ready || !capacity.gkr_point_shape_exact ||
@@ -11969,9 +11969,8 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         session = NativeProofSession{};
         std::string verify_reason;
         if (validated_owner != nullptr) {
-            // The formal CLI defers full artifact validation to its independent
-            // verifier after checking serialized readback integrity. Keep public
-            // proof API defaults self-verifying while avoiding this duplicate pass.
+            // The formal CLI leaves proof validation to its independent verifier.
+            // Keep public proof API defaults self-verifying while avoiding this duplicate pass.
             result.self_verify_ms = 0.0;
             stage("selfverify-deferred-to-independent-verifier");
         } else {
@@ -11984,7 +11983,7 @@ static ProveResult prove_gat_impl(const GatCircuitPlan& plan, std::shared_ptr<co
         result.has_artifact = true;
         result.artifact = std::move(artifact);
         result.diagnostic = validated_owner != nullptr
-            ? "masked_full canonical GAT proof generated; serialized readback integrity and independent verification remain required"
+            ? "masked_full canonical GAT proof generated; independent verification remains required"
             : "masked_full canonical GAT proof generated and independently verified";
         return result;
     } catch (const std::exception& error) {

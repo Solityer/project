@@ -1,0 +1,2 @@
+2026-10-24T06:31:02Z MECHANISM_PREFLIGHT_STARTED session_id=mechanism_20261024T063102Z_7108dda407fe output=/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe
+2026-10-24T06:31:03Z MECHANISM_PREFLIGHT_END session_id=mechanism_20261024T063102Z_7108dda407fe status=PASS groups=40 cells=240 output=/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063102Z_7108dda407fe

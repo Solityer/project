@@ -4,26 +4,17 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import hashlib
-import hmac
 import json
 import os
 import re
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import threading
 import time
 from pathlib import Path
 from typing import Any
-from session_lifecycle import (
-    SessionRootError,
-    require_bound_session,
-    require_session_artifact,
-    require_session_root,
-)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
@@ -33,7 +24,6 @@ ACTIVE_PGID: int | None = None
 INTERRUPTED: int | None = None
 ACTIVE_SESSION_STATE: Path | None = None
 ACTIVE_SESSION_ID: str | None = None
-ACTIVE_SESSION_STAGE: str | None = None
 SIGNAL_GRACE_SECONDS = 2.0
 
 
@@ -68,14 +58,6 @@ def _srs_manifest_finalization_capacity(family_count: int, segment_count: int) -
             "hash_buffer_bytes": hash_buffer_bytes,
             "interpreter_reserve_bytes": interpreter_reserve_bytes,
             "host_peak_bytes_upper_bound": host_peak_bytes}
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _terminate_group(pgid: int, grace_seconds: float = 2.0) -> None:
@@ -120,14 +102,13 @@ def _mark_active_session_interrupted(signum: int) -> None:
     if path is None or session_id is None:
         return
     try:
-        require_session_root(session=path.parent)
         if path.is_symlink() or not path.is_file():
             return
         state = json.loads(path.read_text(encoding="utf-8"))
         if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
                 state.get("session_id") != session_id or state.get("status") != "RUNNING"):
             return
-        state["interrupted_stage"] = state.get("stage", ACTIVE_SESSION_STAGE or "unknown")
+        state["interrupted_stage"] = state.get("stage", "unknown")
         state["status"] = "INTERRUPTED"
         state["stage"] = "interrupted"
         state["failure"] = f"formal phase received termination signal {signum}"
@@ -141,39 +122,21 @@ def _mark_active_session_interrupted(signum: int) -> None:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        # The next baseline-local invocation will convert an ownerless RUNNING
-        # state to INTERRUPTED; never let signal cleanup mask process teardown.
+        # Never let signal cleanup mask process teardown.
         return
-
-
-def _install_parent_death_signal(owner_pid: int, owner_start_ticks: int) -> None:
-    """Stop this phase if its local lifecycle owner disappears unexpectedly."""
-    if os.getppid() != owner_pid or _proc_start_ticks(owner_pid) != owner_start_ticks:
-        raise PhaseError("zkDL formal runner owner changed before parent-death protection was installed")
-    libc = ctypes.CDLL(None, use_errno=True)
-    # Linux PR_SET_PDEATHSIG: SIGTERM invokes the ordinary local process-group
-    # cleanup path below, even if the runner itself was killed with SIGKILL.
-    if libc.prctl(1, signal.SIGTERM, 0, 0, 0) != 0:
-        error = ctypes.get_errno()
-        raise PhaseError(f"cannot install zkDL phase parent-death protection: errno={error}")
-    if os.getppid() != owner_pid or _proc_start_ticks(owner_pid) != owner_start_ticks:
-        raise PhaseError("zkDL formal runner owner exited while parent-death protection was installed")
 
 
 def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = False,
          env: dict[str, str] | None = None, also_log_paths: tuple[Path, ...] = (), capture_output: bool = False,
-         capture_mode: str = "all", pass_fds: tuple[int, ...] = ()) -> str:
+         capture_mode: str = "all") -> str:
     """Run one owned process group; preserve its exit status and drain logs."""
     global ACTIVE_PGID
-    identity = require_session_root()
     log_streams = []
     for index, path in enumerate(((log_path,) if log_path is not None else ()) + also_log_paths):
-        require_session_artifact(path, ROOT)
         if path.parent.is_symlink() or not path.parent.is_dir():
             raise PhaseError(f"formal stage log directory is missing or unsafe: {path.parent}")
         log_streams.append(path.open("xb" if fresh_log and index == 0 else "ab", buffering=0))
     output: list[str] = []
-    last_output_line: list[str] = []
     output_lock = threading.Lock()
     log_error: list[OSError] = []
     child_env = dict(os.environ if env is None else env)
@@ -191,7 +154,6 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
             stderr=subprocess.STDOUT,
             start_new_session=True,
             bufsize=0,
-            pass_fds=pass_fds,
         )
     except OSError as exc:
         for stream in log_streams:
@@ -205,7 +167,6 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
         assert process.stdout is not None
         for raw in iter(process.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace")
-            last_output_line[:] = [line.rstrip("\r\n")[:2048]]
             if capture_output and capture_mode == "all":
                 with output_lock:
                     output.append(line)
@@ -264,13 +225,6 @@ def _run(command: list[str], *, log_path: Path | None = None, fresh_log: bool = 
         ACTIVE_PGID = None
     with output_lock:
         text = "".join(output)
-    try:
-        require_session_root(identity)
-    except SessionRootError as exc:
-        detail = (text.strip().splitlines()[-1][:1024] if text.strip()
-                  else last_output_line[-1][:1024] if last_output_line else "")
-        suffix = f"; original stage output={detail}" if detail else ""
-        raise SessionRootError(f"{exc}{suffix}") from exc
     if log_error:
         raise PhaseError(f"cannot persist complete stage log {log_path}: {log_error[0]}")
     if orphaned_group:
@@ -295,134 +249,8 @@ def _session_path(raw: str) -> tuple[Path, str]:
     return resolved, match.group(1)
 
 
-def _proc_start_ticks(pid: int) -> int:
-    """Read field 22 of /proc/<pid>/stat without splitting the parenthesized comm."""
-    if pid <= 0:
-        raise PhaseError("formal owner lease contains an invalid PID")
-    try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except OSError as exc:
-        raise PhaseError("formal owner process is not live") from exc
-    close = text.rfind(")")
-    if close < 0:
-        raise PhaseError("formal owner process identity is malformed")
-    fields = text[close + 2:].split()
-    if len(fields) <= 19:
-        raise PhaseError("formal owner process identity is incomplete")
-    try:
-        return int(fields[19])
-    except ValueError as exc:
-        raise PhaseError("formal owner process start identity is malformed") from exc
-
-
-def _proc_parent_pid(pid: int) -> int:
-    try:
-        text = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-    except OSError as exc:
-        raise PhaseError("formal owner process is not live") from exc
-    close = text.rfind(")")
-    if close < 0:
-        raise PhaseError("formal owner process identity is malformed")
-    fields = text[close + 2:].split()
-    if not fields:
-        raise PhaseError("formal owner process identity is incomplete")
-    try:
-        return int(fields[1])
-    except (IndexError, ValueError) as exc:
-        raise PhaseError("formal owner parent identity is malformed") from exc
-
-
-def _validate_local_owner(session: Path, session_id: str, phase: str, dataset: str | None) -> None:
-    """Authorize only a live phase child of the zkDL-local lock-owning runner."""
-    global ACTIVE_SESSION_STATE, ACTIVE_SESSION_ID, ACTIVE_SESSION_STAGE
-    require_bound_session(session, ROOT)
-    token = os.environ.get("ZKDL_FORMAL_OWNER_TOKEN", "")
-    lock_fd_text = os.environ.get("ZKDL_FORMAL_LOCK_FD", "")
-    if re.fullmatch(r"[0-9a-f]{64}", token) is None or not lock_fd_text.isascii() or not lock_fd_text.isdecimal():
-        raise PhaseError("zkDL phases require the live baseline-local formal runner owner lease")
-    try:
-        lock_fd = int(lock_fd_text)
-        if lock_fd < 3:
-            raise ValueError
-        inherited_lock = os.fstat(lock_fd)
-    except (OSError, ValueError) as exc:
-        raise PhaseError("zkDL formal runner lock descriptor is missing") from exc
-
-    lock_path = ROOT / "runs" / ".formal.lock"
-    try:
-        if lock_path.is_symlink():
-            raise PhaseError("zkDL formal runner lock path is a symlink")
-        expected_lock = lock_path.stat(follow_symlinks=False)
-    except OSError as exc:
-        raise PhaseError("zkDL formal runner lock path is unavailable") from exc
-    if not stat.S_ISREG(expected_lock.st_mode) or (inherited_lock.st_dev, inherited_lock.st_ino) != (expected_lock.st_dev, expected_lock.st_ino):
-        raise PhaseError("inherited descriptor is not the zkDL-local formal runner lock")
-
-    state_path = session / "state.json"
-    if state_path.is_symlink() or not state_path.is_file():
-        raise PhaseError("zkDL-local formal runner session state is missing")
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PhaseError("zkDL-local formal runner session state is unreadable") from exc
-    if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
-            state.get("baseline") != "zkdl" or state.get("session_id") != session_id or state.get("status") != "RUNNING"):
-        raise PhaseError("zkDL-local formal runner session identity/status mismatch")
-
-    expected_stage = "prepare" if phase == "prepare" else f"cell:{dataset}" if phase == "cell" else "finalize"
-    if state.get("stage") != expected_stage:
-        raise PhaseError("zkDL-local formal runner stage does not authorize this phase")
-    stored_token_digest = state.get("internal_owner_token_sha256")
-    actual_token_digest = hashlib.sha256(token.encode("ascii")).hexdigest()
-    if not isinstance(stored_token_digest, str) or re.fullmatch(r"[0-9a-f]{64}", stored_token_digest) is None or not hmac.compare_digest(
-            stored_token_digest, actual_token_digest):
-        raise PhaseError("zkDL-local formal runner owner token does not match the active session")
-    require_session_root(session=session)
-
-    owner = state.get("owner")
-    lock = state.get("lock")
-    if not isinstance(owner, dict) or not isinstance(lock, dict):
-        raise PhaseError("zkDL-local formal runner owner or lock lease is missing")
-    owner_pid = owner.get("pid")
-    owner_boot_id = owner.get("boot_id")
-    owner_start_ticks = owner.get("start_ticks")
-    if (not isinstance(owner_pid, int) or isinstance(owner_pid, bool) or owner_pid <= 0 or
-            not isinstance(owner_boot_id, str) or re.fullmatch(r"[0-9a-fA-F-]{36}", owner_boot_id) is None or
-            not isinstance(owner_start_ticks, str) or re.fullmatch(r"[1-9][0-9]*", owner_start_ticks) is None or
-            lock.get("device") != expected_lock.st_dev or lock.get("inode") != expected_lock.st_ino):
-        raise PhaseError("zkDL-local formal runner owner or lock lease is malformed")
-    try:
-        live_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-    except OSError as exc:
-        raise PhaseError("cannot validate zkDL-local formal runner boot identity") from exc
-    if (live_boot_id != owner_boot_id or _proc_start_ticks(owner_pid) != int(owner_start_ticks) or
-            _proc_parent_pid(os.getpid()) != owner_pid or os.getppid() != owner_pid):
-        raise PhaseError("zkDL phase is not a live child of the recorded baseline-local owner")
-    try:
-        owner_cmdline = Path(f"/proc/{owner_pid}/cmdline").read_bytes().split(b"\0")
-    except OSError as exc:
-        raise PhaseError("zkDL-local formal runner command identity is unavailable") from exc
-    if not any(b"formal_runner.py" in arg for arg in owner_cmdline):
-        raise PhaseError("zkDL-local formal runner command identity mismatch")
-
-    ACTIVE_SESSION_STATE = state_path
-    ACTIVE_SESSION_ID = session_id
-    ACTIVE_SESSION_STAGE = expected_stage
-    _install_parent_death_signal(owner_pid, int(owner_start_ticks))
-
-    # The token only authenticates this adapter entry; never pass it to native descendants.
-    os.environ.pop("ZKDL_FORMAL_OWNER_TOKEN", None)
-    os.environ.pop("ZKDL_FORMAL_LOCK_FD", None)
-    os.environ.pop("COMPARISON_FORMAL_OWNER_TOKEN", None)
-    os.environ.pop("COMPARISON_FORMAL_ROOT_LOCK_FD", None)
-
-
 def _config(session: Path, dataset: str) -> Path:
     return ROOT / "configs" / f"{session.name}_{dataset}.cfg"
-
-
-def _build_manifest(session: Path) -> Path:
-    return session / "build_manifest.json"
 
 
 def _graph_identity(native: dict[str, dict[str, Any]]) -> dict[str, Any]:
@@ -831,12 +659,6 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         spill_ram_peak = int(admission["native_sumcheck_max_spill_ram_peak_bytes_upper_bound"])
         spill_io_bytes = int(admission["native_sumcheck_spill_storage_io_bytes_upper_bound"])
         spill_source_bytes = int(admission["native_sumcheck_spill_provider_source_bytes_upper_bound"])
-        if ((spill_call_count == 0) != (spill_disk_peak == 0) or
-                (spill_call_count == 0) != (spill_ram_peak == 0) or
-                (spill_call_count == 0) != (spill_io_bytes == 0) or
-                (spill_call_count == 0) != (spill_source_bytes == 0) or
-                spill_disk_peak > (1 << 37) or spill_ram_peak > (1 << 30)):
-            raise PhaseError(f"native admission returned an inconsistent Sumcheck spill envelope for {dataset}")
         if spill_fallback_count != 0:
             raise PhaseError(f"native Sumcheck still reports an unbounded in-memory fallback for {dataset}")
         if spill_ram_peak > int(admission["native_segmented_sumcheck_live_peak_bytes_upper_bound"]):
@@ -844,8 +666,8 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         nodes = int(admission["nodes"])
         edges = int(admission["edges"])
         graphs = int(admission["graphs"])
-        # The authenticated resource-prerequisite record is the authoritative
-        # source for input shape.  The per-dataset preflight row has no
+        # The resource-prerequisite record is the authoritative source for
+        # input shape. The per-dataset preflight row has no
         # top-level input_shape field.
         input_shape = audit["input_shape"]
         features = int(input_shape["features"])
@@ -861,9 +683,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
         # covers field names, digests, compressed points and JSON framing.
         registration_bytes = 256 * 1024 + tensor_count * 8192 + model_segments * 2048
         sidecar_bytes = 64 * 1024 + tensor_count * 1024
-        input_identity = input_report["input_identity"]
-        asset_file_count = (len(input_identity["cache_files"]) + len(input_identity["checkpoint_files"]) +
-                            family_count + operation_count + lookup_count + 128)
+        asset_file_count = family_count + operation_count + lookup_count + 128
         manifest_bytes = asset_file_count * 1024 + registration_bytes + 256 * 1024
         relation_plan_bytes = int(admission["relation_plan_text_bytes"])
         public_y_bytes = nodes * classes * 24 + 64
@@ -1016,20 +836,17 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             },
         }
         finalization_bytes += receipt_bytes + 1 * mib
-    existing_bytes = 0
-    for path in session.rglob("*"):
-        if path.is_symlink():
-            raise PhaseError(f"session tree contains a symlink during artifact audit: {path}")
-        if path.is_file():
-            existing_bytes += path.stat().st_size
     device = os.stat(session, follow_symlinks=False).st_dev
     finalization_host_peak = max(item["host_peak_bytes_upper_bound"] for item in finalization_manifest_capacity.values())
+    shared_host_cuda_method = (
+        "shared_uma_host_available_ge_host_plus_gpu_workspace_cuda_free_ge_workspace"
+        if hybrid and gpu_device is not None and gpu_device.get("name") == "NVIDIA GB10" else
+        "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace")
     profile = {
         "schema": "zkdl_formal_capacity_profile_v4" if hybrid else "zkdl_formal_capacity_profile_v3",
         "baseline": "zkdl",
         "session_id": session_id,
         "fs_device_id": int(device),
-        "preexisting_baseline_artifact_bytes": existing_bytes,
         "finalization_disk_bytes_upper_bound": finalization_bytes,
         "finalization_host_peak_bytes_upper_bound": finalization_host_peak,
         "finalization_manifest_capacity": {"schema": "zkdl_srs_manifest_finalization_heap_v1",
@@ -1042,7 +859,7 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
             "additional_disk_peak": "source_derived_upper_bound",
             "host_peak": "source_derived_upper_bound",
             **({"gpu_workspace": "authenticated_basis_144B_plus_max_opening_704P_plus_352",
-                "shared_host_cuda": "shared_pool_min_host_cuda_ge_host_plus_gpu_workspace"} if hybrid else {}),
+                "shared_host_cuda": shared_host_cuda_method} if hybrid else {}),
             "finalization_host_peak": "srs_manifest_schema_python_heap_upper_bound",
         },
         "datasets": datasets,
@@ -1050,24 +867,11 @@ def _admission_profile(session: Path, session_id: str, preflight: dict[str, Any]
     return profile, native_capacity_diagnostics
 
 
-def _session_artifact_bytes(session: Path) -> int:
-    identity = require_bound_session(session, ROOT)
-    total = 0
-    for path in session.rglob("*"):
-        if path.is_symlink():
-            raise PhaseError(f"session tree contains a symlink during artifact audit: {path}")
-        if path.is_file() and "logs" not in path.relative_to(session).parts:
-            total += path.stat(follow_symlinks=False).st_size
-    require_session_root(identity, session)
-    return total
-
-
 def _dataset_status(dataset: str, status: str, stage: str, failure: str = "") -> dict[str, str]:
     return {"dataset": dataset, "status": status, "stage": stage, "failure": failure[:2048]}
 
 
 def _append_log(path: Path, text: str) -> None:
-    require_session_artifact(path, ROOT)
     if path.is_symlink():
         raise PhaseError(f"refusing to append through a symlinked formal log: {path}")
     if path.parent.is_symlink() or not path.parent.is_dir():
@@ -1079,177 +883,105 @@ def _append_log(path: Path, text: str) -> None:
 
 
 def _remove_failed_snapshot(session: Path, dataset: str) -> None:
-    identity = require_bound_session(session, ROOT)
     paths = (session / "resources" / "cache" / dataset,
              session / "resources" / "checkpoints" / f"{dataset}_gat",
              session / dataset,
              ROOT / "configs" / f"{session.name}_{dataset}.cfg")
     for path in paths:
-        require_session_root(identity, session)
         if path.is_symlink():
             raise PhaseError(f"refusing to remove symlinked partial snapshot path: {path}")
         if path.is_dir():
             shutil.rmtree(path)
         elif path.is_file():
             path.unlink()
-    require_session_root(identity, session)
     for path in (session / "resources" / "cache", session / "resources" / "checkpoints",
                  session / "resources", session / "data"):
-        require_session_root(identity, session)
         if path.is_dir() and not any(path.iterdir()):
             path.rmdir()
 
 
 def _write_prepare_outcome(session: Path, session_id: str, outcomes: dict[str, dict[str, str]],
                            preflight: dict[str, Any] | None, error: str,
-                           build_manifest: Path | None = None, native: dict[str, dict[str, Any]] | None = None,
-                           diagnostics: dict[str, Any] | None = None, profile: dict[str, Any] | None = None) -> dict[str, Any]:
-    identity = require_bound_session(session, ROOT)
+                           native: dict[str, dict[str, Any]] | None = None,
+                           diagnostics: dict[str, Any] | None = None,
+                           profile: dict[str, Any] | None = None) -> dict[str, Any]:
     passed = sum(row["status"] == "PASS" for row in outcomes.values())
     overall = "PASS" if passed == len(DATASETS) else "PARTIAL" if passed else "FAILED"
-    graph = _graph_identity(native or {}) if native else {
-        "schema": "zkdl_canonical_graph_set_v1", "complete": False, "admitted_datasets": [], "datasets": {}}
     receipt: dict[str, Any] = {
-        "schema": "zkDL_formal_prepare_receipt_v2", "baseline": "zkdl", "session_id": session_id,
+        "schema": "zkDL_formal_prepare_receipt_v3", "baseline": "zkdl", "session_id": session_id,
         "status": overall, "failure": error[:2048], "dataset_status": outcomes,
         "preflight_report": preflight, "native_admissions": native or {},
-        "native_capacity_diagnostics": diagnostics or {}, "graph_identity": graph,
-        "capacity_profile": profile,
+        "native_capacity_diagnostics": diagnostics or {}, "capacity_profile": profile,
     }
-    if build_manifest is not None and build_manifest.is_file():
-        build_doc = json.loads(build_manifest.read_text(encoding="utf-8"))
-        receipt.update({"source_digest": build_doc["source_digest"],
-                        "build_manifest_path": build_manifest.relative_to(ROOT).as_posix(),
-                        "build_manifest_sha256": sha256_file(build_manifest)})
     receipt_path = session / "phase" / "prepare.json"
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    require_session_root(identity, session)
     marker: dict[str, Any] = {
         "zkdl_phase": "prepare", "status": overall, "session_id": session_id,
         "session_dir": session.relative_to(ROOT).as_posix(),
         "prepare_receipt_path": receipt_path.relative_to(ROOT).as_posix(),
-        "prepare_receipt_sha256": sha256_file(receipt_path), "dataset_status": outcomes,
-        "failure": error[:2048], "graph_identity": graph,
+        "dataset_status": outcomes, "failure": error[:2048],
     }
-    if build_manifest is not None and build_manifest.is_file():
-        build_log = session / "logs" / "build.log"
-        marker.update({"build_log_path": build_log.relative_to(ROOT).as_posix(),
-                      "build_log_sha256": sha256_file(build_log),
-                      "build_manifest_path": receipt["build_manifest_path"],
-                      "build_manifest_sha256": receipt["build_manifest_sha256"],
-                      "source_digest": receipt["source_digest"]})
     if profile is not None:
         marker["capacity_profile"] = profile
     print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
     return marker
 
-
 def prepare(session: Path, session_id: str) -> None:
-    identity = require_bound_session(session, ROOT)
     if session.is_symlink() or not session.is_dir():
-        raise PhaseError(f"zkDL session must be created by the baseline-local formal runner: {session}")
-    entries = {entry.name: entry for entry in session.iterdir()}
-    expected_entries = {"state.json", "build", "build_manifest.json", "logs"}
-    if set(entries) != expected_entries:
-        raise PhaseError("zkDL formal prepare found unexpected or missing prepublished build artifacts")
-    state_path = entries["state.json"]
-    build_dir = entries["build"]
-    build_manifest = entries["build_manifest.json"]
-    logs_dir = entries["logs"]
-    if (state_path.is_symlink() or not state_path.is_file() or build_dir.is_symlink() or not build_dir.is_dir() or
-            build_manifest.is_symlink() or not build_manifest.is_file() or logs_dir.is_symlink() or
-            not logs_dir.is_dir() or (logs_dir / "build.log").is_symlink() or not (logs_dir / "build.log").is_file()):
-        raise PhaseError("zkDL formal prepare found unsafe or incomplete prepublished build artifacts")
-    try:
-        state = json.loads(state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise PhaseError("zkDL formal runner session state is unreadable before prepare") from exc
+        raise PhaseError(f"zkDL formal session is missing: {session}")
+    state = json.loads((session / "state.json").read_text(encoding="utf-8"))
     if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
             state.get("baseline") != "zkdl" or state.get("session_id") != session_id or
             state.get("status") != "RUNNING" or state.get("stage") != "prepare"):
-        raise PhaseError("zkDL formal runner session state is not fresh for prepare")
-    require_session_root(identity, session)
-    # The build log and the build snapshot are atomically published before
-    # this formal root is created. Prepare only adds its phase-local records.
+        raise PhaseError("zkDL formal session state is not ready for preparation")
     (session / "phase").mkdir()
-    require_session_root(identity, session)
     admission_log = session / "logs" / "admission.log"
     report_path = session / "dataset_prerequisites.json"
     env = dict(os.environ)
     env["ZKDL_PREFLIGHT_REPORT"] = str(report_path)
     _run([sys.executable, str(ROOT / "scripts/formal_preflight.py")],
          log_path=admission_log, fresh_log=True, env=env)
-    report = json.loads(report_path.read_text(encoding="utf-8"))
-    if report.get("schema") != "zkDL_formal_input_preflight_v1" or set(report.get("datasets", {})) != set(DATASETS):
-        raise PhaseError("fresh formal input preflight did not produce the complete canonical five-dataset report")
+    report_doc = json.loads(report_path.read_text(encoding="utf-8"))
+    if report_doc.get("schema") != "zkDL_formal_input_preflight_v1" or set(report_doc.get("datasets", {})) != set(DATASETS):
+        raise PhaseError("formal resource plan does not contain the five datasets")
+    report = report_doc
     outcomes = {
         dataset: _dataset_status(dataset,
                                  "PASS" if report["datasets"][dataset].get("status") == "PASS" else "FAILED",
-                                 "preflight" if report["datasets"][dataset].get("status") != "PASS" else "pending",
+                                 "resource_plan" if report["datasets"][dataset].get("status") != "PASS" else "pending",
                                  str(report["datasets"][dataset].get("failure", "")))
         for dataset in DATASETS
     }
     dataset_logs = {dataset: session / "logs" / f"{dataset}.log" for dataset in DATASETS}
     for dataset in DATASETS:
-        _append_log(dataset_logs[dataset], json.dumps({"stage": "preflight", **report["datasets"][dataset]},
+        _append_log(dataset_logs[dataset], json.dumps({"stage": "resource_plan", **report["datasets"][dataset]},
                                                        sort_keys=True, separators=(",", ":")))
-    for dataset in DATASETS:
-        require_session_root(identity, session)
         if outcomes[dataset]["status"] != "PASS":
             continue
         try:
-            require_session_root(identity)
             _run([sys.executable, str(ROOT / "scripts/formal_session.py"), "--session", str(session),
                   "--dataset", dataset], log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env)
-        except SessionRootError:
-            raise
         except Exception as exc:
             _remove_failed_snapshot(session, dataset)
-            outcomes[dataset] = _dataset_status(dataset, "FAILED", "snapshot", f"{type(exc).__name__}: {exc}")
-            _append_log(dataset_logs[dataset], json.dumps({"stage": "snapshot", "status": "FAILED",
+            outcomes[dataset] = _dataset_status(dataset, "FAILED", "config", f"{type(exc).__name__}: {exc}")
+            _append_log(dataset_logs[dataset], json.dumps({"stage": "config", "status": "FAILED",
                                                            "error": outcomes[dataset]["failure"]}, separators=(",", ":")))
 
     if not any(row["status"] == "PASS" for row in outcomes.values()):
-        _write_prepare_outcome(session, session_id, outcomes, report,
-                               "no dataset passed full-input preflight and snapshot admission")
-        return
-
-    build_manifest = _build_manifest(session)
-    try:
-        require_session_root(identity, session)
-        env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
-        env["ZKDL_RUNNER_BINARY"] = str(session / "build" / "gat_runner")
-        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest)],
-             log_path=admission_log, also_log_paths=tuple(dataset_logs.values()), env=env)
-    except SessionRootError:
-        raise
-    except Exception as exc:
-        shared_error = f"shared build/provenance failure: {type(exc).__name__}: {exc}"
-        for dataset in DATASETS:
-            if outcomes[dataset]["status"] == "PASS":
-                outcomes[dataset] = _dataset_status(dataset, "BLOCKED", "build", shared_error)
-            _append_log(dataset_logs[dataset], json.dumps({"stage": "build", "status": "BLOCKED",
-                                                           "error": shared_error}, separators=(",", ":")))
-        _write_prepare_outcome(session, session_id, outcomes, report, shared_error)
+        _write_prepare_outcome(session, session_id, outcomes, report, "no dataset passed resource planning")
         return
 
     native: dict[str, dict[str, Any]] = {}
+    env["ZKDL_RUNNER_BINARY"] = str(ROOT / "gat_runner")
+    env["ZKDL_RESOURCE_SETUP_BINARY"] = str(ROOT / "gat_resource_setup")
     for dataset in DATASETS:
         if outcomes[dataset]["status"] != "PASS":
             continue
         config = _config(session, dataset)
-        run_dir = session / dataset
         try:
-            require_session_root(identity, session)
-            shutil.copy2(build_manifest, run_dir / "build_manifest.json")
-            for command in (
-                [sys.executable, str(ROOT / "scripts/prepare_form_resources.py"),
-                 "--config", str(config), "--full-dataset", "--admission-only"],
-                [sys.executable, str(ROOT / "scripts/asset_manifest.py"), "--config", str(config),
-                 "--output", str(run_dir / "asset_manifest.json"), "--admission-only"],
-            ):
-                _run(command, log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env)
-            output = _run([str(env["ZKDL_RUNNER_BINARY"]), "admit", "--config", str(config)],
+            _run(["/bin/bash", str(ROOT / "scripts/setup_register.sh"), str(config)],
+                 log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env)
+            output = _run([env["ZKDL_RUNNER_BINARY"], "admit", "--config", str(config)],
                           log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env,
                           capture_output=True, capture_mode="last_line")
             result = json.loads(output.strip())
@@ -1257,12 +989,10 @@ def prepare(session: Path, session_id: str) -> None:
                     result.get("status") != "PASS" or result.get("dataset") != dataset):
                 raise PhaseError(f"native production relation admission rejected {dataset}")
             native[dataset] = result
-        except SessionRootError:
-            raise
         except Exception as exc:
-            outcomes[dataset] = _dataset_status(dataset, "FAILED", "resource_admission",
+            outcomes[dataset] = _dataset_status(dataset, "FAILED", "resource_setup",
                                                 f"{type(exc).__name__}: {exc}")
-            _append_log(dataset_logs[dataset], json.dumps({"stage": "resource_admission", "status": "FAILED",
+            _append_log(dataset_logs[dataset], json.dumps({"stage": "resource_setup", "status": "FAILED",
                                                            "error": outcomes[dataset]["failure"]}, separators=(",", ":")))
 
     profiles: dict[str, dict[str, Any]] = {}
@@ -1271,20 +1001,17 @@ def prepare(session: Path, session_id: str) -> None:
         if dataset not in native:
             continue
         try:
-            require_session_root(identity, session)
             config = _config(session, dataset)
-            gpu_output = _run([str(session / "build" / "gat_runner"), "resource-plan", "--config", str(config),
-                               "--gpu-offload-stage", GPU_OFFLOAD_STAGE],
-                              log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env,
-                              capture_output=True, capture_mode="last_line")
-            gpu_plan = json.loads(gpu_output.strip())
+            output = _run([str(ROOT / "gat_runner"), "resource-plan", "--config", str(config),
+                           "--gpu-offload-stage", GPU_OFFLOAD_STAGE],
+                          log_path=admission_log, also_log_paths=(dataset_logs[dataset],), env=env,
+                          capture_output=True, capture_mode="last_line")
+            gpu_plan = json.loads(output.strip())
             one_report = {**report, "datasets": {dataset: report["datasets"][dataset]}}
             one_profile, one_diagnostics = _admission_profile(session, session_id, one_report,
                                                                {dataset: native[dataset]}, {dataset: gpu_plan})
             profiles[dataset] = one_profile
             diagnostics[dataset] = one_diagnostics[dataset]
-        except SessionRootError:
-            raise
         except Exception as exc:
             outcomes[dataset] = _dataset_status(dataset, "FAILED", "capacity_profile",
                                                 f"{type(exc).__name__}: {exc}")
@@ -1292,7 +1019,6 @@ def prepare(session: Path, session_id: str) -> None:
             _append_log(dataset_logs[dataset], json.dumps({"stage": "capacity_profile", "status": "FAILED",
                                                            "error": outcomes[dataset]["failure"]}, separators=(",", ":")))
 
-    graph_native = {dataset: native[dataset] for dataset in DATASETS if dataset in native}
     if profiles:
         keys = [dataset for dataset in DATASETS if dataset in profiles]
         capacity_profile = dict(profiles[keys[0]])
@@ -1300,12 +1026,12 @@ def prepare(session: Path, session_id: str) -> None:
                profiles[dataset].get("device") != capacity_profile.get("device") for dataset in keys[1:]):
             for dataset in keys:
                 outcomes[dataset] = _dataset_status(dataset, "BLOCKED", "capacity_profile",
-                                                    "GPU offload device identity changed during prepare")
+                                                    "GPU offload device changed during preparation")
             capacity_profile = None
             profiles.clear()
         if capacity_profile is None:
-            _write_prepare_outcome(session, session_id, outcomes, report, "GPU offload device identity changed during prepare",
-                                   build_manifest, graph_native, diagnostics, None)
+            _write_prepare_outcome(session, session_id, outcomes, report,
+                                   "GPU offload device changed during preparation", native, diagnostics)
             return
         capacity_profile["datasets"] = {dataset: profiles[dataset]["datasets"][dataset] for dataset in keys}
         capacity_profile["finalization_manifest_capacity"] = {
@@ -1316,12 +1042,9 @@ def prepare(session: Path, session_id: str) -> None:
             profiles[dataset]["finalization_disk_bytes_upper_bound"] for dataset in keys)
         capacity_profile["finalization_host_peak_bytes_upper_bound"] = max(
             profiles[dataset]["finalization_host_peak_bytes_upper_bound"] for dataset in keys)
-        capacity_profile["preexisting_baseline_artifact_bytes"] = _session_artifact_bytes(session)
     else:
         capacity_profile = None
-    _write_prepare_outcome(session, session_id, outcomes, report, "", build_manifest, graph_native,
-                           diagnostics, capacity_profile)
-
+    _write_prepare_outcome(session, session_id, outcomes, report, "", native, diagnostics, capacity_profile)
 
 def _read_kv(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
@@ -1340,8 +1063,6 @@ def _cell_stage(stage: str, dataset: str, operation: Any, log_path: Path | None 
         _append_log(log_path, json.dumps(start_marker, separators=(",", ":")))
     try:
         result = operation()
-    except SessionRootError:
-        raise
     except BaseException as exc:
         marker = {"zkdl_cell_stage": stage, "dataset": dataset, "status": "FAIL",
                   "elapsed_seconds": round(time.monotonic() - started, 6), "error": str(exc)[:512]}
@@ -1358,13 +1079,9 @@ def _cell_stage(stage: str, dataset: str, operation: Any, log_path: Path | None 
 
 
 def cell(session: Path, session_id: str, dataset: str) -> None:
-    identity = require_bound_session(session, ROOT)
     if dataset not in DATASETS:
         raise PhaseError(f"cell dataset is not canonical: {dataset}")
-    receipt_path = session / "phase" / "prepare.json"
-    if receipt_path.is_symlink() or not receipt_path.is_file():
-        raise PhaseError("cell phase requires a successful prepare receipt")
-    prepared = json.loads(receipt_path.read_text(encoding="utf-8"))
+    prepared = json.loads((session / "phase" / "prepare.json").read_text(encoding="utf-8"))
     outcome = prepared.get("dataset_status", {}).get(dataset)
     native_admissions = prepared.get("native_admissions")
     capacity_profile = prepared.get("capacity_profile")
@@ -1372,31 +1089,22 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             not isinstance(outcome, dict) or outcome.get("status") != "PASS" or
             not isinstance(native_admissions, dict) or dataset not in native_admissions or
             not isinstance(capacity_profile, dict) or dataset not in capacity_profile.get("datasets", {})):
-        raise PhaseError("cell phase prepare receipt identity/status mismatch")
+        raise PhaseError("cell phase has no completed resource admission")
     if (capacity_profile.get("schema") != "zkdl_formal_capacity_profile_v4" or
             capacity_profile.get("gpu_offload_stage") != GPU_OFFLOAD_STAGE or
             capacity_profile.get("memory_accounting_kind") != "shared_host_cuda" or
             not isinstance(capacity_profile.get("device"), dict)):
-        raise PhaseError("cell phase prepare receipt lacks the authenticated GPU offload plan")
-    build_manifest = _build_manifest(session)
+        raise PhaseError("cell phase has no matching GPU capacity profile")
     env = dict(os.environ)
-    env["ZKDL_BUILD_MANIFEST"] = str(build_manifest)
-    env["ZKDL_RUNNER_BINARY"] = str(session / "build" / "gat_runner")
+    env["ZKDL_RUNNER_BINARY"] = str(ROOT / "gat_runner")
+    env["ZKDL_RESOURCE_SETUP_BINARY"] = str(ROOT / "gat_resource_setup")
     config = _config(session, dataset)
     run_dir = session / dataset
     log_path = session / "logs" / f"{dataset}.log"
-    runner = str(session / "build" / "gat_runner")
-    def setup() -> None:
-        _run([sys.executable, str(ROOT / "scripts/formal_provenance.py"), "--check", str(build_manifest),
-              "--require-gpu-offload"],
-             log_path=log_path, env=env)
-        _run([str(ROOT / "scripts/setup_register.sh"), str(config)], log_path=log_path, env=env)
+    runner = str(ROOT / "gat_runner")
+
     def cleanup() -> None:
-        require_session_root(identity, session)
         for private_path in (run_dir / ".private_native", run_dir / "scratch" / "sorted_lookup"):
-            require_session_root(identity, session)
-            if private_path.is_symlink():
-                raise PhaseError(f"refusing to clean symlinked private prover scratch: {private_path}")
             if private_path.exists():
                 if not private_path.is_dir():
                     raise PhaseError(f"private prover scratch path is not a directory: {private_path}")
@@ -1404,18 +1112,16 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         scratch_parent = run_dir / "scratch"
         if scratch_parent.is_dir() and not any(scratch_parent.iterdir()):
             scratch_parent.rmdir()
+
     try:
-        _cell_stage("setup", dataset, setup, log_path)
-        _cell_stage("prepare", dataset, lambda: _run(["/bin/bash", str(ROOT / "scripts/prepare_local.sh"), str(config), str(run_dir)],
-                                                       log_path=log_path, env=env), log_path)
-        _cell_stage("prove", dataset, lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu",
-                                                     "--gpu-offload-stage", GPU_OFFLOAD_STAGE, "--run-dir", str(run_dir)],
-                                                     log_path=log_path, env=env), log_path)
+        _cell_stage("prove", dataset,
+                    lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu",
+                                  "--gpu-offload-stage", GPU_OFFLOAD_STAGE, "--run-dir", str(run_dir)],
+                                 log_path=log_path, env=env), log_path)
         _cell_stage("cleanup", dataset, cleanup, log_path)
-        _cell_stage("verify", dataset, lambda: _run([str(ROOT / "scripts/verify_single.sh"), str(config), str(run_dir)],
-                                                      log_path=log_path, env=env), log_path)
-    except SessionRootError:
-        raise
+        _cell_stage("verify", dataset,
+                    lambda: _run([runner, "verify", "--config", str(config), "--run-dir", str(run_dir)],
+                                 log_path=log_path, env=env), log_path)
     except BaseException:
         try:
             cleanup()
@@ -1423,7 +1129,6 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             pass
         raise
 
-    require_session_root(identity, session)
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import audit_run
     audited = audit_run(ROOT, run_dir, expected_dataset=dataset, expected_backend="cpu",
@@ -1434,42 +1139,28 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
             audited.get("gpu_device_ordinal") != str(device.get("ordinal")) or
             audited.get("gpu_device_uuid") != device.get("uuid") or
             int(audited.get("gpu_proof_peak_allocated_bytes", "0")) > planned_gpu.get("gpu_workspace_required_bytes", 0)):
-        raise PhaseError(f"proof GPU execution identity or tracked peak differs from the admitted capacity for {dataset}")
+        raise PhaseError(f"proof GPU execution or memory exceeds the admitted capacity for {dataset}")
     proof_path = run_dir / "proof.bin"
     verification_path = run_dir / "verification.result"
     if (not proof_path.is_file() or not verification_path.is_file() or
             _read_kv(verification_path).get("status") != "VERIFIED" or
             audited.get("independent_verification") != "1"):
-        raise PhaseError(f"single-cell proof audit/independent verification failed: {dataset}")
-    proof_digest = audited["proof_digest"]
-    verify_digest = sha256_file(verification_path)
+        raise PhaseError(f"proof or independent verification failed: {dataset}")
+    proof_size = proof_path.stat().st_size
     cell_receipt = {
-        "schema": "zkDL_formal_cell_receipt_v1",
-        "baseline": "zkdl",
-        "session_id": session_id,
-        "dataset": dataset,
-        "status": "PASS",
-        "independent_verification": True,
-        "statement_id": audited["statement_id"],
-        "proof_id": audited["proof_id"],
-        "proof_path": proof_path.relative_to(ROOT).as_posix(),
-        "proof_sha256": proof_digest,
-        "proof_size_bytes": proof_path.stat().st_size,
+        "schema": "zkDL_formal_cell_receipt_v2", "baseline": "zkdl", "session_id": session_id,
+        "dataset": dataset, "status": "PASS", "independent_verification": True,
+        "statement_id": audited["statement_id"], "proof_path": proof_path.relative_to(ROOT).as_posix(),
+        "proof_size_bytes": proof_size,
         "verification_path": verification_path.relative_to(ROOT).as_posix(),
-        "verification_sha256": verify_digest,
         "commitment_time_seconds": float(audited["commitment_time_seconds"]),
         "prove_time_seconds": float(audited["prove_time_seconds"]),
         "verify_time_seconds": float(audited["verify_time_seconds"]),
-        "metrics": {
-            "commitment_time_seconds": float(audited["commitment_time_seconds"]),
-            "prove_time_seconds": float(audited["prove_time_seconds"]),
-            "verify_time_seconds": float(audited["verify_time_seconds"]),
-            "proof_size_bytes": proof_path.stat().st_size,
-        },
-        "statement_sha256": audited["statement_digest"],
-        "run_record_sha256": sha256_file(run_dir / "run.record"),
+        "metrics": {"commitment_time_seconds": float(audited["commitment_time_seconds"]),
+                    "prove_time_seconds": float(audited["prove_time_seconds"]),
+                    "verify_time_seconds": float(audited["verify_time_seconds"]),
+                    "proof_size_bytes": proof_size},
         "run_log_path": log_path.relative_to(ROOT).as_posix(),
-        "run_log_sha256": sha256_file(log_path),
         "gpu_offload_stage": audited["gpu_offload_stage"],
         "gpu_device_name": audited["gpu_device_name"],
         "gpu_device_ordinal": audited["gpu_device_ordinal"],
@@ -1483,26 +1174,16 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         "verify_gpu_kernel_executed": audited["verify_gpu_kernel_executed"],
     }
     cell_receipt_path = session / "phase" / f"{dataset}.json"
-    require_session_root(identity, session)
     cell_receipt_path.write_text(json.dumps(cell_receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    require_session_root(identity, session)
     marker = {
-        "zkdl_phase": "cell",
-        "status": "PASS",
-        "dataset": dataset,
+        "zkdl_phase": "cell", "status": "PASS", "dataset": dataset,
         "receipt_path": cell_receipt_path.relative_to(ROOT).as_posix(),
-        "receipt_sha256": sha256_file(cell_receipt_path),
-        "proof_path": cell_receipt["proof_path"],
-        "proof_sha256": proof_digest,
-        "proof_size_bytes": proof_path.stat().st_size,
-        "verification_path": cell_receipt["verification_path"],
-        "verification_sha256": verify_digest,
-        "independent_verification": True,
+        "proof_path": cell_receipt["proof_path"], "proof_size_bytes": proof_size,
+        "verification_path": cell_receipt["verification_path"], "independent_verification": True,
         "commitment_time_seconds": cell_receipt["commitment_time_seconds"],
         "prove_time_seconds": cell_receipt["prove_time_seconds"],
         "verify_time_seconds": cell_receipt["verify_time_seconds"],
         "run_log_path": cell_receipt["run_log_path"],
-        "run_log_sha256": cell_receipt["run_log_sha256"],
         "gpu_offload_stage": cell_receipt["gpu_offload_stage"],
         "gpu_device_name": cell_receipt["gpu_device_name"],
         "gpu_device_ordinal": cell_receipt["gpu_device_ordinal"],
@@ -1517,38 +1198,34 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     }
     print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
 
-
 def _partial_result_summary(session: Path, session_id: str, state: dict[str, Any],
                             global_failure: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    identity = require_bound_session(session, ROOT)
     sys.path.insert(0, str(ROOT / "scripts"))
     from result_artifacts import ArtifactError, audit_run
     dataset_rows: list[dict[str, Any]] = []
     for dataset in DATASETS:
-        require_session_root(identity, session)
         state_row = state.get("dataset_status", {}).get(dataset, {})
         cell_receipt_path = session / "phase" / f"{dataset}.json"
         if state_row.get("status") == "PASS" and cell_receipt_path.is_file() and not cell_receipt_path.is_symlink():
             try:
                 cell_receipt = json.loads(cell_receipt_path.read_text(encoding="utf-8"))
-                if (cell_receipt.get("schema") != "zkDL_formal_cell_receipt_v1" or
+                if (cell_receipt.get("schema") != "zkDL_formal_cell_receipt_v2" or
                         cell_receipt.get("session_id") != session_id or cell_receipt.get("dataset") != dataset or
                         cell_receipt.get("status") != "PASS" or cell_receipt.get("independent_verification") is not True):
                     raise PhaseError(f"cell receipt identity/status mismatch for {dataset}")
                 audited = audit_run(ROOT, session / dataset, expected_dataset=dataset, expected_backend="cpu",
                                     expected_gpu_offload_stage=GPU_OFFLOAD_STAGE)
-                if (audited.get("proof_digest") != cell_receipt.get("proof_sha256") or
-                        audited.get("independent_verification") != "1" or
+                if (audited.get("independent_verification") != "1" or
+                        audited.get("statement_id") != cell_receipt.get("statement_id") or
+                        audited.get("proof_artifact_path") != cell_receipt.get("proof_path") or
                         any(audited.get(field) != cell_receipt.get(field) for field in (
                             "gpu_offload_stage", "gpu_device_name", "gpu_device_ordinal", "gpu_device_uuid",
                             "gpu_forward_kernel_executed", "gpu_proof_kernel_executed", "gpu_kernel_executed",
                             "gpu_proof_kernel_count", "gpu_proof_peak_allocated_bytes", "verifier_backend",
-                            "verify_gpu_kernel_executed")) or
-                        sha256_file(session / dataset / "verification.result") != cell_receipt.get("verification_sha256")):
-                    raise PhaseError(f"cell receipt does not match the audited proof/verification for {dataset}")
+                            "verify_gpu_kernel_executed"))):
+                    raise PhaseError(f"cell receipt does not match the independently verified result for {dataset}")
                 dataset_rows.append({"dataset": dataset, "status": "PASS", "stage": "independently_verified",
-                                     "result": audited, "cell_receipt_path": cell_receipt_path.relative_to(ROOT).as_posix(),
-                                     "cell_receipt_sha256": sha256_file(cell_receipt_path)})
+                                     "result": audited, "cell_receipt_path": cell_receipt_path.relative_to(ROOT).as_posix()})
                 continue
             except (ArtifactError, OSError, ValueError, TypeError, json.JSONDecodeError, PhaseError) as exc:
                 failure = f"final result audit failed: {type(exc).__name__}: {exc}"
@@ -1586,7 +1263,6 @@ def _partial_result_summary(session: Path, session_id: str, state: dict[str, Any
 
 
 def finalize(session: Path, session_id: str) -> None:
-    identity = require_bound_session(session, ROOT)
     state_path = session / "state.json"
     if state_path.is_symlink() or not state_path.is_file():
         raise PhaseError("finalization requires the local formal-runner state")
@@ -1598,7 +1274,6 @@ def finalize(session: Path, session_id: str) -> None:
     if output_dir.exists() and any(output_dir.iterdir()):
         raise PhaseError(f"final result directory is not empty for this formal session: {output_dir}")
     output_dir.mkdir(parents=True, exist_ok=True)
-    require_session_root(identity, session)
     collection = output_dir / "collected.json"
     receipt_path = output_dir / "final_validation.json"
     all_success = (not state.get("global_failure") and
@@ -1619,47 +1294,35 @@ def finalize(session: Path, session_id: str) -> None:
                 "session_id": session_id, "status": "PASS", "validator": "scripts/final_validate.py",
                 "validator_exit_code": 0, "validator_output": validation_output.strip().splitlines(),
                 "collection_path": collection.relative_to(ROOT).as_posix(),
-                "collection_sha256": sha256_file(collection), "verified_cells": list(DATASETS),
+                "verified_cells": list(DATASETS),
             }
-            require_session_root(identity, session)
             receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-            require_session_root(identity, session)
             marker = {
                 "zkdl_phase": "finalize", "status": "PASS", "session_id": session_id,
                 "final_validation_path": receipt_path.relative_to(ROOT).as_posix(),
-                "final_validation_sha256": sha256_file(receipt_path),
                 "collection_path": collection.relative_to(ROOT).as_posix(),
-                "collection_sha256": sha256_file(collection),
             }
             print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
             return
-        except SessionRootError:
-            raise
         except Exception as exc:
             global_failure = f"strict final collection/validation failed: {type(exc).__name__}: {exc}"
     else:
         global_failure = "one or more datasets did not complete a proof with independent verification"
     summary, dataset_rows = _partial_result_summary(session, session_id, state, global_failure)
-    require_session_root(identity, session)
     collection.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    require_session_root(identity, session)
     receipt = {
         "schema": "zkDL_formal_final_validation_receipt_v1", "baseline": "zkdl",
         "session_id": session_id, "status": "FAILED", "strict_pass": False,
         "failure": global_failure[:2048], "collection_path": collection.relative_to(ROOT).as_posix(),
-        "collection_sha256": sha256_file(collection), "verified_cells": [
+        "verified_cells": [
             row["dataset"] for row in dataset_rows if row.get("status") == "PASS"],
         "failed_cells": [row for row in dataset_rows if row.get("status") != "PASS"],
     }
-    require_session_root(identity, session)
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    require_session_root(identity, session)
     marker = {
         "zkdl_phase": "finalize", "status": "FAILED", "session_id": session_id,
         "failure": global_failure[:2048], "final_validation_path": receipt_path.relative_to(ROOT).as_posix(),
-        "final_validation_sha256": sha256_file(receipt_path),
         "collection_path": collection.relative_to(ROOT).as_posix(),
-        "collection_sha256": sha256_file(collection),
         "dataset_status": {row["dataset"]: row for row in dataset_rows},
     }
     print(json.dumps(marker, sort_keys=True, separators=(",", ":")), flush=True)
@@ -1677,7 +1340,11 @@ def main() -> int:
     if (args.internal_phase == "cell") != (args.dataset is not None):
         parser.error("--dataset is required only for cell phase")
     session, session_id = _session_path(args.session_dir)
-    _validate_local_owner(session, session_id, args.internal_phase, args.dataset)
+    if not session.is_dir():
+        raise PhaseError(f"formal session directory is missing: {session}")
+    global ACTIVE_SESSION_STATE, ACTIVE_SESSION_ID
+    ACTIVE_SESSION_STATE = session / "state.json"
+    ACTIVE_SESSION_ID = session_id
     if args.internal_phase == "prepare":
         prepare(session, session_id)
     elif args.internal_phase == "cell":

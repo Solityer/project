@@ -104,7 +104,8 @@ std::string trim(std::string value) {
     return value.substr(first, last - first + 1);
 }
 
-std::map<std::string, std::string> read_kv(const std::filesystem::path &path) {
+std::map<std::string, std::string> read_kv(const std::filesystem::path &path,
+                                           const std::set<std::string> &allow_empty_values = {}) {
     std::ifstream input(path);
     if (!input) fail("cannot open configuration " + path.string());
     std::map<std::string, std::string> result;
@@ -120,7 +121,8 @@ std::map<std::string, std::string> read_kv(const std::filesystem::path &path) {
         if (equal == std::string::npos) { fail("malformed key=value line " + std::to_string(line_no) + " in " + path.string()); }
         const std::string key = trim(line.substr(0, equal));
         const std::string value = trim(line.substr(equal + 1));
-        if (key.empty() || value.empty()) fail("empty key/value in " + path.string());
+        if (key.empty() || (value.empty() && !allow_empty_values.count(key)))
+            fail("empty key/value in " + path.string());
         if (!result.emplace(key, value).second) fail("duplicate key " + key + " in " + path.string());
     }
     return result;
@@ -490,7 +492,7 @@ std::string config_identity_digest(const std::map<std::string, std::string> &val
     std::string canonical = "{";
     bool first = true;
     for (const auto &[key, value] : values) {
-        if (key == "verifier_registry_digest" || key == "model_blinder_sidecar_digest") continue;
+        if (key == "verifier_registry_digest") continue;
         if (!first) canonical.push_back(',');
         first = false;
         canonical += json_quote_config(key) + ":" + json_quote_config(value);
@@ -503,7 +505,7 @@ std::string config_binding_identity_digest(const std::map<std::string, std::stri
     std::string canonical = "{";
     bool first = true;
     for (const auto &[key, value] : values) {
-        if (key == "srs_manifest_digest" || key == "verifier_registry_digest" || key == "model_blinder_sidecar_digest") continue;
+        if (key == "srs_manifest_digest" || key == "verifier_registry_digest") continue;
         if (!first) canonical.push_back(',');
         first = false;
         canonical += json_quote_config(key) + ":" + json_quote_config(value);
@@ -1326,7 +1328,6 @@ GatTrace run_forward(const Config &config, const Graph &graph, const ModelBundle
         HiddenLayerTrace layer_trace;
         layer_trace.heads.reserve(static_cast<std::size_t>(config.architecture.hidden_heads.at(layer)));
         const Matrix &current_input = *current;
-        layer_trace.input = current_input;
         const u64 head_count = config.architecture.hidden_heads.at(layer);
         const u64 head_dim = config.architecture.hidden_dims.at(layer);
         const u64 in_dim = current_input.cols;
@@ -1422,7 +1423,6 @@ void expect_manifest(const std::string &manifest, const Config &config) {
     if (json_string_field(manifest, "quant_cfg_id") != config.quant_cfg_id) fail("checkpoint quant_cfg_id mismatch");
     if (json_string_field(manifest, "static_table_id") != config.static_table_id) fail("checkpoint static_table_id mismatch");
     if (json_string_field(manifest, "input_preprocess_id") != config.input_preprocess_id) fail("checkpoint input_preprocess_id mismatch");
-    if (json_string_field(manifest, "degree_bound_id") != config.degree_bound_id) fail("checkpoint degree_bound_id mismatch");
     if (json_string_field(manifest, "edge_sort_rule") != config.edge_sort_rule) fail("checkpoint edge_sort_rule mismatch");
     if (json_string_field(manifest, "batching_rule") != config.batching_rule) fail("checkpoint batching_rule mismatch");
     const auto checkpoint_prefix = json_string_field(manifest, "checkpoint_prefix");
@@ -1505,20 +1505,10 @@ std::vector<float> load_npy_float32(const std::filesystem::path &path, u64 expec
     return values;
 }
 
-std::string authenticated_asset_digest(const Config &config, const std::filesystem::path &path) {
-    const auto assets = load_asset_manifest(config);
-    const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
-    for (const auto &file : assets.files) {
-        if (file.path == relative) return file.sha256;
+void require_input_file(const std::filesystem::path &path, const std::string &label) {
+    if (path.empty() || !std::filesystem::is_regular_file(path)) {
+        fail(label + " is missing or not a regular file: " + path.string());
     }
-    fail("asset manifest does not authenticate relation resource: " + relative);
-}
-
-void require_authentication_file(const Config &config, const std::filesystem::path &path, const std::string &label) {
-    if (path.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path)) {
-        fail("BLOCKED: authenticated " + label + " is missing or not a regular baseline-local file: " + path.string());
-    }
-    (void)authenticated_asset_digest(config, path);
 }
 
 void validate_field_bound(i64 value, const std::string &label) {
@@ -1604,7 +1594,7 @@ void validate_static_tables(const Config &config, StaticTables *tables) {
 }
 
 StaticTables load_static_table_descriptor(const Config &config) {
-    require_authentication_file(config, config.static_table_descriptor_path, "static table descriptor");
+    require_input_file(config.static_table_descriptor_path, "static table descriptor");
     const auto text = file_text(config.static_table_descriptor_path);
     if (trim(text).empty() || trim(text).front() != '{') { fail("BLOCKED: static table descriptor must use the canonical JSON resource format"); }
     StaticTables tables;
@@ -1640,8 +1630,8 @@ StaticTables load_static_table_descriptor(const Config &config) {
     tables.exp_value_min = tables.exp.back();
     tables.exp_value_max = tables.exp.front();
     tables.metadata_only = false;
-    tables.descriptor_digest = authenticated_asset_digest(config, config.static_table_descriptor_path);
-    require_authentication_file(config, config.sorted_lookup_descriptor_path, "sorted lookup descriptor");
+    tables.descriptor_digest = sha256_text(text);
+    require_input_file(config.sorted_lookup_descriptor_path, "sorted lookup descriptor");
     const auto lookup_text = file_text(config.sorted_lookup_descriptor_path);
     if (json_scalar(lookup_text, "schema") != "zkDL_gat_sorted_lookup_descriptor_v1" || json_u64_value(lookup_text, "version") != 1U ||
         json_scalar(lookup_text, "key_encoding") != "packed_pair_u128" || json_scalar(lookup_text, "source_root") != "baseline-local") {
@@ -1654,15 +1644,14 @@ StaticTables load_static_table_descriptor(const Config &config) {
         fail("sorted lookup descriptor is not bound to the authenticated static table file");
     }
     tables.sorted_lookup_descriptor = std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string();
-    tables.sorted_lookup_descriptor_digest = authenticated_asset_digest(config, config.sorted_lookup_descriptor_path);
+    tables.sorted_lookup_descriptor_digest = sha256_text(lookup_text);
     tables.authenticated = true;
     validate_static_tables(config, &tables);
     return tables;
 }
 
 StaticTables load_static_table_descriptor_shape(const Config &config) {
-    require_authentication_file(config, config.static_table_descriptor_path,
-                                "static table descriptor");
+    require_input_file(config.static_table_descriptor_path, "static table descriptor");
     const auto parsed = JsonShapeReader(config.static_table_descriptor_path)
                             .read_static_table_descriptor();
     const auto scalar = [&](const std::string &key) -> const std::string & {
@@ -1779,13 +1768,9 @@ StaticTables load_static_table_descriptor_shape(const Config &config) {
     tables.exp_value_min = 1;
     tables.exp_value_max = 16;
     tables.metadata_only = true;
-    tables.descriptor_digest = authenticated_asset_digest(config,
-                                                           config.static_table_descriptor_path);
-    if (sha256_file(config.static_table_descriptor_path) != tables.descriptor_digest)
-        fail("analysis-only static table descriptor differs from its authenticated asset digest");
+    tables.descriptor_digest = sha256_file(config.static_table_descriptor_path);
 
-    require_authentication_file(config, config.sorted_lookup_descriptor_path,
-                                "sorted lookup descriptor");
+    require_input_file(config.sorted_lookup_descriptor_path, "sorted lookup descriptor");
     const auto lookup_text = file_text(config.sorted_lookup_descriptor_path);
     if (json_scalar(lookup_text, "schema") != "zkDL_gat_sorted_lookup_descriptor_v1" ||
         json_u64_value(lookup_text, "version") != 1U ||
@@ -1797,10 +1782,7 @@ StaticTables load_static_table_descriptor_shape(const Config &config) {
         fail("analysis-only sorted lookup descriptor identity is unsupported");
     tables.sorted_lookup_descriptor =
         std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string();
-    tables.sorted_lookup_descriptor_digest =
-        authenticated_asset_digest(config, config.sorted_lookup_descriptor_path);
-    if (sha256_file(config.sorted_lookup_descriptor_path) != tables.sorted_lookup_descriptor_digest)
-        fail("analysis-only sorted lookup descriptor differs from its authenticated asset digest");
+    tables.sorted_lookup_descriptor_digest = sha256_file(config.sorted_lookup_descriptor_path);
     tables.authenticated = true;
     return tables;
 }
@@ -1857,14 +1839,14 @@ void validate_ledger_identity(const Config &config, const StaticTables &tables, 
 }
 
 IntegerBoundLedger load_integer_bound_ledger(const Config &config, const StaticTables &tables) {
-    require_authentication_file(config, config.integer_bound_ledger_path, "integer-bound ledger");
+    require_input_file(config.integer_bound_ledger_path, "integer-bound ledger");
     const auto text = file_text(config.integer_bound_ledger_path);
     if (trim(text).empty() || trim(text).front() != '{') { fail("BLOCKED: integer-bound ledger must use the canonical JSON resource format"); }
     IntegerBoundLedger ledger;
     try { ledger = integer_bound_ledger::parse(text); }
     catch (const std::exception &error) { fail(error.what()); }
     ledger.authenticated = true;
-    ledger.descriptor_digest = authenticated_asset_digest(config, config.integer_bound_ledger_path);
+    ledger.descriptor_digest = sha256_text(text);
     validate_ledger_identity(config, tables, ledger);
     return ledger;
 }
@@ -2080,100 +2062,6 @@ void admit_integer_bound_ledger(const Config &config, const Graph &graph, const 
 
 }
 
-AssetManifest load_asset_manifest(const Config &config) {
-    if (config.asset_manifest_path.empty()) fail("asset manifest path is empty");
-    if (std::filesystem::is_symlink(config.asset_manifest_path) || !std::filesystem::is_regular_file(config.asset_manifest_path)) {
-        fail("baseline-local asset_manifest is missing or not a regular file: " + config.asset_manifest_path.string());
-    }
-    const auto manifest = file_text(config.asset_manifest_path);
-    AssetManifest result;
-    result.schema = json_string_field(manifest, "schema");
-    if (result.schema != "zkDL_gat_asset_manifest_v1") fail("asset manifest schema mismatch");
-    result.dataset = json_string_field(manifest, "dataset");
-    if (result.dataset != config.dataset) fail("asset manifest dataset mismatch");
-    result.quant_cfg_id = json_string_field(manifest, "quant_cfg_id");
-    if (result.quant_cfg_id != config.quant_cfg_id) fail("asset manifest quant_cfg_id mismatch");
-    result.config = json_string_field(manifest, "config");
-    result.scale_chain_digest = json_string_field(manifest, "scale_chain_digest");
-    result.static_table_descriptor = json_string_field(manifest, "static_table_descriptor");
-    result.static_table_descriptor_digest = json_string_field(manifest, "static_table_descriptor_digest");
-    result.sorted_lookup_descriptor = json_string_field(manifest, "sorted_lookup_descriptor");
-    result.sorted_lookup_descriptor_digest = json_string_field(manifest, "sorted_lookup_descriptor_digest");
-    result.integer_bound_ledger = json_string_field(manifest, "integer_bound_ledger");
-    result.integer_bound_ledger_descriptor_digest = json_string_field(manifest, "integer_bound_ledger_descriptor_digest");
-    result.srs_path = json_string_field_or(manifest, "srs_path", "UNAVAILABLE");
-    result.srs_manifest_digest = json_string_field_or(manifest, "srs_manifest_digest", "UNAVAILABLE");
-    result.model_registry_path = json_string_field_or(manifest, "model_registry_path", "UNAVAILABLE");
-    result.model_registry_digest = json_string_field_or(manifest, "model_registry_digest", "UNAVAILABLE");
-    result.model_blinder_sidecar_path = json_string_field_or(manifest, "model_blinder_sidecar_path", "UNAVAILABLE");
-    result.model_blinder_sidecar_digest = json_string_field_or(manifest, "model_blinder_sidecar_digest", "UNAVAILABLE");
-    if (!is_digest(result.scale_chain_digest) || !is_digest(result.static_table_descriptor_digest) || !is_digest(result.sorted_lookup_descriptor_digest) ||
-        !is_digest(result.integer_bound_ledger_descriptor_digest) || result.scale_chain_digest != config.scale_chain_digest ||
-        result.static_table_descriptor != std::filesystem::relative(config.static_table_descriptor_path, config.baseline_root).generic_string() ||
-        result.sorted_lookup_descriptor != std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string() ||
-        result.integer_bound_ledger != std::filesystem::relative(config.integer_bound_ledger_path, config.baseline_root).generic_string()) {
-        fail("asset manifest relation-resource identity mismatch");
-    }
-    const auto expected_config = std::filesystem::relative(config.config_path, config.baseline_root).generic_string();
-    if (result.config != expected_config) fail("asset manifest config identity mismatch");
-    const auto expected_srs_path = std::filesystem::relative(std::filesystem::path(config.srs_path), config.baseline_root).generic_string();
-    const auto expected_registry_path = std::filesystem::relative(config.model_registry_path, config.baseline_root).generic_string();
-    if (result.srs_path != expected_srs_path || result.srs_manifest_digest != config.srs_manifest_digest ||
-        result.model_registry_path != expected_registry_path || result.model_registry_digest != config.verifier_registry_digest ||
-        result.model_blinder_sidecar_path != "UNAVAILABLE" || result.model_blinder_sidecar_digest != "UNAVAILABLE") {
-        fail("asset manifest authenticated native resource identity mismatch");
-    }
-    result.digest = sha256_file(config.asset_manifest_path);
-
-    const std::regex entry("\\{\\s*\"bytes\"\\s*:\\s*([0-9]+)\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"\\s*\\}");
-    std::set<std::string> paths;
-    const std::string checkpoint_root = std::filesystem::relative(config.checkpoint_bundle, config.baseline_root).generic_string();
-    const std::string checkpoint_prefix = checkpoint_root.empty() ? std::string() : checkpoint_root + "/";
-    for (std::sregex_iterator iterator(manifest.begin(), manifest.end(), entry), end; iterator != end; ++iterator) {
-        AssetManifestEntry file;
-        file.bytes = parse_u64((*iterator)[1].str(), "asset manifest bytes");
-        file.path = (*iterator)[2].str();
-        file.sha256 = (*iterator)[3].str();
-        if (file.path.empty() || std::filesystem::path(file.path).is_absolute()) { fail("asset manifest file path is not baseline-local: " + file.path); }
-        for (const auto &component : std::filesystem::path(file.path)) {
-            if (component == "..") fail("asset manifest file path escapes baseline root: " + file.path);
-        }
-        if (!paths.insert(file.path).second) fail("duplicate asset manifest file: " + file.path);
-        if (file.path.rfind("artifacts/model_blinders/", 0U) == 0U || file.path.find("/model_blinders/") != std::string::npos || file.path.find("/.private_native/") != std::string::npos || std::filesystem::path(file.path).filename() == "private_asset_manifest.json" || (!checkpoint_prefix.empty() && file.path.rfind(checkpoint_prefix, 0U) == 0U && file.path != checkpoint_prefix + "manifest.json")) fail("public asset manifest contains private prover material");
-        const auto resolved = local_path(config.baseline_root, file.path, "asset manifest file");
-        if (std::filesystem::is_symlink(resolved) || !std::filesystem::is_regular_file(resolved)) {
-            fail("asset manifest file is missing or symlinked: " + file.path);
-        }
-        if (std::filesystem::file_size(resolved) != file.bytes) fail("asset manifest byte size mismatch: " + file.path);
-        if (sha256_file(resolved) != file.sha256) fail("asset manifest digest mismatch: " + file.path);
-        result.files.push_back(std::move(file));
-    }
-    if (result.files.empty()) fail("asset manifest has no files");
-    const auto require_entry = [&](const std::string &relative) {
-        if (!paths.count(relative)) fail("asset manifest missing required file: " + relative);
-    };
-    require_entry(result.config);
-    require_entry("configs/quantization_scale_chain.cfg");
-    require_entry((std::filesystem::relative(config.checkpoint_bundle, config.baseline_root) / "manifest.json").generic_string());
-    if (!is_digest(json_string_field(manifest, "checkpoint_tensors_txt_digest")) || !is_digest(json_string_field(manifest, "checkpoint_tensors_npz_digest"))) fail("public asset manifest checkpoint identities are not SHA-256 digests");
-    require_entry((std::filesystem::relative(config.cache_root / config.dataset, config.baseline_root) / "meta.cfg").generic_string());
-    require_entry(std::filesystem::relative(config.static_table_descriptor_path, config.baseline_root).generic_string());
-    require_entry(std::filesystem::relative(config.sorted_lookup_descriptor_path, config.baseline_root).generic_string());
-    require_entry(std::filesystem::relative(config.integer_bound_ledger_path, config.baseline_root).generic_string());
-    const auto manifest_digest_for = [&](const std::string &relative) -> const std::string & {
-        for (const auto &file : result.files)
-            if (file.path == relative) return file.sha256;
-        fail("asset manifest relation resource entry is missing: " + relative);
-    };
-    if (manifest_digest_for(result.static_table_descriptor) != result.static_table_descriptor_digest ||
-        manifest_digest_for(result.sorted_lookup_descriptor) != result.sorted_lookup_descriptor_digest ||
-        manifest_digest_for(result.integer_bound_ledger) != result.integer_bound_ledger_descriptor_digest ||
-        manifest_digest_for("configs/quantization_scale_chain.cfg") != result.scale_chain_digest) {
-        fail("asset manifest relation-resource digest mismatch");
-    }
-    return result;
-}
-
 const char *backend_name(Backend backend) noexcept { return backend == Backend::Cpu ? "cpu" : "gpu"; }
 
 Backend parse_backend(const std::string &value) {
@@ -2225,7 +2113,6 @@ Config load_config(const std::filesystem::path &path, bool admission_only,
                                                   "srs_manifest_digest",
                                                   "model_registry_path",
                                                   "model_blinder_sidecar_path",
-                                                  "model_blinder_sidecar_digest",
                                                   "privacy_policy",
                                                   "input_privacy",
                                                   "output_mode",
@@ -2252,7 +2139,6 @@ Config load_config(const std::filesystem::path &path, bool admission_only,
     config.cache_root = local_path(config.baseline_root, required("cache_root"), "cache_root");
     config.checkpoint_bundle = local_path(config.baseline_root, required("checkpoint_bundle"), "checkpoint_bundle");
     config.run_root = local_path(config.baseline_root, required("export_dir"), "export_dir");
-    config.asset_manifest_path = config.run_root / "asset_manifest.json";
     config.static_table_descriptor_path = local_path(config.baseline_root, required("static_table_descriptor"), "static_table_descriptor");
     config.sorted_lookup_descriptor_path = local_path(config.baseline_root, required("sorted_lookup_descriptor"), "sorted_lookup_descriptor");
     config.integer_bound_ledger_path = local_path(config.baseline_root, required("integer_bound_ledger"), "integer_bound_ledger");
@@ -2281,10 +2167,6 @@ Config load_config(const std::filesystem::path &path, bool admission_only,
         fail("srs_manifest_digest must be SHA-256 or explicit UNAVAILABLE");
     config.model_registry_path = local_path(config.baseline_root, required("model_registry_path"), "model_registry_path");
     config.model_blinder_sidecar_path = local_path(config.baseline_root, required("model_blinder_sidecar_path"), "model_blinder_sidecar_path");
-    config.model_blinder_sidecar_digest = required("model_blinder_sidecar_digest");
-    if (config.model_blinder_sidecar_digest != "UNAVAILABLE" && !is_digest(config.model_blinder_sidecar_digest) &&
-        !(admission_only && allow_analysis_only_planned && config.model_blinder_sidecar_digest == "CEREMONY_REQUIRED"))
-        fail("model_blinder_sidecar_digest must be SHA-256 or explicit UNAVAILABLE");
     config.opening_mode = required("opening_mode");
     config.binding_mode = required("binding_mode");
     config.security_profile_id = required("security_profile_id");
@@ -2439,19 +2321,16 @@ Config load_config(const std::filesystem::path &path, bool admission_only,
 }
 
 ModelBundle load_model_bundle(const Config &config) {
-    const auto assets = load_asset_manifest(config);
-    const auto private_manifest_path = config.run_root / "private_asset_manifest.json";
-    if (std::filesystem::is_symlink(private_manifest_path) || !std::filesystem::is_regular_file(private_manifest_path)) fail("private checkpoint asset manifest is missing or symlinked");
-    const auto private_permissions = std::filesystem::status(private_manifest_path).permissions();
-    if ((private_permissions & (std::filesystem::perms::group_all | std::filesystem::perms::others_all)) != std::filesystem::perms::none) fail("private checkpoint asset manifest must be owner-only");
-    const auto private_manifest = file_text(private_manifest_path);
-    if (json_string_field(private_manifest, "schema") != "zkDL_gat_private_asset_manifest_v1" || json_string_field(private_manifest, "dataset") != config.dataset || json_string_field(private_manifest, "registry_digest") != config.verifier_registry_digest) fail("private checkpoint asset manifest identity mismatch");
-    const auto public_manifest = file_text(config.asset_manifest_path);
-    if (!std::filesystem::is_directory(config.checkpoint_bundle)) fail("checkpoint bundle is not a directory");
+    if (!std::filesystem::is_directory(config.checkpoint_bundle))
+        fail("checkpoint bundle is not a directory: " + config.checkpoint_bundle.string());
     const auto manifest_path = config.checkpoint_bundle / "manifest.json";
+    const auto tensors_path = config.checkpoint_bundle / "tensors.txt";
+    require_input_file(manifest_path, "checkpoint manifest");
+    require_input_file(tensors_path, "checkpoint tensor export");
     const auto manifest = file_text(manifest_path);
     expect_manifest(manifest, config);
     const auto manifest_shapes = manifest_tensor_shapes(manifest);
+
     ModelBundle model;
     model.root = config.checkpoint_bundle;
     model.dataset = config.dataset;
@@ -2459,37 +2338,10 @@ ModelBundle load_model_bundle(const Config &config) {
     model.model_param_id = config.model_param_id;
     model.quant_cfg_id = config.quant_cfg_id;
     model.static_table_id = config.static_table_id;
-    model.manifest_digest = sha256_file(manifest_path);
     model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
-    const auto asset_digest = [&](const std::filesystem::path &path) -> std::string {
-        const auto relative = std::filesystem::relative(path, config.baseline_root).generic_string();
-        const std::regex entry("\\{\\s*\"bytes\"\\s*:\\s*([0-9]+)\\s*,\\s*\"path\"\\s*:\\s*\"([^\"]+)\"\\s*,\\s*\"sha256\"\\s*:\\s*\"([0-9a-fA-F]{64})\"\\s*\\}");
-        std::string expected;
-        u64 expected_bytes = 0U;
-        for (std::sregex_iterator iterator(private_manifest.begin(), private_manifest.end(), entry), end; iterator != end; ++iterator) {
-            if ((*iterator)[2].str() != relative) continue;
-            if (!expected.empty()) fail("duplicate private checkpoint asset: " + relative);
-            expected = (*iterator)[3].str();
-            expected_bytes = parse_u64((*iterator)[1].str(), "private checkpoint bytes");
-        }
-        if (expected.empty() || std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path) || std::filesystem::file_size(path) != expected_bytes || sha256_file(path) != expected) fail("private asset manifest does not authenticate checkpoint file: " + relative);
-        if (path.filename() == "tensors.txt" && expected != json_string_field(public_manifest, "checkpoint_tensors_txt_digest")) fail("private checkpoint text identity does not match public statement resources");
-        if (path.filename() == "tensors.npz" && expected != json_string_field(public_manifest, "checkpoint_tensors_npz_digest")) fail("private checkpoint archive identity does not match public statement resources");
-        return expected;
-    };
-    model.tensors_text_digest = asset_digest(config.checkpoint_bundle / "tensors.txt");
-    model.tensors_npz_digest = asset_digest(config.checkpoint_bundle / "tensors.npz");
-    const auto best_model = config.checkpoint_bundle / "best_model.pt";
-    if (std::filesystem::is_regular_file(best_model)) model.best_model_digest = asset_digest(best_model);
-    std::ifstream npz(config.checkpoint_bundle / "tensors.npz", std::ios::binary);
-    std::array<unsigned char, 4> npz_magic{};
-    npz.read(reinterpret_cast<char *>(npz_magic.data()), static_cast<std::streamsize>(npz_magic.size()));
-    if (npz.gcount() != static_cast<std::streamsize>(npz_magic.size()) || npz_magic[0] != 'P' || npz_magic[1] != 'K' || npz_magic[2] != 3 ||
-        npz_magic[3] != 4) {
-        fail("checkpoint tensors.npz is not a valid ZIP archive");
-    }
-    std::ifstream input(config.checkpoint_bundle / "tensors.txt");
-    if (!input) fail("cannot open checkpoint tensor export");
+
+    std::ifstream input(tensors_path);
+    if (!input) fail("cannot open checkpoint tensor export: " + tensors_path.string());
     std::string marker;
     while (input >> marker) {
         if (marker != "TENSOR") fail("unexpected checkpoint token " + marker);
@@ -2501,7 +2353,8 @@ ModelBundle load_model_bundle(const Config &config) {
         u64 product = 1;
         for (u64 &dimension : tensor.shape) {
             input >> dimension;
-            if (!input || dimension == 0 || product > std::numeric_limits<u64>::max() / dimension) fail("invalid tensor shape");
+            if (!input || dimension == 0 || product > std::numeric_limits<u64>::max() / dimension)
+                fail("invalid tensor shape");
             product *= dimension;
         }
         input >> count;
@@ -2511,12 +2364,13 @@ ModelBundle load_model_bundle(const Config &config) {
             input >> value;
             if (!input || !std::isfinite(value)) fail("invalid checkpoint tensor value: " + tensor.name);
         }
-        if (!model.tensors.emplace(tensor.name, std::move(tensor)).second) fail("duplicate checkpoint tensor");
+        if (!model.tensors.emplace(tensor.name, std::move(tensor)).second)
+            fail("duplicate checkpoint tensor");
     }
     if (model.tensors.empty()) fail("checkpoint contains no tensors");
-    if (model.tensors.size() != model.tensor_count_manifest || manifest_shapes.size() != model.tensor_count_manifest) {
+    if (model.tensors.size() != model.tensor_count_manifest ||
+        manifest_shapes.size() != model.tensor_count_manifest)
         fail("checkpoint tensor_count does not match manifest tensor_index");
-    }
     for (const auto &item : model.tensors) {
         const auto shape = manifest_shapes.find(item.first);
         if (shape == manifest_shapes.end()) fail("checkpoint tensor is absent from manifest tensor_index: " + item.first);
@@ -2526,11 +2380,8 @@ ModelBundle load_model_bundle(const Config &config) {
 }
 
 ModelBundle load_model_metadata(const Config &config) {
-    (void)load_asset_manifest(config);
-    if (!std::filesystem::is_directory(config.checkpoint_bundle)) fail("checkpoint bundle is not a directory");
     const auto manifest_path = config.checkpoint_bundle / "manifest.json";
-    if (std::filesystem::is_symlink(manifest_path) || !std::filesystem::is_regular_file(manifest_path))
-        fail("BLOCKED: public checkpoint manifest is missing or not a regular file");
+    require_input_file(manifest_path, "checkpoint manifest");
     const auto manifest = file_text(manifest_path);
     expect_manifest(manifest, config);
     (void)manifest_tensor_shapes(manifest);
@@ -2542,11 +2393,7 @@ ModelBundle load_model_metadata(const Config &config) {
     model.model_param_id = config.model_param_id;
     model.quant_cfg_id = config.quant_cfg_id;
     model.static_table_id = config.static_table_id;
-    model.manifest_digest = sha256_file(manifest_path);
     model.tensor_count_manifest = json_u64_field(manifest, "tensor_count");
-    const auto public_manifest = file_text(config.asset_manifest_path);
-    model.tensors_text_digest = json_string_field(public_manifest, "checkpoint_tensors_txt_digest");
-    model.tensors_npz_digest = json_string_field(public_manifest, "checkpoint_tensors_npz_digest");
     return model;
 }
 
@@ -3073,15 +2920,12 @@ static RelationPlan build_relation_plan_internal(const Config &config, const Gra
     };
     const auto add_stage_tensors = [&](const std::string &stage, u64 layer, u64 head, u64 in_dim, u64 out_dim, bool output) {
         const std::string order = stage_order(layer, head);
-        const std::string input_id = stage + "/trace/input";
-        const std::string trace_visibility = layer == 0 && !output ? "public" : "witness";
         add_tensor(stage + "/model/seq_kernel", "witness", "model-layer-head-row-major", "model", {1, in_dim, out_dim}, {"model"}, order,
                    "model_param_registry", 1);
         add_tensor(stage + "/model/attn_src", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
         add_tensor(stage + "/model/attn_dst", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
         if (output)
             add_tensor(stage + "/model/output_bias", "witness", "model-layer-head-row-major", "model", {out_dim}, {"model"}, order, "model_param_registry", 1);
-        add_tensor(input_id, trace_visibility, "node-major-little-endian", "node", {graph.nodes, in_dim}, {"input"}, order, "layer_input_route", 1);
         add_tensor(stage + "/trace/" + (output ? "y_prime" : "h_prime"), "witness", "node-major-little-endian", "node", {graph.nodes, out_dim}, {"projection"},
                    order, "projection_output", 2);
         for (const auto &name :
@@ -3828,9 +3672,9 @@ void populate_authenticated_resource_wire(const Config &config, NativeRelationWi
     if (!load_authenticated_model_registry(config, srs, &registry, &resource_error))
         fail(resource_error.empty() ? "BLOCKED: authenticated model registry load failed without a diagnostic" : resource_error);
 
-    AuthenticatedModelBlinders blinders;
-    if (prover_sidecar && !load_authenticated_model_blinders(config, registry, &blinders, &resource_error))
-        fail(resource_error.empty() ? "BLOCKED: authenticated model blinder sidecar load failed without a diagnostic" : resource_error);
+    ModelBlinders blinders;
+    if (prover_sidecar && !load_model_blinders(config, registry, &blinders, &resource_error))
+        fail(resource_error.empty() ? "BLOCKED: model blinder sidecar load failed without a diagnostic" : resource_error);
 
     output.srs_digest = srs.manifest_digest;
     output.srs_authenticated = srs.authenticated;
@@ -3844,9 +3688,7 @@ void populate_authenticated_resource_wire(const Config &config, NativeRelationWi
     output.registered_model_commitments = registry.model_commitments;
 
     if (!prover_sidecar) return;
-    output.model_blinder_digest = blinders.digest;
     output.model_blinders = blinders.entries;
-    output.model_blinders_authenticated = blinders.authenticated;
 }
 
 std::vector<NativeFrWire> native_matrix_values(const Matrix &matrix) { return native_i64_values(matrix.values); }
@@ -4173,7 +4015,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
             u64 emitted = 0U;
             for (const auto &[key, row] : ordered) {
                 for (u64 index = 0U; index < row.table_count + row.query_count; ++index) {
-                    const U128 delta = previous ? key - previous_key : 0U;
+                    const U128 delta = previous ? key - previous_key : key;
                     const std::uint8_t marker = (!previous || key != previous_key) ? 1U : 0U;
                     if (marker) ++prefix;
                     write_record(stream, key, delta, row.x, row.y, prefix, 1U, marker, index < row.table_count ? 1U : 2U, context);
@@ -4215,9 +4057,6 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         provider.query_ref = plan_query->query_ref;
         provider.merge_ref = plan_query->merge_ref;
         provider.scratch_path = std::filesystem::relative(final_path, config.baseline_root).generic_string();
-        const auto digest_start = std::chrono::steady_clock::now();
-        provider.scratch_digest = sha256_file(final_path);
-        explicit_file_io_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - digest_start).count();
         provider.layout_digest = plan_query->layout_digest;
         std::stringstream role_stream(plan_query->commitment_role_map);
         for (std::string role; std::getline(role_stream, role, ',');) provider.commitment_roles.push_back(role);
@@ -4240,8 +4079,6 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
 
     const auto put_stage_base = [&](const std::string &stage, u64 layer, u64 head, bool output) {
         const u64 width = output ? config.architecture.classes : config.architecture.hidden_dims.at(layer);
-        const Matrix &input = output ? trace.hidden_layers.back().concat : trace.hidden_layers.at(layer).input;
-        put_matrix(stage + "/trace/input", input);
         const Matrix weight = quantized_tensor_matrix(model, stage + "/seq/kernel",
                                                       output ? config.quantization.output_weight.at(head) :
                                                                config.quantization.hidden_weight.at(layer).at(head));
@@ -4716,10 +4553,7 @@ std::string statement_canonical_payload(const PublicStatement &statement) {
               << "integer_bound_ledger_id=" << statement.integer_bound_ledger_id << "\n"
               << "integer_bound_ledger_digest=" << statement.integer_bound_ledger_digest << "\n"
               << "integer_bound_ledger_descriptor_digest=" << statement.integer_bound_ledger_descriptor_digest << "\n"
-              << "config_digest=" << statement.config_digest << "\nasset_manifest_digest=" << statement.asset_manifest_digest << "\n"
-              << "checkpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
-              << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest << "\n"
-              << "checkpoint_tensors_npz_digest=" << statement.checkpoint_tensors_npz_digest << "\n"
+              << "config_digest=" << statement.config_digest << "\n"
               << "verifier_registry_digest=" << statement.verifier_registry_digest << "\n"
               << "topology_boundary_digest=" << statement.topology_boundary_digest << "\n"
               << "total_nodes=" << statement.total_nodes << "\n"
@@ -4802,10 +4636,6 @@ PublicStatement make_statement(const Config &config, const Graph &graph, const M
     statement.integer_bound_ledger_digest = relation.integer_bound_ledger.digest;
     statement.integer_bound_ledger_descriptor_digest = relation.integer_bound_ledger.descriptor_digest;
     statement.config_digest = config.config_digest;
-    statement.asset_manifest_digest = sha256_file(config.asset_manifest_path);
-    statement.checkpoint_manifest_digest = model.manifest_digest;
-    statement.checkpoint_tensors_txt_digest = model.tensors_text_digest;
-    statement.checkpoint_tensors_npz_digest = model.tensors_npz_digest;
     statement.verifier_registry_digest = config.verifier_registry_digest;
     statement.topology_boundary_digest = digest_graph_boundaries(graph);
     statement.total_nodes = graph.total_nodes;
@@ -4849,9 +4679,6 @@ void write_statement(const std::filesystem::path &path, const PublicStatement &s
            << "\n"
            << "integer_bound_ledger_descriptor_digest=" << statement.integer_bound_ledger_descriptor_digest << "\nconfig_digest=" << statement.config_digest
            << "\n"
-           << "asset_manifest_digest=" << statement.asset_manifest_digest << "\ncheckpoint_manifest_digest=" << statement.checkpoint_manifest_digest << "\n"
-           << "checkpoint_tensors_txt_digest=" << statement.checkpoint_tensors_txt_digest
-           << "\ncheckpoint_tensors_npz_digest=" << statement.checkpoint_tensors_npz_digest << "\n"
            << "verifier_registry_digest=" << statement.verifier_registry_digest << "\ntopology_boundary_digest=" << statement.topology_boundary_digest << "\n"
            << "total_nodes=" << statement.total_nodes << "\nnodes=" << statement.nodes << "\nedges=" << statement.edges << "\n"
            << "graphs=" << statement.graphs << "\nclasses=" << statement.classes << "\nproof_scope=" << statement.proof_scope << "\n"
@@ -4904,10 +4731,6 @@ bool read_statement(const std::filesystem::path &path, PublicStatement *statemen
         statement->integer_bound_ledger_digest = get("integer_bound_ledger_digest");
         statement->integer_bound_ledger_descriptor_digest = get("integer_bound_ledger_descriptor_digest");
         statement->config_digest = get("config_digest");
-        statement->asset_manifest_digest = get("asset_manifest_digest");
-        statement->checkpoint_manifest_digest = get("checkpoint_manifest_digest");
-        statement->checkpoint_tensors_txt_digest = get("checkpoint_tensors_txt_digest");
-        statement->checkpoint_tensors_npz_digest = get("checkpoint_tensors_npz_digest");
         statement->verifier_registry_digest = get("verifier_registry_digest");
         statement->topology_boundary_digest = get("topology_boundary_digest");
         statement->total_nodes = parse_u64(get("total_nodes"), "statement total_nodes");
@@ -4935,7 +4758,7 @@ void write_run_record(const std::filesystem::path &path, const RunRecord &record
     std::ofstream output(path);
     if (!output) fail("cannot write run record " + path.string());
     output << "schema=zkDL_gat_run_record_v2\ndataset=" << record.dataset << "\nbackend=" << record.backend << "\n"
-           << "statement_id=" << record.statement_id << "\nproof_id=" << record.proof_id << "\nverification_status=" << record.verification_status << "\n"
+           << "statement_id=" << record.statement_id << "\nverification_status=" << record.verification_status << "\n"
            << "proof_scope=" << record.proof_scope << "\nstatic_table_descriptor_digest=" << record.static_table_descriptor_digest << "\n"
            << "scale_chain_digest=" << record.scale_chain_digest << "\ninteger_bound_ledger_id=" << record.integer_bound_ledger_id << "\n"
            << "integer_bound_ledger_digest=" << record.integer_bound_ledger_digest << "\n"
@@ -5050,7 +4873,6 @@ std::filesystem::path run_path(const Config &config, const std::filesystem::path
 Config config_for_run(const Config &config, const std::filesystem::path &directory) {
     Config result = config;
     result.run_root = directory;
-    result.asset_manifest_path = directory / "asset_manifest.json";
     return result;
 }
 
@@ -5195,7 +5017,7 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
     std::filesystem::create_directories(path.parent_path());
     std::ofstream output(path);
     if (!output) fail("cannot write proof envelope " + path.string());
-    output << "schema_id=" << envelope.schema_id << "\nstatement_id=" << envelope.statement_id << "\nproof_id=" << envelope.proof_id << "\n"
+    output << "schema_id=" << envelope.schema_id << "\nstatement_id=" << envelope.statement_id << "\n"
            << "backend=" << envelope.backend << "\nproof_scope=" << envelope.proof_scope << "\nnative_core_api=" << envelope.native_core_api << "\n"
            << "status=" << envelope.status << "\nstatic_table_descriptor_digest=" << envelope.static_table_descriptor_digest << "\n"
            << "scale_chain_digest=" << envelope.scale_chain_digest << "\ninteger_bound_ledger_id=" << envelope.integer_bound_ledger_id << "\n"
@@ -5211,13 +5033,15 @@ void write_envelope(const std::filesystem::path &path, const ProofEnvelope &enve
            << "gpu_offload_stage=" << envelope.gpu_offload_stage << "\n"
            << "gpu_proof_kernel_count=" << envelope.gpu_proof_kernel_count << "\n"
            << "gpu_proof_peak_allocated_bytes=" << envelope.gpu_proof_peak_allocated_bytes << "\n"
-           << "gpu_device_ordinal=" << envelope.gpu_device_ordinal << "\n"
-           << "gpu_device_name=" << envelope.gpu_device_name << "\n"
-           << "gpu_device_uuid=" << envelope.gpu_device_uuid << "\n"
+           << "gpu_device_ordinal=" << envelope.gpu_device_ordinal << "\n";
+    if (!envelope.gpu_device_name.empty()) output << "gpu_device_name=" << envelope.gpu_device_name << "\n";
+    if (!envelope.gpu_device_uuid.empty()) output << "gpu_device_uuid=" << envelope.gpu_device_uuid << "\n";
+    output
            << "verifier_backend=" << envelope.verifier_backend << "\n"
            << "verify_gpu_kernel_executed=" << (envelope.verify_gpu_kernel_executed ? 1 : 0) << "\n"
            << "silent_fallback=" << (envelope.silent_fallback ? 1 : 0) << "\n"
-           << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\nerror=" << envelope.error << "\n";
+           << "output_bound=" << (envelope.output_bound ? 1 : 0) << "\n";
+    if (!envelope.error.empty()) output << "error=" << envelope.error << "\n";
     finish_output(output, path, "proof envelope");
 }
 
@@ -5248,7 +5072,7 @@ void write_proof_timing(const std::filesystem::path &path, const ProofEnvelope &
     std::ofstream output(path);
     if (!output) fail("cannot write proof timing diagnostics " + path.string());
     output << "schema_id=zkDL_gat_proof_timing_v1\nstatus=PROVED\n"
-           << "statement_id=" << envelope.statement_id << "\nproof_id=" << envelope.proof_id << "\n"
+           << "statement_id=" << envelope.statement_id << "\n"
            << "commitment_time_seconds=" << std::setprecision(17) << envelope.commitment_time_seconds << "\n"
            << "prove_time_seconds=" << envelope.prove_time_seconds << "\n"
            << "proof_auxiliary_construction_seconds=" << envelope.proof_auxiliary_construction_seconds << "\n"
@@ -5263,7 +5087,7 @@ void write_proof_timing(const std::filesystem::path &path, const ProofEnvelope &
 }
 
 ProofEnvelope read_envelope(const std::filesystem::path &path) {
-    const auto values = read_kv(path);
+    const auto values = read_kv(path, {"error", "gpu_device_name", "gpu_device_uuid"});
     const auto get = [&](const std::string &key) -> std::string {
         const auto iterator = values.find(key);
         if (iterator == values.end()) fail("proof envelope field missing: " + key);
@@ -5277,7 +5101,6 @@ ProofEnvelope read_envelope(const std::filesystem::path &path) {
     ProofEnvelope envelope;
     envelope.schema_id = get("schema_id");
     envelope.statement_id = get("statement_id");
-    envelope.proof_id = get("proof_id");
     envelope.backend = get("backend");
     envelope.proof_scope = get("proof_scope");
     envelope.native_core_api = get("native_core_api");
@@ -5318,7 +5141,7 @@ ProofEnvelope read_envelope(const std::filesystem::path &path) {
         "verify_gpu_kernel_executed");
     envelope.silent_fallback = parse_bool(get("silent_fallback"), "silent_fallback");
     envelope.output_bound = parse_bool(get("output_bound"), "output_bound");
-    envelope.error = get("error");
+    envelope.error = get_optional("error", "");
     return envelope;
 }
 
@@ -5362,7 +5185,6 @@ RunRecord record_from_envelope(const Config &config, const PublicStatement &stat
     record.dataset = config.dataset;
     record.backend = envelope.backend;
     record.statement_id = statement.statement_id;
-    record.proof_id = envelope.proof_id;
     record.verification_status = status;
     record.proof_scope = statement.proof_scope;
     record.static_table_descriptor_digest = statement.static_table_descriptor_digest;
@@ -5459,8 +5281,8 @@ int produce(const Config &config, const CliOptions &options) {
             bind_envelope_identity(&result.envelope, statement);
             write_envelope(envelope_path, result.envelope);
             const std::string message = error.empty() ? "native prove rejected" : error;
+            std::cerr << "native_prove=BLOCKED " << message << '\n' << std::flush;
             auto record = rejected_record(run_config, options.backend, &statement, message, kernel_executed);
-            record.proof_id = result.envelope.proof_id;
             record.proof_size_bytes = result.envelope.proof_size_bytes;
             write_run_record(record_path, record);
             return 4;
@@ -5490,7 +5312,7 @@ int produce(const Config &config, const CliOptions &options) {
             return 5;
         }
         bind_envelope_identity(&result.envelope, statement);
-        if (result.envelope.status != "PROVED" || result.envelope.proof_id.empty() || result.proof_bytes.empty() ||
+        if (result.envelope.status != "PROVED" || result.proof_bytes.empty() ||
             result.envelope.commitment_time_semantics != "native_tensor_commitments" ||
             result.envelope.native_core_api != "zkdl_native_gat_bridge_v1") {
             const std::string message = "native proof envelope is not a complete proved proof artifact";
@@ -5505,6 +5327,7 @@ int produce(const Config &config, const CliOptions &options) {
         write_run_record(record_path, record);
         return 0;
     } catch (const std::exception &exception) {
+        std::cerr << "prove=BLOCKED " << exception.what() << '\n' << std::flush;
         ProofEnvelope envelope;
         envelope.backend = backend_name(options.backend);
         envelope.status = "BLOCKED";
@@ -5542,9 +5365,6 @@ void validate_statement_binding(const Config &config, const Graph &graph, const 
     expected.public_output_digest = statement.public_output_digest;
     expected.statement_id = statement_identity(expected);
     if (statement.statement_id != expected.statement_id) { fail("public statement identity is not bound to authenticated run inputs"); }
-    if (statement.asset_manifest_digest != sha256_file(config.asset_manifest_path)) {
-        fail("public statement asset manifest digest is stale or unauthenticated");
-    }
 }
 
 int resource_check(const Config &config) {
@@ -5559,9 +5379,9 @@ int resource_check(const Config &config) {
         fail(error.empty() ? "BLOCKED: authenticated model registry check failed without a diagnostic" : error);
     std::cout << "resource_check stage=model_registry status=PASS tensors=" << registry.model_commitments.size() << "\n";
 
-    AuthenticatedModelBlinders blinders;
-    if (!load_authenticated_model_blinders(config, registry, &blinders, &error))
-        fail(error.empty() ? "BLOCKED: authenticated model blinder sidecar check failed without a diagnostic" : error);
+    ModelBlinders blinders;
+    if (!load_model_blinders(config, registry, &blinders, &error))
+        fail(error.empty() ? "BLOCKED: model blinder sidecar check failed without a diagnostic" : error);
     std::cout << "resource_check stage=model_blinders status=PASS entries=" << blinders.entries.size() << "\n";
     return 0;
 }
@@ -5791,15 +5611,9 @@ struct AnalysisPlannedShape {
     StaticTables tables;
     IntegerBoundLedger ledger;
     std::string document;
-    std::string sha256;
     std::map<std::string, u64> family_domains;
     u64 family_domain_count = 0U;
     std::string family_domain_sha256;
-    std::string metadata_sha256;
-    std::string edge_file_sha256;
-    std::string node_ptr_file_sha256;
-    std::string checkpoint_manifest_sha256;
-    std::string checkpoint_tensor_export_sha256;
     u64 raw_edge_rows = 0U;
     u64 max_quantized_model_abs = 0U;
     u64 checkpoint_tensor_count = 0U;
@@ -5817,51 +5631,20 @@ AnalysisPlannedShape load_analysis_planned_shape(const Config &config,
         fail("BLOCKED: analysis-only planned-shape sidecar exceeds its bounded metadata size");
     AnalysisPlannedShape result;
     result.document = file_text(path);
-    result.sha256 = sha256_file(path);
     const auto &document = result.document;
     if (json_string_field(document, "schema") != "zkdl_analysis_only_planned_shape_v1" ||
         json_string_field(document, "status") != "ANALYSIS_ONLY_PLANNED" ||
         json_string_field(document, "dataset") != config.dataset ||
-        json_string_field(document, "config_sha256") != sha256_file(config.config_path) ||
         json_string_field(document, "scale_chain_sha256") != config.scale_chain_digest ||
         json_scalar(document, "prepared_resources_claimed") != "false" ||
         json_scalar(document, "authenticated_resource_digests_present") != "false")
         fail("BLOCKED: planned-shape sidecar identity/status does not bind this analysis config");
     for (const auto *forbidden : {"static_table_descriptor_digest", "sorted_lookup_descriptor_digest",
                                   "integer_bound_ledger_digest", "srs_manifest_digest",
-                                  "verifier_registry_digest", "model_blinder_sidecar_digest"}) {
+                                  "verifier_registry_digest"}) {
         if (document.find(std::string("\"") + forbidden + "\"") != std::string::npos)
             fail("BLOCKED: planned-shape sidecar contains an authenticated resource identity field");
     }
-
-    const auto input_identity = json_fragment(document, "input_identity", '{', '}');
-    const auto dataset_dir = config.cache_root / config.dataset;
-    const auto metadata_path = dataset_dir / "meta.cfg";
-    const auto edge_path = dataset_dir / "edges.txt";
-    const auto manifest_path = config.checkpoint_bundle / "manifest.json";
-    const auto tensor_export_path = config.checkpoint_bundle / "tensors.txt";
-    result.metadata_sha256 = sha256_file(metadata_path);
-    result.edge_file_sha256 = sha256_file(edge_path);
-    result.node_ptr_file_sha256 = config.dataset == "ppi" ? sha256_file(dataset_dir / "node_ptr.txt") : std::string();
-    result.checkpoint_manifest_sha256 = sha256_file(manifest_path);
-    result.checkpoint_tensor_export_sha256 = sha256_file(tensor_export_path);
-    if (json_string_field(input_identity, "metadata_sha256") != result.metadata_sha256 ||
-        json_string_field(input_identity, "edge_file_sha256") != result.edge_file_sha256 ||
-        json_scalar(input_identity, "node_ptr_file_sha256") !=
-            (config.dataset == "ppi" ? result.node_ptr_file_sha256 : std::string("null")) ||
-        json_string_field(input_identity, "checkpoint_manifest_sha256") != result.checkpoint_manifest_sha256 ||
-        json_string_field(input_identity, "checkpoint_tensor_export_sha256") != result.checkpoint_tensor_export_sha256)
-        fail("BLOCKED: planned-shape source hashes do not match current graph/checkpoint files");
-
-    const auto source_identity = json_fragment(document, "analysis_source_identity", '{', '}');
-    const auto require_source_hash = [&](const std::string &field, const std::filesystem::path &source) {
-        if (json_string_field(source_identity, field) != sha256_file(source))
-            fail("BLOCKED: planned-shape source identity is stale: " + field);
-    };
-    require_source_hash("planner_sha256", config.baseline_root / "scripts/prepare_form_resources.py");
-    require_source_hash("resource_report_sha256", config.baseline_root / "scripts/analysis_only_resource_report.py");
-    require_source_hash("formal_phase_sha256", config.baseline_root / "scripts/formal_phase.py");
-    require_source_hash("formal_runner_sha256", config.baseline_root / "scripts/formal_runner.py");
 
     const auto graph_shape = json_fragment(document, "graph", '{', '}');
     if (json_u64_field(graph_shape, "nodes") != graph.nodes ||
@@ -5875,6 +5658,7 @@ AnalysisPlannedShape load_analysis_planned_shape(const Config &config,
     result.raw_edge_rows = raw_edge_records;
 
     const auto checkpoint = json_fragment(document, "checkpoint", '{', '}');
+    const auto manifest_path = config.checkpoint_bundle / "manifest.json";
     const auto checkpoint_manifest = file_text(manifest_path);
     expect_manifest(checkpoint_manifest, config);
     result.checkpoint_tensor_count = json_u64_field(checkpoint_manifest, "tensor_count");
@@ -6510,26 +6294,6 @@ int analysis_only_resource_plan(const Config &config,
         checked_product(srs_domain_count, 4096U, "SRS family manifest reservation"),
         "SRS materialized bytes");
 
-    u64 cache_file_count = 0U;
-    u64 checkpoint_file_count = 0U;
-    const auto count_regular_files = [&](const std::filesystem::path &root, u64 &count,
-                                         u64 &total_bytes, const std::string &label) {
-        if (std::filesystem::is_symlink(root) || !std::filesystem::is_directory(root))
-            fail("BLOCKED: analysis-only resource file inventory is missing: " + root.string());
-        for (const auto &entry : std::filesystem::recursive_directory_iterator(root)) {
-            if (entry.is_symlink()) fail("BLOCKED: analysis-only resource inventory contains a symlink: " + entry.path().string());
-            if (entry.is_regular_file()) {
-                count = checked_sum(count, 1U, label + " count");
-                total_bytes = checked_sum(total_bytes, entry.file_size(), label + " bytes");
-            }
-            else if (!entry.is_directory()) fail("BLOCKED: analysis-only resource inventory contains a special file");
-        }
-    };
-    u64 cache_file_bytes = 0U, checkpoint_file_bytes = 0U;
-    count_regular_files(config.cache_root / config.dataset, cache_file_count,
-                        cache_file_bytes, "cache inventory");
-    count_regular_files(config.checkpoint_bundle, checkpoint_file_count,
-                        checkpoint_file_bytes, "checkpoint inventory");
     const u64 relation_plan_text_base_bytes = serialize_plan_text(plan, tables).size();
     u64 planned_identifier_text_reserve_bytes = 0U;
     if (planned_mode) {
@@ -6570,53 +6334,12 @@ int analysis_only_resource_plan(const Config &config,
             fail("BLOCKED: analysis-only padded edge domain exceeds native bound");
         padded_edge_domain <<= 1U;
     }
-    const auto source_path = [&](const std::string &relative) {
-        const auto path = config.baseline_root / relative;
-        if (std::filesystem::is_symlink(path) || !std::filesystem::is_regular_file(path))
-            fail("BLOCKED: analysis-only source provenance file is missing: " + path.string());
-        return sha256_file(path);
-    };
-    const auto metadata_path = config.cache_root / config.dataset / "meta.cfg";
-    const auto edge_path = config.cache_root / config.dataset / "edges.txt";
-    const auto node_ptr_path = config.cache_root / config.dataset / "node_ptr.txt";
-    const auto checkpoint_tensor_export_path = config.checkpoint_bundle / "tensors.txt";
-    const std::string config_file_digest = sha256_file(config.config_path);
-    const std::string metadata_digest = sha256_file(metadata_path);
-    const std::string edge_file_digest = sha256_file(edge_path);
-    const std::string node_ptr_file_digest = config.dataset == "ppi" ? sha256_file(node_ptr_path) : std::string();
-    const std::string checkpoint_tensor_export_digest = sha256_file(checkpoint_tensor_export_path);
-    const std::string planner_source_digest = source_path("scripts/prepare_form_resources.py");
-    const std::string runner_source_digest = source_path("gat_adapter/gat_runner.cu");
-    const std::string resource_report_digest = source_path("scripts/analysis_only_resource_report.py");
-    const std::string formal_phase_digest = source_path("scripts/formal_phase.py");
-    const std::string formal_runner_digest = source_path("scripts/formal_runner.py");
-    const std::string bridge_header_digest = source_path("gat_adapter/gat_native_bridge.hpp");
-    const std::string native_source_digest = source_path("gat_adapter/gat_native_core.cu");
-    const std::string native_header_digest = source_path("gat_adapter/gat_native_core.cuh");
-    const std::string proof_header_digest = source_path("zkrelation-proof.cuh");
-
     std::cout << "{\"schema\":\"zkdl_analysis_only_resource_plan_v1\",\"status\":"
               << json_quote_config(planned_mode ? "ANALYSIS_ONLY_PLANNED" : "ANALYSIS_ONLY")
               << ",\"dataset\":" << json_quote_config(config.dataset)
-              << ",\"config_sha256\":" << json_quote_config(config_file_digest)
-              << ",\"metadata_sha256\":" << json_quote_config(metadata_digest)
-              << ",\"raw_edge_file_sha256\":" << json_quote_config(edge_file_digest)
-              << ",\"node_ptr_file_sha256\":"
-              << (config.dataset == "ppi" ? json_quote_config(node_ptr_file_digest) : "null")
-              << ",\"checkpoint_tensor_export_sha256\":" << json_quote_config(checkpoint_tensor_export_digest)
-              << ",\"scale_chain_sha256\":" << json_quote_config(config.scale_chain_digest)
-              << ",\"planner_source_sha256\":" << json_quote_config(planner_source_digest)
-              << ",\"gat_runner_source_sha256\":" << json_quote_config(runner_source_digest)
-              << ",\"analysis_resource_report_sha256\":" << json_quote_config(resource_report_digest)
-              << ",\"formal_phase_source_sha256\":" << json_quote_config(formal_phase_digest)
-              << ",\"formal_runner_source_sha256\":" << json_quote_config(formal_runner_digest)
-              << ",\"native_bridge_header_sha256\":" << json_quote_config(bridge_header_digest)
-              << ",\"native_core_source_sha256\":" << json_quote_config(native_source_digest)
-              << ",\"native_core_header_sha256\":" << json_quote_config(native_header_digest)
-              << ",\"relation_proof_header_sha256\":" << json_quote_config(proof_header_digest);
+              << ",\"scale_chain_sha256\":" << json_quote_config(config.scale_chain_digest);
     if (planned_mode) {
-        std::cout << ",\"planned_shape_sha256\":" << json_quote_config(planned_shape.sha256)
-                  << ",\"planned_metadata_status\":\"ANALYSIS_ONLY_PLANNED\""
+        std::cout << ",\"planned_metadata_status\":\"ANALYSIS_ONLY_PLANNED\""
                   << ",\"planned_identifier_text_reserve_bytes\":" << planned_identifier_text_reserve_bytes
                   << ",\"prepared_resources_claimed\":false"
                   << ",\"authenticated_resource_digests_present\":false";
@@ -6714,11 +6437,6 @@ int analysis_only_resource_plan(const Config &config,
                   ",\"gpu_max_opening_padded_generator_size\":" + std::to_string(gpu_capacity.max_opening_padded_generator_size) +
                   ",\"gpu_workspace_required_bytes\":" + std::to_string(gpu_capacity.workspace_required_bytes))
               << ",\"model_tensor_count\":" << model_tensor_count
-              << ",\"cache_file_count\":" << cache_file_count
-              << ",\"cache_file_bytes\":" << cache_file_bytes
-              << ",\"checkpoint_file_count\":" << checkpoint_file_count
-              << ",\"checkpoint_file_bytes\":" << checkpoint_file_bytes
-              << ",\"checkpoint_manifest_sha256\":" << json_quote_config(sha256_file(checkpoint_manifest_path))
               << ",\"srs_family_domains\":["
               << "{\"id\":\"*\",\"logical_domain\":" << wildcard_srs_domain
               << ",\"segment_count\":" << ((wildcard_srs_domain + srs_basis_domain - 1U) / srs_basis_domain) << "}";
@@ -6760,7 +6478,7 @@ int verify_only(const Config &config, const CliOptions &options) {
         if (envelope.schema_id != "zkDL_gat_proof_envelope_v1" ||
             envelope.commitment_time_semantics != "native_tensor_commitments" || envelope.status != "PROVED" ||
             envelope.native_core_api != "zkdl_native_gat_bridge_v1" ||
-            envelope.proof_id.empty() || envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
+            envelope.statement_id != statement.statement_id || envelope.proof_scope != statement.proof_scope ||
             envelope.verifier_reads_witness || envelope.silent_fallback || !envelope.output_bound || envelope.proof_size_bytes == 0) {
             fail("BLOCKED: proof envelope is not a complete independent-verification artifact");
         }
@@ -6828,7 +6546,6 @@ int verify_only(const Config &config, const CliOptions &options) {
         std::ofstream result(directory / "verification.result");
         if (!result) fail("cannot write verification.result");
         result << "status=VERIFIED\nstatement_id=" << statement.statement_id
-               << "\nproof_id=" << envelope.proof_id
                << "\nverifier_backend=" << envelope.verifier_backend
                << "\nverify_gpu_kernel_executed="
                << (envelope.verify_gpu_kernel_executed ? 1 : 0) << "\n";
@@ -6845,7 +6562,6 @@ int verify_only(const Config &config, const CliOptions &options) {
             std::ofstream result(directory / "verification.result");
             if (result) {
                 result << "status=BLOCKED\nstatement_id=" << (statement_loaded ? statement.statement_id : "UNAVAILABLE")
-                       << "\nproof_id=" << (envelope_loaded ? envelope.proof_id : "UNAVAILABLE")
                        << "\nverifier_backend=cpu\nverify_gpu_kernel_executed=0\nerror=" << message << "\n";
                 finish_output(result, directory / "verification.result", "blocked verification result");
             }

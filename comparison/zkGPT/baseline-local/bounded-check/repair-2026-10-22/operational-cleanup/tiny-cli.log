@@ -1,0 +1,18 @@
+E
+======================================================================
+ERROR: test_formal_consumer_accepts_compact_t2_profile_from_native_cli (__main__.T2CapacityConsumerSmoke.test_formal_consumer_accepts_compact_t2_profile_from_native_cli)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/zkGPT/tests/test_t2_capacity_consumer.py", line 146, in test_formal_consumer_accepts_compact_t2_profile_from_native_cli
+    payload = formal_preflight.run_capacity(
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/pzh/project/comparison/zkGPT/scripts/formal_preflight.py", line 896, in run_capacity
+    raise ChainError(f"unsupported capacity schema for {dataset}/{backend}")
+common.ChainError: unsupported capacity schema for cora/cpu
+
+----------------------------------------------------------------------
+Ran 1 test in 0.228s
+
+FAILED (errors=1)
+exit_code=1
+elapsed_seconds=0

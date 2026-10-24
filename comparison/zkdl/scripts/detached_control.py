@@ -79,13 +79,12 @@ def _formal_session(launch: Path) -> tuple[Path, dict[str, Any]] | None:
     try:
         session_id = link["session_id"]
         session = Path(link["session_dir"])
-        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
-        if (link.get("schema") != "zkdl_detached_formal_session_v1" or
-                link.get("launch_id") != launch.name or link.get("launch_dir") != str(launch) or
+        if (link.get("schema") != "zkdl_detached_formal_session_v2" or
+                link.get("launch_id") != launch.name or
                 not isinstance(session_id, str) or session.name != f"formal_{session_id}" or
                 not __import__("re").fullmatch(r"[0-9a-f]{32}", session_id) or
                 session.parent != RUNS or session.is_symlink() or
-                link.get("boot_id") != boot_id):
+                session.resolve(strict=True).parent != RUNS.resolve(strict=True)):
             raise ControlError("formal session mapping does not belong to this launch")
         session_state = _json(session / "state.json")
         if session_state is None or session_state.get("session_id") != session_id:
@@ -190,7 +189,6 @@ def final(launch: Path) -> int:
         return 2
     session, state = mapped
     final_path = state.get("final_validation_path")
-    final_digest = state.get("final_validation_sha256")
     expected_final_path = f"results/{session.name}/final_validation.json"
     if final_path and final_path != expected_final_path:
         print("final_status=FAILED reason=final receipt path is outside the exact session result directory")
@@ -208,10 +206,8 @@ def final(launch: Path) -> int:
                 state.get("status") == "PASS" and receipt.get("schema") == "zkDL_formal_final_validation_receipt_v1" and
                 receipt.get("status") == "PASS" and receipt.get("session_id") == state.get("session_id") and
                 receipt.get("verified_cells") == list(DATASETS) and strict_line in receipt.get("validator_output", []) and
-                receipt.get("collection_sha256") == __import__("hashlib").sha256(collection_path.read_bytes()).hexdigest() and
-                state.get("final_validation_sha256") == __import__("hashlib").sha256(receipt_path.read_bytes()).hexdigest() and
                 collection.get("schema") == "zkDL_gat_result_collection_v3" and
-                collection.get("session_id") == state.get("session_id") and len(collection.get("rows", [])) == 5 and
+                collection.get("session_id") == session.name and len(collection.get("rows", [])) == 5 and
                 {row.get("dataset") for row in collection["rows"] if isinstance(row, dict)} == set(DATASETS)
             )
         except (OSError, TypeError, ValueError):

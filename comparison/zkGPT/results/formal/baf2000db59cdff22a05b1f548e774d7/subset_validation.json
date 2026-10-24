@@ -1,0 +1,140 @@
+{
+  "cells": [
+    {
+      "backend": "cpu",
+      "dataset": "ppi",
+      "independent_verifier": true,
+      "paper_metrics": {
+        "commitment_time_ms": 2021159.1971655402,
+        "paper_timing_semantics": "zkgpt-gat-paper-timing-v5-native-commitment-wire-io-excluded",
+        "proof_size_bytes": 345395114,
+        "prove_time_ms": 18039643.532355458,
+        "timing_scope": "Commitment Time includes native cryptographic computations for initial Aux and L_qry bindings and M_f row bindings, plus the per-proof M_f column-generator derivation; sampling the initial hiding randomness is excluded. Prove Time excludes only that initial randomness preparation, Commitment Time, and prover self-verification; it includes native relation evaluation, borrowed Aux witness construction, Lasso table-value/index and lookup-protocol construction, later protocol work, and canonical in-memory wire serialization. Canonical forward generation, explicit dataset/checkpoint file I/O and decode, and one-time model registration are outside this proof timer; artifact wire self-check and artifact file write are recorded separately and excluded.",
+        "verify_time_ms": 3163316.338572
+      },
+      "process_telemetry": {
+        "prover": {
+          "cpu_system_seconds": 7476.47294,
+          "cpu_user_seconds": 29865.84867,
+          "exit_code": 0,
+          "peak_rss_bytes": 115640504320
+        },
+        "verifier": {
+          "cpu_system_seconds": 328.474,
+          "cpu_user_seconds": 5558.288318,
+          "exit_code": 0,
+          "peak_rss_bytes": 116390199296
+        }
+      },
+      "proof_digest": "125aff7fe6b4f6e0f6b34742173cd244a8c7f7a8d775618ff42c0c34cfc09b5e",
+      "proof_generated": true,
+      "proof_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ppi/proof.artifact",
+      "proof_size_bytes": 345395114,
+      "prover_wall_ms": 22481422.26280201,
+      "result_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ppi/result.json",
+      "statement_digest": "0ecd9b06bae22064a8c8938ac926d08841fd7e52361b31a90b06ac4a60064ab6",
+      "status": "VERIFY_OK",
+      "timing_ms": {
+        "artifact_wire_self_check": 0.0,
+        "artifact_write": 124.549836,
+        "aux_commitment": 160448.160897,
+        "commitment": 2021159.1971655402,
+        "initial_commitment_blinding_prepare": 121.543364,
+        "lasso_family_commitments": 1597197.48247054,
+        "lasso_family_generator_derive": 31508.179190000003,
+        "lasso_family_selected_row_mapping": 213918.02908145994,
+        "lasso_query_commitment": 232005.374608,
+        "load": 721.466788,
+        "preparation": 2058333.873879,
+        "preparation_net": 1826328.499271,
+        "prove": 18039643.532355458,
+        "prove_total": 20060257.430074,
+        "registration": 3.722845,
+        "self_verify": 0.0,
+        "serialize": 666.842811,
+        "verify": 0.0,
+        "witness": 2413499.872589
+      },
+      "verifier_report_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ppi/verifier_report.json",
+      "verifier_wall_ms": 4864045.572333998
+    },
+    {
+      "backend": "cpu",
+      "dataset": "ogbn_arxiv",
+      "independent_verifier": true,
+      "paper_metrics": {
+        "commitment_time_ms": 3090718.329095912,
+        "paper_timing_semantics": "zkgpt-gat-paper-timing-v5-native-commitment-wire-io-excluded",
+        "proof_size_bytes": 418371003,
+        "prove_time_ms": 36413703.31810408,
+        "timing_scope": "Commitment Time includes native cryptographic computations for initial Aux and L_qry bindings and M_f row bindings, plus the per-proof M_f column-generator derivation; sampling the initial hiding randomness is excluded. Prove Time excludes only that initial randomness preparation, Commitment Time, and prover self-verification; it includes native relation evaluation, borrowed Aux witness construction, Lasso table-value/index and lookup-protocol construction, later protocol work, and canonical in-memory wire serialization. Canonical forward generation, explicit dataset/checkpoint file I/O and decode, and one-time model registration are outside this proof timer; artifact wire self-check and artifact file write are recorded separately and excluded.",
+        "verify_time_ms": 6658816.281366
+      },
+      "process_telemetry": {
+        "prover": {
+          "cpu_system_seconds": 14356.509915,
+          "cpu_user_seconds": 59243.813608,
+          "exit_code": 0,
+          "peak_rss_bytes": 115766104064
+        },
+        "verifier": {
+          "cpu_system_seconds": 819.004667,
+          "cpu_user_seconds": 11235.697118,
+          "exit_code": 0,
+          "peak_rss_bytes": 106590822400
+        }
+      },
+      "proof_digest": "1f1750f26a05ee84dfb3f5fd94b12f39c73569582bbc316111e61d30d550d9ed",
+      "proof_generated": true,
+      "proof_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ogbn_arxiv/proof.artifact",
+      "proof_size_bytes": 418371003,
+      "prover_wall_ms": 44975399.497367,
+      "result_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ogbn_arxiv/result.json",
+      "statement_digest": "0ca8322eac13dd79d4c3db1c179278f449f7eb81b21c29c9fc63a2aace58c81c",
+      "status": "VERIFY_OK",
+      "timing_ms": {
+        "artifact_wire_self_check": 0.0,
+        "artifact_write": 131.472469,
+        "aux_commitment": 189976.446662,
+        "commitment": 3090718.329095912,
+        "initial_commitment_blinding_prepare": 156.173936,
+        "lasso_family_commitments": 2442983.296266912,
+        "lasso_family_generator_derive": 62894.519677000004,
+        "lasso_family_selected_row_mapping": 435177.22312208783,
+        "lasso_query_commitment": 394864.06649,
+        "load": 1940.570382,
+        "preparation": 3483043.8735519997,
+        "preparation_net": 3088179.8070619996,
+        "prove": 36413703.31810408,
+        "prove_total": 39503539.005755,
+        "registration": 1.948466,
+        "self_verify": 0.0,
+        "serialize": 1038.815381,
+        "verify": 0.0,
+        "witness": 5459259.499495
+      },
+      "verifier_report_path": "baseline-local/runs/formal/baf2000db59cdff22a05b1f548e774d7/ogbn_arxiv/verifier_report.json",
+      "verifier_wall_ms": 9941214.196463
+    }
+  ],
+  "created_unix_ns": 1792748956057480833,
+  "dataset_scope": [
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "formal_dataset_universe": [
+    "cora",
+    "citeseer",
+    "pubmed",
+    "ppi",
+    "ogbn_arxiv"
+  ],
+  "formal_results_complete": false,
+  "full_five_complete": false,
+  "independent_verification": true,
+  "paper_timing_semantics": "zkgpt-gat-paper-timing-v5-native-commitment-wire-io-excluded",
+  "schema": "zkgpt-gat-subset-validation-v2",
+  "session_id": "baf2000db59cdff22a05b1f548e774d7",
+  "status": "SUBSET_COMPLETE",
+  "validation_scope": "requested_dataset_subset"
+}

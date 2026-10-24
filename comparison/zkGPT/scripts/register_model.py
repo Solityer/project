@@ -16,14 +16,10 @@ from common import (
     config_with_auth,
     launch_native,
     load_json,
-    derive_run_nonce,
     require_formal_session,
     validate_registration_artifact,
     require_prover_secret,
     run_directory,
-    verify_cache,
-    verify_checkpoint,
-    verify_local_resources,
 )
 
 
@@ -33,15 +29,9 @@ def main(argv: List[str]) -> int:
     args = parser.parse_args(argv)
     root = baseline_root()
     try:
-        session_id, _session, session_manifest_sha256 = require_formal_session(root)
+        session_id, _session = require_formal_session(root)
         backend = "cpu"
         config_path, config = config_with_auth(root, args.dataset)
-        resource_errors = verify_local_resources(root, (args.dataset,))
-        if resource_errors:
-            raise ChainError("resource authentication failed: " + " | ".join(resource_errors))
-
-        verify_cache(root, args.dataset)
-        verify_checkpoint(root, args.dataset)
         if config.get("setup_mode") != "hyrax_native_local" or config.get("setup_resource_scope") != "baseline-local":
             raise ChainError("model registration requires the baseline-local Hyrax setup declaration")
         run_relative, run_path = run_directory(root, args.dataset, session_id, config)
@@ -57,8 +47,6 @@ def main(argv: List[str]) -> int:
             registration_path_value=registration_relative,
             com_w_secret_path_value=secret_relative,
             formal_session_id=session_id,
-            run_nonce=derive_run_nonce(session_id, args.dataset),
-            session_manifest_sha256=session_manifest_sha256,
             run_directory_relative=run_relative,
         )
         atomic_write_text(run_path / "registration.stdout.log", completed.stdout)

@@ -43,60 +43,158 @@ METRIC_FIELDS = (
     "verify_time_ms",
     "proof_size_bytes",
 )
-METRIC_LABELS = {
-    "commitment_time_ms": "Commitment Time (ms)",
-    "prove_time_ms": "Prove Time (ms)",
-    "verify_time_ms": "Verify Time (ms)",
-    "proof_size_bytes": "Proof Size (Bytes)",
-}
+PROCESS_METRICS = (
+    "prover_wall_time_seconds",
+    "verify_wall_time_seconds",
+)
+SUMMARY_METRIC_FIELDS = (*METRIC_FIELDS, *PROCESS_METRICS)
 HEX_256 = re.compile(r"^[0-9a-f]{64}$")
 CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
 POWER_OF_TWO_LOWER_BOUND = re.compile(r"^2\^([0-9]+)$")
 RUN_FORMAT = "zkgat_mechanism_result_v1"
+EXPERIMENT_FORMAT = "zkgat_real_mechanism_experiment_v2"
 TIMING_SCHEMA = "mechanism_commitment_disjoint_verify_parse_accept_v2"
 REAL_INPUT_SCHEMA = "zkgat_real_mechanism_input_v1"
 DEFAULT_EXPERIMENT_REPETITIONS = 3
 GPU_ACTIVITY_SAMPLE_INTERVAL_SECONDS = 30
 PUBLICATION_DOC_PATHS = ("README.md", "docs/mechanism_ablation.md")
 FORMAL_WIDTH = 8
+DATASET_ORDER = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 DATASETS: dict[str, dict[str, Any]] = {
     "cora": {
         "config": "configs/cora_secure.cfg", "srs": "artifacts/srs/cora_formal_srs",
-        "srs_id": "cora_formal_srs", "N": 2708, "E": 13264, "n_domain": 4096,
-        "e_domain": 32768, "arch": "gat_family_L3_hid8x8-8x8_kout2_c7",
+        "srs_id": "cora_formal_srs", "N": 2708, "E": 13264, "raw_E": 10858,
+        "features": 1433, "classes": 7, "n_domain": 4096, "e_domain": 32768,
+        "arch": "gat_family_L3_hid8x8-8x8_kout2_c7",
         "params": "cora_planetoid_seed11", "preprocess": "row_normalize",
     },
     "citeseer": {
         "config": "configs/citeseer_secure.cfg", "srs": "artifacts/srs/citeseer_formal_srs",
-        "srs_id": "citeseer_formal_srs", "N": 3327, "E": 12431, "n_domain": 4096,
-        "e_domain": 32768, "arch": "gat_family_L3_hid8x8-8x8_kout2_c6",
+        "srs_id": "citeseer_formal_srs", "N": 3327, "E": 12431, "raw_E": 9464,
+        "features": 3703, "classes": 6, "n_domain": 4096, "e_domain": 32768,
+        "arch": "gat_family_L3_hid8x8-8x8_kout2_c6",
         "params": "citeseer_planetoid_seed11", "preprocess": "row_normalize",
+    },
+    "pubmed": {
+        "config": "configs/pubmed_secure.cfg", "srs": "artifacts/srs/pubmed_formal_srs",
+        "srs_id": "pubmed_formal_srs", "N": 19717, "E": 108365, "raw_E": 88676,
+        "features": 500, "classes": 3, "n_domain": 32768, "e_domain": 262144,
+        "arch": "gat_family_L3_hid8x8-8x8_kout2_c3",
+        "params": "pubmed_planetoid_seed11", "preprocess": "row_normalize",
     },
     "ppi": {
         "config": "configs/ppi_secure.cfg", "srs": "artifacts/srs/ppi_formal_srs",
-        "srs_id": "ppi_formal_srs", "n_domain": 65536, "e_domain": 8388608,
+        "srs_id": "ppi_formal_srs", "N": 56944, "E": 850576, "raw_E": 818716,
+        "features": 50, "classes": 121, "n_domain": 65536, "e_domain": 8388608,
         "arch": "gat_family_L3_hid8x8-8x8_kout2_c121",
         "params": "ppi_gat_seed11", "preprocess": "row_normalize",
-        "component_shapes": {0: (1546, 17699), 9: (1377, 16229)},
-        "components": {1: (1546, 17699, (0,)), 2: (2923, 33928, (0, 9))},
+        "component_shapes": {0: (1546, 17699)},
+    },
+    "ogbn_arxiv": {
+        "config": "configs/ogbn_arxiv_secure.cfg", "srs": "artifacts/srs/ogbn_arxiv_formal_srs",
+        "srs_id": "ogbn_arxiv_formal_srs", "N": 169343, "E": 1335586, "raw_E": 1166243,
+        "features": 128, "classes": 40, "n_domain": 262144, "e_domain": 16777216,
+        "arch": "gat_family_L3_hid8x8-8x8_kout2_c40",
+        "params": "ogbn_arxiv_seed11", "preprocess": "ogbn_arxiv_raw_float32",
     },
 }
-PPI_COMPONENT_RULE = "ascending canonical component ID with N>=3 and at least one node having two distinct off-self incoming neighbors"
-FORMAL_CONFIGS: tuple[dict[str, Any], ...] = (
-    {"mechanism": "feature_folding", "dataset": "cora", "width": 1, "graphs": 1, "components": None},
-    {"mechanism": "feature_folding", "dataset": "cora", "width": 2, "graphs": 1, "components": None},
-    {"mechanism": "feature_folding", "dataset": "cora", "width": 4, "graphs": 1, "components": None},
-    {"mechanism": "feature_folding", "dataset": "cora", "width": 8, "graphs": 1, "components": None},
-    {"mechanism": "feature_folding", "dataset": "citeseer", "width": 8, "graphs": 1, "components": None},
-    {"mechanism": "feature_folding", "dataset": "ppi", "width": 8, "graphs": 1, "components": (0,)},
-    {"mechanism": "feature_folding", "dataset": "ppi", "width": 8, "graphs": 2, "components": (0, 9)},
-    {"mechanism": "shared_neighborhood", "dataset": "cora", "width": 8, "graphs": 1, "components": None},
-    {"mechanism": "shared_neighborhood", "dataset": "citeseer", "width": 8, "graphs": 1, "components": None},
-    {"mechanism": "shared_neighborhood", "dataset": "ppi", "width": 8, "graphs": 1, "components": (0,)},
-    {"mechanism": "shared_neighborhood", "dataset": "ppi", "width": 8, "graphs": 2, "components": (0, 9)},
+PPI_COMPONENT_RULE = "canonical ascending PPI component IDs: component 0 for the five-dataset experiment and IDs 0..294 for full PPI"
+PPI_FULL_COMPONENTS = tuple(range(295))
+FORMAL_CONFIGS: tuple[dict[str, Any], ...] = tuple(
+    {"mechanism": "feature_folding", "dataset": dataset, "width": width, "graphs": 1,
+     "components": (0,) if dataset == "ppi" else None}
+    for dataset in DATASET_ORDER for width in range(1, FORMAL_WIDTH + 1)
+) + tuple(
+    {"mechanism": "shared_neighborhood", "dataset": dataset, "width": FORMAL_WIDTH, "graphs": 1,
+     "components": (0,) if dataset == "ppi" else None}
+    for dataset in DATASET_ORDER
+) + tuple(
+    {"mechanism": mechanism, "dataset": "ppi", "width": FORMAL_WIDTH, "graphs": len(PPI_FULL_COMPONENTS),
+     "components": PPI_FULL_COMPONENTS}
+    for mechanism in MECHANISMS
 )
-if len(FORMAL_CONFIGS) != 11 or len({(x["mechanism"], x["dataset"], x["width"], x["graphs"]) for x in FORMAL_CONFIGS}) != 11:
-    raise RuntimeError("internal formal mechanism matrix must contain exactly 11 unique configurations")
+_FORMAL_CONFIG_KEYS = {
+    (item["mechanism"], item["dataset"], item["width"], item["graphs"], item["components"])
+    for item in FORMAL_CONFIGS
+}
+if len(FORMAL_CONFIGS) != 47 or len(_FORMAL_CONFIG_KEYS) != 47:
+    raise RuntimeError("internal formal mechanism matrix must contain exactly 47 unique configurations")
+if any(item["width"] not in range(1, 9) for item in FORMAL_CONFIGS if item["mechanism"] == "feature_folding") or \
+        any(item["width"] != 8 for item in FORMAL_CONFIGS if item["mechanism"] == "shared_neighborhood"):
+    raise RuntimeError("formal mechanism matrix has an invalid feature width")
+
+
+SELECTION_MECHANISMS = ("all", "feature_folding", "shared_neighborhood")
+SELECTION_INPUT_SCOPES = ("all", "main", "ppi_full")
+
+
+def selected_formal_configs(mechanism: str = "all", input_scope: str = "all") -> tuple[dict[str, Any], ...]:
+    require(mechanism in SELECTION_MECHANISMS,
+            f"--mechanism must be one of {', '.join(SELECTION_MECHANISMS)}")
+    require(input_scope in SELECTION_INPUT_SCOPES,
+            f"--input-scope must be one of {', '.join(SELECTION_INPUT_SCOPES)}")
+    selected = tuple(
+        spec for spec in FORMAL_CONFIGS
+        if (mechanism == "all" or spec["mechanism"] == mechanism)
+        and (input_scope == "all" or
+             (input_scope == "main" and spec["graphs"] == 1) or
+             (input_scope == "ppi_full" and spec["dataset"] == "ppi" and
+              spec["components"] == PPI_FULL_COMPONENTS and spec["graphs"] == 295))
+    )
+    require(bool(selected), "selected mechanism/input scope contains no registered configurations")
+    return selected
+
+
+def configs_for_document(document: dict[str, Any]) -> tuple[dict[str, Any], ...]:
+    selection = document.get("selection")
+    if selection is None:
+        selection = {"mechanism": "all", "input_scope": "all"}
+    require(isinstance(selection, dict), "session summary has no formal matrix selection")
+    require(set(selection) == {"mechanism", "input_scope"},
+            "session summary has unexpected formal matrix selector fields")
+    configs = selected_formal_configs(selection.get("mechanism"), selection.get("input_scope"))
+    declared = document.get("formal_configs")
+    require(isinstance(declared, list), "session summary has no formal configuration inventory")
+    normalized = []
+    for item in declared:
+        require(isinstance(item, dict), "session summary contains a malformed formal configuration")
+        require(set(item) == {"mechanism", "dataset", "width", "graphs", "components", "config_id"},
+                "session summary formal configuration has unexpected fields")
+        components = item.get("components")
+        require(components is None or isinstance(components, (list, tuple)),
+                "session summary contains an invalid component selector")
+        require(isinstance(item.get("mechanism"), str) and isinstance(item.get("dataset"), str) and
+                type(item.get("width")) is int and type(item.get("graphs")) is int and
+                (components is None or all(type(component) is int for component in components)) and
+                isinstance(item.get("config_id"), str),
+                "session summary formal configuration has invalid field types")
+        normalized.append({
+            "mechanism": item.get("mechanism"), "dataset": item.get("dataset"),
+            "width": item.get("width"), "graphs": item.get("graphs"),
+            "components": None if components is None else tuple(components),
+            "config_id": item.get("config_id"),
+        })
+    expected = [dict(spec, config_id=matrix_config_id(spec)) for spec in configs]
+    require(normalized == expected, "session formal configuration inventory differs from its selectors")
+    return configs
+
+
+def selected_datasets(configs: tuple[dict[str, Any], ...] | list[dict[str, Any]]) -> tuple[str, ...]:
+    selected = {spec["dataset"] for spec in configs}
+    return tuple(dataset for dataset in DATASET_ORDER if dataset in selected)
+
+
+def registered_matrix_counts(configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS) -> dict[str, int]:
+    main = [spec for spec in configs if spec["graphs"] == 1]
+    appendix = [spec for spec in configs if spec["dataset"] == "ppi" and
+                spec["components"] == PPI_FULL_COMPONENTS and spec["graphs"] == 295]
+    return {
+        "total_configurations": len(configs),
+        "feature_folding_main_matrix_count": sum(spec["mechanism"] == "feature_folding" for spec in main),
+        "shared_neighborhood_main_matrix_count": sum(spec["mechanism"] == "shared_neighborhood" for spec in main),
+        "ppi_component0_main_matrix_groups": sum(spec["dataset"] == "ppi" and spec["components"] == (0,) for spec in main),
+        "ppi_full295_appendix_groups": len(appendix),
+    }
 TIMING_SEMANTICS = {
     "commitment_time_ms": "cold native KZG commitment work only, including first-use static-base preparation invoked inside commitment; Taylor-shift coefficient materialization is excluded",
     "prove_time_ms": "native online proof work, Taylor-shift coefficient materialization, and canonical proof encoding, excluding KZG commitment work and artifact file I/O",
@@ -313,7 +411,7 @@ def build_snapshot(binary: pathlib.Path, backend: str) -> dict[str, Any]:
     }
 
 
-def srs_snapshot(path: pathlib.Path) -> dict[str, Any]:
+def srs_snapshot(path: pathlib.Path, *, verify_material_hashes: bool = True) -> dict[str, Any]:
     resolved = path.expanduser().resolve()
     require(resolved.is_dir() and not path.is_symlink(), f"--srs must be a regular SRS directory: {path}")
     manifest_path = resolved / "srs_manifest.json"
@@ -334,6 +432,7 @@ def srs_snapshot(path: pathlib.Path) -> dict[str, Any]:
             "selected SRS manifest has no canonical manifest digest")
     for key in ("pk_coef_path", "pk_coef_hash", "vk_path", "vk_hash", "srs_audit_report_path", "srs_audit_report_hash"):
         require(key in manifest, f"selected SRS manifest is missing required trusted material field {key}")
+    material_files: list[dict[str, Any]] = []
     for path_key, hash_key in (("pk_coef_path", "pk_coef_hash"), ("vk_path", "vk_hash"),
                                ("srs_audit_report_path", "srs_audit_report_hash")):
         item = resolved / str(manifest[path_key])
@@ -343,8 +442,14 @@ def srs_snapshot(path: pathlib.Path) -> dict[str, Any]:
         require(item.is_file() and not item.is_symlink(), f"SRS trusted material is missing or not regular: {item}")
         require(isinstance(manifest[hash_key], str) and HEX_256.fullmatch(manifest[hash_key]),
                 f"SRS trusted material has an invalid digest: {hash_key}")
-        require(sha256_file(canonical_item) == manifest[hash_key],
-                f"SRS trusted material digest does not match its registered bytes: {item}")
+        if verify_material_hashes:
+            require(sha256_file(canonical_item) == manifest[hash_key],
+                    f"SRS trusted material digest does not match its registered bytes: {item}")
+        material_files.append({
+            "path": str(canonical_item), "declared_sha256": manifest[hash_key],
+            "size_bytes": canonical_item.stat().st_size,
+            "sha256_verified": verify_material_hashes,
+        })
     lagrange_paths = manifest.get("pk_lagrange_paths")
     lagrange_hashes = manifest.get("pk_lagrange_hashes")
     require(isinstance(lagrange_paths, dict) and isinstance(lagrange_hashes, dict),
@@ -370,8 +475,14 @@ def srs_snapshot(path: pathlib.Path) -> dict[str, Any]:
         require(item.is_file() and not item.is_symlink(), f"SRS {domain} Lagrange material is missing or not regular: {item}")
         require(isinstance(lagrange_hashes[domain], str) and HEX_256.fullmatch(lagrange_hashes[domain]),
                 f"SRS {domain} Lagrange material digest is invalid")
-        require(sha256_file(canonical_item) == lagrange_hashes[domain],
-                f"SRS {domain} Lagrange material digest does not match its registered bytes")
+        if verify_material_hashes:
+            require(sha256_file(canonical_item) == lagrange_hashes[domain],
+                    f"SRS {domain} Lagrange material digest does not match its registered bytes")
+        material_files.append({
+            "path": str(canonical_item), "domain": domain,
+            "declared_sha256": lagrange_hashes[domain], "size_bytes": canonical_item.stat().st_size,
+            "sha256_verified": verify_material_hashes,
+        })
     envelope = manifest.get("max_instance_envelope")
     require(isinstance(envelope, dict), "selected SRS manifest has no trusted instance envelope")
     degree_bound = manifest.get("degree_bound")
@@ -390,6 +501,8 @@ def srs_snapshot(path: pathlib.Path) -> dict[str, Any]:
         "ceremony_transcript_hash": ceremony_hash,
         "domain_sizes": domains,
         "max_instance_envelope": envelope,
+        "material_verification": "sha256_verified" if verify_material_hashes else "metadata_only_not_rehashed",
+        "material_files": material_files,
         "manifest": manifest,
     }
 
@@ -414,7 +527,7 @@ def read_config(path: pathlib.Path) -> dict[str, str]:
     return values
 
 
-def config_snapshot(dataset: str) -> dict[str, Any]:
+def config_snapshot(dataset: str, *, verify_srs_materials: bool = True) -> dict[str, Any]:
     config_path, srs_path = dataset_paths(dataset)
     config = read_config(config_path)
     expected = DATASETS[dataset]
@@ -438,7 +551,8 @@ def config_snapshot(dataset: str) -> dict[str, Any]:
         "config_sha256": sha256_file(config_path),
         "config_values": config,
         "checkpoint_path": str(checkpoint_path),
-        "srs": srs_snapshot(srs_path),
+        "checkpoint_manifest_path": str(checkpoint_path / "manifest.json"),
+        "srs": srs_snapshot(srs_path, verify_material_hashes=verify_srs_materials),
     }
 
 
@@ -595,7 +709,13 @@ def validate_real_metadata(
     require(isinstance(actual, dict), "real-input metadata has no actual graph size")
     graphs = len(components) if dataset == "ppi" and components else 1
     if dataset == "ppi":
-        expected_nodes, expected_edges, ids = expected["components"][graphs]
+        if components == (0,):
+            expected_nodes, expected_edges = expected["component_shapes"][0]
+            ids = (0,)
+        elif components == PPI_FULL_COMPONENTS:
+            expected_nodes, expected_edges, ids = expected["N"], expected["E"], PPI_FULL_COMPONENTS
+        else:
+            raise ValueError("PPI input selection must be component 0 or the complete canonical 0..294 inventory")
     else:
         expected_nodes, expected_edges, ids = expected["N"], expected["E"], (0,)
     require({key: actual.get(key) for key in ("N", "E", "G")} ==
@@ -616,22 +736,26 @@ def validate_real_metadata(
     computed_edge_ptr = [0]
     seen_ids: list[int] = []
     selected_records: list[dict[str, Any]] = []
+    absolute_node_cursor = 0
     for index, record in enumerate(selected):
         require(isinstance(record, dict), "malformed selected component metadata")
         component_id = record.get("canonical_id")
         require(type(component_id) is int and component_id == ids[index],
                 "selected component IDs differ from the fixed canonical component rule")
         component_nodes, component_edges = record.get("N"), record.get("E")
-        require(type(component_nodes) is int and component_nodes >= 3,
+        require(type(component_nodes) is int and component_nodes >= 1,
                 f"selected component {component_id} has an invalid node count")
-        require(type(component_edges) is int and component_edges > 0,
+        require(type(component_edges) is int and component_edges >= 1,
                 f"selected component {component_id} has an invalid edge count")
         if dataset == "ppi":
-            require((component_nodes, component_edges) == expected["component_shapes"][component_id],
-                    f"PPI component {component_id} counts differ from the fixed complete-component identity")
+            if components == (0,):
+                require((component_nodes, component_edges) == expected["component_shapes"][component_id],
+                        f"PPI component {component_id} counts differ from the fixed component-0 identity")
         node_begin, node_end = record.get("absolute_node_begin"), record.get("absolute_node_end")
-        require(type(node_begin) is int and type(node_end) is int and node_begin >= 0 and node_end - node_begin == component_nodes,
+        require(type(node_begin) is int and type(node_end) is int and node_begin == absolute_node_cursor and
+                node_end - node_begin == component_nodes,
                 f"selected component {component_id} has an invalid original node boundary")
+        absolute_node_cursor = node_end
         stats = record.get("nonself_neighbor_stats")
         require(isinstance(stats, dict), f"selected component {component_id} has no non-self neighbor statistics")
         eligible = stats.get("eligible_nodes")
@@ -641,7 +765,7 @@ def validate_real_metadata(
                 f"selected component {component_id} has invalid neighbor degree extrema")
         require(type(median) in (int, float) and math.isfinite(float(median)) and minimum <= median <= maximum,
                 f"selected component {component_id} has invalid median neighbor count")
-        if dataset == "ppi":
+        if dataset == "ppi" and components == (0,):
             require(eligible >= 1 and maximum >= 2,
                     f"PPI component {component_id} does not meet the nontrivial-neighborhood selection rule")
         computed_node_ptr.append(computed_node_ptr[-1] + component_nodes)
@@ -1508,7 +1632,12 @@ def run_process(
 
 
 def matrix_config_id(spec: dict[str, Any]) -> str:
-    component_tag = "full" if spec["components"] is None else "components-" + "-".join(str(x) for x in spec["components"])
+    if spec["dataset"] == "ppi" and spec["components"] == (0,):
+        component_tag = "component_0"
+    elif spec["dataset"] == "ppi" and spec["components"] == PPI_FULL_COMPONENTS:
+        component_tag = "all_295_graphs"
+    else:
+        component_tag = "full"
     mechanism_tag = "ff" if spec["mechanism"] == "feature_folding" else "sn"
     return f"{mechanism_tag}_{spec['dataset']}_{component_tag}_d{spec['width']}_g{spec['graphs']}"
 
@@ -1516,12 +1645,18 @@ def matrix_config_id(spec: dict[str, Any]) -> str:
 def bundle_key(dataset: str, components: tuple[int, ...] | None) -> str:
     if components is None:
         return f"{dataset}_full_graph"
+    if dataset == "ppi" and components == (0,):
+        return "ppi_component_0"
+    if dataset == "ppi" and components == PPI_FULL_COMPONENTS:
+        return "ppi_all_295_graphs"
     return f"{dataset}_components_" + "_".join(str(x) for x in components)
 
 
-def unique_bundle_specs() -> list[tuple[str, str, tuple[int, ...] | None]]:
+def unique_bundle_specs(
+    configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS,
+) -> list[tuple[str, str, tuple[int, ...] | None]]:
     found: dict[tuple[str, tuple[int, ...] | None], None] = {}
-    for spec in FORMAL_CONFIGS:
+    for spec in configs:
         found[(spec["dataset"], spec["components"])] = None
     return [(bundle_key(ds, comps), ds, comps) for ds, comps in found]
 
@@ -1534,11 +1669,13 @@ def spec_for_cell(dataset: str, mechanism: str, width: int, graphs: int, compone
     return matches[0]
 
 
-def empty_summary(session_id: str, session_root: pathlib.Path, repetitions: int) -> dict[str, Any]:
+def empty_summary(
+    session_id: str, session_root: pathlib.Path, repetitions: int,
+    mechanism: str = "all", input_scope_value: str = "all",
+) -> dict[str, Any]:
+    configs = selected_formal_configs(mechanism, input_scope_value)
     return {
-        "format": "zkgat_real_mechanism_experiment_v1",
-        "combined_summary_schema": "zkgat_real_mechanism_combined_summary_v1",
-        "combined_summary_status": "pending",
+        "format": EXPERIMENT_FORMAT,
         "session_id": session_id,
         "session_root": str(session_root),
         "created_utc": utc_now(),
@@ -1551,11 +1688,12 @@ def empty_summary(session_id: str, session_root: pathlib.Path, repetitions: int)
         "ppi_component_rule": PPI_COMPONENT_RULE,
         "mechanisms": list(MECHANISMS),
         "variants": list(VARIANTS),
+        "selection": {"mechanism": mechanism, "input_scope": input_scope_value},
         "repetitions": repetitions,
-        "expected_config_count": len(FORMAL_CONFIGS),
-        "expected_pair_count": len(FORMAL_CONFIGS) * repetitions,
-        "expected_cell_count": len(FORMAL_CONFIGS) * repetitions * len(VARIANTS),
-        "formal_configs": [dict(item, config_id=matrix_config_id(item)) for item in FORMAL_CONFIGS],
+        "expected_config_count": len(configs),
+        "expected_pair_count": len(configs) * repetitions,
+        "expected_cell_count": len(configs) * repetitions * len(VARIANTS),
+        "formal_configs": [dict(item, config_id=matrix_config_id(item)) for item in configs],
         "prepared_inputs": [],
         "cells": [],
         "pairs": [],
@@ -1565,12 +1703,17 @@ def empty_summary(session_id: str, session_root: pathlib.Path, repetitions: int)
         "complete_pairs": 0,
         "failure_reason": None,
         "timing_semantics": TIMING_SEMANTICS,
+        "process_timing_semantics": {
+            "prover_wall_time_seconds": "整个独立 Prover 子进程生命周期墙钟时间，含启动与 I/O，不与原生在线计时混合",
+            "verify_wall_time_seconds": "整个独立 Verifier 子进程生命周期墙钟时间，含启动与 I/O，不与原生在线计时混合",
+        },
     }
 
 
 def update_summary_counts(document: dict[str, Any], cells: list[dict[str, Any]]) -> None:
-    pairs = summarize_real_pairs(cells)
-    groups = summarize_real_groups(pairs, int(document["repetitions"]))
+    configs = configs_for_document(document)
+    pairs = summarize_real_pairs(cells, configs)
+    groups = summarize_real_groups(pairs, int(document["repetitions"]), configs)
     document["cells"] = cells
     document["pairs"] = pairs
     document["groups"] = groups
@@ -1591,6 +1734,8 @@ def publish_progress(session_root: pathlib.Path, document: dict[str, Any], cells
         "gpu_sharing_mode": document.get("gpu_sharing_mode"),
         "failure_reason": document.get("failure_reason"),
     })
+    write_summary_markdown(session_root / "summary.md", document)
+    write_results_csv(session_root / "results.csv", document)
 
 
 def prepare_real_bundle(
@@ -1959,8 +2104,10 @@ def require_repetition_input_stability(cells: list[dict[str, Any]], config_id: s
             f"real input, relation digest, SRS, or security policy changed between repetitions for {config_id}")
 
 
-def summarize_real_pairs(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    expected_config = {matrix_config_id(spec): spec for spec in FORMAL_CONFIGS}
+def summarize_real_pairs(
+    cells: list[dict[str, Any]], configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS,
+) -> list[dict[str, Any]]:
+    expected_config = {matrix_config_id(spec): spec for spec in configs}
     grouped: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
     for cell in cells:
         grouped.setdefault((cell["config_id"], cell["repetition"]), {})[cell["variant"]] = cell
@@ -1983,7 +2130,7 @@ def summarize_real_pairs(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         if valid:
             metrics: dict[str, Any] = {}
-            for name in METRIC_FIELDS:
+            for name in SUMMARY_METRIC_FIELDS:
                 original_value, control_value = float(original[name]), float(control[name])
                 saving = None if control_value == 0 else (control_value - original_value) / control_value * 100.0
                 ratio = None if original_value == 0 else control_value / original_value
@@ -2006,14 +2153,17 @@ def _sample(values: list[float]) -> dict[str, float | None]:
     }
 
 
-def summarize_real_groups(pairs: list[dict[str, Any]], requested_repetitions: int) -> list[dict[str, Any]]:
+def summarize_real_groups(
+    pairs: list[dict[str, Any]], requested_repetitions: int,
+    configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
-    for spec in FORMAL_CONFIGS:
+    for spec in configs:
         cfgid = matrix_config_id(spec)
         selected = [pair for pair in pairs if pair["config_id"] == cfgid]
         complete = [pair for pair in selected if pair["status"] == "complete"]
         metrics: dict[str, Any] = {}
-        for name in METRIC_FIELDS:
+        for name in SUMMARY_METRIC_FIELDS:
             original_values = [float(pair["metrics"][name]["original"]) for pair in complete]
             control_values = [float(pair["metrics"][name]["control"]) for pair in complete]
             differences = [float(pair["metrics"][name]["original_minus_control"]) for pair in complete]
@@ -2042,6 +2192,8 @@ def summarize_real_groups(pairs: list[dict[str, Any]], requested_repetitions: in
             "component_ids": (source_cell.get("component_ids") if source_cell else list(spec["components"] or (0,))),
             "requested_repetitions": requested_repetitions,
             "complete_repetitions": len(complete), "metrics": metrics,
+            "status": "已完成" if len(complete) == requested_repetitions else
+                      ("部分完成" if complete else ("失败/未完成" if selected else "未运行")),
         })
     return result
 
@@ -2072,488 +2224,214 @@ def copy_build_source_manifest(source_path: pathlib.Path, destination: pathlib.P
             "copied build source manifest does not preserve the producer's raw SHA-256")
 
 
-COMBINED_STAT_ROLES = (
-    "original", "control", "paired_original_minus_control", "saving_percent", "improvement_factor",
-)
-COMBINED_STAT_FIELDS = ("value", "mean", "sample_sd", "n")
+def expected_geometry(spec: dict[str, Any]) -> tuple[int, int, int]:
+    dataset = DATASETS[spec["dataset"]]
+    if spec["dataset"] == "ppi" and spec["components"] == (0,):
+        nodes, edges = dataset["component_shapes"][0]
+    else:
+        nodes, edges = dataset["N"], dataset["E"]
+    return nodes, edges, spec["graphs"]
 
 
-def combined_summary_rows(document: dict[str, Any], session_root: pathlib.Path,
-                          *, verify_artifact_hashes: bool = True) -> list[dict[str, Any]]:
-    """Validate one complete registered matrix and render rows from its existing groups."""
-    require(document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1",
-            "combined summary export is not enabled for this session schema")
-    require(document.get("format") == "zkgat_real_mechanism_experiment_v1" and
-            document.get("session_status") == "complete" and document.get("provenance_stable") is True,
-            "combined summary requires a complete session with stable provenance")
-    repetitions = document.get("repetitions")
-    require(type(repetitions) is int and repetitions > 0,
-            "combined summary has an invalid repetition count")
-    expected_pairs = len(FORMAL_CONFIGS) * repetitions
-    expected_cells = expected_pairs * len(VARIANTS)
-    require(document.get("expected_config_count") == len(FORMAL_CONFIGS) and
-            document.get("expected_pair_count") == expected_pairs and
-            document.get("expected_cell_count") == expected_cells and
-            document.get("cell_count") == expected_cells and
-            document.get("verified_cells") == expected_cells and
-            document.get("complete_pairs") == expected_pairs,
-            "combined summary requires every registered cell and pair to be complete and initially verified")
-
-    source = document.get("provenance", {}).get("source", {})
-    build = document.get("provenance", {}).get("build", {})
-    for label, record, fields in (
-        ("source", source, ("source_tree_hash", "git_diff_sha256", "git_status_sha256")),
-        ("CUDA build", build, ("binary_sha256", "cmake_cache_sha256", "source_manifest_sha256")),
-    ):
-        require(isinstance(record, dict) and all(
-            isinstance(record.get(field), str) and HEX_256.fullmatch(record[field]) for field in fields
-        ), f"combined summary is missing stable {label} identity hashes")
-
-    expected_ids = [matrix_config_id(spec) for spec in FORMAL_CONFIGS]
-    spec_by_id = {matrix_config_id(spec): spec for spec in FORMAL_CONFIGS}
-    cells = document.get("cells")
-    require(isinstance(cells, list) and len(cells) == expected_cells,
-            "combined summary cell inventory is incomplete")
-    keys: set[tuple[str, int, str]] = set()
-    geometry_by_config: dict[str, tuple[int, int, int, int, tuple[int, ...]]] = {}
-    for cell in cells:
-        key = (cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
-        require(key not in keys, f"combined summary contains duplicate cell {key}")
-        keys.add(key)
-        spec = spec_by_id.get(cell.get("config_id"))
-        require(spec is not None, f"combined summary contains an unregistered configuration {cell.get('config_id')}")
-        require(cell.get("cell_status") == "complete" and cell.get("pair_status") == "paired" and
-                cell.get("verification_status") == "VERIFY_OK" and cell.get("backend") == "cuda" and
-                cell.get("cuda_actual") is True and type(cell.get("cuda_kernel_invocations_delta")) is int and
-                cell["cuda_kernel_invocations_delta"] > 0,
-                f"combined summary cell has no accepted initial verification or actual CUDA proof evidence: {key}")
-        require(type(cell.get("repetition")) is int and 1 <= cell["repetition"] <= repetitions and
-                cell.get("variant") in VARIANTS,
-                f"combined summary cell has an invalid repetition or variant: {key}")
-        component_ids = tuple(cell.get("component_ids", []))
-        require(cell.get("D") == spec["width"] and cell.get("G") == spec["graphs"] and
-                component_ids == tuple(spec["components"] or (0,)) and
-                type(cell.get("N")) is int and cell["N"] > 0 and
-                type(cell.get("E")) is int and cell["E"] > 0,
-                f"combined summary cell geometry differs from its registered configuration: {key}")
-        geometry = (cell["N"], cell["E"], cell["D"], cell["G"], component_ids)
-        prior_geometry = geometry_by_config.setdefault(cell["config_id"], geometry)
-        require(prior_geometry == geometry, f"combined summary geometry changed within {cell['config_id']}")
-        for metric in METRIC_FIELDS:
-            value = cell.get(metric)
-            require(type(value) in (int, float) and math.isfinite(float(value)) and float(value) > 0,
-                    f"combined summary cell has an invalid {metric}: {key}")
-        if verify_artifact_hashes:
-            for path_field, digest_field, label in (
-                ("proof_path", "proof_sha256", "proof"),
-                ("statement_path", "statement_file_sha256", "statement"),
-                ("prover_result_path", "prover_result_sha256", "prover receipt"),
-                ("verifier_result_path", "verifier_result_sha256", "initial verifier receipt"),
-                ("prover_log", "prover_log_sha256", "prover log"),
-                ("verifier_log", "verifier_log_sha256", "verifier log"),
-            ):
-                path_text, digest = cell.get(path_field), cell.get(digest_field)
-                require(isinstance(path_text, str) and path_text and isinstance(digest, str),
-                        f"combined summary cell has no {label} path or digest: {key}")
-                require_session_artifact(session_root, path_text, digest, f"{key} {label}")
-            cell_path = cell.get("cell_json_path")
-            require(isinstance(cell_path, str) and cell_path,
-                    f"combined summary cell has no persisted cell record: {key}")
-            require(load_json(pathlib.Path(cell_path), "persisted formal cell") == cell,
-                    f"combined summary cell record differs from its persisted artifact: {key}")
-    require(keys == expected_cell_keys(repetitions),
-            f"combined summary does not contain the exact 11 x 2 x {repetitions} matrix")
-    require(len(geometry_by_config) == len(FORMAL_CONFIGS), "combined summary is missing a registered configuration")
-
-    computed_pairs = summarize_real_pairs(cells)
-    require(document.get("pairs") == computed_pairs and len(computed_pairs) == expected_pairs and
-            all(pair.get("status") == "complete" for pair in computed_pairs),
-            "combined summary paired records differ from the completed Original/Control cells")
-    groups = document.get("groups")
-    expected_groups = summarize_real_groups(computed_pairs, repetitions)
-    require(isinstance(groups, list) and groups == expected_groups and
-            [group.get("config_id") for group in groups] == expected_ids,
-            "combined summary groups differ from the paired measurements or registered configuration order")
-
-    rows: list[dict[str, Any]] = []
-    for group in groups:
-        require(group.get("requested_repetitions") == repetitions and
-                group.get("complete_repetitions") == repetitions and
-                type(group.get("N")) is int and group["N"] > 0 and
-                type(group.get("E")) is int and group["E"] > 0,
-                f"combined summary configuration is incomplete: {group.get('config_id')}")
-        metric_stats = group.get("metrics")
-        require(isinstance(metric_stats, dict) and set(metric_stats) == set(METRIC_FIELDS),
-                f"combined summary metrics are incomplete: {group.get('config_id')}")
-        for metric in METRIC_FIELDS:
-            roles = metric_stats[metric]
-            require(isinstance(roles, dict) and set(roles) == set(COMBINED_STAT_ROLES),
-                    f"combined summary paired statistics are incomplete: {group['config_id']} {metric}")
-            for role in COMBINED_STAT_ROLES:
-                stats = roles[role]
-                require(isinstance(stats, dict) and stats.get("n") == repetitions,
-                        f"combined summary has an incomplete {role} statistic: {group['config_id']} {metric}")
-                estimate_key = "value" if repetitions == 1 else "mean"
-                estimate = stats.get(estimate_key)
-                require(type(estimate) in (int, float) and math.isfinite(float(estimate)),
-                        f"combined summary has an invalid {role} estimate: {group['config_id']} {metric}")
-                if repetitions >= 2:
-                    sd = stats.get("sample_sd")
-                    require(type(sd) in (int, float) and math.isfinite(float(sd)) and float(sd) >= 0,
-                            f"combined summary has an invalid {role} sample standard deviation: {group['config_id']} {metric}")
-        rows.append({
-            "config_id": group["config_id"], "mechanism": group["mechanism"],
-            "dataset": group["dataset"], "N": group["N"], "E": group["E"],
-            "D": group["D"], "G": group["G"], "component_ids": list(group["component_ids"]),
-            "complete_repetitions": group["complete_repetitions"],
-            "requested_repetitions": group["requested_repetitions"],
-            "metrics": group["metrics"],
-        })
-    return rows
+def input_scope(spec: dict[str, Any]) -> str:
+    if spec["dataset"] != "ppi":
+        return "完整数据集"
+    return "PPI 第0个原始连通分量" if spec["components"] == (0,) else "PPI 全部295个图（附录）"
 
 
-def combined_summary_csv_fields() -> list[str]:
+def _cell_display_status(cell: dict[str, Any] | None) -> str:
+    if cell is None:
+        return "未运行"
+    return {"complete": "已完成", "failed": "失败", "running": "进行中"}.get(
+        str(cell.get("cell_status")), str(cell.get("cell_status") or "进行中"))
+
+
+def _csv_value(value: Any) -> Any:
+    return "" if value is None else value
+
+
+def write_results_csv(path: pathlib.Path, document: dict[str, Any]) -> None:
+    """Write a flat, Excel-friendly row for every planned cell, updating actual cells in place."""
+    cells_by_key = {
+        (cell["config_id"], cell["repetition"], cell["variant"]): cell
+        for cell in document.get("cells", [])
+    }
     fields = [
-        "config_id", "mechanism", "dataset", "N", "E", "D", "G", "component_ids",
-        "complete_repetitions", "requested_repetitions",
+        "机制", "数据集", "输入范围", "N", "E", "G", "D", "版本", "重复序号",
+        "原生承诺时间_ms", "原生证明时间_ms", "原生验证时间_ms",
+        "完整Prover进程时间_秒", "完整Verifier进程时间_秒", "证明字节数",
+        "独立验证", "安全账本", "单元状态", "配对状态", "失败原因",
+        "配置ID", "输入Bundle_SHA256", "Statement_SHA256", "Proof_SHA256",
+        "Prover日志", "Verifier日志", "Proof文件",
     ]
-    for metric in METRIC_FIELDS:
-        for role in COMBINED_STAT_ROLES:
-            fields.extend(f"{metric}_{role}_{stat}" for stat in COMBINED_STAT_FIELDS)
-    return fields
-
-
-def write_combined_summary_csv(path: pathlib.Path, rows: list[dict[str, Any]]) -> None:
-    fields = combined_summary_csv_fields()
-    with path.open("w", encoding="utf-8", newline="") as stream:
+    with path.open("w", encoding="utf-8-sig", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="raise")
         writer.writeheader()
-        for row in rows:
-            flat: dict[str, Any] = {key: row[key] for key in fields[:10]}
-            flat["component_ids"] = ",".join(str(value) for value in row["component_ids"])
-            for metric in METRIC_FIELDS:
-                for role in COMBINED_STAT_ROLES:
-                    stats = row["metrics"][metric][role]
-                    for stat in COMBINED_STAT_FIELDS:
-                        flat[f"{metric}_{role}_{stat}"] = stats.get(stat, "")
-            writer.writerow(flat)
+        for spec in configs_for_document(document):
+            config_id = matrix_config_id(spec)
+            nodes, edges, graphs = expected_geometry(spec)
+            for repetition in range(1, int(document["repetitions"]) + 1):
+                for variant in VARIANTS:
+                    cell = cells_by_key.get((config_id, repetition, variant))
+                    verification = "未验证"
+                    security = "未验证"
+                    if cell is not None:
+                        verification = "通过" if cell.get("verification_status") == "VERIFY_OK" else (
+                            "失败" if cell.get("verification_status") not in (None, "NOT_RUN") else "未验证")
+                        security = "通过" if cell.get("security_budget_valid") is True else (
+                            "失败" if cell.get("security_budget_valid") is False else "未验证")
+                    row = {
+                        "机制": "特征折叠" if spec["mechanism"] == "feature_folding" else "共享邻域",
+                        "数据集": spec["dataset"], "输入范围": input_scope(spec),
+                        "N": cell.get("N", nodes) if cell else nodes,
+                        "E": cell.get("E", edges) if cell else edges,
+                        "G": cell.get("G", graphs) if cell else graphs,
+                        "D": spec["width"], "版本": "Original" if variant == "original" else "Control",
+                        "重复序号": repetition,
+                        "原生承诺时间_ms": _csv_value(cell.get("commitment_time_ms")) if cell else "",
+                        "原生证明时间_ms": _csv_value(cell.get("prove_time_ms")) if cell else "",
+                        "原生验证时间_ms": _csv_value(cell.get("verify_time_ms")) if cell else "",
+                        "完整Prover进程时间_秒": _csv_value(cell.get("prover_wall_time_seconds")) if cell else "",
+                        "完整Verifier进程时间_秒": _csv_value(cell.get("verify_wall_time_seconds")) if cell else "",
+                        "证明字节数": _csv_value(cell.get("proof_size_bytes")) if cell else "",
+                        "独立验证": verification, "安全账本": security,
+                        "单元状态": _cell_display_status(cell),
+                        "配对状态": ("未运行" if cell is None else cell.get("pair_status", "未配对")),
+                        "失败原因": "" if cell is None else cell.get("failure_reason", ""),
+                        "配置ID": config_id,
+                        "输入Bundle_SHA256": "" if cell is None else cell.get("input_bundle_sha256", ""),
+                        "Statement_SHA256": "" if cell is None else cell.get("statement_file_sha256", ""),
+                        "Proof_SHA256": "" if cell is None else cell.get("proof_sha256", ""),
+                        "Prover日志": "" if cell is None else cell.get("prover_log", ""),
+                        "Verifier日志": "" if cell is None else cell.get("verifier_log", ""),
+                        "Proof文件": "" if cell is None else cell.get("proof_path", ""),
+                    }
+                    writer.writerow(row)
 
 
-def _combined_summary_estimate(stats: dict[str, Any]) -> str:
-    if "value" in stats:
-        return f"{float(stats['value']):.8g} (n=1)"
-    return f"{float(stats['mean']):.8g} ± {float(stats['sample_sd']):.8g}"
-
-
-def write_combined_summary_markdown(path: pathlib.Path, document: dict[str, Any],
-                                    rows: list[dict[str, Any]]) -> None:
-    metric_columns: dict[str, str] = {
-        "commitment_time_ms": "Commitment (ms)", "prove_time_ms": "Prove (ms)",
-        "verify_time_ms": "Verify (ms)", "proof_size_bytes": "Proof size (bytes)",
-    }
-    lines = [
-        "# Combined real-data CUDA mechanism ablation summary", "",
-        f"Session `{document['session_id']}`; status **{document['session_status']}**; "
-        f"{document['expected_config_count']} configurations, {document['complete_pairs']} paired repetitions, "
-        f"{document['verified_cells']}/{document['expected_cell_count']} initial independent verifications.",
-        "This combined export checks the initial verification receipts and artifact SHA-256 bindings. "
-        "It does not run or claim a full independent re-verification.",
-        "Each metric cell is `Original; Control; paired O−C; Saving (%); Improvement Factor (Control/Original)`. "
-        "For 2+ repetitions each item is mean ± sample SD of its corresponding observations; paired effects "
-        "are summarized after per-pair calculation. A single repetition is shown as its measured value (n=1), "
-        "without a fabricated SD.",
-        "Formulas: Saving (%) = (Control − Original) / Control × 100; Improvement Factor = Control / Original.",
-        "",
-        "| Mechanism | Dataset | N | E | D | G | PPI components | Repetitions | " +
-        " | ".join(metric_columns.values()) + " |",
-        "|---|---|---:|---:|---:|---:|---|---:|" + "---|" * len(metric_columns),
-    ]
-    for row in rows:
-        metric_cells = []
-        for metric in METRIC_FIELDS:
-            values = row["metrics"][metric]
-            metric_cells.append(
-                f"O {_combined_summary_estimate(values['original'])}; "
-                f"C {_combined_summary_estimate(values['control'])}; "
-                f"Δ {_combined_summary_estimate(values['paired_original_minus_control'])}; "
-                f"save {_combined_summary_estimate(values['saving_percent'])}%; "
-                f"factor {_combined_summary_estimate(values['improvement_factor'])}×"
-            )
-        components = ",".join(str(value) for value in row["component_ids"]) or "—"
-        lines.append("| " + " | ".join(str(value) for value in (
-            row["mechanism"], row["dataset"], row["N"], row["E"], row["D"], row["G"], components,
-            f"{row['complete_repetitions']}/{row['requested_repetitions']}", *metric_cells,
-        )) + " |")
-    atomic_write_text(path, "\n".join(lines) + "\n")
-
-
-def write_combined_summary_json(path: pathlib.Path, document: dict[str, Any],
-                                rows: list[dict[str, Any]]) -> None:
-    report = {
-        "format": "zkgat_real_mechanism_combined_summary_v1",
-        "session_id": document["session_id"], "session_status": document["session_status"],
-        "backend": document["backend"], "repetitions": document["repetitions"],
-        "expected_config_count": document["expected_config_count"],
-        "expected_pair_count": document["expected_pair_count"],
-        "expected_cell_count": document["expected_cell_count"],
-        "initially_verified_cells": document["verified_cells"],
-        "verification_scope": {
-            "initial_independent_verifier_receipts": "VERIFY_OK for every formal cell",
-            "artifact_sha256_bindings_checked": True,
-            "full_reverification_performed_by_exporter": False,
-            "full_reverification_claimed": False,
-        },
-        "paired_statistics": {
-            "paired_original_minus_control": "calculate each repetition's Original - Control, then summarize",
-            "saving_percent": "calculate each repetition as (Control - Original) / Control * 100, then summarize",
-            "improvement_factor": "calculate each repetition as Control / Original, then summarize",
-            "summary_for_repetitions_ge_2": "mean and sample standard deviation",
-            "summary_for_single_repetition": "measured value and n=1; no sample standard deviation",
-        },
-        "metric_units": METRIC_LABELS,
-        "source_identity": document["provenance"]["source"],
-        "build_identity": document["provenance"]["build"],
-        "rows": rows,
-    }
-    atomic_write_json(path, report)
-
-
-def write_cells_csv(path: pathlib.Path, cells: list[dict[str, Any]]) -> None:
-    fields = [
-        "mechanism", "variant", "dataset", "config_id", "N", "E", "D", "G", "component_ids",
-        "node_ptr", "edge_ptr", "nonself_neighbor_stats", "repetition", "pair_order_index",
-        "backend", "device", "device_name", "cell_status", "pair_status", "verification_status",
-        "gpu_sharing_mode", "gpu_uuid", "cuda_activity_before", "cuda_activity_after",
-        *METRIC_FIELDS, "pair_input_commitment_sha256", "input_bundle_sha256", "input_metadata_sha256",
-        "input_witness_sha256", "data_identity_sha256", "config_path", "config_sha256", "checkpoint_bundle",
-        "data_sources", "srs_id", "srs_manifest_sha256", "protocol_schema_id", "security_budget_ledger_sha256",
-        "security_budget_valid", "security_target_bits", "security_error_numerator",
-        "security_target_numerator_threshold", "security_fiat_shamir_challenge_count",
-        "security_kzg_point_group_games", "cuda_actual", "cuda_device_name", "cuda_ntt_forced", "cuda_kernel_invocations_delta",
-        "cuda_stats_delta", "cuda_warmup_time_ms", "cuda_warmup_kernel_invocations",
-        "proof_path", "proof_sha256", "statement_path", "statement_sha256", "prover_result_path",
-        "prover_result_sha256", "verifier_result_path", "verifier_result_sha256",
-        "prover_exit_code", "verifier_exit_code", "prover_log", "verifier_log", "failure_reason",
-    ]
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
-        writer.writeheader()
-        for cell in cells:
-            row = dict(cell)
-            for field in ("component_ids", "node_ptr", "edge_ptr", "nonself_neighbor_stats", "checkpoint_bundle",
-                          "data_sources", "cuda_stats_delta", "cuda_activity_before", "cuda_activity_after"):
-                if field in row:
-                    row[field] = json.dumps(row[field], sort_keys=True, separators=(",", ":"))
-            writer.writerow({field: row.get(field, "") for field in fields})
-
-
-def _paper_number(value: Any, name: str) -> str:
+def _format_stat(stats: dict[str, Any], metric: str, requested: int) -> str:
+    count = stats.get("n", 0)
+    if not count:
+        return "未运行"
+    value = _reported_value(stats)
     if value is None:
-        return "—"
-    if name == "proof_size_bytes":
-        return f"{float(value):.2f}"
-    return f"{float(value):.6f}"
+        return "未运行"
+    unit = {
+        "proof_size_bytes": " B", "prover_wall_time_seconds": " s",
+        "verify_wall_time_seconds": " s", "saving_percent": "%",
+        "improvement_factor": "×",
+    }.get(metric, " ms")
+    if requested == 1:
+        return f"{float(value):.5g}{unit} (n=1)"
+    sd = _reported_sd(stats)
+    if sd is None:
+        return f"{float(value):.5g}{unit} (n={count}/{requested})"
+    return f"{float(value):.5g} ± {float(sd):.3g}{unit} (n={count}/{requested})"
 
 
-def write_mechanism_paper_markdown(path: pathlib.Path, document: dict[str, Any], mechanism: str) -> None:
-    title = "Sparse Node-to-Edge Feature Verification" if mechanism == "feature_folding" else "Shared Neighborhood Verification"
-    single_measurement = int(document["repetitions"]) == 1
+def _format_metric_effect(values: dict[str, Any], metric: str, requested: int) -> str:
+    original = _format_stat(values["original"], metric, requested)
+    control = _format_stat(values["control"], metric, requested)
+    saving = _format_stat(values["saving_percent"], "saving_percent", requested)
+    factor = _format_stat(values["improvement_factor"], "improvement_factor", requested)
+    return f"O {original}; C {control}; 节省 {saving}; C/O {factor}"
+
+
+def write_summary_markdown(path: pathlib.Path, document: dict[str, Any]) -> None:
+    status = document.get("session_status", "unknown")
+    state_label = "预检计划（没有运行正式证明）" if status.startswith("preflight") else status
+    configs = configs_for_document(document)
+    selection = document.get("selection", {"mechanism": "all", "input_scope": "all"})
+    mechanism_label = {
+        "all": "全部机制", "feature_folding": "Feature Folding", "shared_neighborhood": "Shared Neighborhood",
+    }[selection["mechanism"]]
+    input_scope_label = {
+        "all": "全部输入范围", "main": "消融主表输入（完整非 PPI 图及 PPI 原始组件 0；不是 zkGAT 主实验）",
+        "ppi_full": "仅全量 PPI 295 图附录输入",
+    }[selection["input_scope"]]
     lines = [
-        f"# {title} — formal real-data CUDA mechanism results", "",
-        f"Session: `{document['session_id']}`; status: **{document['session_status']}**; backend: **CUDA**.",
-        f"Independent verifier: CPU, separate process. Accepted formal proof cells: {document['verified_cells']}/{document['expected_cell_count']}.",
-        f"Formal measurement count: **{document['repetitions']} per configuration**.",
-        "Layer/head source: formal hidden layer 0, attention head 0, width 8. Feature Folding D<8 uses the first D coordinates of the same real width-8 hidden feature as a controlled mechanism width.",
-        "PPI components use the fixed selection rule recorded in provenance: " + PPI_COMPONENT_RULE + ".",
-        "Commitment and Prove are disjoint native proof partitions; Verify covers independent verifier parsing through acceptance; proof size is the serialized mechanism proof file length.",
-        "Paired difference is Original − Control; Saving (%) is (Control − Original) / Control × 100; Improvement Factor is Control / Original.",
+        "# zkGAT 两项机制性消融实验结果摘要", "",
+        f"- 会话：`{document.get('session_id', '—')}`；状态：**{state_label}**。",
+        f"- 本次选择：{mechanism_label}；输入范围：{input_scope_label}。",
+        f"- 计划矩阵：{len(configs)} 组 × {document.get('repetitions', 0)} 次 × Original/Control = "
+        f"{document.get('expected_cell_count', 0)} 个单元。",
+        f"- 已记录单元：{document.get('cell_count', 0)}；独立验证通过：{document.get('verified_cells', 0)}；"
+        f"成功配对重复：{document.get('complete_pairs', 0)}/{document.get('expected_pair_count', 0)}。",
+        "- 统计只纳入同一配置、同一重复序号中 Original 与 Control 均成功、独立 Verify 通过且安全账本有效的配对；"
+        "未运行/失败单元不填 0，也不进入统计。",
+        "- 原生在线计时（承诺、证明、验证）与完整子进程墙钟时间分别报告；墙钟时间包括进程启动及文件 I/O。",
+        "- Saving = (Control − Original) / Control × 100%；C/O = Control / Original。负节省和小于 1 的倍数按实测保留。",
+        "- main 范围表示消融主表输入：PPI 仅用原始 component 0；ppi_full 表示完整 295 个图及原始边界。",
+        "",
     ]
-    if single_measurement:
+    selected_mechanisms = {spec["mechanism"] for spec in configs}
+    metric_columns = [
+        ("commitment_time_ms", "承诺在线(ms)"), ("prove_time_ms", "证明在线(ms)"),
+        ("verify_time_ms", "验证在线(ms)"), ("proof_size_bytes", "证明字节(B)"),
+        ("prover_wall_time_seconds", "Prover进程(s)"), ("verify_wall_time_seconds", "Verifier进程(s)"),
+    ]
+    for mechanism, title in (("feature_folding", "特征折叠"), ("shared_neighborhood", "共享邻域")):
+        if mechanism not in selected_mechanisms:
+            continue
+        selected_groups = [group for group in document.get("groups", []) if group["mechanism"] == mechanism]
+        lines.extend([f"## {title}", ""])
+        headers = ["数据集", "输入范围", "N", "E", "D", "G", "有效配对", "状态"] + [label for _, label in metric_columns]
+        lines.append("| " + " | ".join(headers) + " |")
+        lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+        for group in selected_groups:
+            spec = next(item for item in configs if matrix_config_id(item) == group["config_id"])
+            nodes, edges, graphs = expected_geometry(spec)
+            row = [
+                group["dataset"], input_scope(spec), group["N"] or nodes, group["E"] or edges,
+                group["D"], group["G"] or graphs,
+                f"{group['complete_repetitions']}/{group['requested_repetitions']}", group["status"],
+            ]
+            row.extend(_format_metric_effect(group["metrics"][metric], metric, group["requested_repetitions"])
+                       for metric, _ in metric_columns)
+            lines.append("| " + " | ".join(str(value).replace("|", "\\|") for value in row) + " |")
+        lines.append("")
+    failed = [cell for cell in document.get("cells", [])
+              if cell.get("cell_status") != "complete" or cell.get("pair_status") != "paired"]
+    if failed:
+        lines.extend(["## 失败或未完成的已尝试单元", "",
+                      "| 配置 | 重复 | 版本 | 单元状态 | 配对状态 | 独立验证 | 安全账本 | 失败原因 |",
+                      "|---|---:|---|---|---|---|---|---|"])
+        for cell in failed:
+            lines.append("| " + " | ".join(str(value or "—").replace("|", "\\|") for value in (
+                cell.get("config_id"), cell.get("repetition"), cell.get("variant"),
+                _cell_display_status(cell), cell.get("pair_status"), cell.get("verification_status"),
+                cell.get("security_budget_valid", "未验证"), cell.get("failure_reason"))) + " |")
+        lines.append("")
+    if status.startswith("preflight"):
         lines.extend([
-            "Each configuration has one paired measurement. Values are the direct measured values; no sample standard deviation, confidence interval, or significance estimate is calculated.", "",
-            "| Dataset | N | E | D | G | Component IDs | Metric | Original | Control | Paired O−C | Saving (%) | Improvement Factor | Repetitions |",
-            "|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|",
+            "预检只核对矩阵、配置、缓存/图边界、checkpoint 清单和 SRS manifest/文件存在性；它没有准备 proof 输入、"
+            "没有重新散列 SRS key 内容、没有运行 Prove/Verify，也没有验证本次实验的安全账本。",
+            "所有单元状态均为“未运行”；本文件不是实验结果。", "",
         ])
-    else:
-        lines.extend([
-            "Metric values and paired effects report the mean and sample standard deviation over complete verified pairs; no confidence interval or significance estimate is calculated.", "",
-            "| Dataset | N | E | D | G | Component IDs | Metric | Original mean | Original sample SD | Control mean | Control sample SD | Paired O−C mean | Paired O−C SD | Saving % mean | Saving % SD | C/O mean | C/O sample SD | Repetitions |",
-            "|---|---:|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
-        ])
-    for row in document["groups"]:
-        if row["mechanism"] != mechanism:
-            continue
-        comp = ",".join(str(x) for x in row["component_ids"])
-        for metric_name in METRIC_FIELDS:
-            values = row["metrics"][metric_name]
-            if single_measurement:
-                fields = [
-                    row["dataset"], row["N"], row["E"], row["D"], row["G"], comp, METRIC_LABELS[metric_name],
-                    _paper_number(_reported_value(values["original"]), metric_name),
-                    _paper_number(_reported_value(values["control"]), metric_name),
-                    _paper_number(_reported_value(values["paired_original_minus_control"]), metric_name),
-                    _paper_number(_reported_value(values["saving_percent"]), "saving_percent"),
-                    _paper_number(_reported_value(values["improvement_factor"]), "improvement_factor"),
-                    f"{row['complete_repetitions']}/{row['requested_repetitions']}",
-                ]
-            else:
-                fields = [
-                    row["dataset"], row["N"], row["E"], row["D"], row["G"], comp, METRIC_LABELS[metric_name],
-                    _paper_number(_reported_value(values["original"]), metric_name),
-                    _paper_number(_reported_sd(values["original"]), metric_name),
-                    _paper_number(_reported_value(values["control"]), metric_name),
-                    _paper_number(_reported_sd(values["control"]), metric_name),
-                    _paper_number(_reported_value(values["paired_original_minus_control"]), metric_name),
-                    _paper_number(_reported_sd(values["paired_original_minus_control"]), metric_name),
-                    _paper_number(_reported_value(values["saving_percent"]), "saving_percent"),
-                    _paper_number(_reported_sd(values["saving_percent"]), "saving_percent"),
-                    _paper_number(_reported_value(values["improvement_factor"]), "improvement_factor"),
-                    _paper_number(_reported_sd(values["improvement_factor"]), "improvement_factor"),
-                    f"{row['complete_repetitions']}/{row['requested_repetitions']}",
-                ]
-            lines.append("| " + " | ".join(str(field) for field in fields) + " |")
-    lines.extend(["", "## Proof cells", "", "| Config | Rep | Variant | Verification | Pair | Commitment ms | Prove ms | Verify ms | Proof bytes | CUDA device | Proof kernels | Warmup kernels | Input bundle SHA-256 | Metadata SHA-256 | Relation SHA-256 | Statement SHA-256 | Prover receipt SHA-256 | Proof SHA-256 | Verifier receipt SHA-256 |", "|---|---:|---|---|---|---:|---:|---:|---:|---|---:|---:|---|---|---|---|---|---|---|"])
-    for cell in document["cells"]:
-        if cell["mechanism"] != mechanism:
-            continue
-        lines.append(
-            f"| {cell['config_id']} | {cell['repetition']} | {cell['variant']} | {cell['verification_status']} | {cell['pair_status']} | "
-            f"{_paper_number(cell.get('commitment_time_ms'), 'commitment_time_ms')} | "
-            f"{_paper_number(cell.get('prove_time_ms'), 'prove_time_ms')} | "
-            f"{_paper_number(cell.get('verify_time_ms'), 'verify_time_ms')} | "
-            f"{_paper_number(cell.get('proof_size_bytes'), 'proof_size_bytes')} | "
-            f"{cell.get('cuda_device_name', '—')} | {cell.get('cuda_kernel_invocations_delta', '—')} | "
-            f"{cell.get('cuda_warmup_kernel_invocations', '—')} | `{cell.get('input_bundle_sha256', '—')}` | "
-            f"`{cell.get('input_metadata_sha256', '—')}` | `{cell.get('pair_input_commitment_sha256', '—')}` | "
-            f"`{cell.get('statement_sha256', '—')}` | `{cell.get('prover_result_sha256', '—')}` | "
-            f"`{cell.get('proof_sha256', '—')}` | `{cell.get('verifier_result_sha256', '—')}` |"
-        )
-    lines.extend([
-        "", "## Data and provenance", "",
-        f"- Source tree SHA-256: `{document.get('provenance', {}).get('source', {}).get('source_tree_hash', '—')}`",
-        f"- Source diff SHA-256: `{document.get('provenance', {}).get('source', {}).get('git_diff_sha256', '—')}`",
-        f"- Source inventory ID: `{document.get('provenance', {}).get('source', {}).get('source_inventory_id', '—')}`",
-        f"- CUDA binary SHA-256: `{document.get('provenance', {}).get('build', {}).get('binary_sha256', '—')}`; CMake cache SHA-256 `{document.get('provenance', {}).get('build', {}).get('cmake_cache_sha256', '—')}`; build source manifest SHA-256 `{document.get('provenance', {}).get('build', {}).get('source_manifest_sha256', '—')}`.",
-        f"- CUDA device record: `{document.get('provenance', {}).get('device', {}).get('selected_device', {})}`; formal CUDA proofs attested: `{document.get('verified_cells', 0)}`.",
-    ])
-    datasets = sorted({row["dataset"] for row in document["groups"] if row["mechanism"] == mechanism})
-    for dataset in datasets:
-        info = document.get("provenance", {}).get("datasets", {}).get(dataset, {})
-        lines.append(f"- `{dataset}` config SHA-256 `{info.get('config_sha256', '—')}`, checkpoint bundle `{info.get('checkpoint_path', '—')}`.")
-        srs = info.get("srs", {})
-        lines.append(f"  - Checkpoint bundle path and each member digest are listed in `summary.json`/`cells.csv`; formal checkpoint bundle SHA-256 values are recorded per prepared input.")
-        lines.append(f"  - SRS `{srs.get('manifest_srs_id', '—')}` trusted manifest SHA-256 `{srs.get('manifest_sha256', '—')}`, registered domains `{srs.get('domain_sizes', {})}`.")
-    lines.extend(["", "### Prepared input hashes", ""])
-    for bundle in document.get("prepared_inputs", []):
-        meta = bundle.get("metadata", {})
-        if meta.get("dataset") not in datasets:
-            continue
-        lines.append(
-            f"- `{bundle['bundle_key']}` N/E/G `{meta.get('actual', {}).get('N', '—')}/{meta.get('actual', {}).get('E', '—')}/{meta.get('actual', {}).get('G', '—')}`; "
-            f"components `{bundle.get('components', [])}`; bundle SHA-256 `{bundle.get('bundle_sha256', '—')}`; "
-            f"metadata SHA-256 `{bundle.get('metadata_sha256', '—')}`; witness SHA-256 `{bundle.get('witness_sha256', '—')}`; "
-            f"checkpoint bundle SHA-256 `{meta.get('checkpoint_bundle_sha256', '—')}`; source manifest SHA-256 `{meta.get('source_manifest_sha256', '—')}`."
-        )
-    lines.append(f"- Output directory: `{document['session_root']}`")
-    atomic_write_text(path, "\n".join(lines) + "\n")
-
-
-def write_paper_csv(path: pathlib.Path, groups: list[dict[str, Any]], mechanism: str) -> None:
-    single_measurement = all(group["requested_repetitions"] == 1 for group in groups)
-    fields = ["mechanism", "dataset", "N", "E", "D", "G", "component_ids", "complete_repetitions", "requested_repetitions", "metric"]
-    if single_measurement:
-        fields.extend(["original", "control", "paired_original_minus_control", "saving_percent", "improvement_factor"])
-    else:
-        fields.extend([
-            "original_mean", "original_sample_sd", "control_mean", "control_sample_sd",
-            "paired_original_minus_control_mean", "paired_original_minus_control_sample_sd",
-            "saving_percent_mean", "saving_percent_sample_sd", "improvement_factor_mean", "improvement_factor_sample_sd",
-        ])
-    with path.open("w", encoding="utf-8", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=fields)
-        writer.writeheader()
-        for group in groups:
-            if group["mechanism"] != mechanism:
-                continue
-            for metric_name, values in group["metrics"].items():
-                row = {
-                    "mechanism": mechanism, "dataset": group["dataset"], "N": group["N"], "E": group["E"],
-                    "D": group["D"], "G": group["G"],
-                    "component_ids": ",".join(str(x) for x in group["component_ids"]),
-                    "complete_repetitions": group["complete_repetitions"], "requested_repetitions": group["requested_repetitions"],
-                    "metric": METRIC_LABELS[metric_name],
-                }
-                if single_measurement:
-                    row.update({
-                        "original": _reported_value(values["original"]),
-                        "control": _reported_value(values["control"]),
-                        "paired_original_minus_control": _reported_value(values["paired_original_minus_control"]),
-                        "saving_percent": _reported_value(values["saving_percent"]),
-                        "improvement_factor": _reported_value(values["improvement_factor"]),
-                    })
-                else:
-                    row.update({
-                        "original_mean": _reported_value(values["original"]),
-                        "original_sample_sd": _reported_sd(values["original"]),
-                        "control_mean": _reported_value(values["control"]),
-                        "control_sample_sd": _reported_sd(values["control"]),
-                        "paired_original_minus_control_mean": _reported_value(values["paired_original_minus_control"]),
-                        "paired_original_minus_control_sample_sd": _reported_sd(values["paired_original_minus_control"]),
-                        "saving_percent_mean": _reported_value(values["saving_percent"]),
-                        "saving_percent_sample_sd": _reported_sd(values["saving_percent"]),
-                        "improvement_factor_mean": _reported_value(values["improvement_factor"]),
-                        "improvement_factor_sample_sd": _reported_sd(values["improvement_factor"]),
-                    })
-                writer.writerow(row)
+    if document.get("failure_reason"):
+        lines.extend([f"会话失败原因：{document['failure_reason']}", ""])
+    lines.extend([f"原始日志、逐单元回执、Proof/Statement 与审计证据目录：`{document.get('session_root', '—')}`", ""])
+    atomic_write_text(path, "\n".join(lines))
 
 
 def generate_reports(session_root: pathlib.Path, document: dict[str, Any]) -> dict[str, str]:
-    write_cells_csv(session_root / "cells.csv", document["cells"])
-    paths: dict[str, str] = {}
-    for mechanism, stem in (("feature_folding", "feature_folding"), ("shared_neighborhood", "shared_neighborhood")):
-        md = session_root / f"{stem}_summary.md"
-        csv_path = session_root / f"{stem}_summary.csv"
-        write_mechanism_paper_markdown(md, document, mechanism)
-        write_paper_csv(csv_path, document["groups"], mechanism)
-        paths[f"{mechanism}_markdown"] = str(md)
-        paths[f"{mechanism}_csv"] = str(csv_path)
-    if document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1":
-        if document.get("session_status") == "complete":
-            try:
-                rows = combined_summary_rows(document, session_root, verify_artifact_hashes=True)
-            except (OSError, ValueError) as exc:
-                document["session_status"] = "incomplete"
-                document["failure_reason"] = document.get("failure_reason") or (
-                    f"combined summary validation failed: {str(exc) or type(exc).__name__}")
-                document["combined_summary_status"] = "not_generated_validation_failed"
-                status_path = session_root / "status.json"
-                if status_path.is_file() and not status_path.is_symlink():
-                    status = load_json(status_path, "formal session status")
-                    status.update({
-                        "session_status": "incomplete", "updated_utc": utc_now(),
-                        "failure_reason": document["failure_reason"],
-                    })
-                    atomic_write_json(status_path, status)
-            else:
-                combined_paths = {
-                    "combined_summary_csv": session_root / "combined_summary.csv",
-                    "combined_summary_markdown": session_root / "combined_summary.md",
-                    "combined_summary_json": session_root / "combined_summary.json",
-                }
-                write_combined_summary_csv(combined_paths["combined_summary_csv"], rows)
-                write_combined_summary_markdown(combined_paths["combined_summary_markdown"], document, rows)
-                write_combined_summary_json(combined_paths["combined_summary_json"], document, rows)
-                paths.update({key: str(value) for key, value in combined_paths.items()})
-                document["combined_summary_status"] = "generated_initial_verification_and_artifact_hash_checks"
-        else:
-            document["combined_summary_status"] = "not_generated_incomplete_session"
+    summary_path = session_root / "summary.md"
+    results_path = session_root / "results.csv"
+    write_summary_markdown(summary_path, document)
+    write_results_csv(results_path, document)
+    paths = {"summary_markdown": str(summary_path), "results_csv": str(results_path)}
     document["result_files"] = paths
     atomic_write_json(session_root / "summary.json", document)
     manifest = {
         "session_id": document["session_id"], "session_status": document["session_status"],
+        "selection": document.get("selection", {"mechanism": "all", "input_scope": "all"}),
+        "expected_config_count": document["expected_config_count"],
+        "expected_pair_count": document["expected_pair_count"],
+        "expected_cell_count": document["expected_cell_count"],
         "files": {key: {"path": value, "sha256": sha256_file(pathlib.Path(value))}
                   for key, value in paths.items()},
-        "cells_csv": {"path": str(session_root / "cells.csv"), "sha256": sha256_file(session_root / "cells.csv")},
+        "results_csv": {"path": str(results_path), "sha256": sha256_file(results_path)},
+        "summary_markdown": {"path": str(summary_path), "sha256": sha256_file(summary_path)},
         "summary_json": {"path": str(session_root / "summary.json"), "sha256": sha256_file(session_root / "summary.json")},
     }
     monitor = document.get("cuda_activity_monitor")
@@ -2587,11 +2465,13 @@ def revalidate_input_sources(document: dict[str, Any]) -> None:
                 f"real dataset source manifest digest changed during the session: {meta['dataset']}")
 
 
-def formal_schedule(repetitions: int) -> list[tuple[dict[str, Any], int]]:
+def formal_schedule(
+    repetitions: int, configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS,
+) -> list[tuple[dict[str, Any], int]]:
     schedule: list[tuple[dict[str, Any], int]] = []
     for repetition in range(1, repetitions + 1):
-        shift = ((repetition - 1) * 4) % len(FORMAL_CONFIGS)
-        ordered = list(FORMAL_CONFIGS[shift:]) + list(FORMAL_CONFIGS[:shift])
+        shift = ((repetition - 1) * 4) % len(configs)
+        ordered = list(configs[shift:]) + list(configs[:shift])
         schedule.extend((spec, repetition) for spec in ordered)
     return schedule
 
@@ -2603,6 +2483,212 @@ def pair_variant_order(pair_index: int) -> list[str]:
     return variants
 
 
+def preflight_cache(dataset: str) -> dict[str, Any]:
+    expected = DATASETS[dataset]
+    root = PROJECT_ROOT / "data" / "cache" / dataset
+    require(root.is_dir() and not root.is_symlink(), f"{dataset} formal cache is missing or not regular")
+    meta_path = root / "meta.cfg"
+    meta = read_config(meta_path)
+    for key, value in {
+        "name": dataset, "num_nodes": str(expected["N"]),
+        "num_features": str(expected["features"]), "num_classes": str(expected["classes"]),
+        "input_preprocess_id": expected["preprocess"],
+    }.items():
+        require(meta.get(key) == value, f"{dataset} cache meta.cfg {key} differs from registry")
+    if dataset == "ppi":
+        require(meta.get("graph_count") == "295", "PPI cache does not declare all 295 graphs")
+    if dataset == "ogbn_arxiv":
+        require(meta.get("graph_count") == "1", "OGBN-Arxiv cache does not declare one full graph")
+    required = [meta_path, root / "edges.txt"]
+    if dataset == "ppi":
+        required.extend([root / "features.npy", root / "labels_multi.npy", root / "node_ptr.txt"])
+    elif dataset == "ogbn_arxiv":
+        required.extend([root / "features.npy", root / "labels.txt"])
+    else:
+        required.extend([root / "features.txt", root / "labels.txt"])
+    for item in required:
+        require(item.is_file() and not item.is_symlink(), f"{dataset} cache member is missing: {item}")
+    node_ptr: list[int] = []
+    if dataset == "ppi":
+        try:
+            node_ptr = [int(value) for value in (root / "node_ptr.txt").read_text(encoding="ascii").split()]
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(f"PPI node_ptr.txt is malformed: {exc}") from exc
+        require(len(node_ptr) == 296 and node_ptr[0] == 0 and node_ptr[-1] == expected["N"] and
+                all(a < b for a, b in zip(node_ptr, node_ptr[1:])),
+                "PPI node_ptr does not contain complete contiguous boundaries for 295 graphs")
+    raw_edges = 0
+    try:
+        with (root / "edges.txt").open("r", encoding="ascii") as stream:
+            for line_number, line in enumerate(stream, 1):
+                fields = line.split()
+                require(len(fields) == (3 if dataset == "ppi" else 2),
+                        f"{dataset} edge row {line_number} has an invalid field count")
+                try:
+                    values = [int(value) for value in fields]
+                except ValueError as exc:
+                    raise ValueError(f"{dataset} edge row {line_number} is not integer encoded") from exc
+                if dataset == "ppi":
+                    graph, source, target = values
+                    require(0 <= graph < 295, f"PPI edge row {line_number} has an invalid graph id")
+                    lower, upper = node_ptr[graph], node_ptr[graph + 1]
+                    require(lower <= source < upper and lower <= target < upper,
+                            f"PPI edge row {line_number} crosses its graph boundary")
+                else:
+                    source, target = values
+                    require(0 <= source < expected["N"] and 0 <= target < expected["N"],
+                            f"{dataset} edge row {line_number} has an out-of-range node id")
+                raw_edges += 1
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"cannot read {dataset} edge cache: {exc}") from exc
+    require(raw_edges == expected["raw_E"],
+            f"{dataset} raw edge count {raw_edges} differs from registered {expected['raw_E']}")
+    return {
+        "cache_root": str(root), "metadata": meta, "metadata_sha256": sha256_file(meta_path),
+        "raw_edge_count_verified": raw_edges, "edge_size_bytes": (root / "edges.txt").stat().st_size,
+        "edge_content_sha256": None, "node_ptr": node_ptr,
+        "node_ptr_sha256": sha256_file(root / "node_ptr.txt") if dataset == "ppi" else None,
+        "required_files": [{"path": str(item), "size_bytes": item.stat().st_size} for item in required],
+        "input_content_hashes_computed": False,
+    }
+
+
+def preflight_checkpoint(dataset: str, info: dict[str, Any]) -> dict[str, Any]:
+    root = pathlib.Path(info["checkpoint_path"])
+    manifest_path = root / "manifest.json"
+    require(manifest_path.is_file() and not manifest_path.is_symlink(),
+            f"{dataset} checkpoint manifest is missing or not regular")
+    manifest = load_json(manifest_path, f"{dataset} checkpoint manifest")
+    expected = DATASETS[dataset]
+    expected_manifest = {
+        "dataset": dataset, "model_arch_id": expected["arch"],
+        "model_param_id": expected["params"], "input_preprocess_id": expected["preprocess"],
+    }
+    for key, value in expected_manifest.items():
+        require(manifest.get(key) == value, f"{dataset} checkpoint {key} differs from registry")
+    for key in ("quant_cfg_id", "static_table_id"):
+        require(manifest.get(key) == info["config_values"].get(key),
+                f"{dataset} checkpoint {key} differs from formal config")
+    tensor_index = manifest.get("tensor_index")
+    require(isinstance(tensor_index, dict) and tensor_index, f"{dataset} checkpoint has no tensor index")
+    required = [manifest_path, root / "tensors.npz", root / "tensors.txt"]
+    for item in required:
+        require(item.is_file() and not item.is_symlink(), f"{dataset} checkpoint member is missing: {item}")
+    return {
+        "path": str(root), "manifest_path": str(manifest_path), "manifest_sha256": sha256_file(manifest_path),
+        "model_arch_id": manifest["model_arch_id"], "model_param_id": manifest["model_param_id"],
+        "input_preprocess_id": manifest["input_preprocess_id"], "tensor_count": len(tensor_index),
+        "required_files": [{"path": str(item), "size_bytes": item.stat().st_size} for item in required],
+        "weight_contents_hashed": False,
+    }
+
+
+def execute_preflight(args: argparse.Namespace) -> int:
+    repetitions = args.repetitions
+    require(type(repetitions) is int and repetitions > 0, "--repetitions must be a positive integer")
+    require(type(args.device) is int and args.device >= 0,
+            "preflight --device must be a non-negative integer; no CUDA task is started")
+    output_root = safe_output_root(args.output_root)
+    session_id, session_root = create_session_dir(output_root)
+    os.umask(0o077)
+    configs = selected_formal_configs(args.mechanism, args.input_scope)
+    datasets = selected_datasets(configs)
+    document = empty_summary(session_id, session_root, repetitions, args.mechanism, args.input_scope)
+    document["session_status"] = "preflight_running"
+    document["preflight"] = {
+        "mode": "bounded_metadata_only", "device_argument": args.device,
+        "formal_cells_executed": 0, "proofs_generated": 0, "real_input_bundles_generated": 0,
+        "independent_verify": "未运行", "security_ledger": "未验证",
+        "srs_key_content_hashes": "未重新计算；只检查 manifest 声明、路径和文件尺寸",
+        "cache_content_hashes": "不计算；流式检查边数、端点和 PPI graph_id/node_ptr 边界",
+    }
+    log_path = session_root / "session.log"
+    emit(f"MECHANISM_PREFLIGHT_STARTED session_id={session_id} output={session_root}", log_path)
+    errors: list[str] = []
+    expected_keys = expected_cell_keys(repetitions, configs)
+    matrix = {
+        **registered_matrix_counts(configs),
+        "pair_count": len(configs) * repetitions,
+        "cell_count": len(expected_keys),
+    }
+    if matrix["total_configurations"] != len(configs) or \
+            len(expected_keys) != len(configs) * repetitions * len(VARIANTS):
+        errors.append(f"矩阵检查失败：所选 {len(configs)} 组配置与计划单元数不一致")
+    checks: dict[str, Any] = {"matrix": matrix, "datasets": {}}
+    dataset_info: dict[str, dict[str, Any]] = {}
+    for dataset in datasets:
+        record: dict[str, Any] = {"dataset": dataset, "status": "blocked"}
+        try:
+            info = config_snapshot(dataset, verify_srs_materials=False)
+            expected = DATASETS[dataset]
+            srs = info["srs"]
+            require(srs["manifest_srs_id"] == expected["srs_id"], f"{dataset} SRS id differs from registry")
+            require(srs["domain_sizes"].get("N") == expected["n_domain"] and
+                    srs["domain_sizes"].get("edge") == expected["e_domain"],
+                    f"{dataset} SRS lacks the exact registered N/edge domains")
+            require(srs["manifest_degree_bound"] + 1 >= 2 * expected["e_domain"] + 14,
+                    f"{dataset} SRS coefficient prefix is too short")
+            selected_workload = [expected_geometry(spec) for spec in configs if spec["dataset"] == dataset]
+            max_nodes = max(shape[0] for shape in selected_workload)
+            max_edges = max(shape[1] for shape in selected_workload)
+            graph_count = max(shape[2] for shape in selected_workload)
+            envelope = srs["max_instance_envelope"]
+            require(envelope.get("max_nodes", 0) >= max_nodes and
+                    envelope.get("max_edges", 0) >= max_edges and
+                    envelope.get("max_graphs", 0) >= graph_count,
+                    f"{dataset} SRS envelope does not include the selected workload")
+            checkpoint = preflight_checkpoint(dataset, info)
+            cache = preflight_cache(dataset)
+            record.update({
+                "status": "metadata_checks_passed", "config_path": info["config_path"],
+                "config_sha256": info["config_sha256"], "preprocess": expected["preprocess"],
+                "checkpoint": checkpoint, "cache": cache,
+                "srs": {key: value for key, value in srs.items() if key != "manifest"},
+                "srs_key_content_hashes_verified": False,
+            })
+            dataset_info[dataset] = info
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            record["failure_reason"] = str(exc) or type(exc).__name__
+            errors.append(f"{dataset} 预检失败：{record['failure_reason']}")
+        checks["datasets"][dataset] = record
+
+    if len(dataset_info) == len(datasets):
+        document["provenance"] = {"datasets": {
+            name: {
+                "config_path": info["config_path"], "config_sha256": info["config_sha256"],
+                "checkpoint_path": info["checkpoint_path"],
+                "srs": {key: value for key, value in info["srs"].items() if key != "manifest"},
+                "srs_manifest": info["srs"]["manifest"],
+            } for name, info in dataset_info.items()
+        }}
+        atomic_write_json(session_root / "configuration_and_srs_manifest.json", document["provenance"]["datasets"])
+    document["preflight"].update({
+        "status": "PASS" if not errors else "BLOCKED", "checks": checks, "errors": errors,
+        "remaining_formal_gates": [
+            "native prepare-real 完整生成并核验真实输入 bundle/元数据/图边界",
+            "对所选数据集的 SRS trusted material 重新计算 SHA-256 并装载正式密钥",
+            "CUDA Prove、独立 CPU Verify 与逐单元安全账本检查",
+        ],
+    })
+    document["session_status"] = "preflight_complete" if not errors else "preflight_blocked"
+    document["failure_reason"] = "; ".join(errors) if errors else None
+    update_summary_counts(document, [])
+    atomic_write_json(session_root / "summary.json", document)
+    atomic_write_json(session_root / "preflight.json", document["preflight"])
+    atomic_write_json(session_root / "status.json", {
+        "session_id": session_id, "session_status": document["session_status"],
+        "updated_utc": utc_now(), "expected_config_count": len(configs),
+        "expected_pair_count": document["expected_pair_count"], "expected_cell_count": document["expected_cell_count"],
+        "formal_cells_executed": 0, "proofs_generated": 0, "real_input_bundles_generated": 0,
+        "independent_verify": "not_run", "security_ledger": "not_checked",
+        "failure_reason": document["failure_reason"],
+    })
+    generate_reports(session_root, document)
+    emit(f"MECHANISM_PREFLIGHT_END session_id={session_id} status={document['preflight']['status']} "
+         f"groups={len(configs)} cells={document['expected_cell_count']} output={session_root}", log_path)
+    return 0 if not errors else 1
+
+
 def execute_formal(args: argparse.Namespace) -> int:
     require(type(args.repetitions) is int and args.repetitions > 0, "--repetitions must be a positive integer")
     require(0 <= args.timeout_seconds <= 599, "--timeout-seconds must be 0 (unlimited) or between 1 and 599")
@@ -2611,7 +2697,9 @@ def execute_formal(args: argparse.Namespace) -> int:
     output_root = safe_output_root(args.output_root)
     session_id, session_root = create_session_dir(output_root)
     os.umask(0o077)
-    document = empty_summary(session_id, session_root, args.repetitions)
+    configs = selected_formal_configs(args.mechanism, args.input_scope)
+    datasets = selected_datasets(configs)
+    document = empty_summary(session_id, session_root, args.repetitions, args.mechanism, args.input_scope)
     allow_shared_gpu = bool(getattr(args, "allow_shared_gpu", False))
     document["gpu_sharing_mode"] = (
         "authorized_shared_external_compute" if allow_shared_gpu else "exclusive_required")
@@ -2647,7 +2735,7 @@ def execute_formal(args: argparse.Namespace) -> int:
         build = build_snapshot(binary, "cuda")
         require(build.get("built_source_tree_hash") == source_start["source_tree_hash"],
                 "CUDA mechanism binary was not built from the current source inventory")
-        dataset_info = {name: config_snapshot(name) for name in ("cora", "citeseer", "ppi")}
+        dataset_info = {name: config_snapshot(name) for name in datasets}
         for dataset, info in dataset_info.items():
             expected = DATASETS[dataset]
             manifest = info["srs"]["manifest"]
@@ -2659,13 +2747,13 @@ def execute_formal(args: argparse.Namespace) -> int:
             require(info["srs"]["manifest_degree_bound"] + 1 >= required_coefficient_count,
                     f"{dataset} trusted SRS coefficient prefix is too short for the mechanism ledger requirement")
             envelope = info["srs"]["max_instance_envelope"]
-            if dataset == "ppi":
-                max_nodes, max_edges, max_graphs = 2923, 33928, 2
-            else:
-                max_nodes, max_edges, max_graphs = expected["N"], expected["E"], 1
+            selected_workload = [expected_geometry(spec) for spec in configs if spec["dataset"] == dataset]
+            max_nodes = max(shape[0] for shape in selected_workload)
+            max_edges = max(shape[1] for shape in selected_workload)
+            max_graphs = max(shape[2] for shape in selected_workload)
             require(envelope.get("max_nodes", 0) >= max_nodes and envelope.get("max_edges", 0) >= max_edges and
                     envelope.get("max_graphs", 0) >= max_graphs,
-                    f"{dataset} trusted SRS instance envelope cannot contain every configured graph")
+                    f"{dataset} trusted SRS instance envelope cannot contain the selected workload")
         document["provenance"] = {
             "source": {key: value for key, value in source_start.items() if key != "source_manifest"},
             "build": {key: value for key, value in build.items() if key != "source_manifest"},
@@ -2700,7 +2788,7 @@ def execute_formal(args: argparse.Namespace) -> int:
             session_log,
         )
         prepared_by_key: dict[str, dict[str, Any]] = {}
-        for key, dataset, components in unique_bundle_specs():
+        for key, dataset, components in unique_bundle_specs(configs):
             if not allow_shared_gpu:
                 assert_no_external_cuda_compute(device_snapshot)
             try:
@@ -2720,14 +2808,14 @@ def execute_formal(args: argparse.Namespace) -> int:
             document["prepared_inputs"] = list(prepared)
             prepared_by_key[key] = record
             publish_progress(session_root, document, cells)
-        for spec in FORMAL_CONFIGS:
+        for spec in configs:
             input_record = prepared_by_key[bundle_key(spec["dataset"], spec["components"])]
             check_expected_spec(spec, input_record)
         document["session_status"] = "running_proofs"
         publish_progress(session_root, document, cells)
         used_seed_tokens: set[bytes] = set()
         pair_index = 0
-        for spec, repetition in formal_schedule(args.repetitions):
+        for spec, repetition in formal_schedule(args.repetitions, configs):
             cfgid = matrix_config_id(spec)
             input_record = prepared_by_key[bundle_key(spec["dataset"], spec["components"])]
             variants = pair_variant_order(pair_index)
@@ -2779,7 +2867,7 @@ def execute_formal(args: argparse.Namespace) -> int:
                 "session_matrix_complete")
         source_end = source_snapshot()
         build_end = build_snapshot(binary, "cuda")
-        configs_end = {name: config_snapshot(name) for name in dataset_info}
+        configs_end = {name: config_snapshot(name) for name in datasets}
         revalidate_input_sources(document)
         stable = (
             source_start["source_tree_hash"] == source_end["source_tree_hash"]
@@ -2811,11 +2899,6 @@ def execute_formal(args: argparse.Namespace) -> int:
                 f"formal session did not produce {document['expected_cell_count']} independently verified cells "
                 f"and {document['expected_pair_count']} complete pairs")
         document["session_status"] = "complete"
-        if document.get("combined_summary_schema") == "zkgat_real_mechanism_combined_summary_v1":
-            # Validate the matrix before final reporting; the report writer repeats this with
-            # artifact SHA-256 checks after all proof/receipt files are closed.
-            combined_summary_rows(document, session_root, verify_artifact_hashes=False)
-            document["combined_summary_status"] = "ready_for_artifact_hash_check"
     except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
         if document.get("failure_reason") is None:
             document["failure_reason"] = str(exc) or "interrupted"
@@ -2852,10 +2935,12 @@ def execute_formal(args: argparse.Namespace) -> int:
     return 0 if document.get("session_status") == "complete" else 1
 
 
-def expected_cell_keys(repetitions: int) -> set[tuple[str, int, str]]:
+def expected_cell_keys(
+    repetitions: int, configs: tuple[dict[str, Any], ...] = FORMAL_CONFIGS,
+) -> set[tuple[str, int, str]]:
     return {
         (matrix_config_id(spec), repetition, variant)
-        for spec in FORMAL_CONFIGS
+        for spec in configs
         for repetition in range(1, repetitions + 1)
         for variant in VARIANTS
     }
@@ -2889,9 +2974,17 @@ def validate_results_manifest(session_root: pathlib.Path, document: dict[str, An
     require(manifest_path.is_file() and not manifest_path.is_symlink(),
             "formal results manifest is missing")
     manifest = load_json(manifest_path, "formal results manifest")
+    configs = configs_for_document(document)
+    selection = document.get("selection", {"mechanism": "all", "input_scope": "all"})
     summary_sha = sha256_file(session_root / "summary.json")
     require(manifest.get("session_id") == document.get("session_id") and
             manifest.get("session_status") == "complete" and
+            manifest.get("selection", {"mechanism": "all", "input_scope": "all"}) == selection and
+            manifest.get("expected_config_count", len(configs)) == len(configs) and
+            manifest.get("expected_pair_count", len(configs) * int(document["repetitions"])) ==
+            len(configs) * int(document["repetitions"]) and
+            manifest.get("expected_cell_count", len(configs) * int(document["repetitions"]) * len(VARIANTS)) ==
+            len(configs) * int(document["repetitions"]) * len(VARIANTS) and
             manifest.get("summary_json", {}).get("path") == str(session_root / "summary.json") and
             manifest.get("summary_json", {}).get("sha256") == summary_sha,
             "formal results manifest does not bind the current completed summary")
@@ -2905,10 +2998,30 @@ def validate_results_manifest(session_root: pathlib.Path, document: dict[str, An
         require(isinstance(item, dict) and item.get("path") == path_text,
                 f"formal results manifest path differs from summary for {key}")
         require_session_artifact(session_root, path_text, item.get("sha256", ""), f"paper result {key}")
-    require(manifest.get("cells_csv", {}).get("path") == str(session_root / "cells.csv"),
-            "formal results manifest has an invalid cells.csv path")
-    require_session_artifact(session_root, manifest["cells_csv"]["path"],
-                             manifest["cells_csv"].get("sha256", ""), "cells.csv")
+    require(manifest.get("results_csv", {}).get("path") == str(session_root / "results.csv"),
+            "formal results manifest has an invalid results.csv path")
+    require_session_artifact(session_root, manifest["results_csv"]["path"],
+                             manifest["results_csv"].get("sha256", ""), "results.csv")
+    csv_path = pathlib.Path(manifest["results_csv"]["path"])
+    with csv_path.open(newline="", encoding="utf-8-sig") as stream:
+        rows = list(csv.DictReader(stream))
+    expected_keys = expected_cell_keys(int(document["repetitions"]), configs)
+    require(len(rows) == len(expected_keys), "results.csv does not contain exactly the selected planned cell rows")
+    report_keys: set[tuple[str, int, str]] = set()
+    variant_by_label = {"Original": "original", "Control": "control"}
+    for row in rows:
+        try:
+            key = (row["配置ID"], int(row["重复序号"]), variant_by_label[row["版本"]])
+        except (KeyError, ValueError) as exc:
+            raise ValueError("results.csv has a malformed selected cell key") from exc
+        require(key not in report_keys, f"results.csv contains duplicate selected cell {key}")
+        report_keys.add(key)
+    require(report_keys == expected_keys,
+            "results.csv cell keys differ from the canonical mechanism/input selectors")
+    require(manifest.get("summary_markdown", {}).get("path") == str(session_root / "summary.md"),
+            "formal results manifest has an invalid summary.md path")
+    require_session_artifact(session_root, manifest["summary_markdown"]["path"],
+                             manifest["summary_markdown"].get("sha256", ""), "summary.md")
     require_session_artifact(session_root, manifest["summary_json"]["path"], summary_sha, "summary.json")
     sharing = document.get("provenance", {}).get("gpu_sharing", {})
     monitor = document.get("cuda_activity_monitor")
@@ -2938,12 +3051,17 @@ def validate_reverify_archive(session_root: pathlib.Path, document: dict[str, An
     require(digest_path.read_text(encoding="ascii") == expected_sidecar,
             "independent re-verification archive SHA-256 sidecar does not match its bytes")
     archive = load_json(archive_path, "independent re-verification archive")
+    configs = configs_for_document(document)
+    selection = document.get("selection", {"mechanism": "all", "input_scope": "all"})
     summary_path = session_root / "summary.json"
     summary_sha = sha256_file(summary_path)
     expected_count = document.get("expected_cell_count")
     require(archive.get("format") == "zkgat_real_mechanism_result_audit_v1" and
             archive.get("status") == "PASS" and archive.get("reverified_independently") is True and
             archive.get("session_id") == document.get("session_id") and
+            archive.get("selection", {"mechanism": "all", "input_scope": "all"}) == selection and
+            archive.get("expected_config_ids", [matrix_config_id(spec) for spec in configs]) ==
+            [matrix_config_id(spec) for spec in configs] and
             archive.get("summary_sha256") == summary_sha and
             archive.get("cell_count") == expected_count and archive.get("verified_cells") == expected_count,
             "independent re-verification archive is not a complete passing audit for the current summary")
@@ -2962,6 +3080,8 @@ def validate_reverify_archive(session_root: pathlib.Path, document: dict[str, An
     require(len(expected_by_key) == expected_count and len(archived_by_key) == expected_count and
             expected_by_key.keys() == archived_by_key.keys(),
             "independent re-verification archive cell keys do not match the formal matrix")
+    require(expected_by_key.keys() == expected_cell_keys(int(document["repetitions"]), configs),
+            "formal summary cell keys differ from the canonical mechanism/input selectors")
     for key, cell in expected_by_key.items():
         archived = archived_by_key[key]
         require(archived.get("status") == "VERIFY_OK" and archived.get("exit_code") == 0 and
@@ -3050,13 +3170,15 @@ def _audit_session_impl(args: argparse.Namespace) -> int:
     session_root = args.session.expanduser().resolve()
     require(session_root.is_dir() and not args.session.is_symlink(), "session path is missing, not a directory, or a symlink")
     document = load_json(session_root / "summary.json", "mechanism summary")
-    require(document.get("format") == "zkgat_real_mechanism_experiment_v1", "session summary is not a real-data mechanism run")
+    require(document.get("format") == EXPERIMENT_FORMAT, "session summary is not a current real-data mechanism run")
     require(document.get("session_status") == "complete", "formal session is incomplete; no formal result audit can pass")
     repetitions = document.get("repetitions")
     require(type(repetitions) is int and repetitions > 0, "session summary has an invalid formal repetition count")
-    expected_pairs = len(FORMAL_CONFIGS) * repetitions
+    configs = configs_for_document(document)
+    datasets = selected_datasets(configs)
+    expected_pairs = len(configs) * repetitions
     expected_cells = expected_pairs * len(VARIANTS)
-    require(document.get("expected_config_count") == len(FORMAL_CONFIGS) and
+    require(document.get("expected_config_count") == len(configs) and
             document.get("expected_pair_count") == expected_pairs and
             document.get("expected_cell_count") == expected_cells and
             document.get("cell_count") == expected_cells and
@@ -3108,9 +3230,12 @@ def _audit_session_impl(args: argparse.Namespace) -> int:
             build_current["cmake_cache_sha256"] == build_expected.get("cmake_cache_sha256") and
             build_current["source_manifest_sha256"] == build_expected.get("source_manifest_sha256"),
             "CUDA build identity changed since the formal run")
-    dataset_current = {name: config_snapshot(name) for name in ("cora", "citeseer", "ppi")}
+    recorded_datasets = document.get("provenance", {}).get("datasets", {})
+    require(isinstance(recorded_datasets, dict) and set(recorded_datasets) == set(datasets),
+            "session SRS/config snapshots do not match the canonical selected datasets")
+    dataset_current = {name: config_snapshot(name) for name in datasets}
     for name, current in dataset_current.items():
-        recorded = document["provenance"]["datasets"][name]
+        recorded = recorded_datasets[name]
         require(current["config_sha256"] == recorded["config_sha256"] and
                 current["srs"]["manifest_sha256"] == recorded["srs"]["manifest_sha256"],
                 f"{name} config or trusted SRS manifest changed since the formal run")
@@ -3151,9 +3276,17 @@ def _audit_session_impl(args: argparse.Namespace) -> int:
         check_regular_digest(cell["verifier_log"], cell["verifier_log_sha256"], "verifier log")
         cell_doc = load_json(pathlib.Path(cell["cell_json_path"]), "cell record")
         require(cell_doc == cell, f"cell record differs from the collected summary: {key}")
-    require(keys == expected_cell_keys(repetitions),
-            f"session summary does not contain the exact fixed 11 x 2 x {repetitions} configuration matrix")
-    for bundle in document.get("prepared_inputs", []):
+    expected_keys = expected_cell_keys(repetitions, configs)
+    require(keys == expected_keys,
+            "session summary cell keys differ from the canonical mechanism/input selectors")
+    prepared_inputs = document.get("prepared_inputs", [])
+    expected_bundle_keys = [key for key, _, _ in unique_bundle_specs(configs)]
+    actual_bundle_keys = [bundle.get("bundle_key") for bundle in prepared_inputs if isinstance(bundle, dict)]
+    require(len(actual_bundle_keys) == len(prepared_inputs) and
+            len(actual_bundle_keys) == len(set(actual_bundle_keys)) and
+            set(actual_bundle_keys) == set(expected_bundle_keys),
+            "prepared input bundle inventory differs from the canonical mechanism/input selectors")
+    for bundle in prepared_inputs:
         check_regular_digest(bundle["input_bundle_path"], bundle["bundle_sha256"], "real input bundle")
         check_regular_digest(bundle["metadata_path"], bundle["metadata_sha256"], "real input metadata")
         metadata = load_json(pathlib.Path(bundle["metadata_path"]), "real-input metadata")
@@ -3198,6 +3331,8 @@ def _audit_session_impl(args: argparse.Namespace) -> int:
                        for cell in cells]
     audit = {
         "format": "zkgat_real_mechanism_result_audit_v1", "session_id": document["session_id"],
+        "selection": document.get("selection", {"mechanism": "all", "input_scope": "all"}),
+        "expected_config_ids": [matrix_config_id(spec) for spec in configs],
         "created_utc": utc_now(), "status": "PASS", "reverified_independently": bool(args.reverify),
         "summary_sha256": sha256_file(session_root / "summary.json"),
         "cell_count": len(audit_cells), "verified_cells": sum(item["status"] == "VERIFY_OK" for item in audit_cells)
@@ -3376,13 +3511,16 @@ def regenerate_summary(args: argparse.Namespace) -> int:
             audit.get("verified_cells") == document.get("expected_cell_count"),
             "paper tables require the final receipt audit; the archived full CPU re-verification is tracked separately")
     validate_reverify_archive(session_root, document)
+    configs = configs_for_document(document)
     require(document.get("session_status") == "complete" and
             document.get("cell_count") == document.get("expected_cell_count") and
-            document.get("expected_config_count") == len(FORMAL_CONFIGS),
+            document.get("expected_config_count") == len(configs) and
+            {(cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+             for cell in document.get("cells", [])} == expected_cell_keys(int(document["repetitions"]), configs),
             "cannot create formal tables from an incomplete experiment")
     generate_reports(session_root, document)
-    print(f"PAPER_TABLES_REGENERATED session={session_root} feature_folding={session_root / 'feature_folding_summary.md'} "
-          f"shared_neighborhood={session_root / 'shared_neighborhood_summary.md'}")
+    print(f"REPORTS_REGENERATED session={session_root} summary={session_root / 'summary.md'} "
+          f"results={session_root / 'results.csv'}")
     return 0
 
 
@@ -3409,6 +3547,9 @@ def integrity_session_file(session_root: pathlib.Path, path_text: str, expected_
 
 def build_publication_integrity(session_root: pathlib.Path, created_utc: str) -> dict[str, Any]:
     document = load_json(session_root / "summary.json", "mechanism summary")
+    configs = configs_for_document(document)
+    selection = document.get("selection", {"mechanism": "all", "input_scope": "all"})
+    canonical_keys = expected_cell_keys(int(document["repetitions"]), configs)
     require(document.get("session_status") == "complete" and
             document.get("cell_count") == document.get("expected_cell_count"),
             "publication integrity requires a complete formal session")
@@ -3420,13 +3561,18 @@ def build_publication_integrity(session_root: pathlib.Path, created_utc: str) ->
     expected_count = document["expected_cell_count"]
     require(final_audit.get("status") == "PASS" and final_audit.get("session_id") == document["session_id"] and
             final_audit.get("reverified_independently") is False and
+            final_audit.get("selection", {"mechanism": "all", "input_scope": "all"}) == selection and
             final_audit.get("summary_sha256") == summary_sha and
             final_audit.get("cell_count") == expected_count and
             final_audit.get("verified_cells") == expected_count,
             "publication integrity requires the passing final receipt-only audit for the current summary")
     require(isinstance(final_audit.get("cells"), list) and
             len(final_audit["cells"]) == expected_count and
-            all(cell.get("status") == "RECEIPT_VERIFIED" for cell in final_audit["cells"]),
+            all(cell.get("status") == "RECEIPT_VERIFIED" for cell in final_audit["cells"]) and
+            {(cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+             for cell in final_audit["cells"]} == canonical_keys and
+            len({(cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+                 for cell in final_audit["cells"]}) == expected_count,
             "final receipt-only audit does not cover every formal cell")
     result_manifest_path, result_manifest = validate_results_manifest(session_root, document)
     source = document.get("provenance", {}).get("source", {})
@@ -3466,7 +3612,8 @@ def build_publication_integrity(session_root: pathlib.Path, created_utc: str) ->
     for name, path in (
         ("summary", session_root / "summary.json"),
         ("results_manifest", result_manifest_path),
-        ("cells_csv", session_root / "cells.csv"),
+        ("results_csv", session_root / "results.csv"),
+        ("summary_markdown", session_root / "summary.md"),
         ("source_manifest", source_manifest_path),
         ("build_source_manifest", build_manifest_path),
         ("configuration_and_srs_manifest", configuration_manifest_path),
@@ -3568,6 +3715,8 @@ def build_publication_integrity(session_root: pathlib.Path, created_utc: str) ->
     return {
         "format": "zkgat_mechanism_publication_integrity_v1",
         "session_id": document["session_id"], "created_utc": created_utc,
+        "selection": selection,
+        "expected_config_ids": [matrix_config_id(spec) for spec in configs],
         "expected_cell_count": expected_count,
         "repetition_count_per_configuration": document.get("repetitions"),
         "archived_full_reverification": {
@@ -3629,7 +3778,9 @@ def launch_formal(args: argparse.Namespace) -> int:
     require(0 <= args.timeout_seconds <= 599 and 0 <= args.prepare_timeout_seconds <= 599,
             "formal runner timeouts must be 0 (unlimited) or at most 599 seconds")
     output_root = safe_output_root(args.output_root)
-    launch_root = output_root / "launchers"
+    # Keep launcher records outside a new custom run root. The detached runner
+    # must see that root as nonexistent when it revalidates the immutable-output guard.
+    launch_root = DEFAULT_OUTPUT_ROOT / "launchers"
     launch_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     launch_dir = launch_root / f"cuda_{stamp}_{uuid.uuid4().hex[:10]}"
@@ -3638,6 +3789,8 @@ def launch_formal(args: argparse.Namespace) -> int:
     command = [sys.executable, str(pathlib.Path(__file__).resolve()), "run", "--device", str(args.device),
                "--output-root", str(output_root),
                "--repetitions", str(args.repetitions),
+               "--mechanism", getattr(args, "mechanism", "all"),
+               "--input-scope", getattr(args, "input_scope", "all"),
                "--timeout-seconds", str(args.timeout_seconds), "--prepare-timeout-seconds", str(args.prepare_timeout_seconds)]
     if getattr(args, "allow_shared_gpu", False):
         command.append("--allow-shared-gpu")
@@ -3671,9 +3824,26 @@ def install_signal_handlers() -> None:
         signal.signal(sig, handle)
 
 
+def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mechanism", choices=SELECTION_MECHANISMS, default="all",
+                        help="selected ablation mechanism; default all")
+    parser.add_argument("--input-scope", choices=SELECTION_INPUT_SCOPES, default="all",
+                        help="main means mechanism ablation main-table inputs, not the main zkGAT experiment; "
+                             "ppi_full means only the complete 295-graph PPI appendix")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run the fixed 11-configuration real-data CUDA zkGAT mechanism experiment.")
+    parser = argparse.ArgumentParser(description="Run or preflight the fixed 47-configuration real-data CUDA zkGAT mechanism experiment.")
     subparsers = parser.add_subparsers(dest="command", required=True)
+    preflight = subparsers.add_parser("preflight", help="run bounded metadata-only checks; never prepares inputs or proves")
+    preflight.add_argument("--output-root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT,
+                           help="isolated report root; a new preflight session directory is created")
+    preflight.add_argument("--device", type=integer_arg, required=True,
+                           help="recorded formal device index; no CUDA task is started")
+    preflight.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
+                           help="matrix repetitions to enumerate; default 3")
+    add_selection_arguments(preflight)
+
     run = subparsers.add_parser("run", help="prepare all real inputs and run the paired formal CUDA proof matrix")
     run.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
     run.add_argument("--output-root", type=pathlib.Path, default=DEFAULT_OUTPUT_ROOT,
@@ -3682,11 +3852,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--allow-shared-gpu", action="store_true",
                      help="explicitly authorize sharing with external CUDA compute processes and record their activity")
     run.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
-                     help="positive paired measurement count per configuration; default 3, official single run uses 1")
+                     help="positive paired measurement count per configuration; default 3")
     run.add_argument("--timeout-seconds", type=integer_arg, default=0,
                      help="per-cell prove+verify timeout; 0 means unlimited for the official run")
     run.add_argument("--prepare-timeout-seconds", type=integer_arg, default=0,
                      help="real-input preparation timeout; 0 means unlimited")
+    add_selection_arguments(run)
 
     launch = subparsers.add_parser("launch", help="start the complete CUDA run in a detached SSH-resilient session")
     launch.add_argument("--binary", type=pathlib.Path, help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
@@ -3696,11 +3867,12 @@ def build_parser() -> argparse.ArgumentParser:
     launch.add_argument("--allow-shared-gpu", action="store_true",
                         help="explicitly authorize sharing with external CUDA compute processes and record their activity")
     launch.add_argument("--repetitions", type=integer_arg, default=DEFAULT_EXPERIMENT_REPETITIONS,
-                        help="positive paired measurement count per configuration; default 3, official single run uses 1")
+                        help="positive paired measurement count per configuration; default 3")
     launch.add_argument("--timeout-seconds", type=integer_arg, default=0,
                         help="per-cell prove+verify timeout; 0 means unlimited for the official run")
     launch.add_argument("--prepare-timeout-seconds", type=integer_arg, default=0,
                         help="real-input preparation timeout; 0 means unlimited")
+    add_selection_arguments(launch)
 
     audit = subparsers.add_parser("audit", help="audit exact cell/artifact/hash receipts and optionally reverify all proofs")
     audit.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
@@ -3723,6 +3895,8 @@ def main() -> int:
     args = build_parser().parse_args()
     install_signal_handlers()
     try:
+        if args.command == "preflight":
+            return execute_preflight(args)
         if args.command == "run":
             return execute_formal(args)
         if args.command == "launch":

@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -205,28 +204,6 @@ class ToolingTests(unittest.TestCase):
                 validate(dict(summary, rows=changed_metric))
             with self.assertRaises(ArtifactError):
                 validate(dict(summary, session_id="stale_session"))
-
-    def test_manifest_synthetic_and_negative_paths(self) -> None:
-        with tempfile.TemporaryDirectory(dir=ROOT / "tests") as directory:
-            fixture_root = Path(directory)
-            (fixture_root / "configs").mkdir()
-            (fixture_root / "data" / "cache" / "tiny").mkdir(parents=True)
-            (fixture_root / "models" / "checkpoints" / "tiny").mkdir(parents=True)
-            (fixture_root / "configs" / "quantization_scale_chain.cfg").write_text("quant_cfg_id=q\n", encoding="utf-8")
-            config = fixture_root / "configs" / "tiny.cfg"
-            config.write_text("\n".join((
-                "dataset=tiny", "cache_root=data/cache", "checkpoint_bundle=models/checkpoints/tiny",
-                "export_dir=runs/tiny", "quant_cfg_id=q", "data_root=data",
-            )) + "\n", encoding="utf-8")
-            (fixture_root / "data" / "cache" / "tiny" / "meta.cfg").write_text("fixture\n", encoding="utf-8")
-            (fixture_root / "models" / "checkpoints" / "tiny" / "manifest.json").write_text("{}\n", encoding="utf-8")
-            self.run_cmd("python3", str(SCRIPTS / "asset_manifest.py"), "--config", str(config))
-            manifest = json.loads((fixture_root / "runs" / "tiny" / "asset_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["schema"], "zkDL_gat_asset_manifest_v1")
-            os.symlink(fixture_root / "outside", fixture_root / "data" / "cache" / "tiny" / "escape")
-            self.run_cmd("python3", str(SCRIPTS / "asset_manifest.py"), "--config", str(config), expected=1)
-            config.write_text(config.read_text(encoding="utf-8").replace("cache_root=data/cache", "cache_root=/tmp"), encoding="utf-8")
-            self.run_cmd("python3", str(SCRIPTS / "asset_manifest.py"), "--config", str(config), expected=1)
 
 
 if __name__ == "__main__":

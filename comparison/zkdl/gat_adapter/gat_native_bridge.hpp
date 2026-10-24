@@ -56,6 +56,9 @@ struct NativeRelationPlanMetrics {
     std::uint64_t route_count = 0U;
     std::uint64_t fac_binding_count = 0U;
     std::uint64_t padding_family_count = 0U;
+    // Number of PAD2 proof records after same-selector families are grouped.
+    // padding_family_count remains the raw authenticated member count.
+    std::uint64_t padding_group_count = 0U;
     std::uint64_t family_segment_count = 0U;
     std::uint64_t primitive_opening_segment_count = 0U;
     std::uint64_t constraint_opening_segment_count = 0U;

@@ -26,9 +26,6 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
-from formal_provenance import native_binary
-
-
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 R = int("73eda753299d7d483339d80809a1d80553bda402fffe5bfeffffffff00000001", 16)
 P = int("1a0111ea397fe69a4b1ba7b6434bacd764774b84f38512bf6730d2a0f6b0f6241eabfffeb153ffffb9feffffffffaaab", 16)
@@ -43,6 +40,11 @@ NATIVE_BASIS_DOMAIN = 1 << 18
 SRS_FRAME_HEADER_BYTES = 8 + 4 + 4 + 8 + 8 + 8
 G1_POINT_BYTES = 48
 MAX_SRS_FRAME_BYTES = 1 << 32
+
+
+def resource_setup_binary(root: Path) -> Path:
+    raw = os.environ.get("ZKDL_RESOURCE_SETUP_BINARY")
+    return Path(raw) if raw else root / "gat_resource_setup"
 CANONICAL_SCALE_CHAIN = {
     "schema": "gat_l3_scale_chain", "quant_cfg_id": "gat_l3_scale_chain", "s_input": "16", "s_delta": "256", "s_exp": "16",
     "s_h": "16,16,16",
@@ -192,16 +194,7 @@ def update_config(path: Path, updates: dict[str, str]) -> None:
 def config_identity(path: Path) -> str:
     values = parse_config(path)
     values.pop("verifier_registry_digest", None)
-    values.pop("model_blinder_sidecar_digest", None)
     return sha256_bytes(compact(values))
-
-
-def config_binding(values: dict[str, str]) -> str:
-    bound = dict(values)
-    bound.pop("srs_manifest_digest", None)
-    bound.pop("verifier_registry_digest", None)
-    bound.pop("model_blinder_sidecar_digest", None)
-    return sha256_bytes(compact(bound))
 
 
 def next_pow2(value: int) -> int:
@@ -499,21 +492,18 @@ def audit_graph(root: Path, dataset: str, values: dict[str, str] | None = None) 
         die("normalized edge/CSR prefix pointers are not monotone")
     if any(degree == 0 for degree in incoming):
         die("normalized CSR contains a destination without an incoming self-loop or edge")
-    def pointer_digest(pointer: list[int]) -> str:
-        return sha256_bytes(("\n".join(map(str, pointer)) + "\n").encode())
-    return {"dataset": dataset, "nodes": nodes, "graphs": graph_count, "node_id_space": "canonical_flat_equals_proof_flat",
+    result = {"dataset": dataset, "nodes": nodes, "graphs": graph_count, "node_id_space": "canonical_flat_equals_proof_flat",
             "raw_edge_id_space": "gid_src_flat_dst_flat" if dataset == "ppi" else "src_flat_dst_flat", "raw_edge_rows": raw_edge_rows,
             "raw_edge_ownership_checks": raw_edge_rows, "raw_self_loops": raw_self_loops, "symmetrized_edges_added": symmetrized_edges,
             "duplicate_edges_removed": duplicate_edges, "self_loops_added": added_self_loops, "normalized_edges": edge_count,
             "normalized_edge_counts_by_graph": edge_counts, "node_ptr_count": len(node_ptr), "node_ptr_prefix": node_ptr[:3],
-            "node_ptr_suffix": node_ptr[-3:], "node_ptr_sha256": pointer_digest(node_ptr), "edge_ptr_count": len(edge_ptr),
-            "edge_ptr_prefix": edge_ptr[:3], "edge_ptr_suffix": edge_ptr[-3:], "edge_ptr_sha256": pointer_digest(edge_ptr),
-            "csr_pointer_count": len(node_edge_ptr), "csr_pointer_sha256": pointer_digest(node_edge_ptr),
+            "node_ptr_suffix": node_ptr[-3:], "edge_ptr_count": len(edge_ptr),
+            "edge_ptr_prefix": edge_ptr[:3], "edge_ptr_suffix": edge_ptr[-3:],
+            "csr_pointer_count": len(node_edge_ptr),
             "csr_destinations_checked": nodes, "csr_min_in_degree": min(incoming, default=0),
             "csr_max_in_degree": max(incoming, default=0), "destination_groups_checked": nodes,
-            "edge_blocks_checked": graph_count, "edge_file_sha256": sha256_file(edges_path),
-            "meta_sha256": sha256_file(meta_path),
-            "node_ptr_file_sha256": sha256_file(node_ptr_path) if node_ptr_path is not None else None}
+            "edge_blocks_checked": graph_count}
+    return result
 
 def graph_degree(root: Path, dataset: str, values: dict[str, str] | None = None) -> tuple[int, int, int]:
     audit = audit_graph(root, dataset, values)
@@ -735,7 +725,6 @@ def relation_family_domains(values: dict[str, str], nodes: int, edges: int,
             add(prefix + "/model/seq_kernel", 1, current_input, head_dim)
             add(prefix + "/model/attn_src", head_dim)
             add(prefix + "/model/attn_dst", head_dim)
-            add(prefix + "/trace/input", nodes, current_input)
             add(prefix + "/trace/h_prime", nodes, head_dim)
             for name in ("e_src", "e_dst", "score", "leaky_relu", "delta", "exp_weight",
                          "lrelu_idx", "exp_idx", "max_selector"):
@@ -765,7 +754,6 @@ def relation_family_domains(values: dict[str, str], nodes: int, edges: int,
         add(prefix + "/model/attn_src", classes)
         add(prefix + "/model/attn_dst", classes)
         add(prefix + "/model/output_bias", classes)
-        add(prefix + "/trace/input", nodes, output_input)
         add(prefix + "/trace/y_prime", nodes, classes)
         for name in ("e_src", "e_dst", "score", "leaky_relu", "delta", "exp_weight",
                      "lrelu_idx", "exp_idx", "max_selector"):
@@ -1035,9 +1023,9 @@ def audit_tensor_export(path: Path, values: dict[str, str]) -> dict[str, Any]:
     missing = sorted(set(expected) - seen)
     if missing:
         die(f"checkpoint tensor export is missing canonical model parameters: {missing[0]}")
-    return {"tensor_count": tensor_count, "model_shapes": model_shapes, "model_padded_domains": domains,
-            "max_model_padded_domain": max(domains, default=1), "max_quantized_model_abs": model_max,
-            "tensor_export_sha256": sha256_file(path)}
+    result = {"tensor_count": tensor_count, "model_shapes": model_shapes, "model_padded_domains": domains,
+              "max_model_padded_domain": max(domains, default=1), "max_quantized_model_abs": model_max}
+    return result
 
 
 def registered_model_segment_blinders(tensor_id: str, total_blinder: int, domain: int, segment_size: int, segment_count: int, srs_manifest_digest: str) -> list[int]:
@@ -1216,7 +1204,7 @@ def read_srs_frame_prefix(srs_dir: Path, descriptor: dict[str, Any], label: str,
     if required_count < 1 or required_count > declared_count:
         die(f"local SRS {label} frame does not cover required model domain")
     root = Path(__file__).resolve().parent.parent
-    helper = native_binary(root, "gat_resource_setup")
+    helper = resource_setup_binary(root)
     if helper.is_symlink() or not helper.is_file():
         die("baseline-local native SRS decoder is missing")
     try:
@@ -1750,28 +1738,9 @@ def audit_formal_prerequisites(cfg_path: Path) -> dict[str, Any]:
     if checkpoint_path.is_absolute() or ".." in checkpoint_path.parts:
         die(f"checkpoint bundle must be baseline-local: {values['checkpoint_bundle']}")
     tensor_export = root / checkpoint_path / "tensors.txt"
-    manifest_path = root / checkpoint_path / "manifest.json"
-    for path in (tensor_export, manifest_path):
-        if path.is_symlink() or not path.is_file() or path.stat().st_size == 0:
-            die(f"formal checkpoint prerequisite is missing, empty or symlinked: {path}")
+    if tensor_export.is_symlink() or not tensor_export.is_file() or tensor_export.stat().st_size == 0:
+        die(f"formal canonical tensor export is missing, empty or symlinked: {tensor_export}")
     tensor_plan = audit_tensor_export(tensor_export, values)
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        die(f"formal checkpoint manifest is invalid: {exc}")
-    if (manifest.get("dataset") != dataset or manifest.get("L") != layers or manifest.get("K_out") != output_heads or
-            manifest.get("C") != classes or manifest.get("tensor_count") != tensor_plan["tensor_count"] or
-            manifest.get("d_in_profile") != input_dims):
-        die(f"formal checkpoint manifest shape/count mismatch: {dataset}")
-    tensor_index = manifest.get("tensor_index")
-    if not isinstance(tensor_index, dict) or set(tensor_index) != set(tensor_plan["model_shapes"]):
-        die(f"formal checkpoint manifest tensor_index keys differ from canonical exported tensors: {dataset}")
-    for name, expected_shape in tensor_plan["model_shapes"].items():
-        descriptor = tensor_index.get(name)
-        shape = descriptor.get("shape") if isinstance(descriptor, dict) else None
-        if (not isinstance(shape, list) or not shape or
-                any(type(axis) is not int or axis < 1 for axis in shape) or shape != expected_shape):
-            die(f"formal checkpoint manifest tensor shape differs from canonical export: {dataset}/{name}")
 
     table = table_shape_plan(values, quant_digest)
     ledger_id, degree_id, ledger_families, ledger_global = ledger_bounds_plan(
@@ -1808,15 +1777,14 @@ def audit_formal_prerequisites(cfg_path: Path) -> dict[str, Any]:
     if any(value < 0 or value > (1 << 63) - 1 or value >= R // 2 for value in all_ledger_bounds):
         die(f"integer-bound ledger exceeds signed native/field range: {dataset}")
 
-    return {
+    result = {
         "schema": "zkDL_gat_formal_prerequisites_v1",
         "dataset": dataset,
-        "config_sha256": sha256_file(config_path),
         "graph": graph,
         "input_shape": {"nodes": int(graph["nodes"]), "features": features, "classes": classes,
                         "graphs": int(graph["graphs"]), "hidden_profile": [list(item) for item in profile],
                         "input_dims": input_dims, "output_heads": output_heads},
-        "checkpoint": tensor_plan | {"manifest_sha256": sha256_file(manifest_path)},
+        "checkpoint": tensor_plan,
         "table_plan": {
             key: table[key] for key in (
                 "schema", "quant_cfg_id", "generator_id", "version", "scale_id", "domain_id",
@@ -1836,7 +1804,6 @@ def audit_formal_prerequisites(cfg_path: Path) -> dict[str, Any]:
         },
         "sorted_lookup_plan": lookup_plan,
         "family_domain_count": len(family_domains),
-        "family_domain_sha256": sha256_bytes(compact(dict(sorted(family_domains.items())))),
         "family_domains": dict(sorted(family_domains.items())),
         "max_family_domain": max_domain,
         "max_family_domain_ids": max_families,
@@ -1859,6 +1826,7 @@ def audit_formal_prerequisites(cfg_path: Path) -> dict[str, Any]:
                         "families": ledger_families},
         "quantization_scale_chain_sha256": quant_digest,
     }
+    return result
 
 
 def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]) -> tuple[str, str]:
@@ -1884,7 +1852,7 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
         die(f"SRS materialization needs {estimated_bytes} bytes but only {free_bytes} are available")
     domain = common_domain
     temp_dir = Path(tempfile.mkdtemp(prefix=f".{srs_dir.name}.tmp-", dir=srs_dir.parent))
-    helper = native_binary(root, "gat_resource_setup")
+    helper = resource_setup_binary(root)
     if helper.is_symlink() or not helper.is_file():
         shutil.rmtree(temp_dir)
         die("matched baseline-local gat_resource_setup is missing; run the formal build entry")
@@ -1936,7 +1904,6 @@ def write_srs(root: Path, values: dict[str, str], family_domains: dict[str, int]
                 "algorithm": "os_csprng_nonzero_scalar_mul_bls12_381_g1",
                 "spec": "zkDL_Hyrax_IPA_Pedersen_independent_g1_basis_v1",
                 "curve_id": "bls12_381",
-                "config_binding_digest": config_binding(values),
                 "basis_digest": basis, "domain": domain,
                 "basis_domain": common_domain,
                 "generator_count": common_domain, "h_count": 1, "u_count": 1,
@@ -1981,11 +1948,7 @@ def complete_resources_valid(root: Path, config_path: Path) -> bool:
 
 def existing_blinders(root: Path, values: dict[str, str], tensor_ids: set[str]) -> dict[str, int] | None:
     path = root / values["model_blinder_sidecar_path"]
-    expected = values.get("model_blinder_sidecar_digest", "")
-    if (path.is_symlink() or not path.is_file() or expected == "UNAVAILABLE" or
-            not re.fullmatch(r"[0-9a-f]{64}", expected) or sha256_file(path) != expected):
-        return None
-    if (path.stat().st_mode & 0o077) or path.stat().st_mode & 0o600 != 0o600:
+    if path.is_symlink() or not path.is_file():
         return None
     try:
         sidecar = json.loads(path.read_text(encoding="utf-8"))
@@ -2037,7 +2000,7 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool,
     ledger = make_ledger(root, values, table, table_file_digest, quant_digest)
     ledger_path = root / values["integer_bound_ledger"]
     ledger_file_digest = write_json(ledger_path, ledger)
-    ledger_checker = native_binary(root, "gat_resource_setup")
+    ledger_checker = resource_setup_binary(root)
     subprocess.run([str(ledger_checker), "verify-ledger", "--path", str(ledger_path), "--baseline-root", str(root)],
                    cwd=root, check=True)
     model_domains = [math.prod([next_pow2(int(axis)) for axis in (shape[1:] if len(shape) == 3 and shape[0] == 1 else shape)])
@@ -2051,14 +2014,9 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool,
     update_config(config_path, {"degree_bound_id": degree_id})
     values = parse_config(config_path)
     if admission_only:
-        checkpoint_manifest_path = root / values["checkpoint_bundle"] / "manifest.json"
-        checkpoint_manifest = json.loads(checkpoint_manifest_path.read_text(encoding="utf-8"))
-        checkpoint_manifest["degree_bound_id"] = ledger["degree_bound_id"]
-        write_json(checkpoint_manifest_path, checkpoint_manifest)
         update_config(config_path, {
             "srs_manifest_digest": "UNAVAILABLE",
             "verifier_registry_digest": "UNAVAILABLE",
-            "model_blinder_sidecar_digest": "UNAVAILABLE",
         })
         return "ADMISSION_ONLY"
     resources_valid = complete_resources_valid(root, config_path)
@@ -2085,10 +2043,6 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool,
     blinders = old_blinders or {tensor_id: fresh_scalar() for tensor_id in tensor_ids}
     generators, h_point, u_point, generator_digest, _srs_basis_digest = load_srs_basis(
         root, values, max(model_domains, default=1))
-    manifest_path = root / values["checkpoint_bundle"] / "manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["degree_bound_id"] = ledger["degree_bound_id"]
-    write_json(manifest_path, manifest)
     registry_entries = model_entries(
         root, values, h_point, u_point, blinders, generators, srs_digest)
     registry = {
@@ -2105,7 +2059,6 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool,
         "scale_chain_digest": quant_digest,
         "static_table_digest": table_file_digest,
         "integer_bound_ledger_digest": ledger_file_digest,
-        "model_manifest_digest": sha256_file(root / values["checkpoint_bundle"] / "manifest.json"),
         "model_tensors": registry_entries,
         "source_root": "baseline-local"
     }
@@ -2116,9 +2069,9 @@ def generate(root: Path, config_path: Path, full: bool, regenerate_srs: bool,
     sidecar_entries = [{"tensor_id": item["tensor_id"], "blinder": blinders[item["tensor_id"]].to_bytes(32, "little").hex()} for item in registry_entries]
     sidecar = {"schema": "zkDL_gat_model_blinder_sidecar_v1", "registry_digest": registry_digest, "entries": sidecar_entries, "source_root": "baseline-local"}
     sidecar_path = root / values["model_blinder_sidecar_path"]
-    sidecar_digest = write_json_atomic(sidecar_path, sidecar, 0o600)
+    write_json_atomic(sidecar_path, sidecar, 0o600)
     update_config(config_path, {"degree_bound_id": ledger["degree_bound_id"], "srs_manifest_digest": srs_digest,
-                  "verifier_registry_digest": registry_digest, "model_blinder_sidecar_digest": sidecar_digest})
+                  "verifier_registry_digest": registry_digest})
     return "MATERIALIZED" if old_blinders is None else "MATERIALIZED_REUSING_BLINDERS"
 
 

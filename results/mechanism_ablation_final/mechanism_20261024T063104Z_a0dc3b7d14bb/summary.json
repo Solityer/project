@@ -1,0 +1,3258 @@
+{
+  "backend": "cuda",
+  "cell_count": 0,
+  "cells": [],
+  "complete_pairs": 0,
+  "created_utc": "2026-10-24T06:31:04Z",
+  "expected_cell_count": 30,
+  "expected_config_count": 5,
+  "expected_pair_count": 15,
+  "failure_reason": null,
+  "feature_folding_width_semantics": "D is the prefix of the same real width-8 hidden feature from formal layer 0/head 0; D<8 is a controlled mechanism width, not a complete formal head calculation",
+  "formal_configs": [
+    {
+      "components": null,
+      "config_id": "sn_cora_full_d8_g1",
+      "dataset": "cora",
+      "graphs": 1,
+      "mechanism": "shared_neighborhood",
+      "width": 8
+    },
+    {
+      "components": null,
+      "config_id": "sn_citeseer_full_d8_g1",
+      "dataset": "citeseer",
+      "graphs": 1,
+      "mechanism": "shared_neighborhood",
+      "width": 8
+    },
+    {
+      "components": null,
+      "config_id": "sn_pubmed_full_d8_g1",
+      "dataset": "pubmed",
+      "graphs": 1,
+      "mechanism": "shared_neighborhood",
+      "width": 8
+    },
+    {
+      "components": [
+        0
+      ],
+      "config_id": "sn_ppi_component_0_d8_g1",
+      "dataset": "ppi",
+      "graphs": 1,
+      "mechanism": "shared_neighborhood",
+      "width": 8
+    },
+    {
+      "components": null,
+      "config_id": "sn_ogbn_arxiv_full_d8_g1",
+      "dataset": "ogbn_arxiv",
+      "graphs": 1,
+      "mechanism": "shared_neighborhood",
+      "width": 8
+    }
+  ],
+  "formal_head_width": 8,
+  "format": "zkgat_real_mechanism_experiment_v2",
+  "groups": [
+    {
+      "D": 8,
+      "E": null,
+      "G": 1,
+      "N": null,
+      "complete_repetitions": 0,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_cora_full_d8_g1",
+      "dataset": "cora",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prover_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        }
+      },
+      "requested_repetitions": 3,
+      "status": "\u672a\u8fd0\u884c"
+    },
+    {
+      "D": 8,
+      "E": null,
+      "G": 1,
+      "N": null,
+      "complete_repetitions": 0,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_citeseer_full_d8_g1",
+      "dataset": "citeseer",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prover_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        }
+      },
+      "requested_repetitions": 3,
+      "status": "\u672a\u8fd0\u884c"
+    },
+    {
+      "D": 8,
+      "E": null,
+      "G": 1,
+      "N": null,
+      "complete_repetitions": 0,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_pubmed_full_d8_g1",
+      "dataset": "pubmed",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prover_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        }
+      },
+      "requested_repetitions": 3,
+      "status": "\u672a\u8fd0\u884c"
+    },
+    {
+      "D": 8,
+      "E": null,
+      "G": 1,
+      "N": null,
+      "complete_repetitions": 0,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ppi_component_0_d8_g1",
+      "dataset": "ppi",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prover_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        }
+      },
+      "requested_repetitions": 3,
+      "status": "\u672a\u8fd0\u884c"
+    },
+    {
+      "D": 8,
+      "E": null,
+      "G": 1,
+      "N": null,
+      "complete_repetitions": 0,
+      "component_ids": [
+        0
+      ],
+      "config_id": "sn_ogbn_arxiv_full_d8_g1",
+      "dataset": "ogbn_arxiv",
+      "mechanism": "shared_neighborhood",
+      "metrics": {
+        "commitment_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "proof_size_bytes": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prove_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "prover_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_time_ms": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        },
+        "verify_wall_time_seconds": {
+          "control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "improvement_factor": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "original": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "paired_original_minus_control": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          },
+          "saving_percent": {
+            "mean": null,
+            "n": 0,
+            "sample_sd": null
+          }
+        }
+      },
+      "requested_repetitions": 3,
+      "status": "\u672a\u8fd0\u884c"
+    }
+  ],
+  "mechanisms": [
+    "feature_folding",
+    "shared_neighborhood"
+  ],
+  "pairs": [],
+  "ppi_component_rule": "canonical ascending PPI component IDs: component 0 for the five-dataset experiment and IDs 0..294 for full PPI",
+  "preflight": {
+    "cache_content_hashes": "\u4e0d\u8ba1\u7b97\uff1b\u6d41\u5f0f\u68c0\u67e5\u8fb9\u6570\u3001\u7aef\u70b9\u548c PPI graph_id/node_ptr \u8fb9\u754c",
+    "checks": {
+      "datasets": {
+        "citeseer": {
+          "cache": {
+            "cache_root": "/home/pzh/project/data/cache/citeseer",
+            "edge_content_sha256": null,
+            "edge_size_bytes": 88206,
+            "input_content_hashes_computed": false,
+            "metadata": {
+              "input_preprocess_id": "row_normalize",
+              "name": "citeseer",
+              "num_classes": "6",
+              "num_features": "3703",
+              "num_nodes": "3327",
+              "test_count": "1000"
+            },
+            "metadata_sha256": "f7b96c1893069bc020c660bce8df6e946f218fd3fd7c466d30bfa48859645c10",
+            "node_ptr": [],
+            "node_ptr_sha256": null,
+            "raw_edge_count_verified": 9464,
+            "required_files": [
+              {
+                "path": "/home/pzh/project/data/cache/citeseer/meta.cfg",
+                "size_bytes": 123
+              },
+              {
+                "path": "/home/pzh/project/data/cache/citeseer/edges.txt",
+                "size_bytes": 88206
+              },
+              {
+                "path": "/home/pzh/project/data/cache/citeseer/features.txt",
+                "size_bytes": 700967
+              },
+              {
+                "path": "/home/pzh/project/data/cache/citeseer/labels.txt",
+                "size_bytes": 6654
+              }
+            ]
+          },
+          "checkpoint": {
+            "input_preprocess_id": "row_normalize",
+            "manifest_path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat/manifest.json",
+            "manifest_sha256": "7b1e0c7efa70fd38ccc9d5aa0113aa879cd5d04bbb8fa2c2b0f935b845ba4d23",
+            "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c6",
+            "model_param_id": "citeseer_planetoid_seed11",
+            "path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat",
+            "required_files": [
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat/manifest.json",
+                "size_bytes": 17295
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat/tensors.npz",
+                "size_bytes": 909182
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat/tensors.txt",
+                "size_bytes": 5551692
+              }
+            ],
+            "tensor_count": 56,
+            "weight_contents_hashed": false
+          },
+          "config_path": "/home/pzh/project/configs/citeseer_secure.cfg",
+          "config_sha256": "50be73f5569a1e18c743f1b1b5c6fb2730750270cbe4b00b40099037c644235e",
+          "dataset": "citeseer",
+          "preprocess": "row_normalize",
+          "srs": {
+            "ceremony_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+            "domain_sizes": {
+              "C": 8,
+              "FH": 16777216,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 4096
+            },
+            "manifest_degree_bound": 67108863,
+            "manifest_manifest_hash": "d12b137ddff8c9b9cf46aa2b45ca2d318d368210c7e361d14921d2bda6373b85",
+            "manifest_path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "b9ebe4d4cba8c333c83ab1d31f2c9b328199a2e1dd20153647631a73a7b4839f",
+            "manifest_size_bytes": 4508,
+            "manifest_srs_id": "citeseer_formal_srs",
+            "material_files": [
+              {
+                "declared_sha256": "1fd2950eac6287254976691cf88ee6f7d4aad940dd5ef82193f8c82f50d3f432",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_coef.bin",
+                "sha256_verified": false,
+                "size_bytes": 3221225496
+              },
+              {
+                "declared_sha256": "ebbe924127f07af1d21dbd1a513e74c224c60b1b8d52b72b9ac6a01b80dd1801",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/vk.bin",
+                "sha256_verified": false,
+                "size_bytes": 1023
+              },
+              {
+                "declared_sha256": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/srs_audit_report.txt",
+                "sha256_verified": false,
+                "size_bytes": 1409
+              },
+              {
+                "declared_sha256": "2216845ad50a0a4740d2efa6d0948bf377697df30f532fbd9ee48767e4b66822",
+                "domain": "C",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_C.bin",
+                "sha256_verified": false,
+                "size_bytes": 408
+              },
+              {
+                "declared_sha256": "ba53d4ebf7d13831bf0995995f83e7d8ff659e37a56857103666c15fca429301",
+                "domain": "FH",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_FH.bin",
+                "sha256_verified": false,
+                "size_bytes": 805306392
+              },
+              {
+                "declared_sha256": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+                "domain": "N",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_N.bin",
+                "sha256_verified": false,
+                "size_bytes": 196632
+              },
+              {
+                "declared_sha256": "7244b68365e79ea3f372ed778e31b645e6bef504e631a6eebae31791bd6f6aa9",
+                "domain": "cat",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_cat.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "ba895f769377d220e29db87dbf61bcd69c2a086b6e12c635d001216a5a885d3e",
+                "domain": "d",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_d.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "a497b2ea77292b2f86cb6a73bc8d87d41d2a19ef64196dc6d30ba8ff7cef2e51",
+                "domain": "edge",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_edge.bin",
+                "sha256_verified": false,
+                "size_bytes": 1572888
+              },
+              {
+                "declared_sha256": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+                "domain": "in",
+                "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_in.bin",
+                "sha256_verified": false,
+                "size_bytes": 196632
+              }
+            ],
+            "material_verification": "metadata_only_not_rehashed",
+            "max_instance_envelope": {
+              "max_classes": 6,
+              "max_coefficient_chunks": 376,
+              "max_coefficient_object_length": 12319881,
+              "max_concat_dim": 64,
+              "max_edges": 12431,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 3703,
+              "max_layers": 3,
+              "max_nodes": 3327,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 3327,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_key_content_hashes_verified": false,
+          "status": "metadata_checks_passed"
+        },
+        "cora": {
+          "cache": {
+            "cache_root": "/home/pzh/project/data/cache/cora",
+            "edge_content_sha256": null,
+            "edge_size_bytes": 99636,
+            "input_content_hashes_computed": false,
+            "metadata": {
+              "input_preprocess_id": "row_normalize",
+              "name": "cora",
+              "num_classes": "7",
+              "num_features": "1433",
+              "num_nodes": "2708",
+              "test_count": "1000"
+            },
+            "metadata_sha256": "f5cfbfb57e5bef16cc2d7d94119d7571183519f6e1bfd8337665576a3458542c",
+            "node_ptr": [],
+            "node_ptr_sha256": null,
+            "raw_edge_count_verified": 10858,
+            "required_files": [
+              {
+                "path": "/home/pzh/project/data/cache/cora/meta.cfg",
+                "size_bytes": 119
+              },
+              {
+                "path": "/home/pzh/project/data/cache/cora/edges.txt",
+                "size_bytes": 99636
+              },
+              {
+                "path": "/home/pzh/project/data/cache/cora/features.txt",
+                "size_bytes": 310956
+              },
+              {
+                "path": "/home/pzh/project/data/cache/cora/labels.txt",
+                "size_bytes": 5416
+              }
+            ]
+          },
+          "checkpoint": {
+            "input_preprocess_id": "row_normalize",
+            "manifest_path": "/home/pzh/project/artifacts/checkpoints/cora_gat/manifest.json",
+            "manifest_sha256": "ef7dca57894e41d6e932a8ea803e869a184eef57ea6d2ac66e0eaa2ab3790a6f",
+            "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c7",
+            "model_param_id": "cora_planetoid_seed11",
+            "path": "/home/pzh/project/artifacts/checkpoints/cora_gat",
+            "required_files": [
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/cora_gat/manifest.json",
+                "size_bytes": 17283
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/cora_gat/tensors.npz",
+                "size_bytes": 375421
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/cora_gat/tensors.txt",
+                "size_bytes": 2268024
+              }
+            ],
+            "tensor_count": 56,
+            "weight_contents_hashed": false
+          },
+          "config_path": "/home/pzh/project/configs/cora_secure.cfg",
+          "config_sha256": "d9502db858a2691d58eda5c296785e9fc4e8d442f8c2ba870257d05e4081093a",
+          "dataset": "cora",
+          "preprocess": "row_normalize",
+          "srs": {
+            "ceremony_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+            "domain_sizes": {
+              "C": 16,
+              "FH": 4194304,
+              "N": 4096,
+              "cat": 128,
+              "d": 16,
+              "edge": 32768,
+              "in": 2048
+            },
+            "manifest_degree_bound": 16777215,
+            "manifest_manifest_hash": "b7070131e452ad6c1eacc8c2e587ef354969f8b168543f23d5ec02dce41e9229",
+            "manifest_path": "/home/pzh/project/artifacts/srs/cora_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "0734f359deac2c145bab22ed3ed40de7310eda95e732de9aa45f66919108fcf3",
+            "manifest_size_bytes": 4503,
+            "manifest_srs_id": "cora_formal_srs",
+            "material_files": [
+              {
+                "declared_sha256": "5abcbc2ec7f506d8d63fd95209d3afa752fe064913bbd8c7df34d1b866b8cddd",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_coef.bin",
+                "sha256_verified": false,
+                "size_bytes": 805306392
+              },
+              {
+                "declared_sha256": "6f9c017bc7ad7d6f903ab3400c7463a74c9b16bae9dcf75a3cceebfa5050b407",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/vk.bin",
+                "sha256_verified": false,
+                "size_bytes": 1023
+              },
+              {
+                "declared_sha256": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/srs_audit_report.txt",
+                "sha256_verified": false,
+                "size_bytes": 1409
+              },
+              {
+                "declared_sha256": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+                "domain": "C",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_C.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "bb9a00f543cc5b96999ab35271384f4726642589e6ff3262e038696105c4650c",
+                "domain": "FH",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_FH.bin",
+                "sha256_verified": false,
+                "size_bytes": 201326616
+              },
+              {
+                "declared_sha256": "8f098e69fe4c9fa47fb71f06ba1dfdd9b3be9a56dddd347581ce463dcc4386a1",
+                "domain": "N",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_N.bin",
+                "sha256_verified": false,
+                "size_bytes": 196632
+              },
+              {
+                "declared_sha256": "bdc07a6d4a80997d333448106108eae49bac8ffdd56f317b40ff722d83fa567f",
+                "domain": "cat",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_cat.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+                "domain": "d",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_d.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "4f2dd8c8b015d4e064664e839f93708b248a46d41d644d55313952c6e4cc69f9",
+                "domain": "edge",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_edge.bin",
+                "sha256_verified": false,
+                "size_bytes": 1572888
+              },
+              {
+                "declared_sha256": "66c0718c79871c707c64134b0378fad29bce20ccf6751c28eb4ec55cd79bf3b1",
+                "domain": "in",
+                "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_in.bin",
+                "sha256_verified": false,
+                "size_bytes": 98328
+              }
+            ],
+            "material_verification": "metadata_only_not_rehashed",
+            "max_instance_envelope": {
+              "max_classes": 7,
+              "max_coefficient_chunks": 119,
+              "max_coefficient_object_length": 3880564,
+              "max_concat_dim": 64,
+              "max_edges": 13264,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 1433,
+              "max_layers": 3,
+              "max_nodes": 2708,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 2708,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/cora_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_key_content_hashes_verified": false,
+          "status": "metadata_checks_passed"
+        },
+        "ogbn_arxiv": {
+          "cache": {
+            "cache_root": "/home/pzh/project/data/cache/ogbn_arxiv",
+            "edge_content_sha256": null,
+            "edge_size_bytes": 14773350,
+            "input_content_hashes_computed": false,
+            "metadata": {
+              "graph_count": "1",
+              "input_preprocess_id": "ogbn_arxiv_raw_float32",
+              "name": "ogbn_arxiv",
+              "num_classes": "40",
+              "num_features": "128",
+              "num_nodes": "169343",
+              "report_unit": "node",
+              "task_type": "transductive_node_classification"
+            },
+            "metadata_sha256": "90c1ca1a28b4387c8d434ec3bc7a09a71d34eab786fb66160ab58abb53c78595",
+            "node_ptr": [],
+            "node_ptr_sha256": null,
+            "raw_edge_count_verified": 1166243,
+            "required_files": [
+              {
+                "path": "/home/pzh/project/data/cache/ogbn_arxiv/meta.cfg",
+                "size_bytes": 198
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ogbn_arxiv/edges.txt",
+                "size_bytes": 14773350
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ogbn_arxiv/features.npy",
+                "size_bytes": 86703744
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ogbn_arxiv/labels.txt",
+                "size_bytes": 477779
+              }
+            ]
+          },
+          "checkpoint": {
+            "input_preprocess_id": "ogbn_arxiv_raw_float32",
+            "manifest_path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/manifest.json",
+            "manifest_sha256": "d64a412bb8cd565d6f54d37e5d5dd0c71fe771d7905d9890bee0dc350895d788",
+            "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c40",
+            "model_param_id": "ogbn_arxiv_seed11",
+            "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat",
+            "required_files": [
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/manifest.json",
+                "size_bytes": 17301
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/tensors.npz",
+                "size_bytes": 81685
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat/tensors.txt",
+                "size_bytes": 421362
+              }
+            ],
+            "tensor_count": 56,
+            "weight_contents_hashed": false
+          },
+          "config_path": "/home/pzh/project/configs/ogbn_arxiv_secure.cfg",
+          "config_sha256": "3d8e4b4c03b634608a9afc670ce492f91ed7d829ba3aa8cdb32c2eefeeeb515e",
+          "dataset": "ogbn_arxiv",
+          "preprocess": "ogbn_arxiv_raw_float32",
+          "srs": {
+            "ceremony_transcript_hash": "77253ac82aad2b342ed83143dc418f1506eca23edb84a6bfb83f749f453b0df3",
+            "domain_sizes": {
+              "C": 64,
+              "FH": 33554432,
+              "N": 262144,
+              "cat": 128,
+              "d": 16,
+              "edge": 16777216,
+              "in": 256
+            },
+            "manifest_degree_bound": 134217727,
+            "manifest_manifest_hash": "4aff97e44b0ef88f093cc58af309e941aa866b455dd2f1edd1d30309dfa0ed97",
+            "manifest_path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "dd1839c2451739bfc4008444e3cecbcc7daf6ff12bb5c50200457040ff49e050",
+            "manifest_size_bytes": 4521,
+            "manifest_srs_id": "ogbn_arxiv_formal_srs",
+            "material_files": [
+              {
+                "declared_sha256": "6777d4ae509559ec6e2830f590a43fa60d00266ceb1af4ca0da5d41efde72d2d",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_coef.bin",
+                "sha256_verified": false,
+                "size_bytes": 6442450968
+              },
+              {
+                "declared_sha256": "5b112e7c5584008e8cd3b032764b7177f6bf4b771d0cf7f70b617b8ca92de011",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/vk.bin",
+                "sha256_verified": false,
+                "size_bytes": 1023
+              },
+              {
+                "declared_sha256": "cca97e020f15a2cdc5ea280c05f506bfd7b7f9f814af8afb1e350c51b7686bdc",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/srs_audit_report.txt",
+                "sha256_verified": false,
+                "size_bytes": 1421
+              },
+              {
+                "declared_sha256": "ec67ce1bc7c133dac19ca4b75e49e5eb2972919ca22a161c90972e06b7ce458e",
+                "domain": "C",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_C.bin",
+                "sha256_verified": false,
+                "size_bytes": 3096
+              },
+              {
+                "declared_sha256": "e125f6b147446dc6f7d475698ce2a1ff19f81f2a05d60e1c52e66f7f037dec4a",
+                "domain": "FH",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_FH.bin",
+                "sha256_verified": false,
+                "size_bytes": 1610612760
+              },
+              {
+                "declared_sha256": "0cca54e048cec7a1cfb4c25eee6ad8c747529dd47dd69967c01d3752f06e5972",
+                "domain": "N",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_N.bin",
+                "sha256_verified": false,
+                "size_bytes": 12582936
+              },
+              {
+                "declared_sha256": "6bc92ebbb6ca4eb701334e0478eb4f42d0ecc03c3ff6e185ff1e37d40020e437",
+                "domain": "cat",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_cat.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "8c9b3d0ae3f7f80c6776f52b391f2630c9561c3d4183b3b7d0a3bc4eca570512",
+                "domain": "d",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_d.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "e18637e2ec6a95d2bcc7f148f973e32954557b1db9d7cc4582dded1dae45bb87",
+                "domain": "edge",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_edge.bin",
+                "sha256_verified": false,
+                "size_bytes": 805306392
+              },
+              {
+                "declared_sha256": "c7e98e67f55dde2994156570dc5d186dbf8884ec8b40ee64e0ee6f0bb10d2f99",
+                "domain": "in",
+                "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_in.bin",
+                "sha256_verified": false,
+                "size_bytes": 12312
+              }
+            ],
+            "material_verification": "metadata_only_not_rehashed",
+            "max_instance_envelope": {
+              "max_classes": 40,
+              "max_coefficient_chunks": 3,
+              "max_coefficient_object_length": 21675904,
+              "max_concat_dim": 64,
+              "max_edges": 1335586,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 128,
+              "max_layers": 3,
+              "max_nodes": 169343,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 21,
+              "max_total_nodes": 169343,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_key_content_hashes_verified": false,
+          "status": "metadata_checks_passed"
+        },
+        "ppi": {
+          "cache": {
+            "cache_root": "/home/pzh/project/data/cache/ppi",
+            "edge_content_sha256": null,
+            "edge_size_bytes": 12551171,
+            "input_content_hashes_computed": false,
+            "metadata": {
+              "graph_count": "295",
+              "input_preprocess_id": "row_normalize",
+              "label_format": "multi_hot",
+              "name": "ppi",
+              "num_classes": "121",
+              "num_features": "50",
+              "num_nodes": "56944",
+              "report_unit": "graph",
+              "split_format": "node_masks",
+              "task_type": "inductive_multi_graph_node_classification"
+            },
+            "metadata_sha256": "c847ba5d967bd9ce165faff3c51280f2a0a1522288e4047f7e8716b995ada5e4",
+            "node_ptr": [
+              0,
+              1546,
+              1547,
+              1548,
+              1549,
+              1550,
+              1551,
+              1552,
+              1553,
+              1554,
+              2931,
+              2932,
+              2933,
+              2935,
+              2936,
+              2937,
+              2938,
+              2939,
+              2940,
+              2941,
+              2942,
+              5205,
+              5206,
+              5207,
+              5208,
+              5209,
+              5210,
+              5211,
+              5212,
+              5213,
+              5214,
+              5215,
+              7554,
+              7555,
+              7556,
+              7557,
+              7558,
+              7559,
+              7560,
+              7561,
+              7562,
+              7563,
+              7564,
+              9142,
+              9143,
+              9144,
+              9145,
+              9146,
+              9147,
+              9148,
+              9149,
+              9150,
+              9151,
+              10172,
+              10173,
+              10174,
+              10175,
+              10176,
+              10177,
+              10178,
+              10179,
+              10180,
+              12003,
+              12004,
+              12005,
+              12006,
+              12007,
+              12008,
+              12009,
+              12010,
+              12011,
+              12012,
+              12013,
+              12014,
+              12015,
+              14503,
+              14504,
+              14505,
+              14506,
+              14507,
+              14508,
+              14509,
+              14510,
+              14511,
+              14512,
+              14513,
+              14514,
+              14515,
+              15106,
+              15107,
+              15108,
+              15109,
+              15110,
+              15111,
+              15112,
+              15113,
+              15114,
+              15115,
+              15116,
+              15117,
+              18429,
+              18430,
+              18431,
+              18432,
+              18434,
+              18435,
+              18437,
+              18438,
+              18439,
+              18440,
+              18441,
+              18442,
+              18443,
+              20844,
+              20845,
+              20846,
+              20847,
+              20848,
+              20849,
+              20850,
+              22728,
+              22729,
+              22730,
+              22731,
+              22732,
+              22733,
+              22734,
+              24553,
+              24554,
+              24555,
+              24556,
+              24557,
+              24558,
+              24559,
+              28039,
+              28040,
+              28041,
+              28042,
+              28043,
+              28044,
+              28045,
+              28046,
+              28048,
+              28049,
+              28050,
+              28051,
+              28052,
+              28053,
+              28054,
+              28055,
+              28056,
+              30850,
+              30851,
+              30852,
+              30853,
+              30854,
+              30855,
+              30856,
+              30857,
+              30858,
+              30859,
+              30860,
+              30861,
+              30862,
+              30863,
+              33189,
+              33190,
+              33191,
+              33192,
+              33193,
+              33194,
+              33195,
+              33196,
+              35846,
+              35847,
+              35848,
+              35849,
+              35850,
+              35851,
+              35852,
+              35853,
+              35854,
+              35855,
+              35856,
+              35857,
+              35858,
+              35859,
+              35860,
+              38675,
+              38676,
+              38677,
+              38678,
+              38679,
+              38680,
+              38681,
+              38682,
+              38683,
+              38684,
+              38685,
+              38686,
+              38687,
+              38688,
+              38689,
+              41852,
+              41853,
+              41854,
+              41855,
+              41856,
+              41857,
+              41859,
+              41860,
+              41861,
+              41862,
+              41863,
+              41865,
+              41866,
+              41867,
+              41868,
+              41869,
+              44890,
+              44891,
+              44892,
+              44893,
+              44894,
+              44895,
+              44896,
+              44897,
+              44898,
+              44899,
+              44900,
+              44901,
+              44902,
+              44903,
+              44904,
+              44905,
+              44906,
+              48101,
+              48102,
+              48103,
+              48104,
+              48106,
+              48108,
+              48109,
+              48110,
+              48111,
+              48113,
+              48114,
+              48115,
+              48116,
+              51400,
+              51401,
+              51402,
+              51403,
+              51404,
+              51405,
+              51406,
+              51408,
+              51409,
+              51411,
+              51413,
+              51414,
+              51416,
+              51417,
+              51418,
+              51419,
+              51420,
+              54614,
+              54615,
+              54616,
+              54617,
+              54618,
+              54619,
+              54620,
+              54621,
+              54623,
+              54624,
+              54625,
+              54626,
+              54627,
+              54628,
+              54629,
+              54631,
+              54632,
+              54633,
+              54634,
+              56934,
+              56935,
+              56936,
+              56937,
+              56938,
+              56939,
+              56940,
+              56941,
+              56942,
+              56943,
+              56944
+            ],
+            "node_ptr_sha256": "b8c715ff62744f2f0859d3f310236e660278c72433cafd80a1849814cd7ed969",
+            "raw_edge_count_verified": 818716,
+            "required_files": [
+              {
+                "path": "/home/pzh/project/data/cache/ppi/meta.cfg",
+                "size_bytes": 244
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ppi/edges.txt",
+                "size_bytes": 12551171
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ppi/features.npy",
+                "size_bytes": 11388928
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ppi/labels_multi.npy",
+                "size_bytes": 27561024
+              },
+              {
+                "path": "/home/pzh/project/data/cache/ppi/node_ptr.txt",
+                "size_bytes": 1720
+              }
+            ]
+          },
+          "checkpoint": {
+            "input_preprocess_id": "row_normalize",
+            "manifest_path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/manifest.json",
+            "manifest_sha256": "786f29b61871e1d81d4954cc14d93cd4a4c7a44eaad9cc100f6f197e5ebbe58b",
+            "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c121",
+            "model_param_id": "ppi_gat_seed11",
+            "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
+            "required_files": [
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/manifest.json",
+                "size_bytes": 17282
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/tensors.npz",
+                "size_bytes": 101461
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/tensors.txt",
+                "size_bytes": 508006
+              }
+            ],
+            "tensor_count": 56,
+            "weight_contents_hashed": false
+          },
+          "config_path": "/home/pzh/project/configs/ppi_secure.cfg",
+          "config_sha256": "ca0d4f29915c258d5a032000835f68025f9b343094b31cd2fd3522448d92d8d2",
+          "dataset": "ppi",
+          "preprocess": "row_normalize",
+          "srs": {
+            "ceremony_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+            "domain_sizes": {
+              "C": 128,
+              "FH": 4194304,
+              "N": 65536,
+              "cat": 128,
+              "d": 16,
+              "edge": 8388608,
+              "in": 128
+            },
+            "manifest_degree_bound": 33554431,
+            "manifest_manifest_hash": "43ac65afb57f841be4e5b575eeaa58eecad18608a291089a7096fc964d490eab",
+            "manifest_path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "859f59973e1c917303adc7015eac2472250b58cd5508b59dcba62b00b2419e34",
+            "manifest_size_bytes": 4508,
+            "manifest_srs_id": "ppi_formal_srs",
+            "material_files": [
+              {
+                "declared_sha256": "b7802ed2d6edadc3d8063dff3d84a9e377a4d55d129c8cfc8067b4991464d653",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_coef.bin",
+                "sha256_verified": false,
+                "size_bytes": 1610612760
+              },
+              {
+                "declared_sha256": "64a40983e575086e38d11d3681ac2dc11bcbb5e98d08ff462d5b7b8f5abd7783",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/vk.bin",
+                "sha256_verified": false,
+                "size_bytes": 1023
+              },
+              {
+                "declared_sha256": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/srs_audit_report.txt",
+                "sha256_verified": false,
+                "size_bytes": 1415
+              },
+              {
+                "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+                "domain": "C",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_C.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "18963c42cd1391c1585e440f8585350e96bb6f36852b43f00936e2a8287930e0",
+                "domain": "FH",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_FH.bin",
+                "sha256_verified": false,
+                "size_bytes": 201326616
+              },
+              {
+                "declared_sha256": "46f495d2486b4ca66abcde71851a426d57f1f72959cc4e7f5b04bd915e307c6b",
+                "domain": "N",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_N.bin",
+                "sha256_verified": false,
+                "size_bytes": 3145752
+              },
+              {
+                "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+                "domain": "cat",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_cat.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "d3397d568f592275d9dd235ba83a022242c2fb361a476f4b837fa2a962e8f3c3",
+                "domain": "d",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_d.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "b08e41f69e2eb809acb16d9eab47c1a3bdc925fabb5b166184f9998846e19953",
+                "domain": "edge",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_edge.bin",
+                "sha256_verified": false,
+                "size_bytes": 402653208
+              },
+              {
+                "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+                "domain": "in",
+                "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_in.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              }
+            ],
+            "material_verification": "metadata_only_not_rehashed",
+            "max_instance_envelope": {
+              "max_classes": 121,
+              "max_coefficient_chunks": 7,
+              "max_coefficient_object_length": 6890224,
+              "max_concat_dim": 64,
+              "max_edges": 875660,
+              "max_graphs": 295,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 64,
+              "max_layers": 3,
+              "max_nodes": 56944,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 14,
+              "max_total_nodes": 56944,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_key_content_hashes_verified": false,
+          "status": "metadata_checks_passed"
+        },
+        "pubmed": {
+          "cache": {
+            "cache_root": "/home/pzh/project/data/cache/pubmed",
+            "edge_content_sha256": null,
+            "edge_size_bytes": 963182,
+            "input_content_hashes_computed": false,
+            "metadata": {
+              "input_preprocess_id": "row_normalize",
+              "name": "pubmed",
+              "num_classes": "3",
+              "num_features": "500",
+              "num_nodes": "19717",
+              "test_count": "1000"
+            },
+            "metadata_sha256": "f0c1a7e1816e2b5c40d663f5ad7e00af64a45a549aea195233a72ce92f034398",
+            "node_ptr": [],
+            "node_ptr_sha256": null,
+            "raw_edge_count_verified": 88676,
+            "required_files": [
+              {
+                "path": "/home/pzh/project/data/cache/pubmed/meta.cfg",
+                "size_bytes": 121
+              },
+              {
+                "path": "/home/pzh/project/data/cache/pubmed/edges.txt",
+                "size_bytes": 963182
+              },
+              {
+                "path": "/home/pzh/project/data/cache/pubmed/features.txt",
+                "size_bytes": 19289548
+              },
+              {
+                "path": "/home/pzh/project/data/cache/pubmed/labels.txt",
+                "size_bytes": 39434
+              }
+            ]
+          },
+          "checkpoint": {
+            "input_preprocess_id": "row_normalize",
+            "manifest_path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/manifest.json",
+            "manifest_sha256": "93a590c3d4b2e3e192e90de53074a7a9d6939d7f6b0a163d8e10c612445c287b",
+            "model_arch_id": "gat_family_L3_hid8x8-8x8_kout2_c3",
+            "model_param_id": "pubmed_planetoid_seed11",
+            "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat",
+            "required_files": [
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/manifest.json",
+                "size_bytes": 17279
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/tensors.npz",
+                "size_bytes": 150992
+              },
+              {
+                "path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat/tensors.txt",
+                "size_bytes": 828582
+              }
+            ],
+            "tensor_count": 56,
+            "weight_contents_hashed": false
+          },
+          "config_path": "/home/pzh/project/configs/pubmed_secure.cfg",
+          "config_sha256": "e0610c0a52efad0bbd7da1198794cb2043123febaea3a0f6551bb90a29a51394",
+          "dataset": "pubmed",
+          "preprocess": "row_normalize",
+          "srs": {
+            "ceremony_transcript_hash": "2e9f1820b284ddff8699c5cfce4efe78c10eb358fc55160337e683b671cc60ca",
+            "domain_sizes": {
+              "C": 8,
+              "FH": 16777216,
+              "N": 32768,
+              "cat": 128,
+              "d": 16,
+              "edge": 262144,
+              "in": 512
+            },
+            "manifest_degree_bound": 67108863,
+            "manifest_manifest_hash": "2380d38d6592e6d4865aeb1c70208b4ce48f792f689b357c877e73b85c4c2865",
+            "manifest_path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/srs_manifest.json",
+            "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+            "manifest_sha256": "394d6175b21e91196097234a0d32f11f8a0d4429760cc4bf6897ac95a2651655",
+            "manifest_size_bytes": 4507,
+            "manifest_srs_id": "pubmed_formal_srs",
+            "material_files": [
+              {
+                "declared_sha256": "b3eefaf6be932555079c24fd11b4ba95db140510c9ce3c7be99a6d687340d845",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_coef.bin",
+                "sha256_verified": false,
+                "size_bytes": 3221225496
+              },
+              {
+                "declared_sha256": "d7d6d23bd15537fc659717e2c8629d561e250427c6b44f99f91274e3e2742c32",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/vk.bin",
+                "sha256_verified": false,
+                "size_bytes": 1023
+              },
+              {
+                "declared_sha256": "7ee36604e6f88dbcf37d17d989b53b17c552970fdbdcdb5406b3ab1d5182d7b0",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/srs_audit_report.txt",
+                "sha256_verified": false,
+                "size_bytes": 1411
+              },
+              {
+                "declared_sha256": "ceca68dd89cba142fa0adaafb1d1fa580a04fd63a107354f512b42c9c3be9d66",
+                "domain": "C",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_C.bin",
+                "sha256_verified": false,
+                "size_bytes": 408
+              },
+              {
+                "declared_sha256": "5b1b4492568fb4fbd920fadbd6e45056bef342668643282b479ac317015c4349",
+                "domain": "FH",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_FH.bin",
+                "sha256_verified": false,
+                "size_bytes": 805306392
+              },
+              {
+                "declared_sha256": "64990e2e15c5d7972d7e80989e71d80415d4da9ac33d5f432ac666f51cb1d54d",
+                "domain": "N",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_N.bin",
+                "sha256_verified": false,
+                "size_bytes": 1572888
+              },
+              {
+                "declared_sha256": "1bd2f52a43a74226025b0cc6d8e2be6c2e45b3f55db9f3ffefa97d7d0d299949",
+                "domain": "cat",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_cat.bin",
+                "sha256_verified": false,
+                "size_bytes": 6168
+              },
+              {
+                "declared_sha256": "cbe1560b5458354335f6ac7a8d44c2ec4552f439bf004b2c844454ae67c6a46d",
+                "domain": "d",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_d.bin",
+                "sha256_verified": false,
+                "size_bytes": 792
+              },
+              {
+                "declared_sha256": "88ed774b39203b1e1acc0577c63448fb30055018d8b74f338728ea9355f3d2b7",
+                "domain": "edge",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_edge.bin",
+                "sha256_verified": false,
+                "size_bytes": 12582936
+              },
+              {
+                "declared_sha256": "295728e0e341115fda98cadee076b35db0a7ccc4c3f047823373e58b9b5d6d31",
+                "domain": "in",
+                "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_in.bin",
+                "sha256_verified": false,
+                "size_bytes": 24600
+              }
+            ],
+            "material_verification": "metadata_only_not_rehashed",
+            "max_instance_envelope": {
+              "max_classes": 3,
+              "max_coefficient_chunks": 38,
+              "max_coefficient_object_length": 9858500,
+              "max_concat_dim": 64,
+              "max_edges": 108365,
+              "max_graphs": 1,
+              "max_hidden_head_dim": 8,
+              "max_hidden_heads_per_layer": 8,
+              "max_input_dim": 500,
+              "max_layers": 3,
+              "max_nodes": 19717,
+              "max_object_family_count": 32768,
+              "max_output_heads": 2,
+              "max_range_bits": 12,
+              "max_total_nodes": 19717,
+              "security_target_bits": 120
+            },
+            "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs",
+            "security_level": "120-bit",
+            "srs_type": "trusted_srs"
+          },
+          "srs_key_content_hashes_verified": false,
+          "status": "metadata_checks_passed"
+        }
+      },
+      "matrix": {
+        "cell_count": 30,
+        "feature_folding_main_matrix_count": 0,
+        "pair_count": 15,
+        "ppi_component0_main_matrix_groups": 1,
+        "ppi_full295_appendix_groups": 0,
+        "shared_neighborhood_main_matrix_count": 5,
+        "total_configurations": 5
+      }
+    },
+    "device_argument": 0,
+    "errors": [],
+    "formal_cells_executed": 0,
+    "independent_verify": "\u672a\u8fd0\u884c",
+    "mode": "bounded_metadata_only",
+    "proofs_generated": 0,
+    "real_input_bundles_generated": 0,
+    "remaining_formal_gates": [
+      "native prepare-real \u5b8c\u6574\u751f\u6210\u5e76\u6838\u9a8c\u771f\u5b9e\u8f93\u5165 bundle/\u5143\u6570\u636e/\u56fe\u8fb9\u754c",
+      "\u5bf9\u6240\u9009\u6570\u636e\u96c6\u7684 SRS trusted material \u91cd\u65b0\u8ba1\u7b97 SHA-256 \u5e76\u88c5\u8f7d\u6b63\u5f0f\u5bc6\u94a5",
+      "CUDA Prove\u3001\u72ec\u7acb CPU Verify \u4e0e\u9010\u5355\u5143\u5b89\u5168\u8d26\u672c\u68c0\u67e5"
+    ],
+    "security_ledger": "\u672a\u9a8c\u8bc1",
+    "srs_key_content_hashes": "\u672a\u91cd\u65b0\u8ba1\u7b97\uff1b\u53ea\u68c0\u67e5 manifest \u58f0\u660e\u3001\u8def\u5f84\u548c\u6587\u4ef6\u5c3a\u5bf8",
+    "status": "PASS"
+  },
+  "prepared_inputs": [],
+  "process_timing_semantics": {
+    "prover_wall_time_seconds": "\u6574\u4e2a\u72ec\u7acb Prover \u5b50\u8fdb\u7a0b\u751f\u547d\u5468\u671f\u5899\u949f\u65f6\u95f4\uff0c\u542b\u542f\u52a8\u4e0e I/O\uff0c\u4e0d\u4e0e\u539f\u751f\u5728\u7ebf\u8ba1\u65f6\u6df7\u5408",
+    "verify_wall_time_seconds": "\u6574\u4e2a\u72ec\u7acb Verifier \u5b50\u8fdb\u7a0b\u751f\u547d\u5468\u671f\u5899\u949f\u65f6\u95f4\uff0c\u542b\u542f\u52a8\u4e0e I/O\uff0c\u4e0d\u4e0e\u539f\u751f\u5728\u7ebf\u8ba1\u65f6\u6df7\u5408"
+  },
+  "provenance": {
+    "datasets": {
+      "citeseer": {
+        "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/citeseer_gat",
+        "config_path": "/home/pzh/project/configs/citeseer_secure.cfg",
+        "config_sha256": "50be73f5569a1e18c743f1b1b5c6fb2730750270cbe4b00b40099037c644235e",
+        "srs": {
+          "ceremony_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+          "domain_sizes": {
+            "C": 8,
+            "FH": 16777216,
+            "N": 4096,
+            "cat": 128,
+            "d": 16,
+            "edge": 32768,
+            "in": 4096
+          },
+          "manifest_degree_bound": 67108863,
+          "manifest_manifest_hash": "d12b137ddff8c9b9cf46aa2b45ca2d318d368210c7e361d14921d2bda6373b85",
+          "manifest_path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/srs_manifest.json",
+          "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "manifest_sha256": "b9ebe4d4cba8c333c83ab1d31f2c9b328199a2e1dd20153647631a73a7b4839f",
+          "manifest_size_bytes": 4508,
+          "manifest_srs_id": "citeseer_formal_srs",
+          "material_files": [
+            {
+              "declared_sha256": "1fd2950eac6287254976691cf88ee6f7d4aad940dd5ef82193f8c82f50d3f432",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_coef.bin",
+              "sha256_verified": false,
+              "size_bytes": 3221225496
+            },
+            {
+              "declared_sha256": "ebbe924127f07af1d21dbd1a513e74c224c60b1b8d52b72b9ac6a01b80dd1801",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/vk.bin",
+              "sha256_verified": false,
+              "size_bytes": 1023
+            },
+            {
+              "declared_sha256": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/srs_audit_report.txt",
+              "sha256_verified": false,
+              "size_bytes": 1409
+            },
+            {
+              "declared_sha256": "2216845ad50a0a4740d2efa6d0948bf377697df30f532fbd9ee48767e4b66822",
+              "domain": "C",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_C.bin",
+              "sha256_verified": false,
+              "size_bytes": 408
+            },
+            {
+              "declared_sha256": "ba53d4ebf7d13831bf0995995f83e7d8ff659e37a56857103666c15fca429301",
+              "domain": "FH",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_FH.bin",
+              "sha256_verified": false,
+              "size_bytes": 805306392
+            },
+            {
+              "declared_sha256": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+              "domain": "N",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_N.bin",
+              "sha256_verified": false,
+              "size_bytes": 196632
+            },
+            {
+              "declared_sha256": "7244b68365e79ea3f372ed778e31b645e6bef504e631a6eebae31791bd6f6aa9",
+              "domain": "cat",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_cat.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "ba895f769377d220e29db87dbf61bcd69c2a086b6e12c635d001216a5a885d3e",
+              "domain": "d",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_d.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "a497b2ea77292b2f86cb6a73bc8d87d41d2a19ef64196dc6d30ba8ff7cef2e51",
+              "domain": "edge",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_edge.bin",
+              "sha256_verified": false,
+              "size_bytes": 1572888
+            },
+            {
+              "declared_sha256": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+              "domain": "in",
+              "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs/pk_lagrange_in.bin",
+              "sha256_verified": false,
+              "size_bytes": 196632
+            }
+          ],
+          "material_verification": "metadata_only_not_rehashed",
+          "max_instance_envelope": {
+            "max_classes": 6,
+            "max_coefficient_chunks": 376,
+            "max_coefficient_object_length": 12319881,
+            "max_concat_dim": 64,
+            "max_edges": 12431,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 3703,
+            "max_layers": 3,
+            "max_nodes": 3327,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 3327,
+            "security_target_bits": 120
+          },
+          "path": "/home/pzh/project/artifacts/srs/citeseer_formal_srs",
+          "security_level": "120-bit",
+          "srs_type": "trusted_srs"
+        },
+        "srs_manifest": {
+          "ceremony_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+          "curve_id": "bls12_381",
+          "degree_bound": 67108863,
+          "domain_generator_catalog_hash": "287d18c0759fd099cf171cb4c20b5d332148159e232707cb91765c92bc436927",
+          "domain_generators": {
+            "C": "87c08b68cb02d78dfea4ea78408232a0225bca983ab233a76016a3255d40963f",
+            "FH": "2c0eb71a3a15905bb80afb7531faef8d950c904623ae53c58c11d36bdcdc311d",
+            "N": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11",
+            "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "edge": "d4cc7ea9dd54a3e657bcfb882e9d9239c8b1e7d63da62ba2437ff0f51129c242",
+            "in": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11"
+          },
+          "domain_sizes": {
+            "C": 8,
+            "FH": 16777216,
+            "N": 4096,
+            "cat": 128,
+            "d": 16,
+            "edge": 32768,
+            "in": 4096
+          },
+          "encoding": "canonical_mcl_bls12_381_fixed",
+          "field_modulus_id": "bls12_381_fr",
+          "generator_id": "zkgat_srs_setup_tool",
+          "kzg_assumption_degree_bound": 67108863,
+          "kzg_assumption_domain_catalog_hash": "44d0e84a69eaaa1a50f5fb6a99abe19c85c7dce55e796a60afd96704b3c2833d",
+          "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+          "kzg_assumption_security_bits": 128,
+          "manifest_format": "zkgat_srs_manifest",
+          "manifest_hash": "d12b137ddff8c9b9cf46aa2b45ca2d318d368210c7e361d14921d2bda6373b85",
+          "max_instance_envelope": {
+            "max_classes": 6,
+            "max_coefficient_chunks": 376,
+            "max_coefficient_object_length": 12319881,
+            "max_concat_dim": 64,
+            "max_edges": 12431,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 3703,
+            "max_layers": 3,
+            "max_nodes": 3327,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 3327,
+            "security_target_bits": 120
+          },
+          "max_instance_envelope_hash": "d90aa40cf56a068fe058b80329fba12912c3763fe6b2059423011fe8ef420db1",
+          "max_instance_envelope_id": "d90aa40cf56a068fe058b80329fba12912c3763fe6b2059423011fe8ef420db1",
+          "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+          "pk_coef_hash": "1fd2950eac6287254976691cf88ee6f7d4aad940dd5ef82193f8c82f50d3f432",
+          "pk_coef_path": "pk_coef.bin",
+          "pk_lagrange_hashes": {
+            "C": "2216845ad50a0a4740d2efa6d0948bf377697df30f532fbd9ee48767e4b66822",
+            "FH": "ba53d4ebf7d13831bf0995995f83e7d8ff659e37a56857103666c15fca429301",
+            "N": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572",
+            "cat": "7244b68365e79ea3f372ed778e31b645e6bef504e631a6eebae31791bd6f6aa9",
+            "d": "ba895f769377d220e29db87dbf61bcd69c2a086b6e12c635d001216a5a885d3e",
+            "edge": "a497b2ea77292b2f86cb6a73bc8d87d41d2a19ef64196dc6d30ba8ff7cef2e51",
+            "in": "af6fc9c6f4b123e810d9309173b3687160fb5aa938b3e7e49c1bae5a12a84572"
+          },
+          "pk_lagrange_paths": {
+            "C": "pk_lagrange_C.bin",
+            "FH": "pk_lagrange_FH.bin",
+            "N": "pk_lagrange_N.bin",
+            "cat": "pk_lagrange_cat.bin",
+            "d": "pk_lagrange_d.bin",
+            "edge": "pk_lagrange_edge.bin",
+            "in": "pk_lagrange_in.bin"
+          },
+          "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+          "protocol_compiler_artifact_hash": "eab4fa780425452f33476d99e4953afd2d85136636da64233439cf3980640397",
+          "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+          "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+          "root_derivation_id": "bls12_381_fr_generator_5",
+          "row_order": "ascending_powers_from_one",
+          "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+          "security_level": "120-bit",
+          "setup_transcript_hash": "224e5f4c370b126b06f7da5c05ce1547b278aa38ce49f8636aaed0cc6f31ec7d",
+          "srs_audit_report_hash": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+          "srs_audit_report_path": "srs_audit_report.txt",
+          "srs_consistency_hash": "73bcaac5f660cafa790d0f5d8eb09afb791f90f4ed39f80e739eb3e607134fef",
+          "srs_id": "citeseer_formal_srs",
+          "srs_type": "trusted_srs",
+          "vanishing_g2_hash": "ff66e6a9e8a54df7598b37f85aafd2e9767a1a3a492dfb910d45ae28fd29844e",
+          "vk_hash": "ebbe924127f07af1d21dbd1a513e74c224c60b1b8d52b72b9ac6a01b80dd1801",
+          "vk_path": "vk.bin"
+        }
+      },
+      "cora": {
+        "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/cora_gat",
+        "config_path": "/home/pzh/project/configs/cora_secure.cfg",
+        "config_sha256": "d9502db858a2691d58eda5c296785e9fc4e8d442f8c2ba870257d05e4081093a",
+        "srs": {
+          "ceremony_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+          "domain_sizes": {
+            "C": 16,
+            "FH": 4194304,
+            "N": 4096,
+            "cat": 128,
+            "d": 16,
+            "edge": 32768,
+            "in": 2048
+          },
+          "manifest_degree_bound": 16777215,
+          "manifest_manifest_hash": "b7070131e452ad6c1eacc8c2e587ef354969f8b168543f23d5ec02dce41e9229",
+          "manifest_path": "/home/pzh/project/artifacts/srs/cora_formal_srs/srs_manifest.json",
+          "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "manifest_sha256": "0734f359deac2c145bab22ed3ed40de7310eda95e732de9aa45f66919108fcf3",
+          "manifest_size_bytes": 4503,
+          "manifest_srs_id": "cora_formal_srs",
+          "material_files": [
+            {
+              "declared_sha256": "5abcbc2ec7f506d8d63fd95209d3afa752fe064913bbd8c7df34d1b866b8cddd",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_coef.bin",
+              "sha256_verified": false,
+              "size_bytes": 805306392
+            },
+            {
+              "declared_sha256": "6f9c017bc7ad7d6f903ab3400c7463a74c9b16bae9dcf75a3cceebfa5050b407",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/vk.bin",
+              "sha256_verified": false,
+              "size_bytes": 1023
+            },
+            {
+              "declared_sha256": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/srs_audit_report.txt",
+              "sha256_verified": false,
+              "size_bytes": 1409
+            },
+            {
+              "declared_sha256": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+              "domain": "C",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_C.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "bb9a00f543cc5b96999ab35271384f4726642589e6ff3262e038696105c4650c",
+              "domain": "FH",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_FH.bin",
+              "sha256_verified": false,
+              "size_bytes": 201326616
+            },
+            {
+              "declared_sha256": "8f098e69fe4c9fa47fb71f06ba1dfdd9b3be9a56dddd347581ce463dcc4386a1",
+              "domain": "N",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_N.bin",
+              "sha256_verified": false,
+              "size_bytes": 196632
+            },
+            {
+              "declared_sha256": "bdc07a6d4a80997d333448106108eae49bac8ffdd56f317b40ff722d83fa567f",
+              "domain": "cat",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_cat.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+              "domain": "d",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_d.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "4f2dd8c8b015d4e064664e839f93708b248a46d41d644d55313952c6e4cc69f9",
+              "domain": "edge",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_edge.bin",
+              "sha256_verified": false,
+              "size_bytes": 1572888
+            },
+            {
+              "declared_sha256": "66c0718c79871c707c64134b0378fad29bce20ccf6751c28eb4ec55cd79bf3b1",
+              "domain": "in",
+              "path": "/home/pzh/project/artifacts/srs/cora_formal_srs/pk_lagrange_in.bin",
+              "sha256_verified": false,
+              "size_bytes": 98328
+            }
+          ],
+          "material_verification": "metadata_only_not_rehashed",
+          "max_instance_envelope": {
+            "max_classes": 7,
+            "max_coefficient_chunks": 119,
+            "max_coefficient_object_length": 3880564,
+            "max_concat_dim": 64,
+            "max_edges": 13264,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 1433,
+            "max_layers": 3,
+            "max_nodes": 2708,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 2708,
+            "security_target_bits": 120
+          },
+          "path": "/home/pzh/project/artifacts/srs/cora_formal_srs",
+          "security_level": "120-bit",
+          "srs_type": "trusted_srs"
+        },
+        "srs_manifest": {
+          "ceremony_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+          "curve_id": "bls12_381",
+          "degree_bound": 16777215,
+          "domain_generator_catalog_hash": "86828e48d7bfacf84d46f2555d0944f5e6c9097b096a19a42bb094725a76a71f",
+          "domain_generators": {
+            "C": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "FH": "d1563aa5ee70b6c57b7d0353421f7d12e2c222a77e25d45738d8cb33a326ae03",
+            "N": "05eea87e979f0d45c06fd53771f15a56ace9f99348cb55e11b10e9c8d0eb0c11",
+            "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "edge": "d4cc7ea9dd54a3e657bcfb882e9d9239c8b1e7d63da62ba2437ff0f51129c242",
+            "in": "7704138c71f6a174be0a1eb614af34a5d79008621a4a67eb722425ca8b7a5243"
+          },
+          "domain_sizes": {
+            "C": 16,
+            "FH": 4194304,
+            "N": 4096,
+            "cat": 128,
+            "d": 16,
+            "edge": 32768,
+            "in": 2048
+          },
+          "encoding": "canonical_mcl_bls12_381_fixed",
+          "field_modulus_id": "bls12_381_fr",
+          "generator_id": "zkgat_srs_setup_tool",
+          "kzg_assumption_degree_bound": 16777215,
+          "kzg_assumption_domain_catalog_hash": "719d60bce819f0725aae8494b39f41f497814b8921ad3016e3bc944e198bb93e",
+          "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+          "kzg_assumption_security_bits": 128,
+          "manifest_format": "zkgat_srs_manifest",
+          "manifest_hash": "b7070131e452ad6c1eacc8c2e587ef354969f8b168543f23d5ec02dce41e9229",
+          "max_instance_envelope": {
+            "max_classes": 7,
+            "max_coefficient_chunks": 119,
+            "max_coefficient_object_length": 3880564,
+            "max_concat_dim": 64,
+            "max_edges": 13264,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 1433,
+            "max_layers": 3,
+            "max_nodes": 2708,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 2708,
+            "security_target_bits": 120
+          },
+          "max_instance_envelope_hash": "4afc59cc5f7fda2a841a62dd3d5ea64d2d32a65810a894d4820cc398bec66a3b",
+          "max_instance_envelope_id": "4afc59cc5f7fda2a841a62dd3d5ea64d2d32a65810a894d4820cc398bec66a3b",
+          "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+          "pk_coef_hash": "5abcbc2ec7f506d8d63fd95209d3afa752fe064913bbd8c7df34d1b866b8cddd",
+          "pk_coef_path": "pk_coef.bin",
+          "pk_lagrange_hashes": {
+            "C": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+            "FH": "bb9a00f543cc5b96999ab35271384f4726642589e6ff3262e038696105c4650c",
+            "N": "8f098e69fe4c9fa47fb71f06ba1dfdd9b3be9a56dddd347581ce463dcc4386a1",
+            "cat": "bdc07a6d4a80997d333448106108eae49bac8ffdd56f317b40ff722d83fa567f",
+            "d": "3d5fee3f53134f4b3f5b5e30adc6ec95eefd7247e6791a4466acb8f175d105fb",
+            "edge": "4f2dd8c8b015d4e064664e839f93708b248a46d41d644d55313952c6e4cc69f9",
+            "in": "66c0718c79871c707c64134b0378fad29bce20ccf6751c28eb4ec55cd79bf3b1"
+          },
+          "pk_lagrange_paths": {
+            "C": "pk_lagrange_C.bin",
+            "FH": "pk_lagrange_FH.bin",
+            "N": "pk_lagrange_N.bin",
+            "cat": "pk_lagrange_cat.bin",
+            "d": "pk_lagrange_d.bin",
+            "edge": "pk_lagrange_edge.bin",
+            "in": "pk_lagrange_in.bin"
+          },
+          "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+          "protocol_compiler_artifact_hash": "d7eda50252a69a1692bd2554075a7a54f122288564ce8f0718dcc979afdae7c4",
+          "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+          "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+          "root_derivation_id": "bls12_381_fr_generator_5",
+          "row_order": "ascending_powers_from_one",
+          "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+          "security_level": "120-bit",
+          "setup_transcript_hash": "45bda92466b68f561e4f3d11f860471b7aeb80c22d7c03578f1345581a02b1a8",
+          "srs_audit_report_hash": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+          "srs_audit_report_path": "srs_audit_report.txt",
+          "srs_consistency_hash": "48f3f010a641711dc1e6b7794357ae3fa4d58760d93dea1b100b32b852baa20c",
+          "srs_id": "cora_formal_srs",
+          "srs_type": "trusted_srs",
+          "vanishing_g2_hash": "ecd4b32af596ba5aa8fa13213e708d3cf25d3a51277adf37ba55b4439b6af45b",
+          "vk_hash": "6f9c017bc7ad7d6f903ab3400c7463a74c9b16bae9dcf75a3cceebfa5050b407",
+          "vk_path": "vk.bin"
+        }
+      },
+      "ogbn_arxiv": {
+        "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/ogbn_arxiv_gat",
+        "config_path": "/home/pzh/project/configs/ogbn_arxiv_secure.cfg",
+        "config_sha256": "3d8e4b4c03b634608a9afc670ce492f91ed7d829ba3aa8cdb32c2eefeeeb515e",
+        "srs": {
+          "ceremony_transcript_hash": "77253ac82aad2b342ed83143dc418f1506eca23edb84a6bfb83f749f453b0df3",
+          "domain_sizes": {
+            "C": 64,
+            "FH": 33554432,
+            "N": 262144,
+            "cat": 128,
+            "d": 16,
+            "edge": 16777216,
+            "in": 256
+          },
+          "manifest_degree_bound": 134217727,
+          "manifest_manifest_hash": "4aff97e44b0ef88f093cc58af309e941aa866b455dd2f1edd1d30309dfa0ed97",
+          "manifest_path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/srs_manifest.json",
+          "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "manifest_sha256": "dd1839c2451739bfc4008444e3cecbcc7daf6ff12bb5c50200457040ff49e050",
+          "manifest_size_bytes": 4521,
+          "manifest_srs_id": "ogbn_arxiv_formal_srs",
+          "material_files": [
+            {
+              "declared_sha256": "6777d4ae509559ec6e2830f590a43fa60d00266ceb1af4ca0da5d41efde72d2d",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_coef.bin",
+              "sha256_verified": false,
+              "size_bytes": 6442450968
+            },
+            {
+              "declared_sha256": "5b112e7c5584008e8cd3b032764b7177f6bf4b771d0cf7f70b617b8ca92de011",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/vk.bin",
+              "sha256_verified": false,
+              "size_bytes": 1023
+            },
+            {
+              "declared_sha256": "cca97e020f15a2cdc5ea280c05f506bfd7b7f9f814af8afb1e350c51b7686bdc",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/srs_audit_report.txt",
+              "sha256_verified": false,
+              "size_bytes": 1421
+            },
+            {
+              "declared_sha256": "ec67ce1bc7c133dac19ca4b75e49e5eb2972919ca22a161c90972e06b7ce458e",
+              "domain": "C",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_C.bin",
+              "sha256_verified": false,
+              "size_bytes": 3096
+            },
+            {
+              "declared_sha256": "e125f6b147446dc6f7d475698ce2a1ff19f81f2a05d60e1c52e66f7f037dec4a",
+              "domain": "FH",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_FH.bin",
+              "sha256_verified": false,
+              "size_bytes": 1610612760
+            },
+            {
+              "declared_sha256": "0cca54e048cec7a1cfb4c25eee6ad8c747529dd47dd69967c01d3752f06e5972",
+              "domain": "N",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_N.bin",
+              "sha256_verified": false,
+              "size_bytes": 12582936
+            },
+            {
+              "declared_sha256": "6bc92ebbb6ca4eb701334e0478eb4f42d0ecc03c3ff6e185ff1e37d40020e437",
+              "domain": "cat",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_cat.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "8c9b3d0ae3f7f80c6776f52b391f2630c9561c3d4183b3b7d0a3bc4eca570512",
+              "domain": "d",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_d.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "e18637e2ec6a95d2bcc7f148f973e32954557b1db9d7cc4582dded1dae45bb87",
+              "domain": "edge",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_edge.bin",
+              "sha256_verified": false,
+              "size_bytes": 805306392
+            },
+            {
+              "declared_sha256": "c7e98e67f55dde2994156570dc5d186dbf8884ec8b40ee64e0ee6f0bb10d2f99",
+              "domain": "in",
+              "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs/pk_lagrange_in.bin",
+              "sha256_verified": false,
+              "size_bytes": 12312
+            }
+          ],
+          "material_verification": "metadata_only_not_rehashed",
+          "max_instance_envelope": {
+            "max_classes": 40,
+            "max_coefficient_chunks": 3,
+            "max_coefficient_object_length": 21675904,
+            "max_concat_dim": 64,
+            "max_edges": 1335586,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 128,
+            "max_layers": 3,
+            "max_nodes": 169343,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 21,
+            "max_total_nodes": 169343,
+            "security_target_bits": 120
+          },
+          "path": "/home/pzh/project/artifacts/srs/ogbn_arxiv_formal_srs",
+          "security_level": "120-bit",
+          "srs_type": "trusted_srs"
+        },
+        "srs_manifest": {
+          "ceremony_transcript_hash": "77253ac82aad2b342ed83143dc418f1506eca23edb84a6bfb83f749f453b0df3",
+          "curve_id": "bls12_381",
+          "degree_bound": 134217727,
+          "domain_generator_catalog_hash": "340f8f49df6694f30164b896c7b2706e61db3cdf614cc4fad2ab95372e66ed80",
+          "domain_generators": {
+            "C": "7fb45dac695efcd2e4b8d015a6702aa1d9e58dbc671d3b295e6ff857ac40480e",
+            "FH": "ebe8a2594c891c8074c92fe15c5c53bc0398d347278d50954f095daccdd3d916",
+            "N": "089400b989b687bf96cc3cdd7d0e734f0c301046ba057ffd03c98a0bdbe8f55e",
+            "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "edge": "2c0eb71a3a15905bb80afb7531faef8d950c904623ae53c58c11d36bdcdc311d",
+            "in": "b822e32fecadab2c60254115f3842c75ef0a3b1aae32a732f2cb3da359da952e"
+          },
+          "domain_sizes": {
+            "C": 64,
+            "FH": 33554432,
+            "N": 262144,
+            "cat": 128,
+            "d": 16,
+            "edge": 16777216,
+            "in": 256
+          },
+          "encoding": "canonical_mcl_bls12_381_fixed",
+          "field_modulus_id": "bls12_381_fr",
+          "generator_id": "zkgat_srs_setup_tool",
+          "kzg_assumption_degree_bound": 134217727,
+          "kzg_assumption_domain_catalog_hash": "1edadbb58ef0e7310246f4ec9034d89827f5e1edcb42654f1144069a2a139722",
+          "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+          "kzg_assumption_security_bits": 128,
+          "manifest_format": "zkgat_srs_manifest",
+          "manifest_hash": "4aff97e44b0ef88f093cc58af309e941aa866b455dd2f1edd1d30309dfa0ed97",
+          "max_instance_envelope": {
+            "max_classes": 40,
+            "max_coefficient_chunks": 3,
+            "max_coefficient_object_length": 21675904,
+            "max_concat_dim": 64,
+            "max_edges": 1335586,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 128,
+            "max_layers": 3,
+            "max_nodes": 169343,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 21,
+            "max_total_nodes": 169343,
+            "security_target_bits": 120
+          },
+          "max_instance_envelope_hash": "a78223c5d8d4b15f68b68ebfae23d760db39e5fe6e85fd81966f790c9e5c3ab7",
+          "max_instance_envelope_id": "a78223c5d8d4b15f68b68ebfae23d760db39e5fe6e85fd81966f790c9e5c3ab7",
+          "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+          "pk_coef_hash": "6777d4ae509559ec6e2830f590a43fa60d00266ceb1af4ca0da5d41efde72d2d",
+          "pk_coef_path": "pk_coef.bin",
+          "pk_lagrange_hashes": {
+            "C": "ec67ce1bc7c133dac19ca4b75e49e5eb2972919ca22a161c90972e06b7ce458e",
+            "FH": "e125f6b147446dc6f7d475698ce2a1ff19f81f2a05d60e1c52e66f7f037dec4a",
+            "N": "0cca54e048cec7a1cfb4c25eee6ad8c747529dd47dd69967c01d3752f06e5972",
+            "cat": "6bc92ebbb6ca4eb701334e0478eb4f42d0ecc03c3ff6e185ff1e37d40020e437",
+            "d": "8c9b3d0ae3f7f80c6776f52b391f2630c9561c3d4183b3b7d0a3bc4eca570512",
+            "edge": "e18637e2ec6a95d2bcc7f148f973e32954557b1db9d7cc4582dded1dae45bb87",
+            "in": "c7e98e67f55dde2994156570dc5d186dbf8884ec8b40ee64e0ee6f0bb10d2f99"
+          },
+          "pk_lagrange_paths": {
+            "C": "pk_lagrange_C.bin",
+            "FH": "pk_lagrange_FH.bin",
+            "N": "pk_lagrange_N.bin",
+            "cat": "pk_lagrange_cat.bin",
+            "d": "pk_lagrange_d.bin",
+            "edge": "pk_lagrange_edge.bin",
+            "in": "pk_lagrange_in.bin"
+          },
+          "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+          "protocol_compiler_artifact_hash": "d4a7f33a80d12c322770596caec42d530a8a1ac23bd96e19a97987ca6574558f",
+          "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+          "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+          "root_derivation_id": "bls12_381_fr_generator_5",
+          "row_order": "ascending_powers_from_one",
+          "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+          "security_level": "120-bit",
+          "setup_transcript_hash": "77253ac82aad2b342ed83143dc418f1506eca23edb84a6bfb83f749f453b0df3",
+          "srs_audit_report_hash": "cca97e020f15a2cdc5ea280c05f506bfd7b7f9f814af8afb1e350c51b7686bdc",
+          "srs_audit_report_path": "srs_audit_report.txt",
+          "srs_consistency_hash": "cca97e020f15a2cdc5ea280c05f506bfd7b7f9f814af8afb1e350c51b7686bdc",
+          "srs_id": "ogbn_arxiv_formal_srs",
+          "srs_type": "trusted_srs",
+          "vanishing_g2_hash": "2e363befd70cdae4c63405f4dfc17fff917ff18d63ae78e76a64272d6fb9514a",
+          "vk_hash": "5b112e7c5584008e8cd3b032764b7177f6bf4b771d0cf7f70b617b8ca92de011",
+          "vk_path": "vk.bin"
+        }
+      },
+      "ppi": {
+        "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
+        "config_path": "/home/pzh/project/configs/ppi_secure.cfg",
+        "config_sha256": "ca0d4f29915c258d5a032000835f68025f9b343094b31cd2fd3522448d92d8d2",
+        "srs": {
+          "ceremony_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+          "domain_sizes": {
+            "C": 128,
+            "FH": 4194304,
+            "N": 65536,
+            "cat": 128,
+            "d": 16,
+            "edge": 8388608,
+            "in": 128
+          },
+          "manifest_degree_bound": 33554431,
+          "manifest_manifest_hash": "43ac65afb57f841be4e5b575eeaa58eecad18608a291089a7096fc964d490eab",
+          "manifest_path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/srs_manifest.json",
+          "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "manifest_sha256": "859f59973e1c917303adc7015eac2472250b58cd5508b59dcba62b00b2419e34",
+          "manifest_size_bytes": 4508,
+          "manifest_srs_id": "ppi_formal_srs",
+          "material_files": [
+            {
+              "declared_sha256": "b7802ed2d6edadc3d8063dff3d84a9e377a4d55d129c8cfc8067b4991464d653",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_coef.bin",
+              "sha256_verified": false,
+              "size_bytes": 1610612760
+            },
+            {
+              "declared_sha256": "64a40983e575086e38d11d3681ac2dc11bcbb5e98d08ff462d5b7b8f5abd7783",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/vk.bin",
+              "sha256_verified": false,
+              "size_bytes": 1023
+            },
+            {
+              "declared_sha256": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/srs_audit_report.txt",
+              "sha256_verified": false,
+              "size_bytes": 1415
+            },
+            {
+              "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+              "domain": "C",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_C.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "18963c42cd1391c1585e440f8585350e96bb6f36852b43f00936e2a8287930e0",
+              "domain": "FH",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_FH.bin",
+              "sha256_verified": false,
+              "size_bytes": 201326616
+            },
+            {
+              "declared_sha256": "46f495d2486b4ca66abcde71851a426d57f1f72959cc4e7f5b04bd915e307c6b",
+              "domain": "N",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_N.bin",
+              "sha256_verified": false,
+              "size_bytes": 3145752
+            },
+            {
+              "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+              "domain": "cat",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_cat.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "d3397d568f592275d9dd235ba83a022242c2fb361a476f4b837fa2a962e8f3c3",
+              "domain": "d",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_d.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "b08e41f69e2eb809acb16d9eab47c1a3bdc925fabb5b166184f9998846e19953",
+              "domain": "edge",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_edge.bin",
+              "sha256_verified": false,
+              "size_bytes": 402653208
+            },
+            {
+              "declared_sha256": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+              "domain": "in",
+              "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs/pk_lagrange_in.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            }
+          ],
+          "material_verification": "metadata_only_not_rehashed",
+          "max_instance_envelope": {
+            "max_classes": 121,
+            "max_coefficient_chunks": 7,
+            "max_coefficient_object_length": 6890224,
+            "max_concat_dim": 64,
+            "max_edges": 875660,
+            "max_graphs": 295,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 64,
+            "max_layers": 3,
+            "max_nodes": 56944,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 14,
+            "max_total_nodes": 56944,
+            "security_target_bits": 120
+          },
+          "path": "/home/pzh/project/artifacts/srs/ppi_formal_srs",
+          "security_level": "120-bit",
+          "srs_type": "trusted_srs"
+        },
+        "srs_manifest": {
+          "ceremony_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+          "curve_id": "bls12_381",
+          "degree_bound": 33554431,
+          "domain_generator_catalog_hash": "04ef333279c27c00e11595eef1b978c4ced9301f7d3cf29151728f60ace3dfb6",
+          "domain_generators": {
+            "C": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "FH": "d1563aa5ee70b6c57b7d0353421f7d12e2c222a77e25d45738d8cb33a326ae03",
+            "N": "7a5fc3cf8a457b13061bc0293aa6ab0c2c40027a98ee09045b72aa56cdc60967",
+            "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "edge": "f84c50764848911e02dd3eb61ebfbb5502aa554ec8fedabcb0bec02dcdc44551",
+            "in": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007"
+          },
+          "domain_sizes": {
+            "C": 128,
+            "FH": 4194304,
+            "N": 65536,
+            "cat": 128,
+            "d": 16,
+            "edge": 8388608,
+            "in": 128
+          },
+          "encoding": "canonical_mcl_bls12_381_fixed",
+          "field_modulus_id": "bls12_381_fr",
+          "generator_id": "zkgat_srs_setup_tool",
+          "kzg_assumption_degree_bound": 33554431,
+          "kzg_assumption_domain_catalog_hash": "972f142da695be19fa8dfcf6502568a8aa20a0b1b8c260327e2b3bddd495bf00",
+          "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+          "kzg_assumption_security_bits": 128,
+          "manifest_format": "zkgat_srs_manifest",
+          "manifest_hash": "43ac65afb57f841be4e5b575eeaa58eecad18608a291089a7096fc964d490eab",
+          "max_instance_envelope": {
+            "max_classes": 121,
+            "max_coefficient_chunks": 7,
+            "max_coefficient_object_length": 6890224,
+            "max_concat_dim": 64,
+            "max_edges": 875660,
+            "max_graphs": 295,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 64,
+            "max_layers": 3,
+            "max_nodes": 56944,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 14,
+            "max_total_nodes": 56944,
+            "security_target_bits": 120
+          },
+          "max_instance_envelope_hash": "337568101324ae20d2d1c92d06e74a15aa7eb0e968255d913bdeb5af0fff14a6",
+          "max_instance_envelope_id": "337568101324ae20d2d1c92d06e74a15aa7eb0e968255d913bdeb5af0fff14a6",
+          "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+          "pk_coef_hash": "b7802ed2d6edadc3d8063dff3d84a9e377a4d55d129c8cfc8067b4991464d653",
+          "pk_coef_path": "pk_coef.bin",
+          "pk_lagrange_hashes": {
+            "C": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+            "FH": "18963c42cd1391c1585e440f8585350e96bb6f36852b43f00936e2a8287930e0",
+            "N": "46f495d2486b4ca66abcde71851a426d57f1f72959cc4e7f5b04bd915e307c6b",
+            "cat": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c",
+            "d": "d3397d568f592275d9dd235ba83a022242c2fb361a476f4b837fa2a962e8f3c3",
+            "edge": "b08e41f69e2eb809acb16d9eab47c1a3bdc925fabb5b166184f9998846e19953",
+            "in": "8f0d16bbbf344dbcbe0112702fbb3f5154da86809ac3c87b1728204c378d4b6c"
+          },
+          "pk_lagrange_paths": {
+            "C": "pk_lagrange_C.bin",
+            "FH": "pk_lagrange_FH.bin",
+            "N": "pk_lagrange_N.bin",
+            "cat": "pk_lagrange_cat.bin",
+            "d": "pk_lagrange_d.bin",
+            "edge": "pk_lagrange_edge.bin",
+            "in": "pk_lagrange_in.bin"
+          },
+          "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+          "protocol_compiler_artifact_hash": "7342a56d3eac4dc771cddf2c76f4584149b98d08b05bfbbd8af5f1e0e790a442",
+          "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+          "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+          "root_derivation_id": "bls12_381_fr_generator_5",
+          "row_order": "ascending_powers_from_one",
+          "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+          "security_level": "120-bit",
+          "setup_transcript_hash": "3d68e1e926b76e0a08a83c868a763de5be843542f05a19676c6de6c45aaa3ee3",
+          "srs_audit_report_hash": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+          "srs_audit_report_path": "srs_audit_report.txt",
+          "srs_consistency_hash": "b8b7659dc2b27c239a68d940fa75341772414d449c7a1b94b603add0023b0fbb",
+          "srs_id": "ppi_formal_srs",
+          "srs_type": "trusted_srs",
+          "vanishing_g2_hash": "8259edd8036935469cd17bb282c4f6372e8986347bb9f9a057e01d5b0f5e3edf",
+          "vk_hash": "64a40983e575086e38d11d3681ac2dc11bcbb5e98d08ff462d5b7b8f5abd7783",
+          "vk_path": "vk.bin"
+        }
+      },
+      "pubmed": {
+        "checkpoint_path": "/home/pzh/project/artifacts/checkpoints/pubmed_gat",
+        "config_path": "/home/pzh/project/configs/pubmed_secure.cfg",
+        "config_sha256": "e0610c0a52efad0bbd7da1198794cb2043123febaea3a0f6551bb90a29a51394",
+        "srs": {
+          "ceremony_transcript_hash": "2e9f1820b284ddff8699c5cfce4efe78c10eb358fc55160337e683b671cc60ca",
+          "domain_sizes": {
+            "C": 8,
+            "FH": 16777216,
+            "N": 32768,
+            "cat": 128,
+            "d": 16,
+            "edge": 262144,
+            "in": 512
+          },
+          "manifest_degree_bound": 67108863,
+          "manifest_manifest_hash": "2380d38d6592e6d4865aeb1c70208b4ce48f792f689b357c877e73b85c4c2865",
+          "manifest_path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/srs_manifest.json",
+          "manifest_protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "manifest_sha256": "394d6175b21e91196097234a0d32f11f8a0d4429760cc4bf6897ac95a2651655",
+          "manifest_size_bytes": 4507,
+          "manifest_srs_id": "pubmed_formal_srs",
+          "material_files": [
+            {
+              "declared_sha256": "b3eefaf6be932555079c24fd11b4ba95db140510c9ce3c7be99a6d687340d845",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_coef.bin",
+              "sha256_verified": false,
+              "size_bytes": 3221225496
+            },
+            {
+              "declared_sha256": "d7d6d23bd15537fc659717e2c8629d561e250427c6b44f99f91274e3e2742c32",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/vk.bin",
+              "sha256_verified": false,
+              "size_bytes": 1023
+            },
+            {
+              "declared_sha256": "7ee36604e6f88dbcf37d17d989b53b17c552970fdbdcdb5406b3ab1d5182d7b0",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/srs_audit_report.txt",
+              "sha256_verified": false,
+              "size_bytes": 1411
+            },
+            {
+              "declared_sha256": "ceca68dd89cba142fa0adaafb1d1fa580a04fd63a107354f512b42c9c3be9d66",
+              "domain": "C",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_C.bin",
+              "sha256_verified": false,
+              "size_bytes": 408
+            },
+            {
+              "declared_sha256": "5b1b4492568fb4fbd920fadbd6e45056bef342668643282b479ac317015c4349",
+              "domain": "FH",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_FH.bin",
+              "sha256_verified": false,
+              "size_bytes": 805306392
+            },
+            {
+              "declared_sha256": "64990e2e15c5d7972d7e80989e71d80415d4da9ac33d5f432ac666f51cb1d54d",
+              "domain": "N",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_N.bin",
+              "sha256_verified": false,
+              "size_bytes": 1572888
+            },
+            {
+              "declared_sha256": "1bd2f52a43a74226025b0cc6d8e2be6c2e45b3f55db9f3ffefa97d7d0d299949",
+              "domain": "cat",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_cat.bin",
+              "sha256_verified": false,
+              "size_bytes": 6168
+            },
+            {
+              "declared_sha256": "cbe1560b5458354335f6ac7a8d44c2ec4552f439bf004b2c844454ae67c6a46d",
+              "domain": "d",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_d.bin",
+              "sha256_verified": false,
+              "size_bytes": 792
+            },
+            {
+              "declared_sha256": "88ed774b39203b1e1acc0577c63448fb30055018d8b74f338728ea9355f3d2b7",
+              "domain": "edge",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_edge.bin",
+              "sha256_verified": false,
+              "size_bytes": 12582936
+            },
+            {
+              "declared_sha256": "295728e0e341115fda98cadee076b35db0a7ccc4c3f047823373e58b9b5d6d31",
+              "domain": "in",
+              "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs/pk_lagrange_in.bin",
+              "sha256_verified": false,
+              "size_bytes": 24600
+            }
+          ],
+          "material_verification": "metadata_only_not_rehashed",
+          "max_instance_envelope": {
+            "max_classes": 3,
+            "max_coefficient_chunks": 38,
+            "max_coefficient_object_length": 9858500,
+            "max_concat_dim": 64,
+            "max_edges": 108365,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 500,
+            "max_layers": 3,
+            "max_nodes": 19717,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 19717,
+            "security_target_bits": 120
+          },
+          "path": "/home/pzh/project/artifacts/srs/pubmed_formal_srs",
+          "security_level": "120-bit",
+          "srs_type": "trusted_srs"
+        },
+        "srs_manifest": {
+          "ceremony_transcript_hash": "2e9f1820b284ddff8699c5cfce4efe78c10eb358fc55160337e683b671cc60ca",
+          "curve_id": "bls12_381",
+          "degree_bound": 67108863,
+          "domain_generator_catalog_hash": "104c9ee35c645a6836e667c97e8d970094a14e573450b0ebb73604966e59ffe5",
+          "domain_generators": {
+            "C": "87c08b68cb02d78dfea4ea78408232a0225bca983ab233a76016a3255d40963f",
+            "FH": "2c0eb71a3a15905bb80afb7531faef8d950c904623ae53c58c11d36bdcdc311d",
+            "N": "d4cc7ea9dd54a3e657bcfb882e9d9239c8b1e7d63da62ba2437ff0f51129c242",
+            "cat": "08e228ab4cda50b73556e93b64ff1d5076b2b4f03724be8c6e944aa902c8d007",
+            "d": "73fe1104364bdf95bbe1c1eb72e6f41e4acaaf60c4a9926ecc4f3e756e592c4f",
+            "edge": "089400b989b687bf96cc3cdd7d0e734f0c301046ba057ffd03c98a0bdbe8f55e",
+            "in": "f4650cfea11e8133a2287f684cadc115f4e7de42e3edfbecb1885d9a6766b41b"
+          },
+          "domain_sizes": {
+            "C": 8,
+            "FH": 16777216,
+            "N": 32768,
+            "cat": 128,
+            "d": 16,
+            "edge": 262144,
+            "in": 512
+          },
+          "encoding": "canonical_mcl_bls12_381_fixed",
+          "field_modulus_id": "bls12_381_fr",
+          "generator_id": "zkgat_srs_setup_tool",
+          "kzg_assumption_degree_bound": 67108863,
+          "kzg_assumption_domain_catalog_hash": "d9228ba5f259588ba83c99e82ee267113e42e106f1b2e474a61bf3ef47caad1c",
+          "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+          "kzg_assumption_security_bits": 128,
+          "manifest_format": "zkgat_srs_manifest",
+          "manifest_hash": "2380d38d6592e6d4865aeb1c70208b4ce48f792f689b357c877e73b85c4c2865",
+          "max_instance_envelope": {
+            "max_classes": 3,
+            "max_coefficient_chunks": 38,
+            "max_coefficient_object_length": 9858500,
+            "max_concat_dim": 64,
+            "max_edges": 108365,
+            "max_graphs": 1,
+            "max_hidden_head_dim": 8,
+            "max_hidden_heads_per_layer": 8,
+            "max_input_dim": 500,
+            "max_layers": 3,
+            "max_nodes": 19717,
+            "max_object_family_count": 32768,
+            "max_output_heads": 2,
+            "max_range_bits": 12,
+            "max_total_nodes": 19717,
+            "security_target_bits": 120
+          },
+          "max_instance_envelope_hash": "f2f3ed38cb7896b467e0a80ef271de971cbafb1a950914407e70aa90e99d54e1",
+          "max_instance_envelope_id": "f2f3ed38cb7896b467e0a80ef271de971cbafb1a950914407e70aa90e99d54e1",
+          "observation_ledger_hash": "3000bbbdf60dd59a64c33f2275d9c7788842384553464cfb97cbbb763eae67ec",
+          "pk_coef_hash": "b3eefaf6be932555079c24fd11b4ba95db140510c9ce3c7be99a6d687340d845",
+          "pk_coef_path": "pk_coef.bin",
+          "pk_lagrange_hashes": {
+            "C": "ceca68dd89cba142fa0adaafb1d1fa580a04fd63a107354f512b42c9c3be9d66",
+            "FH": "5b1b4492568fb4fbd920fadbd6e45056bef342668643282b479ac317015c4349",
+            "N": "64990e2e15c5d7972d7e80989e71d80415d4da9ac33d5f432ac666f51cb1d54d",
+            "cat": "1bd2f52a43a74226025b0cc6d8e2be6c2e45b3f55db9f3ffefa97d7d0d299949",
+            "d": "cbe1560b5458354335f6ac7a8d44c2ec4552f439bf004b2c844454ae67c6a46d",
+            "edge": "88ed774b39203b1e1acc0577c63448fb30055018d8b74f338728ea9355f3d2b7",
+            "in": "295728e0e341115fda98cadee076b35db0a7ccc4c3f047823373e58b9b5d6d31"
+          },
+          "pk_lagrange_paths": {
+            "C": "pk_lagrange_C.bin",
+            "FH": "pk_lagrange_FH.bin",
+            "N": "pk_lagrange_N.bin",
+            "cat": "pk_lagrange_cat.bin",
+            "d": "pk_lagrange_d.bin",
+            "edge": "pk_lagrange_edge.bin",
+            "in": "pk_lagrange_in.bin"
+          },
+          "proof_schema_template_hash": "e84296df98ebb0a8aeb2f2b31b1075a2756fab3a7c08cb31c46dc8c1388175ff",
+          "protocol_compiler_artifact_hash": "03b80ee062950c58fa2f305b6e6c001f8da0869f7bfca06e0daf338da41ae10e",
+          "protocol_compiler_artifact_path": "protocol_compiler_artifact.txt",
+          "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+          "random_identity_ledger_hash": "2c9254dac9fd94f74ec6f1e8494d273b5b49455db9b055081a6d9582974d8ac6",
+          "root_derivation_id": "bls12_381_fr_generator_5",
+          "row_order": "ascending_powers_from_one",
+          "security_budget_ledger_hash": "ec94f0dd5b4080176786f5eb5790cd3b3d2c6e977ff7b24bd16145510c12602e",
+          "security_level": "120-bit",
+          "setup_transcript_hash": "2e9f1820b284ddff8699c5cfce4efe78c10eb358fc55160337e683b671cc60ca",
+          "srs_audit_report_hash": "7ee36604e6f88dbcf37d17d989b53b17c552970fdbdcdb5406b3ab1d5182d7b0",
+          "srs_audit_report_path": "srs_audit_report.txt",
+          "srs_consistency_hash": "7ee36604e6f88dbcf37d17d989b53b17c552970fdbdcdb5406b3ab1d5182d7b0",
+          "srs_id": "pubmed_formal_srs",
+          "srs_type": "trusted_srs",
+          "vanishing_g2_hash": "7d297cf961da97995da492edc284c8af01b118c08be6479b1ff047c6534d9432",
+          "vk_hash": "d7d6d23bd15537fc659717e2c8629d561e250427c6b44f99f91274e3e2742c32",
+          "vk_path": "vk.bin"
+        }
+      }
+    }
+  },
+  "repetitions": 3,
+  "result_files": {
+    "results_csv": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063104Z_a0dc3b7d14bb/results.csv",
+    "summary_markdown": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063104Z_a0dc3b7d14bb/summary.md"
+  },
+  "selected_head": 0,
+  "selected_layer": 0,
+  "selection": {
+    "input_scope": "main",
+    "mechanism": "shared_neighborhood"
+  },
+  "session_id": "mechanism_20261024T063104Z_a0dc3b7d14bb",
+  "session_root": "/home/pzh/project/results/mechanism_ablation_final/mechanism_20261024T063104Z_a0dc3b7d14bb",
+  "session_status": "preflight_complete",
+  "timing_semantics": {
+    "commitment_time_ms": "cold native KZG commitment work only, including first-use static-base preparation invoked inside commitment; Taylor-shift coefficient materialization is excluded",
+    "proof_size_bytes": "actual canonical serialized mechanism proof bytes",
+    "prove_time_ms": "native online proof work, Taylor-shift coefficient materialization, and canonical proof encoding, excluding KZG commitment work and artifact file I/O",
+    "verify_time_ms": "independent verifier parsing through accept/reject"
+  },
+  "variants": [
+    "original",
+    "control"
+  ],
+  "verified_cells": 0
+}

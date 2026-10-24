@@ -123,7 +123,7 @@ tests/sparse_route_hidden_smoke: tests/sparse_route_hidden_smoke.cu zkrelation-p
 %: %.cu
 	$(NVCC)  $(NVCC_FLAGS) $(INCLUDES) $(LIBS) $< -o $@
 
-GAT_HDRS := gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh gat_adapter/output_stream.hpp gat_adapter/checkpoint_manifest_json.hpp gat_adapter/integer_bound_ledger.hpp gat_adapter/lookup_table_index_bits.hpp gat_adapter/signed_round_bounds.hpp gat_adapter/static_table_bounds.hpp gat_adapter/hyrax_gpu_fold.cu gat_adapter/hyrax_gpu_fold_api.hpp cpu-backend.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul.cuh zkprod.cuh
+GAT_HDRS := gat_adapter/gat_native_resources.cu gat_adapter/gat_adapter.hpp gat_adapter/gat_witness_numerics.hpp gat_adapter/gat_native_abi.hpp gat_adapter/gat_family_storage.hpp gat_adapter/gat_native_bridge.hpp gat_adapter/gat_native_core.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_sparse_route.cuh gat_adapter/output_stream.hpp gat_adapter/checkpoint_manifest_json.hpp gat_adapter/integer_bound_ledger.hpp gat_adapter/lookup_table_index_bits.hpp gat_adapter/signed_round_bounds.hpp gat_adapter/static_table_bounds.hpp gat_adapter/hyrax_gpu_fold.cu gat_adapter/hyrax_gpu_fold_api.hpp cpu-backend.cuh bls12-381.cuh g1-wire.cuh zkrelation-proof.cuh commitment.cuh proof.cuh fr-tensor.cuh g1-tensor.cuh zkmatmul-proof.cuh zkmatmul.cuh zkprod.cuh timer.hpp
 
 $(GAT_OBJ): %.o: %.cu $(GAT_HDRS) $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) -I. -Igat_adapter -c $< -o $@
@@ -147,8 +147,6 @@ witness-numerics-check: tests/gat_witness_numerics_check
 
 tests/gat_witness_numerics_check: tests/gat_witness_numerics_check.cpp gat_adapter/gat_witness_numerics.hpp gat_adapter/gat_adapter.hpp
 	$(CXX) -O2 -std=c++17 -I. $< -lcrypto -o $@
-
-$(GAT_TARGET): gat_adapter/gat_witness_numerics.hpp
 
 .PHONY: cpu-ipa-optimized-check
 cpu-ipa-optimized-check: tests/cpu_ipa_optimized_check

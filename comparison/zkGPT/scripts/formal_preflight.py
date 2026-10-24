@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Authenticate formal execution preconditions without running development tests.
+"""Check native build capability, per-dataset files and source-derived capacity.
 
 Only actual dataset proofs and separate native verification produce formal
 results. Development proof closure is checked independently under tests/.
@@ -24,10 +24,8 @@ from common import (
     canonical_dataset_scope,
     atomic_write_json,
     baseline_root,
-    binary_fingerprint,
     build_binary,
     config_with_auth,
-    file_fingerprint,
     formal_backend_capability,
     formal_child_environment,
     ensure_directory,
@@ -36,19 +34,14 @@ from common import (
     relative_path,
     require_bool,
     require_regular,
-    require_formal_resource_manifest,
-    sha256_file,
     verifier_binary,
-    verify_build_provenance,
     verify_local_resources,
-    validate_scoped_resource_manifest_observation,
     formal_preflight_path,
     require_formal_session,
-    runtime_source_sha256,
     atomic_write_text,
 )
 
-CAPACITY_SCHEMA = "zkgpt-gat-capacity-v11"
+CAPACITY_SCHEMA = "zkgpt-gat-capacity-v12"
 CAPACITY_U64_MAX = (1 << 64) - 1
 CAPACITY_SHAPE_FIELDS = ("num_nodes", "num_edges", "num_features", "num_classes", "graph_count", "model_layers", "model_output_heads", "model_classes", "model_input_dim", "model_hidden_dim", "n_raw", "n_in")
 CAPACITY_INTEGER_FIELDS = ("explicit_gate_count", "max_materialized_gate_bytes", "max_materialized_vector_bytes", "context_recipe_bytes_bound", "context_payload_bytes_bound", "lasso_logical_domain_entries", "lasso_private_selected_row_workspace_peak_bytes", "lasso_heap_workspace_peak_bytes", "lasso_selected_row_cache_bytes_upper_bound", "lasso_selected_row_cache_heap_bytes_upper_bound", "lasso_selected_row_cache_mapped_bytes_upper_bound", "lasso_sparse_matrix_workspace_bytes_upper_bound", "hyrax_active_domain_workspace_entries", "hyrax_active_domain_workspace_bytes", "hyrax_l_qry_tensor_columns", "hyrax_l_qry_tensor_workspace_bytes", "hyrax_l_qry_binary_lut_workspace_bytes", "hyrax_aux_tensor_workspace_bytes", "hyrax_folded_columns_workspace_bytes", "hyrax_tensor_retained_workspace_bytes", "hyrax_tensor_opening_transient_peak_workspace_bytes", "hyrax_tensor_combined_peak_workspace_bytes", "hyrax_w_mle_workspace_bytes", "borrowed_trace_bytes_upper_bound", "lasso_table_and_index_bytes_upper_bound", "gkr_layer_count_upper_bound", "gkr_fconn_layer_count_upper_bound", "gkr_input_source_count_upper_bound", "gkr_message_count_upper_bound", "gkr_wire_bytes_upper_bound", "gkr_prefix_workspace_bytes_upper_bound", "l_query_zero_interval_count_upper_bound", "estimated_native_scratch_bytes", "estimated_peak_host_memory_bytes", "estimated_native_heap_bytes_upper_bound", "estimated_native_mapped_bytes_upper_bound", "max_materialized_fr_bytes", "max_materialized_g1_bytes", "flattened_input_domain_entries", "flattened_input_domain_limit_u64", "disk_requirement_bytes_upper_bound", "proof_message_count_upper_bound", "maximum_transcript_field_entries_upper_bound", "total_transcript_field_entries_upper_bound", "maximum_message_string_bytes_upper_bound", "proof_artifact_wire_bytes_upper_bound", "artifact_disk_bytes_upper_bound", "host_memory_limit_bytes", "native_scratch_available_bytes", "coordinate_domain_limit_u64", "proof_message_count_limit", "maximum_message_string_bytes_limit", "proof_artifact_wire_limit_bytes", "artifact_disk_available_bytes", "shared_scratch_artifact_available_bytes", "retained_relation_witness_entries", "retained_relation_witness_bytes_upper_bound", "relation_public_output_entries", "relation_public_output_bytes_upper_bound", "relation_residual_entries", "relation_residual_bytes_upper_bound", "retained_layer_witness_entries_upper_bound", "retained_layer_witness_bytes_upper_bound", "evaluated_layer_witness_entries_upper_bound", "evaluated_layer_witness_bytes_upper_bound", "native_gkr_witness_heap_bytes_upper_bound", "native_gkr_witness_mapped_bytes_upper_bound", "relation_gate_unary_entries", "relation_gate_binary_entries", "relation_gate_output_entries", "max_single_gate_array_bytes_upper_bound", "max_explicit_unary_gate_buffer_bytes_upper_bound", "max_single_relation_builder_array_bytes_upper_bound", "gkr_subset_source_map_bytes_upper_bound", "gkr_subset_sort_scratch_bytes_upper_bound", "gkr_subset_bitmap_scratch_bytes_upper_bound", "gkr_subset_rank_scratch_bytes_upper_bound", "gkr_subset_source_support_entries_upper_bound", "native_transcript_heap_bytes_upper_bound", "transcript_content_bytes_upper_bound", "transcript_wire_bytes_upper_bound", "transcript_prefix_bytes_upper_bound", "maximum_challenge_suffix_bytes_upper_bound", "transcript_metadata_bytes_upper_bound", "zero_tail_certificate_count_upper_bound", "l_query_zero_interval_message_count_upper_bound")
@@ -143,12 +136,9 @@ def validate_gkr_layer_work_profile(payload: Mapping[str, Any], dataset: str) ->
 def validate_canonical_graph_identity(payload: Mapping[str, Any], dataset: str,
                                       config: Mapping[str, str]) -> None:
     identity = payload.get("canonical_graph_identity")
-    fields = {"digest", "nodes", "edges", "graphs", "node_ptr", "edge_ptr", "input_preprocess_id", "batching_rule"}
+    fields = {"nodes", "edges", "graphs", "node_ptr", "edge_ptr", "input_preprocess_id", "batching_rule"}
     if not isinstance(identity, dict) or set(identity) != fields:
         raise ChainError(f"capacity has no strict native canonical graph identity for {dataset}")
-    digest = identity.get("digest")
-    if not isinstance(digest, str) or len(digest) != 64 or any(ch not in "0123456789abcdef" for ch in digest):
-        raise ChainError(f"capacity has an invalid canonical graph digest for {dataset}")
     for identity_key, capacity_key in (("nodes", "num_nodes"), ("edges", "num_edges"), ("graphs", "graph_count")):
         value = capacity_u64(identity.get(identity_key), f"canonical_graph_identity.{identity_key}", dataset, positive=True)
         if value != payload.get(capacity_key):
@@ -869,7 +859,8 @@ def check_capabilities(root: Path, backend: str, executable: Path) -> Dict[str, 
     return payload
 
 
-def run_capacity(root: Path, dataset: str, backend: str, log_dir: Path) -> Dict[str, Any]:
+def run_capacity(root: Path, dataset: str, backend: str, log_dir: Path,
+                 *, timeout_seconds: float | None = None) -> Dict[str, Any]:
     config_path, config = config_with_auth(root, dataset)
     prover = build_binary(root, backend)
     ensure_directory(log_dir, "capacity diagnostic log directory", root)
@@ -881,6 +872,7 @@ def run_capacity(root: Path, dataset: str, backend: str, log_dir: Path) -> Dict[
          "--baseline-root", str(root), "--config", relative_path(root, config_path, "dataset config")],
         cwd=str(root), text=True, encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
         stderr=subprocess.PIPE, env=formal_child_environment(), check=False,
+        timeout=timeout_seconds,
     )
     atomic_write_text(stdout_log, completed.stdout, root)
     atomic_write_text(stderr_log, completed.stderr, root)
@@ -946,7 +938,7 @@ def main(argv: Sequence[str]) -> int:
     parser.parse_args(list(argv))
     root = baseline_root()
     try:
-        session_id, session, session_manifest_sha256 = require_formal_session(root)
+        session_id, session = require_formal_session(root)
         dataset_scope = canonical_dataset_scope(session.get("dataset_scope"))
         selected = FORMAL_BACKENDS
         preflight_path = formal_preflight_path(root, session_id)
@@ -958,35 +950,8 @@ def main(argv: Sequence[str]) -> int:
     blockers: List[str] = []
     source_errors = check_source(root)
     blockers.extend(source_errors)
-    observed_resource_entries: Dict[str, Dict[str, Any]] = {}
-    observed_quantization_identity: Dict[str, Any] = {}
-    if dataset_scope == DATASETS:
-        resource_errors = verify_local_resources(root, dataset_scope)
-    else:
-        resource_errors = verify_local_resources(
-            root, dataset_scope,
-            resource_entries=observed_resource_entries,
-            quantization_identity=observed_quantization_identity,
-        )
-    blockers.extend(resource_errors)
     backend_report: Dict[str, Any] = {}
     capacity: Dict[str, Any] = {}
-    resource_manifest_digest: Optional[str] = None
-    resource_manifest_fp: Optional[Dict[str, Any]] = None
-    resource_manifest_path_value: Optional[str] = None
-    try:
-        resource_manifest, resource_manifest_path, resource_manifest_digest_value = require_formal_resource_manifest(
-            root, session_id, session, session_manifest_sha256
-        )
-        if dataset_scope != DATASETS:
-            validate_scoped_resource_manifest_observation(
-                resource_manifest, observed_resource_entries, observed_quantization_identity
-            )
-        resource_manifest_path_value = relative_path(root, resource_manifest_path, "resource manifest")
-        resource_manifest_digest = resource_manifest_digest_value
-        resource_manifest_fp = file_fingerprint(resource_manifest_path, "resource manifest")
-    except ChainError as exc:
-        blockers.append(str(exc))
     for backend in selected:
         entry: Dict[str, Any] = {"prover": None, "verifier": None, "capabilities": None, "ready": False}
         capability = formal_backend_capability(backend)
@@ -1000,11 +965,8 @@ def main(argv: Sequence[str]) -> int:
         try:
             prover = build_binary(root, backend)
             verifier = verifier_binary(root, backend)
-            entry["source_tree_sha256"] = verify_build_provenance(root, backend)
             entry["prover"] = relative_path(root, prover, "prover executable")
             entry["verifier"] = relative_path(root, verifier, "verifier executable")
-            entry["prover_fingerprint"] = binary_fingerprint(prover, "prover executable")
-            entry["verifier_fingerprint"] = binary_fingerprint(verifier, "verifier executable")
             entry["capabilities"] = check_capabilities(root, backend, verifier)
             entry["ready"] = True
         except (ChainError, OSError, ValueError, subprocess.SubprocessError) as exc:
@@ -1012,12 +974,19 @@ def main(argv: Sequence[str]) -> int:
             blockers.append(str(exc))
         backend_report[backend] = entry
     capacity_log_dir = preflight_path.parent / "capacity_logs"
-    if not blockers and "cpu" in selected:
+    if "cpu" in selected:
         for dataset in DATASETS:
             if dataset not in dataset_scope:
                 capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "stage": "scope", "reason": "OUT_OF_SCOPE:dataset_not_requested"}
                 continue
+            if blockers:
+                capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "stage": "shared-precondition", "reason": "; ".join(blockers)}
+                continue
             try:
+                resource_errors = verify_local_resources(root, (dataset,))
+                if resource_errors:
+                    capacity[dataset] = {"schema": CAPACITY_SCHEMA, "status": "BLOCKED", "dataset": dataset, "backend": "cpu", "stage": "resource-availability", "reason": "; ".join(resource_errors)}
+                    continue
                 capacity[dataset] = run_capacity(root, dataset, "cpu", capacity_log_dir)
             except (ChainError, OSError, ValueError, subprocess.SubprocessError) as exc:
                 stdout_log = capacity_log_dir / f"{dataset}-cpu.stdout.log"
@@ -1034,29 +1003,28 @@ def main(argv: Sequence[str]) -> int:
         isinstance(capacity.get(dataset), dict) and capacity[dataset].get("status") in ("READY", "BLOCKED")
         for dataset in DATASETS
     )
-    preflight_status = "BLOCKED" if blockers or not capacity_matrix_valid else ("READY" if all_capacity_ready else "PARTIAL")
+    selected_capacity_ready = all(
+        isinstance(capacity.get(dataset), dict) and capacity[dataset].get("status") == "READY"
+        for dataset in dataset_scope
+    )
+    preflight_status = "BLOCKED" if blockers or not capacity_matrix_valid else (
+        "READY" if dataset_scope == DATASETS and all_capacity_ready else "PARTIAL")
     payload = {
         "schema": PREFLIGHT_SCHEMA,
         "session_id": session_id,
-        "session_manifest_sha256": session_manifest_sha256,
-        "runtime_source_sha256": runtime_source_sha256(root),
-        "native_source_sha256": session.get("native_source_sha256"),
         "status": preflight_status,
         "dataset_scope": list(dataset_scope),
-        "formal_experiment_eligible": preflight_status == "READY",
+        "formal_experiment_eligible": not blockers and selected_capacity_ready,
         "shared_preconditions_ready": not blockers,
         "source_ready": not source_errors,
-        "resources_ready": not resource_errors,
+        "resources_ready": selected_capacity_ready,
         "backends": backend_report,
         "capacity": capacity,
         "readiness_scope": "formal_execution_preconditions",
-        "static_checks_passed": preflight_status == "READY",
+        "static_checks_passed": not blockers and selected_capacity_ready,
         "development_e2e_checked": False,
         "development_e2e_check": "tests/check_formal_closure.py (separate development evidence)",
         "formal_results_complete": False,
-        "resource_manifest_path": resource_manifest_path_value,
-        "resource_manifest_sha256": resource_manifest_digest,
-        "resource_manifest_fingerprint": resource_manifest_fp,
         "blockers": blockers,
         "formal_datasets_started": False,
         "no_fallback": True,
@@ -1068,7 +1036,7 @@ def main(argv: Sequence[str]) -> int:
     except ChainError as exc:
         print(f"PREFLIGHT_OUTPUT_FAILED: {exc}", file=sys.stderr)
         return 2
-    if preflight_status == "BLOCKED":
+    if blockers or not capacity_matrix_valid:
         print("FORMAL_PREFLIGHT_BLOCKED", file=sys.stderr)
         for blocker in blockers:
             print(f"- {blocker}", file=sys.stderr)

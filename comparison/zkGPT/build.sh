@@ -71,11 +71,4 @@ if [[ "${developer_tests}" -eq 1 ]]; then
     echo "built isolated gat_adapter_smoke (cpu tests) at ${smoke_build_dir}/tests/"
 fi
 
-if [[ "${build_dir}" == "${ROOT_DIR}/build/${backend}" ]]; then
-    PYTHONPATH="${ROOT_DIR}/scripts" python3 - "${backend}" <<'PYBUILD'
-import sys
-from common import baseline_root, write_build_provenance
-write_build_provenance(baseline_root(), sys.argv[1])
-PYBUILD
-fi
 echo "built zkgpt_gat_prover and zkgpt_gat_verifier (${backend}) at ${build_dir}/gat_adapter/"

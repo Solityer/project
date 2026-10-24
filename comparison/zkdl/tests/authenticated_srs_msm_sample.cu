@@ -65,8 +65,7 @@ static std::string binding_digest(const std::map<std::string, std::string>& valu
     std::string canonical = "{";
     bool first = true;
     for (const auto& entry : values) {
-        if (entry.first == "srs_manifest_digest" || entry.first == "verifier_registry_digest" ||
-            entry.first == "model_blinder_sidecar_digest") continue;
+        if (entry.first == "srs_manifest_digest" || entry.first == "verifier_registry_digest") continue;
         if (!first) canonical.push_back(',');
         first = false;
         canonical += quote_config(entry.first) + ":" + quote_config(entry.second);

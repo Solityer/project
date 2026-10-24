@@ -1,0 +1,17 @@
+E
+======================================================================
+ERROR: test_formal_consumer_accepts_compact_t2_profile_from_native_cli (__main__.T2CapacityConsumerSmoke.test_formal_consumer_accepts_compact_t2_profile_from_native_cli)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/zkGPT/tests/test_t2_capacity_consumer.py", line 255, in test_formal_consumer_accepts_compact_t2_profile_from_native_cli
+    gat_zkgpt_experiment._validate_report(
+  File "/home/pzh/project/comparison/zkGPT/scripts/gat_zkgpt_experiment.py", line 119, in _validate_report
+    raise ChainError(f"independent verifier {key} mismatch: {report_path}")
+common.ChainError: independent verifier checkpoint_identity mismatch: /tmp/zkgpt-t2-capacity-nau_6oaw/baseline-local/runs/formal/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/cora/verifier_report.json
+
+----------------------------------------------------------------------
+Ran 1 test in 21.482s
+
+FAILED (errors=1)
+exit_code=1
+elapsed_seconds=22

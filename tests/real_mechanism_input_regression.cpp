@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cmath>
@@ -330,11 +331,19 @@ namespace
         const auto srs_expectation_pos = metadata.find("\"srs_expectation\":{");
         require(srs_expectation_pos != std::string::npos, "metadata is missing its trusted SRS expectation");
         const auto srs_expectation = metadata.substr(srs_expectation_pos);
-        const auto expected_srs_id = expected_dataset == "cora" ? "cora_formal_srs" :
-                                     expected_dataset == "citeseer" ? "citeseer_formal_srs" : "ppi_formal_srs";
+        const auto *catalog = registered_real_dataset_catalog(expected_dataset);
+        require(catalog != nullptr, "requested real dataset has no registered catalog entry");
+        require(input.input_preprocess_id == catalog->input_preprocess_id &&
+                    string_field_after(metadata, "\"input_preprocess_id\"") == catalog->input_preprocess_id,
+                "metadata or bundle preprocessing identity differs from the dataset catalog");
+        const auto expected_srs_id = catalog->srs_id;
         require(string_field_after(srs_expectation, "\"dataset_id\"") == expected_dataset &&
                     string_field_after(srs_expectation, "\"srs_id\"") == expected_srs_id,
                 "metadata dataset or registered SRS identity differs from the canonical input");
+        require(field_after(srs_expectation, "\"n_domain\"") == catalog->node_domain_size &&
+                    field_after(srs_expectation, "\"e_domain\"") == catalog->edge_domain_size &&
+                    field_after(srs_expectation, "\"required_coefficient_count\"") == 2 * catalog->edge_domain_size + 14,
+                "metadata trusted SRS domains or mechanism coefficient prefix differ from the dataset catalog");
         const auto checkpoint_metadata_pos = metadata.find("\"checkpoint_bundle\":{");
         require(checkpoint_metadata_pos != std::string::npos &&
                     string_field_after(metadata.substr(checkpoint_metadata_pos), "\"sha256\"") == input.checkpoint_bundle_sha256 &&
@@ -396,7 +405,7 @@ namespace
                     "PPI metadata omits nonself neighborhood statistics");
         }
 
-        for (const auto width : {1U, 2U, 4U, 8U})
+        for (std::size_t width = 1; width <= 8; ++width)
         {
             const auto ff = real_mechanism_relation_digest(input, Mechanism::FeatureFolding, width);
             const auto ff_again = real_mechanism_relation_digest(input, Mechanism::FeatureFolding, width);
@@ -480,6 +489,23 @@ namespace
         w.s_exp = 65536;
         w.s_agg_pre = 1U << 20U;
         return input;
+    }
+
+    void run_ff_width_prefix_relation_tests()
+    {
+        const auto input = make_codec_fixture();
+        std::string previous_digest;
+        for (std::size_t width = 1; width <= 8; ++width)
+        {
+            const auto digest = real_mechanism_relation_digest(input, Mechanism::FeatureFolding, width);
+            require(digest.size() == 64 && digest != previous_digest,
+                    "feature-folding relation digest failed to cover a distinct D-prefix from 1 through 8");
+            require(digest == real_mechanism_relation_digest(input, Mechanism::FeatureFolding, width),
+                    "feature-folding D-prefix relation digest is not deterministic");
+            previous_digest = digest;
+        }
+        require(!real_mechanism_relation_digest(input, Mechanism::SharedNeighborhood, 8).empty(),
+                "shared-neighborhood width-eight relation digest is empty");
     }
 
     void expect_bundle_rejected(const std::vector<std::uint8_t> &bytes, const std::filesystem::path &path, const std::string &case_name)
@@ -603,6 +629,110 @@ namespace
         expect_input_rejected(corrupt_aggregate, root / "corrupt-aggregate.realinput", "corrupt-pre-activation-target");
     }
 
+    void run_registered_dataset_catalog_tests()
+    {
+        struct Expected
+        {
+            std::string_view dataset;
+            std::string_view preprocess;
+            std::string_view srs_id;
+            std::size_t node_domain;
+            std::size_t edge_domain;
+        };
+        constexpr std::array<Expected, 5> expected{{
+            {"cora", "row_normalize", "cora_formal_srs", 4096, 32768},
+            {"citeseer", "row_normalize", "citeseer_formal_srs", 4096, 32768},
+            {"pubmed", "row_normalize", "pubmed_formal_srs", 32768, 262144},
+            {"ppi", "row_normalize", "ppi_formal_srs", 65536, 8388608},
+            {"ogbn_arxiv", "ogbn_arxiv_raw_float32", "ogbn_arxiv_formal_srs", 262144, 16777216},
+        }};
+        for (const auto &entry : expected)
+        {
+            const auto *catalog = registered_real_dataset_catalog(entry.dataset);
+            require(catalog != nullptr && catalog->input_preprocess_id == entry.preprocess && catalog->srs_id == entry.srs_id &&
+                        catalog->node_domain_size == entry.node_domain && catalog->edge_domain_size == entry.edge_domain,
+                    "registered real dataset catalog entry differs from the canonical config/SRS set");
+            require(valid_real_component_selection(entry.dataset, {0}), "canonical graph component 0 was rejected");
+        }
+        require(registered_real_dataset_catalog("unknown") == nullptr, "unregistered dataset received a trusted catalog entry");
+        const auto *ogbn = registered_real_dataset_catalog("ogbn_arxiv");
+        require(ogbn != nullptr && ogbn->input_preprocess_id != "row_normalize",
+                "OGBN-Arxiv was assigned the wrong formal preprocessing identity");
+        std::vector<std::size_t> all_ppi_components(295);
+        for (std::size_t graph = 0; graph < all_ppi_components.size(); ++graph)
+            all_ppi_components[graph] = graph;
+        require(valid_real_component_selection("ppi", all_ppi_components), "full canonical PPI component set 0..294 was rejected");
+        require(valid_real_graph_count("ppi", 1) && valid_real_graph_count("ppi", 295) && !valid_real_graph_count("ppi", 2) &&
+                    !valid_real_graph_count("ppi", 294) && valid_real_graph_count("pubmed", 1) &&
+                    !valid_real_graph_count("pubmed", 2),
+                "real dataset graph count admission differs from the complete registered component selection");
+        require(!valid_real_component_selection("ppi", {0, 9}) && !valid_real_component_selection("ppi", {0, 1, 3}) &&
+                    !valid_real_component_selection("cora", {0, 1}),
+                "partial or noncanonical graph selections were accepted");
+    }
+
+    PublicStatement make_ppi_statement_fixture(std::size_t graphs)
+    {
+        PublicStatement statement;
+        statement.dataset_id = "ppi";
+        statement.input_preprocess_id = "row_normalize";
+        statement.real_input_bundle_sha256 = std::string(64, '1');
+        statement.real_input_witness_sha256 = std::string(64, '2');
+        statement.real_input_metadata_sha256 = std::string(64, '3');
+        statement.checkpoint_bundle_sha256 = std::string(64, '4');
+        statement.input_source_manifest_sha256 = std::string(64, '5');
+        statement.formal_head_width = 8;
+        statement.mechanism = Mechanism::FeatureFolding;
+        statement.variant = Variant::Original;
+        statement.nodes = graphs;
+        statement.edges = graphs;
+        statement.width = 3;
+        statement.graphs = graphs;
+        statement.seed = 9;
+        statement.node_ptr.resize(graphs + 1);
+        statement.edge_ptr.resize(graphs + 1);
+        statement.topology.reserve(graphs);
+        for (std::size_t graph = 0; graph <= graphs; ++graph)
+        {
+            statement.node_ptr[graph] = graph;
+            statement.edge_ptr[graph] = graph;
+            if (graph != graphs)
+                statement.topology.push_back(Edge{graph, graph, graph});
+        }
+        statement.srs_id = "mechanism_ablation_test_only_parser_fixture";
+        statement.srs_manifest_sha256 = std::string(64, '6');
+        statement.parent_protocol_schema_id = "mechanism_ablation_test_only_schema_fixture";
+        statement.parent_srs_degree_bound = 33554431;
+        statement.node_domain_size = 65536;
+        statement.edge_domain_size = 8388608;
+        statement.pair_input_commitment_sha256 = std::string(64, '7');
+        statement.security_budget_ledger_sha256 = internal::compute_security_budget_ledger_sha256(statement);
+        statement.mechanism_schema_id = internal::compute_mechanism_schema_id(statement);
+        return statement;
+    }
+
+    void run_ppi_statement_graph_count_tests()
+    {
+        for (const auto graphs : {1U, 295U})
+        {
+            const auto encoded = make_ppi_statement_fixture(graphs).canonical_json();
+            const auto parsed = PublicStatement::parse_canonical_json(encoded);
+            require(parsed.dataset_id == "ppi" && parsed.graphs == graphs,
+                    "canonical PPI statement parser rejected an allowed complete component count");
+        }
+        const auto invalid = make_ppi_statement_fixture(2).canonical_json();
+        bool rejected = false;
+        try
+        {
+            (void)PublicStatement::parse_canonical_json(invalid);
+        }
+        catch (const std::runtime_error &)
+        {
+            rejected = true;
+        }
+        require(rejected, "independent statement parser accepted PPI graph count 2 instead of component 0 or full 0..294");
+    }
+
     void run_real_bundle_case(const std::string &dataset, const std::filesystem::path &bundle_path,
                               const std::filesystem::path &metadata_path, const std::string &component_csv)
     {
@@ -611,7 +741,7 @@ namespace
         validate_real_relation(input, metadata, dataset, parse_csv(component_csv), bundle_path);
         std::cout << "REAL_MECHANISM_INPUT_OK dataset=" << dataset << " N=" << input.witness.node_count
                   << " E=" << input.witness.edge_count << " G=" << input.witness.node_ptr.size() - 1
-                  << " FF_D_prefixes=1,2,4,8 SN_width=8 components=" << component_csv << '\n';
+                  << " FF_D_prefixes=1..8 SN_width=8 components=" << component_csv << '\n';
     }
 }
 
@@ -619,11 +749,22 @@ int main(int argc, char **argv)
 {
     try
     {
-        if (argc < 5 || (argc - 1) % 4 != 0)
+        const bool catalog_only = argc == 2 && std::string_view(argv[1]) == "--catalog-only";
+        if (!catalog_only && (argc < 5 || (argc - 1) % 4 != 0))
             throw std::runtime_error("usage: gatzk_real_mechanism_input_regression DATASET BUNDLE METADATA COMPONENT_IDS [DATASET BUNDLE METADATA COMPONENT_IDS ...]");
         const auto test_root = std::filesystem::temp_directory_path() /
                                ("gatzk_real_mechanism_input_regression_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        run_registered_dataset_catalog_tests();
+        run_ppi_statement_graph_count_tests();
         run_codec_negative_tests(test_root);
+        run_ff_width_prefix_relation_tests();
+        if (catalog_only)
+        {
+            std::filesystem::remove_all(test_root);
+            std::cout << "REAL_MECHANISM_INPUT_REGRESSION_OK catalog=5 ppi_components=0..294 ppi_statement_G2=REJECTED "
+                         "FF_D_prefixes=1..8 SN_width=8 fixture_codec_negatives=7 real_cases=0\n";
+            return 0;
+        }
         for (int arg = 1; arg < argc; arg += 4)
             run_real_bundle_case(argv[arg], argv[arg + 1], argv[arg + 2], argv[arg + 3]);
         std::filesystem::remove_all(test_root);

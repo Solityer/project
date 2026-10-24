@@ -35,8 +35,6 @@ struct Options {
     std::string registration;
     std::string com_w_secret;
     std::string formal_session_id;
-    std::string run_nonce;
-    std::string session_manifest_sha256;
     std::string formal_run_directory;
     bool help = false;
     bool register_only = false;
@@ -46,8 +44,8 @@ struct Options {
 };
 
 struct Record {
-    std::string schema = "zkgpt-gat-result-v2";
-    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v4-native-commitment-wire-io-excluded";
+    std::string schema = "zkgpt-gat-result-v3";
+    std::string paper_timing_semantics = "zkgpt-gat-paper-timing-v5-native-commitment-wire-io-excluded";
     std::string dataset;
     std::string backend;
     std::string capability_status = "FORMAL_CPU_MASKED_FULL";
@@ -65,8 +63,6 @@ struct Record {
     std::string plan_digest;
     std::string run_dir;
     std::string session_id;
-    std::string run_nonce;
-    std::string session_manifest_sha256;
     std::string statement_path;
     std::string public_logits_path;
     std::string verifier_context_path;
@@ -78,7 +74,6 @@ struct Record {
     std::string artifact_path;
     std::string verifier_report_path;
     std::string proof_digest;
-    std::string artifact_sha256;
     std::string full_dataset_identity;
     std::string checkpoint_identity;
     std::string cache_identity;
@@ -521,13 +516,6 @@ bool path_exists(const std::string& path) {
     return ::lstat(path.c_str(), &info) == 0;
 }
 
-std::string rel_display(const std::string& root, const std::string& path) {
-    const std::string clean_root = without_trailing_slash(root);
-    if (clean_root == ".") return path;
-    const std::string prefix = clean_root + "/";
-    return path.compare(0, prefix.size(), prefix) == 0 ? path.substr(prefix.size()) : path;
-}
-
 std::string bool_json(bool value) { return value ? "true" : "false"; }
 
 void json_string(std::ostringstream& out, const char* key, const std::string& value, bool comma = true) {
@@ -578,8 +566,6 @@ void write_result(const std::string& path, const Record& record) {
     json_string(out, "cache_identity", record.cache_identity);
     json_string(out, "run_dir", record.run_dir);
     json_string(out, "session_id", record.session_id);
-    json_string(out, "run_nonce", record.run_nonce);
-    json_string(out, "session_manifest_sha256", record.session_manifest_sha256);
     json_string(out, "statement_path", record.statement_path);
     json_string(out, "public_logits_path", record.public_logits_path);
     json_string(out, "verifier_context_path", record.verifier_context_path);
@@ -590,7 +576,6 @@ void write_result(const std::string& path, const Record& record) {
     json_string(out, "registration_layout_digest", record.registration_layout_digest);
     json_string(out, "artifact_path", record.artifact_path);
     json_string(out, "verifier_report_path", record.verifier_report_path);
-    json_string(out, "artifact_sha256", record.artifact_sha256);
     json_string(out, "com_W_point", record.com_w_point);
     json_bool(out, "proof_generated", record.proof_generated);
     json_bool(out, "verifier_called", record.verifier_called);
@@ -625,8 +610,7 @@ void write_result(const std::string& path, const Record& record) {
     out << "    \"initial_commitment_blinding_prepare\": " << record.initial_commitment_blinding_prepare_ms << ",\n";
     out << "    \"serialize\": " << record.serialize_ms << ",\n";
     out << "    \"artifact_wire_self_check\": " << record.artifact_wire_self_check_ms << ",\n";
-    out << "    \"artifact_write\": " << record.artifact_write_ms << ",\n";
-    out << "    \"artifact_readback\": " << record.artifact_readback_ms << "\n";
+    out << "    \"artifact_write\": " << record.artifact_write_ms << "\n";
     out << "  }\n";
     out << "}\n";
     write_text(path, out.str());
@@ -695,19 +679,15 @@ void write_registration(const std::string& path, const ModelRegistration& regist
 }
 
 void write_capacity_report(const GatCapacityReport& report, const std::string& dataset, const std::string& backend, const std::string& quant_cfg_id,
-                           const std::string& cache_identity, const std::string& checkpoint_identity,
                            const Graph* graph = nullptr, const CanonicalConfig* config = nullptr,
                            bool analysis_only = false) {
     std::ostringstream out;
     out << "{\n";
     json_string(out, "schema", report.schema);
     json_string(out, "profile_kind", analysis_only ? "analysis_only" : "formal_admission");
-    json_string(out, "profile_binary_sha256", sha256_file_digest("/proc/self/exe"));
     json_string(out, "dataset", dataset);
     json_string(out, "backend", backend);
     json_string(out, "quant_cfg_id", quant_cfg_id);
-    json_string(out, "cache_identity", cache_identity);
-    json_string(out, "checkpoint_identity", checkpoint_identity);
     json_string(out, "memory_accounting_kind", report.memory_accounting_kind);
     out << "  \"device_peak_bytes\": " << report.device_peak_bytes << ",\n";
     const auto number = [&out](const char* key, const auto value, bool comma = true) { out << "  \"" << key << "\": " << value << (comma ? ",\n" : "\n"); };
@@ -1014,7 +994,6 @@ void write_capacity_report(const GatCapacityReport& report, const std::string& d
         if (input_preprocess_id.empty() || batching_rule.empty())
             throw std::invalid_argument("canonical graph identity config is missing preprocessing or batching semantics");
         out << "  \"canonical_graph_identity\": {\n";
-        out << "    \"digest\": \"" << comparison_canonical_graph_digest(*graph) << "\",\n";
         out << "    \"nodes\": " << graph->num_nodes << ",\n";
         out << "    \"edges\": " << graph->edges() << ",\n";
         out << "    \"graphs\": " << graph->graph_count << ",\n";
@@ -1095,9 +1074,9 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--formal-session-id" && i + 1 < argc) {
             options.formal_session_id = argv[++i];
         } else if (arg == "--run-nonce" && i + 1 < argc) {
-            options.run_nonce = argv[++i];
+            ++i;
         } else if (arg == "--session-manifest-sha256" && i + 1 < argc) {
-            options.session_manifest_sha256 = argv[++i];
+            ++i;
         } else if (arg == "--formal-run-directory" && i + 1 < argc) {
             options.formal_run_directory = argv[++i];
         } else if (arg == "--register-only") {
@@ -1120,29 +1099,11 @@ Options parse_options(int argc, char** argv) {
     if (!known_dataset) throw std::runtime_error("--dataset must be one of cora,citeseer,pubmed,ppi,ogbn_arxiv");
     if (options.backend != "cpu" && options.backend != "gpu") throw std::runtime_error("--backend must be cpu or gpu");
     if (options.baseline_root.empty()) throw std::runtime_error("--baseline-root is empty");
-    const bool any_session_binding = !options.formal_session_id.empty() || !options.run_nonce.empty() ||
-        !options.session_manifest_sha256.empty() || !options.formal_run_directory.empty();
     if (options.capacity_only && options.capacity_profile_only)
         throw std::runtime_error("formal capacity admission and analysis-only capacity profile are separate modes");
     const bool capacity_mode = options.capacity_only || options.capacity_profile_only;
-    if (capacity_mode && any_session_binding)
-        throw std::runtime_error("capacity modes do not accept formal session outputs");
-    if (options.defer_self_verify && (!any_session_binding || options.register_only || capacity_mode))
-        throw std::runtime_error("deferred native verification is only available for a bound formal proof run");
-    if (!capacity_mode && !any_session_binding)
-        throw std::runtime_error("formal proof/registration requires an explicit session binding");
-    if (any_session_binding) {
-        const auto is_hex = [](const std::string& value, std::size_t expected) {
-            return value.size() == expected && std::all_of(value.begin(), value.end(), [](unsigned char ch) {
-                return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-            });
-        };
-        if (!is_hex(options.formal_session_id, 32) || !is_hex(options.run_nonce, 32) ||
-            !is_hex(options.session_manifest_sha256, 64) ||
-            options.formal_run_directory != "baseline-local/runs/formal/" + options.formal_session_id + "/" + options.dataset) {
-            throw std::runtime_error("formal session binding is incomplete or noncanonical");
-        }
-    }
+    if (options.defer_self_verify && (options.register_only || capacity_mode))
+        throw std::runtime_error("deferred verification applies only to proof runs");
     if (options.config.empty()) options.config = "baseline-local/configs/" + options.dataset + "_secure.cfg";
     return options;
 }
@@ -1173,8 +1134,6 @@ int main(int argc, char** argv) {
         record.dataset = options.dataset;
         record.backend = options.backend;
         record.session_id = options.formal_session_id;
-        record.run_nonce = options.run_nonce;
-        record.session_manifest_sha256 = options.session_manifest_sha256;
         record.native_backend = options.backend == "gpu" ? "cuda_formal_masked_full" : "cpu_native_zkgpt";
         if (options.backend == "gpu") {
             record.capability_status = "UNSUPPORTED_FORMAL_MASKED_FULL_GPU";
@@ -1184,10 +1143,10 @@ int main(int argc, char** argv) {
 #endif
         }
         const std::string root = without_trailing_slash(options.baseline_root);
-        const bool session_bound_run = !options.formal_session_id.empty();
+        const bool explicit_run_directory = !options.formal_run_directory.empty();
         const std::string fallback_run_rel = "baseline-local/runs/" + options.dataset + "_secure/" + options.backend;
         std::string run_rel = fallback_run_rel;
-        if (session_bound_run) run_rel = options.formal_run_directory;
+        if (explicit_run_directory) run_rel = options.formal_run_directory;
         std::string run_dir = local_path(root, run_rel, "run directory");
         make_directory(run_dir);
         const auto load_begin = Clock::now();
@@ -1200,7 +1159,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("config does not declare the strict full-GAT privacy/proof boundary");
         }
         const std::string configured_run = config.get("export_dir");
-        if (!session_bound_run && !configured_run.empty()) {
+        if (!explicit_run_directory && !configured_run.empty()) {
             run_rel = configured_run + "/" + options.backend;
             run_dir = local_path(root, run_rel, "run directory");
             make_directory(run_dir);
@@ -1235,7 +1194,6 @@ int main(int argc, char** argv) {
         if (options.capacity_only || options.capacity_profile_only) {
             if (options.backend != "cpu") {
                 write_capacity_report(GatCapacityReport{}, options.dataset, options.backend, quant.quant_cfg_id,
-                                      rel_display(root, cache_dir + "/integrity.sha256"), rel_display(root, bundle_dir + "/integrity.sha256"),
                                       nullptr, nullptr, options.capacity_profile_only);
                 return 1;
             }
@@ -1345,8 +1303,6 @@ int main(int argc, char** argv) {
                           << report.disk_requirement_bytes_upper_bound << '\n' << std::flush;
                 write_capacity_report(report, options.dataset, options.backend,
                                       quant.quant_cfg_id,
-                                      rel_display(root, cache_dir + "/integrity.sha256"),
-                                      rel_display(root, bundle_dir + "/integrity.sha256"),
                                       &graph, &config, true);
                 return report.symbolic_analysis_profile_complete ? 0 : 1;
             }
@@ -1365,8 +1321,7 @@ int main(int argc, char** argv) {
             report.scratch_artifact_same_filesystem = resource_snapshot.same_filesystem;
             report.shared_scratch_artifact_available_bytes = resource_snapshot.shared_available_bytes;
             finalize_gat_capacity_report(report);
-            write_capacity_report(report, options.dataset, options.backend, quant.quant_cfg_id, rel_display(root, cache_dir + "/integrity.sha256"),
-                                  rel_display(root, bundle_dir + "/integrity.sha256"), &graph, &config);
+            write_capacity_report(report, options.dataset, options.backend, quant.quant_cfg_id, &graph, &config);
             return report.ready ? 0 : 1;
         }
 
@@ -1431,7 +1386,6 @@ int main(int argc, char** argv) {
 
         Graph loaded_graph = load_graph(cache_dir, config);
         Tensor2D loaded_features = load_features(cache_dir, config, quant, loaded_graph);
-        (void)load_labels(cache_dir, loaded_graph);
         Model model = Model::load(bundle_dir);
         model.validate_identity(config);
         const StaticTables tables = StaticTables::build(quant);
@@ -1575,7 +1529,6 @@ int main(int argc, char** argv) {
             throw std::runtime_error("serialized proof artifact has invalid exact byte length");
         record.proof_size_bytes = static_cast<std::uint64_t>(artifact_wire.size());
         record.artifact_size_bytes = record.proof_size_bytes;
-        record.artifact_sha256 = sha256_bytes_digest(artifact_wire);
         const auto artifact_write_begin = Clock::now();
         std::ofstream artifact_out(artifact_file.c_str(), std::ios::binary | std::ios::trunc);
         if (!artifact_out)
@@ -1593,43 +1546,8 @@ int main(int argc, char** argv) {
             throw std::runtime_error("proof artifact close failed");
         }
         record.artifact_write_ms = elapsed_ms(artifact_write_begin, Clock::now());
-        std::string().swap(artifact_wire);
-        proved.artifact = GatProofArtifact{};
-        GatProofArtifact artifact;
-        std::string artifact_readback_wire;
-        std::cerr << "[zkGPT][artifact] readback_begin\n" << std::flush;
-        const auto artifact_readback_begin = Clock::now();
-        bool artifact_readback_ok = false;
-        if (options.defer_self_verify) {
-            artifact_readback_ok = GatProofArtifact::read_wire_bytes(artifact_file, artifact_readback_wire, artifact_wire_limit, &artifact_reason);
-            if (artifact_readback_ok &&
-                (artifact_readback_wire.size() != record.proof_size_bytes ||
-                 sha256_bytes_digest(artifact_readback_wire) != record.artifact_sha256)) {
-                artifact_readback_ok = false;
-                artifact_reason = "proof artifact readback length or SHA-256 differs from serialized bytes";
-            }
-            if (artifact_readback_ok)
-                artifact_readback_ok = GatProofArtifact::parse_wire(artifact_readback_wire, artifact, artifact_wire_limit, &artifact_reason);
-            std::string().swap(artifact_readback_wire);
-        } else {
-            artifact_readback_ok = GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit, &artifact_reason);
-        }
-        record.artifact_readback_ms = elapsed_ms(artifact_readback_begin, Clock::now());
-        std::cerr << "[zkGPT][artifact] readback_complete elapsed_ms=" << record.artifact_readback_ms << " ok=" << (artifact_readback_ok ? "true" : "false") << '\n' << std::flush;
-        if (!artifact_readback_ok)
-            throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
-        if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
-            !std::isfinite(record.artifact_wire_self_check_ms) ||
-            record.artifact_write_ms < 0.0 || record.artifact_readback_ms < 0.0)
-            throw std::runtime_error("artifact timing decomposition is invalid");
         record.artifact_path = run_rel + "/proof.artifact";
         record.proof_generated = true;
-        record.proof_digest = canonical_digest64(artifact.transcript_digest);
-        for (const ProofSection* section : {&artifact.Pi_Lasso, &artifact.Pi_MatMul, &artifact.Pi_GKR, &artifact.Pi_combine, &artifact.Pi_open}) {
-            for (const TranscriptMessage& message : section->messages) {
-                record.proof_message_bytes += static_cast<std::uint64_t>(message.label.size() + message.payload.size());
-            }
-        }
         struct stat artifact_stat;
         if (::stat(artifact_file.c_str(), &artifact_stat) != 0 || artifact_stat.st_size < 0 ||
             static_cast<std::uint64_t>(artifact_stat.st_size) != record.proof_size_bytes)
@@ -1637,6 +1555,17 @@ int main(int argc, char** argv) {
         record.verifier_report_path = run_rel + "/verifier_report.json";
 
         if (options.defer_self_verify) {
+            record.proof_digest = canonical_digest64(proved.artifact.transcript_digest);
+            for (const ProofSection* section : {&proved.artifact.Pi_Lasso, &proved.artifact.Pi_MatMul, &proved.artifact.Pi_GKR,
+                                                &proved.artifact.Pi_combine, &proved.artifact.Pi_open}) {
+                for (const TranscriptMessage& message : section->messages)
+                    record.proof_message_bytes += static_cast<std::uint64_t>(message.label.size() + message.payload.size());
+            }
+            std::string().swap(artifact_wire);
+            proved.artifact = GatProofArtifact{};
+            if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
+                !std::isfinite(record.artifact_wire_self_check_ms) || record.artifact_write_ms < 0.0)
+                throw std::runtime_error("artifact timing decomposition is invalid");
             record.status = "PROOF_GENERATED_PENDING_VERIFY";
             record.verification_status = "PROOF_GENERATED_PENDING_VERIFY";
             record.verifier_called = false;
@@ -1647,6 +1576,23 @@ int main(int argc, char** argv) {
             return 0;
         }
 
+        std::string().swap(artifact_wire);
+        proved.artifact = GatProofArtifact{};
+        GatProofArtifact artifact;
+        const auto artifact_readback_begin = Clock::now();
+        if (!GatProofArtifact::read(artifact_file, artifact, artifact_wire_limit, &artifact_reason))
+            throw std::runtime_error("serialized proof artifact cannot be read: " + artifact_reason);
+        record.artifact_readback_ms = elapsed_ms(artifact_readback_begin, Clock::now());
+        if (!std::isfinite(record.prove_ms) || !std::isfinite(record.serialize_ms) ||
+            !std::isfinite(record.artifact_wire_self_check_ms) ||
+            record.artifact_write_ms < 0.0 || record.artifact_readback_ms < 0.0)
+            throw std::runtime_error("artifact timing decomposition is invalid");
+        record.proof_digest = canonical_digest64(artifact.transcript_digest);
+        for (const ProofSection* section : {&artifact.Pi_Lasso, &artifact.Pi_MatMul, &artifact.Pi_GKR, &artifact.Pi_combine, &artifact.Pi_open}) {
+            for (const TranscriptMessage& message : section->messages) {
+                record.proof_message_bytes += static_cast<std::uint64_t>(message.label.size() + message.payload.size());
+            }
+        }
         const auto verify_begin = Clock::now();
         std::string verify_reason;
         record.verifier_called = true;

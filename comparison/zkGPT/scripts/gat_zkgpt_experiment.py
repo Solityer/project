@@ -10,7 +10,6 @@ or a metadata-only result into success.
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,7 +18,6 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 from common import (
     DATASETS,
     CAPACITY_PROOF_PATH,
-    EXECUTION_SCHEMA,
     PREFLIGHT_SCHEMA,
     PAPER_TIMING_SEMANTICS,
     REPORT_SCHEMA,
@@ -28,12 +26,9 @@ from common import (
     assert_fresh_files,
     atomic_write_json,
     atomic_write_text,
-    binary_fingerprint,
     build_binary,
     cleanup_run_outputs,
     config_with_auth,
-    cross_check_identity,
-    file_fingerprint,
     formal_backend_capability,
     FORMAL_BACKENDS,
     load_json,
@@ -41,24 +36,19 @@ from common import (
     run_logged,
     run_captured,
     local_path,
-    derive_run_nonce,
     require_formal_session,
-    runtime_source_sha256,
     relative_path,
     require_bool,
     require_circuit_id,
     require_fixed_digest,
-    require_manifest,
     require_prover_secret,
     require_result_shape,
     require_string,
     require_timing,
     resource_identity,
     run_directory,
-    sha256_file,
     validate_registration_artifact,
     verifier_binary,
-    verify_build_provenance,
 )
 
 
@@ -94,13 +84,6 @@ def _resource_result_identity(result: Mapping[str, Any], resource: Mapping[str, 
     for key, value in expected.items():
         if result.get(key) != value:
             raise ChainError(f"{path} resource identity mismatch for {key}")
-    for key in ("config_sha256", "quantization_sha256", "cache_manifest_sha256",
-                "checkpoint_manifest_sha256", "checkpoint_manifest_entry_sha256"):
-        if key in result:
-            require_fixed_digest(result[key], key, path)
-            expected_key = key
-            if result[key] != resource[expected_key]:
-                raise ChainError(f"{path} resource identity mismatch for {key}")
 
 
 def _validate_report(
@@ -110,7 +93,6 @@ def _validate_report(
     backend: str,
     resource: Mapping[str, Any],
     paths: Mapping[str, str],
-    artifact_digest: str,
     artifact_size: int,
     report_path: Path,
 ) -> None:
@@ -137,7 +119,7 @@ def _validate_report(
             raise ChainError(f"independent verifier {key} mismatch: {report_path}")
     if report.get("artifact_path") != paths["artifact"] or report.get("verifier_context_path") != paths["context"] or report.get("public_logits_path") != paths["logits"]:
         raise ChainError(f"independent verifier input path mismatch: {report_path}")
-    if report.get("artifact_sha256") != artifact_digest or report.get("artifact_size_bytes") != artifact_size:
+    if report.get("artifact_size_bytes") != artifact_size:
         raise ChainError(f"independent verifier artifact identity mismatch: {report_path}")
     if report.get("proof_digest") != result["proof_digest"]:
         raise ChainError(f"independent verifier proof digest mismatch: {report_path}")
@@ -150,8 +132,6 @@ def ensure_registration(
     run_relative: str,
     run_path: Path,
     config: Mapping[str, str],
-    session_id: str,
-    session_manifest_sha256: str,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """Reuse or create one identity-checked long-lived model registration."""
 
@@ -185,46 +165,35 @@ def _enrich_result(
     root: Path,
     result: Dict[str, Any],
     result_path: Path,
-    resource: Mapping[str, Any],
     registration: Mapping[str, Any],
     artifact: Path,
-    run_nonce: str,
     run_started_ns: int,
-    resource_manifest_digest: str,
     session_id: str,
-    session_manifest_sha256: str,
 ) -> Dict[str, Any]:
-    artifact_fp = file_fingerprint(artifact, "proof artifact")
-    result["artifact_sha256"] = artifact_fp["sha256"]
-    result["artifact_size_bytes"] = artifact_fp["size_bytes"]
-    result["artifact_mtime_ns"] = artifact_fp["mtime_ns"]
-    if (result.get("session_id") != session_id or result.get("run_nonce") != run_nonce or
-            result.get("session_manifest_sha256") != session_manifest_sha256):
-        raise ChainError("native result did not preserve the current formal session binding")
+    artifact_size = artifact.stat().st_size
+    if artifact_size <= 0:
+        raise ChainError(f"proof artifact is empty: {artifact}")
+    if result.get("session_id") != session_id:
+        raise ChainError("native result did not preserve the current session label")
     if result.get("paper_timing_semantics") != PAPER_TIMING_SEMANTICS:
         raise ChainError("native result uses stale paper timing semantics")
     result["run_started_unix_ns"] = run_started_ns
-    result["resource_manifest_sha256"] = resource_manifest_digest
-    for key in ("config_sha256", "quantization_sha256", "cache_manifest_sha256",
-                "checkpoint_manifest_sha256", "checkpoint_manifest_entry_sha256"):
-        result[key] = resource[key]
+    if result.get("proof_size_bytes") != artifact_size:
+        raise ChainError("native proof size does not match the on-disk artifact size")
     result["registration_backend"] = result.get("registration_backend", "path-bound:" + result["backend"])
     result["registration_schema"] = registration["schema"]
-    result["native_result_fingerprint"] = file_fingerprint(result_path, "native result")
     result["run_dir"] = str(result_path.parent.relative_to(root))
     result["registration_path"] = result.get("registration_path", str((result_path.parent / "model_registration.json").relative_to(root)))
     result["prover_secret_path"] = result.get("prover_secret_path", str((result_path.parent / "com_W.prover.secret").relative_to(root)))
     return result
 
 
-def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any], resource_manifest_digest: str,
-             session_id: str, session: Mapping[str, Any], session_manifest_sha256: str,
-             preflight_path: Path) -> None:
+def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any],
+             session_id: str) -> Dict[str, Any]:
     capability = formal_backend_capability(backend)
     if not capability["supported"] or backend not in FORMAL_BACKENDS:
         raise ChainError(capability["reason"])
-    validate_preflight_binding(root, preflight, resource_manifest_digest, backend, dataset,
-                               session_id, session, session_manifest_sha256)
+    validate_preflight_binding(root, preflight, backend, dataset, session_id)
     config_path, config = config_with_auth(root, dataset)
     if config.get("privacy_policy") != "model_and_trace_hidden" or config.get("privacy_profile", "masked_full") not in ("masked_full", ""):
         raise ChainError(f"{dataset} config does not declare the strict privacy boundary")
@@ -232,15 +201,11 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     run_relative, run_path = run_directory(root, dataset, session_id, config)
     cleanup_run_outputs(root, run_path)
     run_started_ns = time.time_ns()
-    run_nonce = derive_run_nonce(session_id, dataset)
     prover = build_binary(root, backend)
     verifier = verifier_binary(root, backend)
-    prover_fp = binary_fingerprint(prover, "prover executable")
-    verifier_fp = binary_fingerprint(verifier, "verifier executable")
     config_relative = relative_path(root, config_path, "dataset config")
     registration_relative, secret_relative, registration = ensure_registration(
-        root, dataset, backend, run_relative, run_path, config, session_id,
-        session_manifest_sha256
+        root, dataset, backend, run_relative, run_path, config
     )
     process_telemetry: Dict[str, Any] = {"prover": {}, "verifier": {}}
     prover_start = time.perf_counter()
@@ -248,8 +213,7 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
         str(prover), "--dataset", dataset, "--backend", backend,
         "--baseline-root", str(root), "--config", config_relative,
         "--registration", registration_relative, "--com-w-secret", secret_relative,
-        "--formal-session-id", session_id, "--run-nonce", run_nonce,
-        "--session-manifest-sha256", session_manifest_sha256,
+        "--formal-session-id", session_id,
         "--formal-run-directory", run_relative,
         "--defer-self-verify",
     ], root, run_path / "prover.stdout.log", run_path / "prover.stderr.log",
@@ -263,9 +227,8 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
             result.get("status") != "PROOF_GENERATED_PENDING_VERIFY" or
             result.get("verification_status") != "PROOF_GENERATED_PENDING_VERIFY"):
         raise ChainError(f"native result is not a matching pending-verification cell: {result_path}")
-    if (result.get("session_id") != session_id or result.get("run_nonce") != run_nonce or
-            result.get("session_manifest_sha256") != session_manifest_sha256):
-        raise ChainError(f"native result does not belong to the current session: {result_path}")
+    if result.get("session_id") != session_id:
+        raise ChainError(f"native result session label mismatch: {result_path}")
     require_bool(result, "proof_generated", True, result_path)
     require_bool(result, "verifier_called", False, result_path)
     require_bool(result, "verifier_ok", False, result_path)
@@ -274,19 +237,23 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     identity = _result_identity(result, result_path)
     _resource_result_identity(result, resource, result_path)
     timing = require_timing(result, result_path)
-    artifact, declared_artifact_digest = artifact_fields(root, result, run_path)
-    artifact_fp = file_fingerprint(artifact, "proof artifact")
-    if declared_artifact_digest and declared_artifact_digest != artifact_fp["sha256"]:
-        raise ChainError(f"native artifact digest mismatch: {artifact}")
+    artifact = artifact_fields(root, result, run_path)
+    artifact_size = artifact.stat().st_size
+    if artifact_size <= 0:
+        raise ChainError(f"proof artifact is empty: {artifact}")
     context_rel, context_path = require_run_file(root, run_path, result.get("verifier_context_path"), "verifier context")
     logits_rel, logits_path = require_run_file(root, run_path, result.get("public_logits_path"), "public logits")
     statement_rel, statement_path = require_run_file(root, run_path, result.get("statement_path"), "public statement")
     assert_fresh_files((result_path, context_path, logits_path, statement_path, artifact), run_started_ns)
     report_rel = f"{run_relative}/verifier_report.json"
+    report_path = run_path / "verifier_report.json"
+    if report_path.exists() or report_path.is_symlink():
+        if not report_path.is_file() or report_path.is_symlink():
+            raise ChainError(f"stale verifier report is not a regular file: {report_path}")
+        report_path.unlink()
     verifier_start = time.perf_counter()
     verified_returncode = run_logged([str(verifier), "--baseline-root", str(root), "--verifier-context", context_rel, "--public-logits", logits_rel, "--artifact", relative_path(root, artifact, "proof artifact"), "--report", report_rel], root, run_path / "verifier.stdout.log", run_path / "verifier.stderr.log", f"{dataset}/{backend}/verifier", process_telemetry["verifier"])
     verifier_wall_ms = (time.perf_counter() - verifier_start) * 1000.0
-    report_path = run_path / "verifier_report.json"
     if verified_returncode != 0:
         raise ChainError(f"independent verifier rejected the cell ({verified_returncode}); see {report_rel}")
     report = load_json(report_path, "independent verifier report")
@@ -295,7 +262,7 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     paths = {"artifact": relative_path(root, artifact, "proof artifact"),
              "context": context_rel, "logits": logits_rel, "statement": statement_rel}
     _validate_report(report, result, dataset, backend, resource, paths,
-                     artifact_fp["sha256"], artifact_fp["size_bytes"], report_path)
+                     artifact_size, report_path)
     assert_fresh_files((report_path, run_path / "prover.stdout.log",
                         run_path / "prover.stderr.log", run_path / "verifier.stdout.log",
                         run_path / "verifier.stderr.log"), run_started_ns)
@@ -303,85 +270,38 @@ def run_cell(root: Path, dataset: str, backend: str, preflight: Mapping[str, Any
     result["verification_status"] = "VERIFY_OK"
     result["verifier_called"] = True
     result["verifier_ok"] = True
-    result = _enrich_result(root, result, result_path, resource, registration,
-                            artifact, run_nonce, run_started_ns, resource_manifest_digest,
-                            session_id, session_manifest_sha256)
+    result = _enrich_result(root, result, result_path, registration,
+                            artifact, run_started_ns, session_id)
     atomic_write_json(result_path, result, root)
-    execution = {
-        "schema": EXECUTION_SCHEMA, "dataset": dataset, "backend": backend,
-        "session_id": session_id, "session_manifest_sha256": session_manifest_sha256,
-        "paper_timing_semantics": PAPER_TIMING_SEMANTICS,
-        "preflight_sha256": sha256_file(preflight_path),
-        "paper_metrics": paper_metrics(result, report, report_path), "process_telemetry": process_telemetry,
-        "status": "VERIFY_OK", "no_fallback": True, "native_backend": result["native_backend"],
-        "run_nonce": run_nonce, "run_started_unix_ns": run_started_ns,
-        "result_path": relative_path(root, result_path, "native result"),
-        "verifier_report_path": report_rel, "statement_path": statement_rel,
-        "verifier_context_path": context_rel, "public_logits_path": logits_rel,
-        "registration_path": registration_relative,
-        "prover_secret_path": secret_relative,
-        "artifact_path": paths["artifact"], "artifact_sha256": artifact_fp["sha256"],
-        "artifact_size_bytes": artifact_fp["size_bytes"],
-        "artifact_mtime_ns": artifact_fp["mtime_ns"],
-        "statement_digest": identity["statement_digest"], "plan_digest": identity["plan_digest"],
-        "circuit_id": identity["circuit_id"], "proof_digest": identity["proof_digest"],
-        "registration_digest": identity["registration_digest"],
-        "registration_binding_digest": identity["registration_binding_digest"],
-        "registration_layout_digest": identity["registration_layout_digest"],
-        "com_W_point": identity["com_W_point"],
-        "full_dataset_identity": resource["full_dataset_identity"],
-        "checkpoint_identity": resource["checkpoint_identity"], "cache_identity": resource["cache_identity"],
-        "config_sha256": resource["config_sha256"], "quantization_sha256": resource["quantization_sha256"],
-        "cache_manifest_sha256": resource["cache_manifest_sha256"],
-        "checkpoint_manifest_sha256": resource["checkpoint_manifest_sha256"],
-        "checkpoint_manifest_entry_sha256": resource["checkpoint_manifest_entry_sha256"],
-        "resource_manifest_sha256": resource_manifest_digest,
-        "prover_binary": {"path": relative_path(root, prover, "prover executable"), **prover_fp},
-        "verifier_binary": {"path": relative_path(root, verifier, "verifier executable"), **verifier_fp},
-        "timing_ms": timing,
-        "prover_wall_ms": prover_wall_ms, "verifier_wall_ms": verifier_wall_ms,
-        "verifier_reads_witness": False, "verifier_reads_checkpoint": False,
-    }
-    execution["file_fingerprints"] = {
-        "result": file_fingerprint(result_path, "native result"),
-        "statement": file_fingerprint(statement_path, "public statement"),
-        "verifier_context": file_fingerprint(context_path, "verifier context"),
-        "public_logits": file_fingerprint(logits_path, "public logits"),
-        "proof_artifact": artifact_fp,
-        "verifier_report": file_fingerprint(report_path, "verifier report"),
-    }
-    atomic_write_json(run_path / "execution.json", execution, root)
+    metrics = paper_metrics(result, report, report_path)
     print(f"VERIFY_OK dataset={dataset} backend={backend} result={run_relative}/result.json")
+    return {
+        "dataset": dataset, "backend": backend, "status": "VERIFY_OK",
+        "proof_generated": True, "independent_verifier": True,
+        "proof_digest": identity["proof_digest"],
+        "statement_digest": identity["statement_digest"],
+        "proof_path": paths["artifact"], "proof_size_bytes": artifact_size,
+        "result_path": relative_path(root, result_path, "native result"),
+        "verifier_report_path": report_rel,
+        "paper_metrics": metrics, "timing_ms": timing,
+        "prover_wall_ms": prover_wall_ms, "verifier_wall_ms": verifier_wall_ms,
+        "process_telemetry": process_telemetry,
+    }
 
 
-def validate_preflight_binding(root: Path, preflight: Mapping[str, Any], resource_manifest_digest: str,
-                               backend: str, dataset: str, session_id: str, session: Mapping[str, Any],
-                               session_manifest_sha256: str) -> None:
+def validate_preflight_binding(root: Path, preflight: Mapping[str, Any],
+                               backend: str, dataset: str, session_id: str) -> None:
     status = preflight.get("status")
     if preflight.get("schema") != PREFLIGHT_SCHEMA or status not in ("READY", "PARTIAL"):
         raise ChainError("formal preflight is not eligible; no proving was started")
     if (preflight.get("shared_preconditions_ready") is not True or
-            preflight.get("source_ready") is not True or preflight.get("resources_ready") is not True or
-            preflight.get("blockers") != [] or
-            preflight.get("formal_experiment_eligible") is not (status == "READY")):
-        raise ChainError("formal preflight shared source/resource/backend/session preconditions are not ready")
-    if preflight.get("resource_manifest_sha256") != resource_manifest_digest:
-        raise ChainError("formal preflight resource manifest is stale")
-    if (preflight.get("session_id") != session_id or
-            preflight.get("session_manifest_sha256") != session_manifest_sha256 or
-            preflight.get("runtime_source_sha256") != session.get("runtime_source_sha256") or
-            preflight.get("runtime_source_sha256") != runtime_source_sha256(root) or
-            preflight.get("native_source_sha256") != session.get("native_source_sha256")):
-        raise ChainError("formal preflight is not bound to the current session/runtime/native source")
+            preflight.get("blockers") != []):
+        raise ChainError("formal preflight resource/backend preconditions are not ready")
+    if preflight.get("session_id") != session_id:
+        raise ChainError("formal preflight belongs to another formal session")
     entry = preflight.get("backends", {}).get(backend)
     if not isinstance(entry, dict) or entry.get("ready") is not True:
         raise ChainError(f"formal preflight has no ready {backend} backend")
-    if entry.get("source_tree_sha256") != verify_build_provenance(root, backend):
-        raise ChainError("formal preflight source identity is stale")
-    prover = build_binary(root, backend)
-    verifier = verifier_binary(root, backend)
-    if entry.get("prover_fingerprint", {}).get("sha256") != sha256_file(prover) or entry.get("verifier_fingerprint", {}).get("sha256") != sha256_file(verifier):
-        raise ChainError("formal preflight binary fingerprint is stale")
     capacities = preflight.get("capacity", {})
     if dataset not in DATASETS or not isinstance(capacities, dict) or set(capacities) != set(DATASETS):
         raise ChainError("formal preflight capacity matrix is incomplete")

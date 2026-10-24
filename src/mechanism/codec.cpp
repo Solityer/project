@@ -1,5 +1,6 @@
 #include "codec.hpp"
 #include "gatzk/mechanism/internal.hpp"
+#include "real_input.hpp"
 
 #include <openssl/sha.h>
 
@@ -362,6 +363,8 @@ namespace gatzk::mechanism
         s.width = static_cast<std::size_t>(r.u64());
         r.token(",\"graphs\":");
         s.graphs = static_cast<std::size_t>(r.u64());
+        if (s.dataset_id != "synthetic" && !internal::valid_real_graph_count(s.dataset_id, s.graphs))
+            throw std::runtime_error("real mechanism statement graph count is outside the complete registered component selection");
         r.token(",\"seed\":");
         s.seed = r.u64();
         if (s.nodes == 0 || s.edges < s.nodes || s.width == 0 || s.width > 32 || s.graphs == 0 || s.graphs > s.nodes)
@@ -415,10 +418,12 @@ namespace gatzk::mechanism
         s.edge_domain = r.string();
         r.token(",\"edge_size\":");
         s.edge_domain_size = static_cast<std::size_t>(r.u64());
-        const bool cora_catalog = s.node_domain_size == 4096 && s.edge_domain_size == 32768;
-        const bool ppi_catalog = s.node_domain_size == 65536 && s.edge_domain_size == 8388608;
-        if (s.node_domain != "N" || s.edge_domain != "edge" || (!cora_catalog && !ppi_catalog) || s.nodes >= s.node_domain_size ||
-            s.edges >= s.edge_domain_size)
+        const auto *real_catalog = internal::registered_real_dataset_catalog(s.dataset_id);
+        const bool synthetic_catalog = s.dataset_id == "synthetic" && s.node_domain_size == 4096 && s.edge_domain_size == 32768;
+        const bool registered_real_domains = real_catalog != nullptr && s.node_domain_size == real_catalog->node_domain_size &&
+                                             s.edge_domain_size == real_catalog->edge_domain_size;
+        if (s.node_domain != "N" || s.edge_domain != "edge" || (!synthetic_catalog && !registered_real_domains) ||
+            s.nodes >= s.node_domain_size || s.edges >= s.edge_domain_size)
             throw std::runtime_error("mechanism statement domain catalog is outside the registered trusted datasets");
         r.token("},\"mechanism_schema_id\":");
         s.mechanism_schema_id = r.string();
@@ -437,15 +442,13 @@ namespace gatzk::mechanism
         }
         else
         {
-            const bool cora = s.dataset_id == "cora" || s.dataset_id == "citeseer";
-            const bool ppi = s.dataset_id == "ppi";
-            if ((!cora && !ppi) || s.input_preprocess_id != "row_normalize" || s.source_layer != 0 || s.source_head != 0 ||
+            if (real_catalog == nullptr || s.input_preprocess_id != real_catalog->input_preprocess_id ||
+                s.source_layer != 0 || s.source_head != 0 ||
                 s.formal_head_width != 8 || s.width > 8 || (s.mechanism == Mechanism::SharedNeighborhood && s.width != 8) ||
-                (s.mechanism == Mechanism::FeatureFolding && s.width != 1 && s.width != 2 && s.width != 4 && s.width != 8) ||
+                (s.mechanism == Mechanism::FeatureFolding && (s.width < 1 || s.width > 8)) ||
                 !is_sha256_hex(s.real_input_bundle_sha256) || !is_sha256_hex(s.real_input_witness_sha256) || !is_sha256_hex(s.real_input_metadata_sha256) ||
                 !is_sha256_hex(s.checkpoint_bundle_sha256) || !is_sha256_hex(s.input_source_manifest_sha256) ||
-                (cora && (s.node_domain_size != 4096 || s.edge_domain_size != 32768)) ||
-                (ppi && (s.node_domain_size != 65536 || s.edge_domain_size != 8388608)))
+                s.node_domain_size != real_catalog->node_domain_size || s.edge_domain_size != real_catalog->edge_domain_size)
                 throw std::runtime_error("real mechanism statement dataset or source provenance is invalid");
         }
         if (!r.done() || s.canonical_json() != bytes)
