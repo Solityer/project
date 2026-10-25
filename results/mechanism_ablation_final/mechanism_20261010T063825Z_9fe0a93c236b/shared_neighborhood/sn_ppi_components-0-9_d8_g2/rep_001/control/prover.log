@@ -1,9 +1,0 @@
-stage=real-mechanism-prover
-start_utc=2026-10-10T07:16:21Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism shared_neighborhood --variant control --nodes 2923 --edges 33928 --width 8 --graphs 2 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/ppi_components_0_9/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/ppi_components_0_9/metadata.json --srs /home/pzh/project/artifacts/srs/ppi_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_001/control/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_001/control/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_ppi_components-0-9_d8_g2/rep_001/control/prover_result.json
-MECHANISM_PROOF_WRITTEN mechanism=shared_neighborhood variant=control backend=cuda actual_cuda=true commitment_time_ms=13317 prove_time_ms=87793.7 proof_size_bytes=10511 proof_sha256=283886b5ce670580a7da227f3dee6a8f25b8e28005a5f962680c678eb40b71ec
-end_utc=2026-10-10T07:19:48Z
-process_pid=1036032
-return_code=0
-timed_out=false
-wall_time_seconds=206.606737

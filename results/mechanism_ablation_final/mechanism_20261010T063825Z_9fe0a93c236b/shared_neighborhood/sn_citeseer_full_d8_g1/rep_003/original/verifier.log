@@ -1,9 +1,0 @@
-stage=independent-cpu-verifier
-start_utc=2026-10-10T08:04:26Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism verify --proof /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_003/original/proof.bin --statement /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_003/original/public_statement.json --srs /home/pzh/project/artifacts/srs/citeseer_formal_srs --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_citeseer_full_d8_g1/rep_003/original/verifier_result.json
-VERIFY_OK proof_sha256=3d83f05eff103fc9effb5431ef91fefdae4154ffbcdbdf5976d1a5041fc999b0 statement_sha256=80a734b82e601709f3fc61d44dc5bf26291380560a85086cd7a394b4f2d38b8c verify_time_ms=44.3434
-end_utc=2026-10-10T08:04:31Z
-process_pid=1137058
-return_code=0
-timed_out=false
-wall_time_seconds=5.466587

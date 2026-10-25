@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "../src/mechanism/codec.hpp"
@@ -274,6 +275,7 @@ namespace
                 "metadata component IDs differ from the explicit selected component list");
         const auto component_records = metadata_object_array(metadata, "\"selected_components\"");
         require(component_records.size() == expected_components.size(), "metadata component record count differs from the selected graph count");
+        std::vector<std::size_t> eligible_nodes_by_graph(expected_components.size(), 0);
         for (std::size_t graph = 0; graph < component_records.size(); ++graph)
         {
             const auto &record = component_records[graph];
@@ -301,6 +303,7 @@ namespace
                 if (neighbors.size() >= 2)
                     ++eligible;
             }
+            eligible_nodes_by_graph[graph] = eligible;
             std::sort(degrees.begin(), degrees.end());
             const auto &stats_key = "\"nonself_neighbor_stats\"";
             const auto stats_start = record.find(stats_key);
@@ -353,6 +356,8 @@ namespace
         const auto edge_graph = graph_ids_from_edges(w);
         std::vector<Field> denominator(w.node_count, Field::zero());
         std::vector<std::vector<Field>> aggregate(w.node_count, std::vector<Field>(w.width, Field::zero()));
+        std::vector<std::size_t> incoming_edge_count(w.node_count, 0);
+        std::vector<bool> has_self_loop(w.node_count, false);
         std::size_t nonself_edges = 0;
         for (std::size_t node = 0; node < w.node_count; ++node)
         {
@@ -374,6 +379,9 @@ namespace
                     "edge crosses a selected graph-component boundary");
             require(w.u[edge] == Field::from_signed(w.u_raw[edge]), "serialized U differs from its formal quantized integer");
             require(w.weighted_edge_features[edge].size() == w.width, "weighted edge feature row has an invalid width");
+            ++incoming_edge_count[dst];
+            if (src == dst)
+                has_self_loop[src] = true;
             denominator[dst] += w.u[edge];
             if (src != dst)
                 ++nonself_edges;
@@ -389,17 +397,25 @@ namespace
         for (std::size_t node = 0; node < w.node_count; ++node)
         {
             require(w.sum[node] == Field::from_signed(w.sum_raw[node]), "serialized Sum differs from its formal quantized integer");
+            require(incoming_edge_count[node] != 0 && has_self_loop[node],
+                    "real mechanism node lacks an incoming edge or its required self-loop");
             require(denominator[node] == w.sum[node] && !w.sum[node].is_zero(),
                     "Sum is not the positive grouped denominator of incoming U values");
             require(aggregate[node] == w.aggregate_pre_activation[node],
                     "aggregate target differs from the exact pre-activation weighted sum");
         }
-        if (expected_dataset == "ppi")
+        const bool ppi_component_zero = expected_dataset == "ppi" && expected_components.size() == 1 && expected_components.front() == 0;
+        if (ppi_component_zero)
         {
+            require(eligible_nodes_by_graph.front() >= 1,
+                    "selected PPI component 0 does not satisfy the fixed nontrivial-neighborhood rule");
             require(nonself_edges != 0, "selected PPI graph components contain no nontrivial neighbor edges");
             for (std::size_t graph = 0; graph < expected_components.size(); ++graph)
                 require(w.edge_ptr[graph + 1] - w.edge_ptr[graph] > w.node_ptr[graph + 1] - w.node_ptr[graph],
                         "selected PPI component has no nonself edges after graph-boundary normalization");
+        }
+        if (expected_dataset == "ppi")
+        {
             require(metadata.find("\"eligible_nodes\":") != std::string::npos &&
                         metadata.find("\"nonself_neighbor_stats\":") != std::string::npos,
                     "PPI metadata omits nonself neighborhood statistics");
@@ -430,8 +446,11 @@ namespace
         require(rejected_too_wide, "feature-folding relation accepted a width larger than the formal head");
     }
 
-    RealMechanismInput make_codec_fixture()
+    RealMechanismInput make_codec_fixture_with_topology(std::vector<std::size_t> node_ptr, std::vector<std::size_t> edge_ptr,
+                                                        std::vector<std::size_t> edge_src, std::vector<std::size_t> edge_dst)
     {
+        require(!node_ptr.empty() && !edge_ptr.empty() && node_ptr.back() != 0 && edge_src.size() == edge_dst.size(),
+                "topology fixture has invalid array dimensions");
         RealMechanismInput input;
         input.dataset = "fixture";
         input.input_preprocess_id = "fixture_preprocess";
@@ -443,13 +462,13 @@ namespace
         input.checkpoint_bundle_sha256 = std::string(64, '2');
         input.source_manifest_sha256 = std::string(64, '3');
         auto &w = input.witness;
-        w.node_count = 4;
-        w.edge_count = 6;
+        w.node_count = node_ptr.back();
+        w.edge_count = edge_src.size();
         w.width = 8;
-        w.node_ptr = {0, 2, 4};
-        w.edge_ptr = {0, 3, 6};
-        w.edge_src_indices = {0, 1, 1, 2, 3, 3};
-        w.edge_dst_indices = {0, 0, 1, 2, 2, 3};
+        w.node_ptr = std::move(node_ptr);
+        w.edge_ptr = std::move(edge_ptr);
+        w.edge_src_indices = std::move(edge_src);
+        w.edge_dst_indices = std::move(edge_dst);
         w.h_prime_raw.assign(w.node_count, std::vector<std::int64_t>(w.width));
         w.h_prime.assign(w.node_count, std::vector<Field>(w.width, Field::zero()));
         for (std::size_t node = 0; node < w.node_count; ++node)
@@ -458,7 +477,9 @@ namespace
                 w.h_prime_raw[node][lane] = static_cast<std::int64_t>(node * 17 + lane + 1);
                 w.h_prime[node][lane] = Field::from_signed(w.h_prime_raw[node][lane]);
             }
-        w.u_raw = {2, 3, 5, 7, 11, 13};
+        w.u_raw.resize(w.edge_count);
+        for (std::size_t edge = 0; edge < w.edge_count; ++edge)
+            w.u_raw[edge] = static_cast<std::int64_t>(edge + 2);
         w.u.reserve(w.edge_count);
         w.alpha.resize(w.edge_count, Field::zero());
         w.weighted_edge_features.assign(w.edge_count, std::vector<Field>(w.width, Field::zero()));
@@ -489,6 +510,11 @@ namespace
         w.s_exp = 65536;
         w.s_agg_pre = 1U << 20U;
         return input;
+    }
+
+    RealMechanismInput make_codec_fixture()
+    {
+        return make_codec_fixture_with_topology({0, 2, 4}, {0, 3, 6}, {0, 1, 1, 2, 3, 3}, {0, 0, 1, 2, 2, 3});
     }
 
     void run_ff_width_prefix_relation_tests()
@@ -564,6 +590,152 @@ namespace
         return offset;
     }
 
+    struct BundleLayoutOffsets
+    {
+        std::size_t node_ptr{};
+        std::size_t edge_ptr{};
+        std::size_t edge_records{};
+        std::size_t sum_raw{};
+        std::size_t alpha_fields{};
+        std::size_t weighted_fields{};
+        std::size_t aggregate_fields{};
+    };
+
+    BundleLayoutOffsets bundle_layout_offsets(const std::vector<std::uint8_t> &bytes, std::size_t nodes,
+                                               std::size_t edges, std::size_t graphs, std::size_t width)
+    {
+        std::size_t offset = 8 + 4;
+        for (unsigned i = 0; i < 9; ++i)
+        {
+            require(offset + 4 <= bytes.size(), "fixture binary string header is truncated");
+            const auto size = static_cast<std::uint32_t>(bytes[offset]) |
+                              (static_cast<std::uint32_t>(bytes[offset + 1]) << 8U) |
+                              (static_cast<std::uint32_t>(bytes[offset + 2]) << 16U) |
+                              (static_cast<std::uint32_t>(bytes[offset + 3]) << 24U);
+            offset += 4;
+            require(size <= bytes.size() - offset, "fixture binary string is truncated");
+            offset += size;
+        }
+        offset += 4 * 8;
+        BundleLayoutOffsets out;
+        out.node_ptr = offset;
+        offset += (graphs + 1) * 8;
+        out.edge_ptr = offset;
+        offset += (graphs + 1) * 8 + 8;
+        out.edge_records = offset;
+        offset += edges * 3 * 8;
+        offset += 8 + nodes * width * 8;
+        offset += 8 + edges * 8;
+        offset += 8;
+        out.sum_raw = offset;
+        offset += nodes * 8;
+        offset += 8 * 8;
+        offset += 8;
+        out.alpha_fields = offset;
+        offset += edges * 32;
+        offset += 8;
+        out.weighted_fields = offset;
+        offset += edges * width * 32;
+        offset += 8;
+        out.aggregate_fields = offset;
+        require(out.aggregate_fields + nodes * width * 32 <= bytes.size(), "fixture binary witness payload is truncated");
+        return out;
+    }
+
+    void write_u64_le(std::vector<std::uint8_t> &bytes, std::size_t offset, std::uint64_t value)
+    {
+        require(offset <= bytes.size() && bytes.size() - offset >= 8, "fixture integer patch is out of bounds");
+        for (unsigned i = 0; i < 8; ++i)
+            bytes[offset + i] = static_cast<std::uint8_t>(value >> (i * 8U));
+    }
+
+    void write_field_le(std::vector<std::uint8_t> &bytes, std::size_t offset, const Field &value)
+    {
+        require(offset <= bytes.size() && bytes.size() - offset >= 32, "fixture field patch is out of bounds");
+        value.write_little_endian(bytes.data() + offset, 32);
+    }
+
+    void run_ppi_topology_codec_tests(const std::filesystem::path &root)
+    {
+        struct Case
+        {
+            const char *name;
+            RealMechanismInput input;
+        };
+        std::vector<Case> cases;
+        auto singleton = make_codec_fixture_with_topology({0, 1}, {0, 1}, {0}, {0});
+        singleton.dataset = "ppi";
+        cases.push_back({"singleton-self-loop", std::move(singleton)});
+        auto self_loop_only = make_codec_fixture_with_topology({0, 3}, {0, 3}, {0, 1, 2}, {0, 1, 2});
+        self_loop_only.dataset = "ppi";
+        cases.push_back({"multi-node-self-loops-only", std::move(self_loop_only)});
+        std::vector<std::size_t> mixed_node_ptr{0};
+        std::vector<std::size_t> mixed_edge_ptr{0};
+        std::vector<std::size_t> mixed_edge_src;
+        std::vector<std::size_t> mixed_edge_dst;
+        for (std::size_t graph = 0; graph < 295; ++graph)
+        {
+            const auto node_begin = mixed_node_ptr.back();
+            if (graph == 1)
+            {
+                mixed_edge_src.insert(mixed_edge_src.end(), {node_begin, node_begin + 1, node_begin + 2, node_begin + 1, node_begin + 2});
+                mixed_edge_dst.insert(mixed_edge_dst.end(), {node_begin, node_begin, node_begin, node_begin + 1, node_begin + 2});
+                mixed_node_ptr.push_back(node_begin + 3);
+            }
+            else
+            {
+                mixed_edge_src.push_back(node_begin);
+                mixed_edge_dst.push_back(node_begin);
+                mixed_node_ptr.push_back(node_begin + 1);
+            }
+            mixed_edge_ptr.push_back(mixed_edge_src.size());
+        }
+        auto mixed = make_codec_fixture_with_topology(std::move(mixed_node_ptr), std::move(mixed_edge_ptr),
+                                                       std::move(mixed_edge_src), std::move(mixed_edge_dst));
+        mixed.dataset = "ppi";
+        cases.push_back({"full-ppi-singletons-and-mixed-component", std::move(mixed)});
+
+        for (auto &test_case : cases)
+        {
+            const auto bytes = encode_real_mechanism_input(test_case.input);
+            const auto path = root / (std::string(test_case.name) + ".realinput");
+            write_bytes(path, bytes);
+            const auto parsed = read_real_mechanism_input(path);
+            require(parsed.witness.node_ptr == test_case.input.witness.node_ptr &&
+                        parsed.witness.edge_ptr == test_case.input.witness.edge_ptr &&
+                        parsed.witness.edge_src_indices == test_case.input.witness.edge_src_indices &&
+                        parsed.witness.edge_dst_indices == test_case.input.witness.edge_dst_indices,
+                    std::string("PPI ") + test_case.name + " topology did not survive the codec roundtrip");
+            require(real_mechanism_relation_digest(parsed, Mechanism::FeatureFolding, 8).size() == 64 &&
+                        real_mechanism_relation_digest(parsed, Mechanism::SharedNeighborhood, 8).size() == 64,
+                    std::string("PPI ") + test_case.name + " did not produce valid mechanism relation digests");
+        }
+
+        auto missing_loop_base = make_codec_fixture_with_topology(
+            {0, 4}, {0, 6}, {0, 1, 2, 1, 2, 3}, {0, 0, 0, 1, 2, 3});
+        missing_loop_base.dataset = "ppi";
+        auto missing_loop_bytes = encode_real_mechanism_input(missing_loop_base);
+        const auto layout = bundle_layout_offsets(missing_loop_bytes, missing_loop_base.witness.node_count,
+                                                   missing_loop_base.witness.edge_count, 1, missing_loop_base.witness.width);
+        write_u64_le(missing_loop_bytes, layout.edge_records, 3);
+        std::vector<Field> new_aggregate(missing_loop_base.witness.width, Field::zero());
+        for (std::size_t edge = 0; edge < missing_loop_base.witness.edge_count; ++edge)
+        {
+            const auto src = edge == 0 ? 3 : missing_loop_base.witness.edge_src_indices[edge];
+            for (std::size_t lane = 0; lane < missing_loop_base.witness.width; ++lane)
+            {
+                const auto weighted = missing_loop_base.witness.alpha[edge] * missing_loop_base.witness.h_prime[src][lane];
+                if (missing_loop_base.witness.edge_dst_indices[edge] == 0)
+                    new_aggregate[lane] += weighted;
+                if (edge == 0)
+                    write_field_le(missing_loop_bytes, layout.weighted_fields + lane * 32, weighted);
+            }
+        }
+        for (std::size_t lane = 0; lane < missing_loop_base.witness.width; ++lane)
+            write_field_le(missing_loop_bytes, layout.aggregate_fields + lane * 32, new_aggregate[lane]);
+        expect_bundle_rejected(missing_loop_bytes, root / "missing-self-loop.realinput", "missing-self-loop-with-positive-indegree");
+    }
+
     void run_codec_negative_tests(const std::filesystem::path &root)
     {
         std::filesystem::create_directories(root);
@@ -612,9 +784,19 @@ namespace
                   noncanonical_field.begin() + static_cast<std::ptrdiff_t>(alpha_offset + 32), 0xff);
         expect_bundle_rejected(noncanonical_field, root / "noncanonical-field.realinput", "noncanonical-field");
 
-        auto cross_component = base;
-        cross_component.witness.edge_src_indices[0] = 2;
-        expect_input_rejected(cross_component, root / "cross-component.realinput", "cross-component-edge");
+        const auto layout = bundle_layout_offsets(valid_bytes, base.witness.node_count, base.witness.edge_count,
+                                                   base.witness.node_ptr.size() - 1, base.witness.width);
+        auto cross_component = valid_bytes;
+        write_u64_le(cross_component, layout.edge_records, 2);
+        expect_bundle_rejected(cross_component, root / "cross-component.realinput", "cross-component-edge");
+
+        auto wrong_node_boundary = valid_bytes;
+        write_u64_le(wrong_node_boundary, layout.node_ptr + 8, 0);
+        expect_bundle_rejected(wrong_node_boundary, root / "wrong-node-boundary.realinput", "empty-node-graph-boundary");
+
+        auto wrong_edge_boundary = valid_bytes;
+        write_u64_le(wrong_edge_boundary, layout.edge_ptr + 8, 2);
+        expect_bundle_rejected(wrong_edge_boundary, root / "wrong-edge-boundary.realinput", "misaligned-edge-graph-boundary");
 
         auto destination_disorder = base;
         std::swap(destination_disorder.witness.edge_dst_indices[1], destination_disorder.witness.edge_dst_indices[2]);
@@ -624,9 +806,23 @@ namespace
         ++corrupt_sum.witness.sum_raw[0];
         expect_input_rejected(corrupt_sum, root / "corrupt-sum.realinput", "corrupt-Sum");
 
+        auto zero_denominator = valid_bytes;
+        write_u64_le(zero_denominator, layout.sum_raw, 0);
+        for (std::size_t edge = 0; edge < 2; ++edge)
+        {
+            write_field_le(zero_denominator, layout.alpha_fields + edge * 32, Field::zero());
+            for (std::size_t lane = 0; lane < base.witness.width; ++lane)
+                write_field_le(zero_denominator, layout.weighted_fields + (edge * base.witness.width + lane) * 32, Field::zero());
+        }
+        for (std::size_t lane = 0; lane < base.witness.width; ++lane)
+            write_field_le(zero_denominator, layout.aggregate_fields + lane * 32, Field::zero());
+        expect_bundle_rejected(zero_denominator, root / "zero-denominator.realinput", "zero-denominator");
+
         auto corrupt_aggregate = base;
         corrupt_aggregate.witness.aggregate_pre_activation[0][0] += Field::one();
         expect_input_rejected(corrupt_aggregate, root / "corrupt-aggregate.realinput", "corrupt-pre-activation-target");
+
+        run_ppi_topology_codec_tests(root);
     }
 
     void run_registered_dataset_catalog_tests()
@@ -762,13 +958,14 @@ int main(int argc, char **argv)
         {
             std::filesystem::remove_all(test_root);
             std::cout << "REAL_MECHANISM_INPUT_REGRESSION_OK catalog=5 ppi_components=0..294 ppi_statement_G2=REJECTED "
-                         "FF_D_prefixes=1..8 SN_width=8 fixture_codec_negatives=7 real_cases=0\n";
+                         "FF_D_prefixes=1..8 SN_width=8 fixture_codec_negatives=11 ppi_topology_positive=3 real_cases=0\n";
             return 0;
         }
         for (int arg = 1; arg < argc; arg += 4)
             run_real_bundle_case(argv[arg], argv[arg + 1], argv[arg + 2], argv[arg + 3]);
         std::filesystem::remove_all(test_root);
-        std::cout << "REAL_MECHANISM_INPUT_REGRESSION_OK fixture_codec_negatives=7 real_cases=" << (argc - 1) / 4 << '\n';
+        std::cout << "REAL_MECHANISM_INPUT_REGRESSION_OK fixture_codec_negatives=11 ppi_topology_positive=3 real_cases="
+                  << (argc - 1) / 4 << '\n';
         return 0;
     }
     catch (const std::exception &error)

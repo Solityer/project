@@ -1,9 +1,0 @@
-stage=real-mechanism-prover
-start_utc=2026-10-10T08:48:12Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism shared_neighborhood --variant original --nodes 2708 --edges 13264 --width 8 --graphs 1 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/cora_full_graph/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/cora_full_graph/metadata.json --srs /home/pzh/project/artifacts/srs/cora_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_003/original/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_003/original/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/shared_neighborhood/sn_cora_full_d8_g1/rep_003/original/prover_result.json
-MECHANISM_PROOF_WRITTEN mechanism=shared_neighborhood variant=original backend=cuda actual_cuda=true commitment_time_ms=213.525 prove_time_ms=340.919 proof_size_bytes=6429 proof_sha256=3dee1f9b88117d47b611ea89580f77aee39c1e3057ac7325b20f55d31e662e44
-end_utc=2026-10-10T08:48:16Z
-process_pid=1215133
-return_code=0
-timed_out=false
-wall_time_seconds=4.001565

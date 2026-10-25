@@ -1,9 +1,0 @@
-stage=real-mechanism-prover
-start_utc=2026-10-10T06:39:10Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism feature_folding --variant original --nodes 2708 --edges 13264 --width 4 --graphs 1 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/cora_full_graph/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/cora_full_graph/metadata.json --srs /home/pzh/project/artifacts/srs/cora_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_001/original/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_001/original/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/feature_folding/ff_cora_full_d4_g1/rep_001/original/prover_result.json
-MECHANISM_PROOF_WRITTEN mechanism=feature_folding variant=original backend=cuda actual_cuda=true commitment_time_ms=124.736 prove_time_ms=208.751 proof_size_bytes=4250 proof_sha256=caf36971de413b7d0e31f936e9ca701c48de9127a09f9ae31d738ed6c8bbc59e
-end_utc=2026-10-10T06:39:14Z
-process_pid=973607
-return_code=0
-timed_out=false
-wall_time_seconds=3.716870

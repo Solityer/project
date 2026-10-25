@@ -1,9 +1,0 @@
-stage=prepare-real
-start_utc=2026-10-10T06:38:37Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism prepare-real --config /home/pzh/project/configs/citeseer_secure.cfg --components 0 --real-input-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/citeseer_full_graph/real_input.bin --metadata-out /home/pzh/project/results/mechanism_ablation_final/mechanism_20261010T063825Z_9fe0a93c236b/real_inputs/citeseer_full_graph/metadata.json
-REAL_MECHANISM_INPUT_WRITTEN nodes=3327 edges=12431 graphs=1 bundle_sha256=9770dc035af209c0076d73367fdcd0117c0d59a02bbf08cd738da0b3e524af04 metadata_sha256=66752e10a60236e2fd91db0052ddfd17082618042a057d1a742d3ae7fada17db
-end_utc=2026-10-10T06:38:40Z
-process_pid=972396
-return_code=0
-timed_out=false
-wall_time_seconds=2.315703

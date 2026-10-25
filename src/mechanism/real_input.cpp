@@ -374,6 +374,8 @@ namespace gatzk::mechanism
                 w.node_count, std::vector<algebra::FieldElement>(w.width, algebra::FieldElement::zero()));
             std::vector<__int128> raw_sum_check(w.node_count, 0);
             std::vector<std::size_t> edge_graph(w.edge_count);
+            std::vector<std::size_t> incoming_edge_count(w.node_count, 0);
+            std::vector<bool> has_self_loop(w.node_count, false);
             std::set<std::tuple<std::size_t, std::size_t, std::size_t>> unique_edges;
             for (std::size_t graph = 0; graph < graphs; ++graph)
             {
@@ -405,6 +407,9 @@ namespace gatzk::mechanism
                     require(std::tie(edge_graph[edge - 1], w.edge_dst_indices[edge - 1]) <= std::tie(graph, dst),
                             "real mechanism topology is not in canonical graph/destination group order");
                 require(unique_edges.emplace(graph, src, dst).second, "real mechanism topology contains a duplicate edge");
+                ++incoming_edge_count[dst];
+                if (src == dst)
+                    has_self_loop[src] = true;
                 require(w.weighted_edge_features[edge].size() == w.width &&
                             w.u_raw[edge] > 0 && algebra::FieldElement::from_signed(w.u_raw[edge]) == w.u[edge],
                         "real mechanism edge feature or U integer/field identity is invalid");
@@ -421,9 +426,13 @@ namespace gatzk::mechanism
                 }
             }
             for (std::size_t node = 0; node < w.node_count; ++node)
+            {
+                require(incoming_edge_count[node] != 0 && has_self_loop[node],
+                        "real mechanism node lacks an incoming edge or its required self-loop");
                 require(raw_sum_check[node] > 0 && raw_sum_check[node] <= std::numeric_limits<std::int64_t>::max() &&
                             static_cast<std::int64_t>(raw_sum_check[node]) == w.sum_raw[node],
                         "real mechanism integer Sum is inconsistent with its U edge integers");
+            }
             require(sum_check == w.sum && aggregate_check == w.aggregate_pre_activation,
                     "real mechanism denominator or pre-activation aggregate is inconsistent with the edge witness");
             std::vector<std::uint8_t> out{'G','Z','K','R','E','A','L','1'};
@@ -602,6 +611,8 @@ namespace gatzk::mechanism
             std::vector<std::vector<algebra::FieldElement>> aggregate_check(w.node_count,
                 std::vector<algebra::FieldElement>(w.width, algebra::FieldElement::zero()));
             std::vector<__int128> raw_sum_check(w.node_count, 0);
+            std::vector<std::size_t> incoming_edge_count(w.node_count, 0);
+            std::vector<bool> has_self_loop(w.node_count, false);
             std::set<std::tuple<std::size_t, std::size_t, std::size_t>> unique_edges;
             for (std::size_t edge = 0; edge < w.edge_count; ++edge)
             {
@@ -616,6 +627,9 @@ namespace gatzk::mechanism
                     throw std::runtime_error("real mechanism input topology is not in canonical graph/destination group order");
                 if (!unique_edges.emplace(graph, src, dst).second)
                     throw std::runtime_error("real mechanism input topology contains a duplicate edge");
+                ++incoming_edge_count[dst];
+                if (src == dst)
+                    has_self_loop[src] = true;
                 if (w.u_raw[edge] <= 0 || w.sum_raw[dst] <= 0 || w.alpha[edge] != w.u[edge] * w.sum[dst].inv())
                     throw std::runtime_error("real mechanism normalized attention weight is inconsistent with the positive U/Sum relation");
                 sum_check[dst] += w.u[edge];
@@ -629,9 +643,13 @@ namespace gatzk::mechanism
                 }
             }
             for (std::size_t node = 0; node < w.node_count; ++node)
+            {
+                if (incoming_edge_count[node] == 0 || !has_self_loop[node])
+                    throw std::runtime_error("real mechanism input node lacks an incoming edge or its required self-loop");
                 if (raw_sum_check[node] <= 0 || raw_sum_check[node] > std::numeric_limits<std::int64_t>::max() ||
                     static_cast<std::int64_t>(raw_sum_check[node]) != w.sum_raw[node])
                     throw std::runtime_error("real mechanism input integer Sum is inconsistent with the grouped U denominator");
+            }
             if (sum_check != w.sum)
                 throw std::runtime_error("real mechanism input finite-field Sum is inconsistent with the grouped U denominator");
             if (aggregate_check != w.aggregate_pre_activation)
@@ -766,7 +784,7 @@ namespace gatzk::mechanism
         };
         context.tables = protocol::build_canonical_static_tables(table_inputs);
         auto witness = protocol::extract_layer0_head0_mechanism_witness(context);
-        if (config.dataset == "ppi")
+        if (config.dataset == "ppi" && options.selected_components.size() == 1 && options.selected_components.front() == 0)
             for (std::size_t graph = 0; graph < local.graph_count; ++graph)
                 if (neighbor_stats(local, graph).eligible_nodes == 0)
                     throw std::runtime_error("selected PPI component does not satisfy the fixed nontrivial-neighborhood rule");
