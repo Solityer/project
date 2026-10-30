@@ -421,7 +421,7 @@ namespace gatzk::protocol
         util::write_lines(export_root + "/proof_block_order.txt", proof.block_order);
 
         util::write_lines(export_root + "/commitment_order.txt", trace.commitment_order);
-        const std::map<std::string, std::string> benchmark_summary = {
+            const std::map<std::string, std::string> benchmark_summary = {
             {"dataset", metrics.dataset},
             {"config_id", config_id},
             {"backend", benchmark_backend_label()},

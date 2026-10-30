@@ -3405,8 +3405,9 @@ namespace gatzk::crypto
                 throw std::runtime_error("failed to open " + std::string(operation) + ": " + info.file_path);
             }
 
-            thread_local std::array<std::vector<FieldElement>, 2> chunks;
-            for (auto &chunk : chunks)
+            thread_local std::array<std::vector<FieldElement>, 2> thread_chunks;
+            auto *const chunk_buffers = &thread_chunks;
+            for (auto &chunk : *chunk_buffers)
             {
                 const auto required = std::min(kChunkSize, stored_value_count);
                 if (chunk.capacity() < required)
@@ -3415,9 +3416,9 @@ namespace gatzk::crypto
                 }
             }
 
-            const auto read_chunk = [&](std::size_t slot, std::size_t count)
+            const auto read_chunk = [&, chunk_buffers](std::size_t slot, std::size_t count)
             {
-                auto &chunk = chunks[slot];
+                auto &chunk = (*chunk_buffers)[slot];
                 chunk.resize(count);
                 try
                 {
@@ -3437,7 +3438,7 @@ namespace gatzk::crypto
             read_chunk(slot, std::min(kChunkSize, stored_value_count));
             if (stored_value_count <= kChunkSize)
             {
-                consumer(chunks[slot], offset);
+                consumer((*chunk_buffers)[slot], offset);
                 return;
             }
 
@@ -3513,7 +3514,7 @@ namespace gatzk::crypto
                         prefetch_request_cv.notify_one();
                     }
 
-                    consumer(chunks[slot], offset);
+                    consumer((*chunk_buffers)[slot], offset);
                     if (has_next)
                     {
                         std::unique_lock<std::mutex> lock(prefetch_mutex);
