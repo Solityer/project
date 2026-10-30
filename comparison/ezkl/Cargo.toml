@@ -220,6 +220,7 @@ formal-gpu = [
     "ezkl",
     "gpu-accelerated",
     "halo2_proofs/formal-permutation-spill",
+    "maybe-rayon/threads",
     "no-banner",
     "parallel-poly-read",
     "reusable-verifier",

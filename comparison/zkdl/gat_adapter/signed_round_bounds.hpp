@@ -11,6 +11,7 @@
 namespace zkdl_gat::signed_round_bounds {
 
 struct Widths {
+    std::int64_t numerator_scale = 1;
     std::int64_t denominator_scale = 0;
     std::int64_t a_max = 0;
     std::int64_t q_max = 0;
@@ -108,6 +109,7 @@ inline Widths derive_impl(const Config &config, const IntegerBoundLedger &ledger
     Widths widths;
     if (operation_id == "final_average") {
         const std::int64_t head_count = positive_config_value(config.architecture.output_heads, operation_id + "/heads");
+        widths.numerator_scale = 1;
         widths.denominator_scale = 1;
         std::int64_t final_sum_bound = 0;
         std::int64_t final_aux_bound = 0;
@@ -143,6 +145,9 @@ inline Widths derive_impl(const Config &config, const IntegerBoundLedger &ledger
         const std::uint64_t scale = config.quantization.hidden_h_prime.at(layer).at(head);
         if (scale == 0U || scale > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
             throw std::runtime_error("hidden signed-round denominator scale is invalid: " + operation_id);
+        widths.numerator_scale = positive_config_value(
+            config.quantization.hidden_aggregate_pre.at(layer),
+            operation_id + "/numerator_scale");
         const auto &family = family_for(ledger, layer, head, false, operation_id);
         widths.binds_raw_denominator = true;
         widths.denominator_scale = static_cast<std::int64_t>(scale);
@@ -167,12 +172,18 @@ inline Widths derive_impl(const Config &config, const IntegerBoundLedger &ledger
             if (head >= config.quantization.output_y_prime.size() || config.quantization.output_y_prime.at(head) == 0U ||
                 config.quantization.output_y_prime.at(head) > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
                 throw std::runtime_error("output signed-round denominator scale is invalid: " + operation_id);
+            widths.numerator_scale = positive_config_value(
+                config.quantization.output_pre,
+                operation_id + "/numerator_scale");
             widths.binds_raw_denominator = true;
             widths.denominator_scale = static_cast<std::int64_t>(config.quantization.output_y_prime.at(head));
             widths.a_max = family.max_dividend_abs;
             widths.divisor_max = family.max_divisor;
             widths.q_max = ceil_positive_div(widths.a_max, widths.denominator_scale, operation_id + "/q");
         } else if (operation_id.substr(suffix) == "/output_scale_alignment") {
+            widths.numerator_scale = positive_config_value(
+                config.quantization.output_head,
+                operation_id + "/numerator_scale");
             widths.denominator_scale = 1;
             // The authenticated output-family dividend bound includes both the
             // prior rounded quotient and its output_head scaling used here.

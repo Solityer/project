@@ -2,7 +2,7 @@
 //! domain that is of a suitable size for the application.
 
 use crate::{
-    arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+    arithmetic::{best_fft, best_fft_cpu, gpu_coset_fft_is_eligible, parallelize, try_gpu_coset_fft_if_eligible, try_gpu_coset_fft_if_eligible_with_factors, try_gpu_fft_if_eligible},
     fft::recursive::FFTData,
     plonk::Assigned,
 };
@@ -438,11 +438,188 @@ impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
     ) -> Polynomial<F, LagrangeCoeff> {
         assert_eq!(a.len(), 1 << self.k);
 
-        self.distribute_powers(a.as_mut_slice(), self.g_coset * extended_omega_factor);
-        let data = self.get_fft_data(a.len());
-        best_fft(a.as_mut_slice(), self.omega, self.k, data, false);
+        let coset = self.g_coset * extended_omega_factor;
+        if !try_gpu_coset_fft_if_eligible(a.as_mut_slice(), self.omega, self.k, coset) {
+            self.distribute_powers(a.as_mut_slice(), coset);
+            let data = self.get_fft_data(a.len());
+            best_fft(a.as_mut_slice(), self.omega, self.k, data, false);
+        }
 
         a.into_basis()
+    }
+
+    /// Allocate one mapped buffer containing the coefficient powers for a
+    /// strided extended-domain part. A group of polynomials at the same part
+    /// can share these powers instead of rebuilding the recurrence for every
+    /// polynomial.
+    pub(crate) fn extended_part_factors_spilled(
+        &self,
+        extended_omega_factor: F,
+    ) -> io::Result<Polynomial<F, Coeff>> {
+        let n = self.extended_part_base_len()?;
+        let mut factors = Polynomial::<F, Coeff>::mapped_filled(n, F::ZERO)?;
+        let factor = self.g_coset * extended_omega_factor;
+        parallelize(&mut factors[..], |chunk, start| {
+            let mut power = factor.pow_vartime([start as u64]);
+            for value in chunk {
+                *value = power;
+                power *= factor;
+            }
+        });
+        Ok(factors)
+    }
+
+    /// Whether this coefficient vector can use the fused native GPU coset
+    /// transform for the requested extended-domain part. Callers can use this
+    /// before constructing shared host powers, which the GPU path can generate
+    /// and retain in its per-device NTT workspace.
+    pub(crate) fn extended_part_gpu_coset_is_eligible(
+        &self,
+        coefficients: &[F],
+        extended_omega_factor: F,
+    ) -> bool {
+        gpu_coset_fft_is_eligible(
+            coefficients,
+            self.omega,
+            self.k,
+            self.g_coset * extended_omega_factor,
+        )
+    }
+
+    /// Apply precomputed coefficient powers and perform the same native FFT
+    /// used by `coeff_to_extended_part`. Both inputs must describe exactly
+    /// one full base-domain part.
+    pub(crate) fn coeff_to_extended_part_with_factors(
+        &self,
+        mut coefficients: Polynomial<F, Coeff>,
+        factors: &[F],
+        extended_omega_factor: F,
+    ) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        let coset = self.g_coset * extended_omega_factor;
+        if try_gpu_coset_fft_if_eligible_with_factors(
+            coefficients.as_mut_slice(),
+            self.omega,
+            self.k,
+            coset,
+            factors,
+        ) {
+            return Ok(coefficients.into_basis());
+        }
+        self.apply_extended_part_factors(coefficients.as_mut_slice(), factors)?;
+        let data = self.get_fft_data(coefficients.len());
+        best_fft(coefficients.as_mut_slice(), self.omega, self.k, data, false);
+        Ok(coefficients.into_basis())
+    }
+
+    /// Copy a coefficient polynomial into mapped storage, apply shared powers,
+    /// and perform the native FFT without retaining an additional N-element
+    /// coefficient vector.
+    pub(crate) fn coeff_to_extended_part_spilled_with_factors(
+        &self,
+        coefficients: &Polynomial<F, Coeff>,
+        factors: &[F],
+        extended_omega_factor: F,
+    ) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        let n = self.extended_part_base_len()?;
+        if coefficients.len() != n {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "coefficient polynomial has inconsistent dimensions",
+            ));
+        }
+        if factors.len() != n {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "extended-part factor buffer has inconsistent dimensions",
+            ));
+        }
+        let mut output = Polynomial::<F, Coeff>::mapped_filled(n, F::ZERO)?;
+        output.copy_from_slice(coefficients);
+        self.coeff_to_extended_part_with_factors(output, factors, extended_omega_factor)
+    }
+
+    /// Turn the reserved factor/output buffer into one selected coset in
+    /// place. The selected source is intentionally consumed last by the group
+    /// loader, so this buffer becomes the final output allocation.
+    pub(crate) fn coeff_to_extended_part_in_factor_buffer(
+        &self,
+        mut factors: Polynomial<F, Coeff>,
+        coefficients: &Polynomial<F, Coeff>,
+        extended_omega_factor: F,
+    ) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        let n = self.extended_part_base_len()?;
+        if factors.len() != n || coefficients.len() != n {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "factor buffer or coefficient polynomial has inconsistent dimensions",
+            ));
+        }
+        let coset = self.g_coset * extended_omega_factor;
+        if gpu_coset_fft_is_eligible(&factors[..], self.omega, self.k, coset) {
+            factors.copy_from_slice(coefficients);
+            if try_gpu_coset_fft_if_eligible(factors.as_mut_slice(), self.omega, self.k, coset) {
+                return Ok(factors.into_basis());
+            }
+            // Eligibility cannot normally change between the query and
+            // dispatch. If it does, rebuild the exact CPU-scaled input before
+            // using the unchanged native FFT fallback.
+            parallelize(&mut factors[..], |chunk, start| {
+                let mut power = coset.pow_vartime([start as u64]);
+                for (offset, value) in chunk.iter_mut().enumerate() {
+                    *value = coefficients[start + offset] * power;
+                    power *= coset;
+                }
+            });
+            let data = self.get_fft_data(n);
+            best_fft(factors.as_mut_slice(), self.omega, self.k, data, false);
+            return Ok(factors.into_basis());
+        }
+        parallelize(&mut factors[..], |chunk, start| {
+            for (offset, factor) in chunk.iter_mut().enumerate() {
+                *factor *= coefficients[start + offset];
+            }
+        });
+        let data = self.get_fft_data(n);
+        best_fft(factors.as_mut_slice(), self.omega, self.k, data, false);
+        Ok(factors.into_basis())
+    }
+
+    fn extended_part_base_len(&self) -> io::Result<usize> {
+        let n = usize::try_from(self.n).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "base domain length does not fit in memory index space",
+            )
+        })?;
+        let expected = 1usize.checked_shl(self.k).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "base domain length overflows memory index space",
+            )
+        })?;
+        if n != expected {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "base domain length has inconsistent dimensions",
+            ));
+        }
+        Ok(n)
+    }
+
+    fn apply_extended_part_factors(&self, coefficients: &mut [F], factors: &[F]) -> io::Result<()> {
+        let n = self.extended_part_base_len()?;
+        if coefficients.len() != n || factors.len() != n {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "factor buffer or coefficient polynomial has inconsistent dimensions",
+            ));
+        }
+        parallelize(coefficients, |chunk, start| {
+            for (offset, coefficient) in chunk.iter_mut().enumerate() {
+                *coefficient *= factors[start + offset];
+            }
+        });
+        Ok(())
     }
 
     /// Converts one coefficient polynomial to one native extended-domain

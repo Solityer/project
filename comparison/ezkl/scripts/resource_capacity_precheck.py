@@ -15,12 +15,19 @@ from formal_common import (
     DATASETS, ROOT, SRS_MANIFEST, AuthenticatedFormalContext, ContractError, abort,
     canonical_json_digest, load_json, local_path, require_authenticated_formal_context,
     resource_file_identities, resource_manifest_hash, sha256, source_tree_hash,
+    selected_datasets_for_session,
+)
+from compatible_resume import (
+    compare_admission_semantics, validate_compatible_resume_request,
+    validate_original_session_snapshot, validate_retained_setup_chain,
 )
 
 _SESSION_ID = re.compile(r"^[0-9a-f]{32}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY_SCHEMA = "ezkl_capacity_source_identity_v2"
 _REPORT_SCHEMA = "ezkl.resource_capacity_precheck.v2"
+_COMPAT_PROVENANCE_SCHEMA = "ezkl.compatible-capacity-provenance.v1"
+_COMPAT_DATASETS = ("ppi", "ogbn_arxiv")
 _FORMAT_ID = "halo2_native_pk_v4_vk_fixed_values_permutation_no_fixed_polys"
 _FORMULA_ID = "native_pk_v4_fixed_payload_lower_bound_unavailable_from_admission_v1"
 _FIELD_BYTES = 32
@@ -34,7 +41,18 @@ _SETUP_FILES = (
     "native_keygen_budget.json", "native_keygen_receipt.json", "gat_static_tables.json",
     "gat_integer_ledger.json", "circuit_ref.json", "producer_context.json",
 )
-_TERMINAL = {"FAILED", "INTERRUPTED", "COMPLETE", "COMPLETED", "VALIDATED"}
+_COMPAT_PROVENANCE_KEYS = {
+    "schema", "session_id", "compatible_resume_request", "old_session_snapshot",
+    "old_resume_identity_sha256", "old_setup_identity_sha256", "resume_identity",
+    "resume_identity_sha256", "capacity_source_identity", "capacity_source_identity_sha256",
+    "native_admissions", "admission_root", "retained_setup",
+}
+_NATIVE_ADMISSION_RECEIPT_KEYS = {
+    "path", "sha256", "prepared_dir", "settings_sha256", "scalar_domain_vector_bytes",
+    "total_assignments", "logrows", "domain_size", "constraint_system",
+    "native_memory_model", "relation_identity",
+}
+_TERMINAL = {"FAILED", "INTERRUPTED", "COMPLETE", "COMPLETED", "VALIDATED", "FINAL_VALIDATION_OK", "SUBSET_COMPLETE", "CAPACITY_PREFLIGHT_COMPLETE"}
 _ESTIMATE_FIELDS = (
     "setup_key_artifact_upper_bytes", "setup_mapped_peak_bytes", "proof_spill_known_bytes",
     "setup_keygen_host_peak_bytes", "proof_host_peak_bytes", "host_known_bytes",
@@ -367,6 +385,7 @@ def _session_context(session_path: Path | str) -> tuple[Path, Path, Path, dict[s
         or not isinstance(document.get("output_root"), str)
     ):
         abort("formal session has an unsupported or mismatched anchor")
+    selected_datasets_for_session(document)
     output_root = local_path(document["output_root"], "formal output root")
     session_dir = output_root / ".sessions" / session_id
     if session_file != (output_root / ".sessions" / f"{session_id}.json").resolve():
@@ -376,15 +395,16 @@ def _session_context(session_path: Path | str) -> tuple[Path, Path, Path, dict[s
     return session_file, output_root, session_dir, document
 
 
-def _admission_paths(session_dir: Path, dataset: str) -> tuple[Path, Path]:
-    folder = session_dir / "admission" / dataset
+def _admission_paths(session_dir: Path, dataset: str, admission_root: Path | None = None) -> tuple[Path, Path]:
+    folder = (admission_root or (session_dir / "admission")) / dataset
     return folder / "admission.json", folder / "settings.json"
 
 
 def _authenticated_admission(
     document: dict[str, Any], session_dir: Path, dataset: str, admission_path: Path, settings_path: Path,
+    *, admission_root: Path | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    expected_admission, expected_settings = _admission_paths(session_dir, dataset)
+    expected_admission, expected_settings = _admission_paths(session_dir, dataset, admission_root)
     _fail_symlink(expected_admission)
     _fail_symlink(expected_settings)
     if admission_path.resolve() != expected_admission.resolve() or settings_path.resolve() != expected_settings.resolve():
@@ -455,13 +475,25 @@ def _missing_row(dataset: str) -> dict[str, Any]:
             "observed_pk_file_bytes": None, "source_model_estimates": None}
 
 
-def _fresh_row(document: dict[str, Any], root: Path, session_dir: Path, dataset: str) -> dict[str, Any]:
-    admission_path, settings_path = _admission_paths(session_dir, dataset)
+def _fresh_row(
+    document: dict[str, Any], root: Path, session_dir: Path, dataset: str, *,
+    admission_root: Path | None = None, retained_setup_override: bool | None = None,
+) -> dict[str, Any]:
+    admission_path, settings_path = _admission_paths(session_dir, dataset, admission_root)
     if not admission_path.exists() or not settings_path.exists():
         return _missing_row(dataset)
-    admission, receipt = _authenticated_admission(document, session_dir, dataset, admission_path, settings_path)
+    admission, receipt = _authenticated_admission(
+        document, session_dir, dataset, admission_path, settings_path, admission_root=admission_root,
+    )
     bounds = _fixed_payload_bounds(admission)
-    retained, observed = _retained_setup(document, root, dataset, receipt["sha256"])
+    if retained_setup_override is None:
+        retained, observed = _retained_setup(document, root, dataset, receipt["sha256"])
+    else:
+        retained = retained_setup_override
+        pk_path = root / dataset / "pk.key"
+        observed = pk_path.stat().st_size if retained and pk_path.is_file() and not pk_path.is_symlink() else None
+        if retained and observed is None:
+            abort(f"{dataset} compatible setup retention override has no regular PK")
     memory = admission["native_memory_model"]
     return {
         **bounds,
@@ -485,13 +517,21 @@ def audit_fresh_admission(
     session_path: Path | str, dataset: str, admission_path: Path | str | None,
     settings_path: Path | str | None, *, output_root: Path | str,
     authenticated_context: AuthenticatedFormalContext | None = None,
+    compatible_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Authenticate one current-session Admission and return its dataset row."""
     session_file, root, session_dir, document = _session_context(session_path)
+    selected_datasets = selected_datasets_for_session(document)
     supplied_root = Path(output_root)
     supplied_root = supplied_root if supplied_root.is_absolute() else local_path(supplied_root.as_posix(), "formal output root")
-    if supplied_root.resolve() != root.resolve() or dataset not in DATASETS:
+    if supplied_root.resolve() != root.resolve() or dataset not in selected_datasets:
         abort("fresh capacity report has an invalid output-root or dataset anchor")
+    admission_root = None
+    retained_setup_override = None
+    if compatible_provenance is not None:
+        document, admission_root, retained_setup_override = _compatible_provenance_document(
+            document, session_dir, authenticated_context, compatible_provenance,
+        )
     _require_fresh_session_binding(document, authenticated_context)
     if admission_path is None or settings_path is None:
         return _missing_row(dataset)
@@ -499,10 +539,228 @@ def audit_fresh_admission(
     settings_path = Path(settings_path)
     admission_path = admission_path if admission_path.is_absolute() else local_path(admission_path.as_posix(), f"{dataset} Admission")
     settings_path = settings_path if settings_path.is_absolute() else local_path(settings_path.as_posix(), f"{dataset} settings")
-    expected_admission, expected_settings = _admission_paths(session_dir, dataset)
+    expected_admission, expected_settings = _admission_paths(session_dir, dataset, admission_root)
     if admission_path.resolve() != expected_admission.resolve() or settings_path.resolve() != expected_settings.resolve():
         abort(f"{dataset} Admission paths do not match the current session")
-    return _fresh_row(document, root, session_dir, dataset)
+    return _fresh_row(
+        document, root, session_dir, dataset, admission_root=admission_root,
+        retained_setup_override=retained_setup_override.get(dataset) if isinstance(retained_setup_override, dict) else None,
+    )
+
+
+def _compatible_provenance_document(
+    document: dict[str, Any], session_dir: Path, authenticated_context: AuthenticatedFormalContext | None,
+    value: dict[str, Any],
+) -> tuple[dict[str, Any], Path, dict[str, bool]]:
+    """Validate compatible-resume evidence before making an in-memory current view."""
+    if type(value) is not dict or set(value) != _COMPAT_PROVENANCE_KEYS:
+        abort("compatible capacity provenance has unknown, missing, or malformed fields")
+    if value.get("schema") != _COMPAT_PROVENANCE_SCHEMA:
+        abort("compatible capacity provenance has an unsupported schema")
+    if not isinstance(authenticated_context, AuthenticatedFormalContext):
+        abort("compatible capacity audit requires the runner's authenticated current context")
+
+    context = authenticated_context
+    session_id = document.get("session_id")
+    if (
+        not isinstance(session_id, str) or _SESSION_ID.fullmatch(session_id) is None
+        or value.get("session_id") != session_id or context.session_id != session_id
+        or selected_datasets_for_session(document) != _COMPAT_DATASETS
+    ):
+        abort("compatible capacity provenance is not bound to the exact current session and dataset selection")
+
+    # The request validator is the sole source of the old session object. The
+    # provenance's copy must be the same immutable request already bound there.
+    request, old_session = validate_compatible_resume_request(document, expected_session_id=session_id)
+    supplied_request = value.get("compatible_resume_request")
+    if (
+        type(supplied_request) is not dict
+        or canonical_json_digest(supplied_request) != canonical_json_digest(request)
+    ):
+        abort("compatible capacity provenance request differs from the authenticated session request")
+
+    snapshot_ref = value.get("old_session_snapshot")
+    if type(snapshot_ref) is not dict or set(snapshot_ref) != {"path", "sha256"}:
+        abort("compatible capacity original-session snapshot reference is malformed")
+    snapshot_path_value = snapshot_ref.get("path")
+    snapshot_sha256 = snapshot_ref.get("sha256")
+    if (
+        not isinstance(snapshot_path_value, str)
+        or snapshot_path_value != request.get("old_session_snapshot_path")
+        or not isinstance(snapshot_sha256, str) or _SHA256.fullmatch(snapshot_sha256) is None
+        or snapshot_sha256 != request.get("old_session_snapshot_sha256")
+    ):
+        abort("compatible capacity original-session snapshot differs from the immutable request")
+    snapshot_path = local_path(snapshot_path_value, "compatible original-session snapshot")
+    _fail_symlink(snapshot_path)
+    snapshotted_old_session, actual_snapshot_sha256 = validate_original_session_snapshot(
+        snapshot_path, session_id=session_id, expected_sha256=snapshot_sha256,
+    )
+    if snapshotted_old_session != old_session or actual_snapshot_sha256 != snapshot_sha256:
+        abort("compatible capacity original session differs from the validated immutable snapshot")
+
+    old_resume = old_session.get("resume_identity")
+    session_old_resume = document.get("resume_identity")
+    old_resume_sha256 = value.get("old_resume_identity_sha256")
+    if (
+        not isinstance(old_resume, dict)
+        or not isinstance(session_old_resume, dict)
+        or canonical_json_digest(session_old_resume) != canonical_json_digest(old_resume)
+        or not isinstance(old_resume_sha256, str) or _SHA256.fullmatch(old_resume_sha256) is None
+        or canonical_json_digest(old_resume) != old_resume_sha256
+    ):
+        abort("compatible capacity provenance does not bind the original resume identity")
+    old_setup_identity, actual_old_setup_sha256, old_setup_refs = validate_retained_setup_chain(
+        old_session, session_id=session_id,
+    )
+    old_setup_sha256 = value.get("old_setup_identity_sha256")
+    expected_setup_ref_keys = {
+        "origin", "setup_identity_sha256", "setup_receipt", "native_keygen_budget",
+        "native_keygen_receipt", "setup_files", "bound_setup_admission",
+    }
+    if (
+        not isinstance(old_setup_sha256, str) or _SHA256.fullmatch(old_setup_sha256) is None
+        or old_setup_sha256 != actual_old_setup_sha256
+        or canonical_json_digest(old_setup_identity) != actual_old_setup_sha256
+        or type(old_setup_refs) is not dict or set(old_setup_refs) != expected_setup_ref_keys
+        or old_setup_refs.get("origin") != "retained_old"
+        or old_setup_refs.get("setup_identity_sha256") != actual_old_setup_sha256
+    ):
+        abort("compatible capacity provenance does not bind the authenticated retained Setup chain")
+
+    old_setup_map = old_session.get("setup_reuse_receipts")
+    if type(old_setup_map) is not dict or set(old_setup_map) != {"ppi"}:
+        abort("compatible capacity original Setup selection is not exactly PPI")
+    retained = value.get("retained_setup")
+    expected_retained = {dataset: dataset in old_setup_map for dataset in _COMPAT_DATASETS}
+    if (
+        type(retained) is not dict or set(retained) != set(_COMPAT_DATASETS)
+        or any(type(flag) is not bool for flag in retained.values())
+        or retained != expected_retained
+    ):
+        abort("compatible capacity retained-Setup map differs from the original Setup selection")
+
+    resume = value.get("resume_identity")
+    session_resume = document.get("compatible_prover_identity")
+    session_resume_sha256 = document.get("compatible_prover_identity_sha256")
+    if (
+        type(resume) is not dict or resume.get("schema") != "ezkl-formal-resume-identity-v1"
+        or type(session_resume) is not dict
+        or canonical_json_digest(resume) != canonical_json_digest(session_resume)
+        or resume.get("selected_datasets") != list(_COMPAT_DATASETS)
+        or value.get("resume_identity_sha256") != canonical_json_digest(resume)
+        or not isinstance(session_resume_sha256, str) or _SHA256.fullmatch(session_resume_sha256) is None
+        or session_resume_sha256 != canonical_json_digest(resume)
+    ):
+        abort("compatible capacity current resume identity/digest differs from the current session")
+
+    capacity_identity = value.get("capacity_source_identity")
+    capacity_identity_sha256 = value.get("capacity_source_identity_sha256")
+    session_capacity_identity = document.get("compatible_capacity_source_identity")
+    session_capacity_sha256 = document.get("compatible_capacity_source_identity_sha256")
+    actual_capacity_identity = capacity_source_identity()
+    if (
+        not isinstance(capacity_identity, dict)
+        or not isinstance(capacity_identity_sha256, str) or _SHA256.fullmatch(capacity_identity_sha256) is None
+        or capacity_identity_sha256 != canonical_json_digest(capacity_identity)
+        or not isinstance(session_capacity_identity, dict)
+        or canonical_json_digest(session_capacity_identity) != canonical_json_digest(capacity_identity)
+        or not isinstance(session_capacity_sha256, str) or _SHA256.fullmatch(session_capacity_sha256) is None
+        or session_capacity_sha256 != canonical_json_digest(session_capacity_identity)
+        or not _identity_matches(capacity_identity, actual_capacity_identity)
+    ):
+        abort("compatible capacity source identity/digest is stale or differs from current source")
+
+    admission_root_value = value.get("admission_root")
+    if not isinstance(admission_root_value, str):
+        abort("compatible Admission root must be a baseline-local relative path")
+    admission_root = local_path(admission_root_value, "compatible Admission root")
+    expected_root = session_dir / "compatibility" / "admission"
+    expected_root_value = expected_root.relative_to(ROOT).as_posix()
+    _fail_symlink(admission_root)
+    if (
+        admission_root_value != expected_root_value
+        or admission_root.resolve(strict=False) != expected_root.resolve(strict=False)
+        or admission_root.is_symlink()
+    ):
+        abort("compatible Admission root is not the exact isolated session sidecar")
+
+    admissions = value.get("native_admissions")
+    old_admissions = old_session.get("native_admissions")
+    session_admissions = document.get("compatible_native_admissions")
+    if (
+        type(admissions) is not dict or set(admissions) != set(_COMPAT_DATASETS)
+        or type(session_admissions) is not dict or set(session_admissions) != set(_COMPAT_DATASETS)
+        or type(old_admissions) is not dict or set(old_admissions) != set(_COMPAT_DATASETS)
+    ):
+        abort("compatible capacity Admission maps must contain exactly PPI and OGBN-Arxiv")
+    for dataset in _COMPAT_DATASETS:
+        current_receipt = admissions[dataset]
+        if type(current_receipt) is not dict or set(current_receipt) != _NATIVE_ADMISSION_RECEIPT_KEYS:
+            abort(f"{dataset} compatible current Admission receipt has unknown, missing, or malformed fields")
+    if canonical_json_digest(session_admissions) != canonical_json_digest(admissions):
+        abort("compatible capacity current Admission map differs from the exact session receipt anchor")
+
+    current = dict(document)
+    current.update({
+        "resume_identity": resume,
+        "capacity_source_identity": capacity_identity,
+        "native_admissions": admissions,
+        "source_tree_sha256": resume.get("source_tree_sha256"),
+        "resource_manifest_sha256": resume.get("resource_manifest_sha256"),
+        "srs_manifest_sha256": resume.get("srs_manifest_sha256"),
+        "binary_sha256": resume.get("binary_sha256"),
+        "build_receipt_sha256": resume.get("build_receipt_sha256"),
+        "build_environment_sha256": resume.get("build_environment_sha256"),
+    })
+    old_output_root_value = old_session.get("output_root")
+    if not isinstance(old_output_root_value, str) or old_output_root_value != document.get("output_root"):
+        abort("compatible original and current session output roots differ")
+    old_output_root = local_path(old_output_root_value, "compatible original output root")
+    old_session_dir = old_output_root / ".sessions" / session_id
+
+    for dataset in _COMPAT_DATASETS:
+        current_receipt = admissions[dataset]
+        old_receipt = old_admissions[dataset]
+        if (
+            type(current_receipt) is not dict or set(current_receipt) != _NATIVE_ADMISSION_RECEIPT_KEYS
+            or type(old_receipt) is not dict or set(old_receipt) != _NATIVE_ADMISSION_RECEIPT_KEYS
+        ):
+            abort(f"{dataset} compatible Admission receipt has unknown, missing, or malformed fields")
+
+        current_admission_path, current_settings_path = _admission_paths(session_dir, dataset, admission_root)
+        current_admission, _ = _authenticated_admission(
+            current, session_dir, dataset, current_admission_path, current_settings_path,
+            admission_root=admission_root,
+        )
+        old_admission_path, old_settings_path = _admission_paths(old_session_dir, dataset)
+        old_admission, _ = _authenticated_admission(
+            old_session, old_session_dir, dataset, old_admission_path, old_settings_path,
+        )
+        for receipt, admission, label in (
+            (current_receipt, current_admission, "current"),
+            (old_receipt, old_admission, "original"),
+        ):
+            for name in ("scalar_domain_vector_bytes", "total_assignments", "logrows", "domain_size"):
+                minimum = 1 if name == "domain_size" else 0
+                receipt_value = _integer(receipt.get(name), f"{dataset} {label} Admission receipt {name}", minimum=minimum)
+                admission_value = _integer(admission.get(name), f"{dataset} {label} Admission {name}", minimum=minimum)
+                if receipt_value != admission_value:
+                    abort(f"{dataset} {label} Admission receipt disagrees with its bound {name}")
+        compare_admission_semantics(old_admission, current_admission, dataset=dataset)
+
+    old_ppi_admission = old_admissions["ppi"]
+    if old_setup_refs.get("bound_setup_admission") != {
+        "path": old_ppi_admission.get("path"),
+        "sha256": old_ppi_admission.get("sha256"),
+        "settings_sha256": old_ppi_admission.get("settings_sha256"),
+    }:
+        abort("compatible retained Setup is not bound to the original PPI Admission")
+
+    # Revalidate the full current session/build binding before accepting any
+    # caller-supplied sidecar identity for capacity accounting.
+    _authenticate_fresh_provenance(current, context)
+    return current, admission_root, retained
 
 
 def _current_session_for_root(output_root: Path | str) -> tuple[Path, Path, Path, dict[str, Any]]:
@@ -527,7 +785,51 @@ def _current_session_for_root(output_root: Path | str) -> tuple[Path, Path, Path
 
 
 def _write_report(path: Path, document: dict[str, Any], *, session_dir: Path, output_root: Path) -> None:
-    if path.is_symlink() or path.parent.resolve() != (session_dir / "capacity").resolve():
+    compatible_session = False
+    session_id = document.get("session_id")
+    if isinstance(session_id, str) and _SESSION_ID.fullmatch(session_id) is not None:
+        session_file = session_dir.parent / f"{session_id}.json"
+        if session_file.is_file() and not session_file.is_symlink():
+            _, anchored_root, anchored_session_dir, session_document = _session_context(session_file)
+            if (
+                anchored_root.resolve() != output_root.resolve()
+                or anchored_session_dir.resolve() != session_dir.resolve()
+                or session_document.get("session_id") != session_id
+            ):
+                abort("capacity report session differs from its authenticated output-root anchor")
+            compatible_request = session_document.get("compatible_resume_request")
+            if compatible_request is not None:
+                request, _ = validate_compatible_resume_request(
+                    session_document, expected_session_id=session_id,
+                )
+                supplied_request = document.get("compatible_resume_request")
+                if supplied_request is not None and canonical_json_digest(supplied_request) != canonical_json_digest(request):
+                    abort("compatible capacity report request differs from its authenticated session")
+                current_provenance = document.get("current_provenance")
+                current_resume_identity = session_document.get("compatible_prover_identity")
+                current_capacity_identity = session_document.get("compatible_capacity_source_identity")
+                if (
+                    type(current_provenance) is not dict
+                    or type(current_resume_identity) is not dict
+                    or type(current_capacity_identity) is not dict
+                    or current_provenance.get("resume_identity_sha256") != canonical_json_digest(current_resume_identity)
+                    or session_document.get("compatible_prover_identity_sha256") != canonical_json_digest(current_resume_identity)
+                    or session_document.get("compatible_capacity_source_identity_sha256") != canonical_json_digest(current_capacity_identity)
+                    or type(current_provenance.get("capacity_source_identity")) is not dict
+                    or canonical_json_digest(current_provenance["capacity_source_identity"]) != canonical_json_digest(current_capacity_identity)
+                    or type(document.get("source_identity")) is not dict
+                    or canonical_json_digest(document["source_identity"]) != canonical_json_digest(current_capacity_identity)
+                ):
+                    abort("compatible capacity report does not bind the current session Prover and capacity identities")
+                expected_path = session_dir / "compatibility" / "capacity_precheck_current.json"
+                if path.is_symlink() or path.resolve(strict=False) != expected_path.resolve(strict=False):
+                    abort("compatible current capacity report must use its exact session sidecar path")
+                compatible_session = True
+    if not compatible_session and (
+        document.get("compatible_resume_request") is not None
+        or path.is_symlink()
+        or path.parent.resolve() != (session_dir / "capacity").resolve()
+    ):
         abort("capacity report must be written inside the current session capacity directory")
     try:
         path.resolve(strict=False).relative_to(output_root.resolve())
@@ -603,8 +905,9 @@ def _historical_session(session_file: Path, output_root: Path) -> dict[str, Any]
     configs = [[dataset, sha256(ROOT / f"resources/canonical/configs/{dataset}_secure.cfg")] for dataset in DATASETS]
     if resume.get("config_sha256s") != configs:
         abort("historical secure-config identities differ from the current five configs")
+    selected_datasets = selected_datasets_for_session(document)
     receipts = document.get("native_admissions")
-    if not isinstance(receipts, dict) or not receipts or any(dataset not in DATASETS for dataset in receipts):
+    if not isinstance(receipts, dict) or not receipts or any(dataset not in selected_datasets for dataset in receipts):
         abort("historical session has no valid authenticated Admission anchors")
     session_dir = root / ".sessions" / session_id
     geometry: dict[str, dict[str, Any]] = {}
@@ -614,7 +917,7 @@ def _historical_session(session_file: Path, output_root: Path) -> dict[str, Any]
         if receipt != receipts[dataset]:
             abort(f"{dataset} Admission anchor differs from historical session")
         geometry[dataset] = _fixed_payload_bounds(admission)
-    return {"document": document, "session_dir": session_dir, "geometry": geometry}
+    return {"document": document, "session_dir": session_dir, "selected_datasets": selected_datasets, "geometry": geometry}
 
 
 def latest_authenticated_historical_session(output_root: Path | str) -> Path | None:
@@ -656,13 +959,14 @@ def audit_historical_session(
     historical_root = historical_file.parent.parent
     authenticated = _historical_session(historical_file, historical_root)
     historical = authenticated["document"]
+    selected_datasets = authenticated["selected_datasets"]
     source_match = _identity_matches(historical.get("capacity_source_identity"), capacity_source_identity())
     hardware = _sample_hardware(current_root)
     rows = []
     profile = historical.get("local_capacity_profile")
     prior_estimates = profile.get("datasets", {}) if isinstance(profile, dict) else {}
     checks = historical.get("capacity_checks", [])
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         row = dict(authenticated["geometry"].get(dataset, _missing_row(dataset)))
         if dataset not in authenticated["geometry"]:
             row["historical_evidence"] = "no authenticated Admission in this session"
@@ -682,12 +986,13 @@ def audit_historical_session(
     report = {
         "schema": _REPORT_SCHEMA, "report_kind": "historical_negative_evidence_only",
         "baseline": "ezkl", "historical_session_id": historical["session_id"],
+        "selected_datasets": list(selected_datasets),
         "historical_status": historical["status"], "historical_started_at_utc": historical.get("started_at_utc"),
         "historical_source_match": source_match,
         "historical_source_match_reason": "exact_geometry_config_resource_native_format_hash_match" if source_match else "missing_or_mismatched_geometry_config_resource_native_format_snapshot",
         "historical_admission_coverage": {
             "authenticated_datasets": sorted(authenticated["geometry"]),
-            "missing_datasets": [dataset for dataset in DATASETS if dataset not in authenticated["geometry"]],
+            "missing_datasets": [dataset for dataset in selected_datasets if dataset not in authenticated["geometry"]],
         },
         "source_matched_disk_floor_failure": bool(source_match and failed),
         "source_matched_disk_floor_failure_datasets": failed if source_match else [],
@@ -703,18 +1008,32 @@ def audit_historical_session(
 def write_and_require_fresh_report(
     session_path: Path | str, records: list[dict[str, Any]], output_path: Path | str, *, output_root: Path | str,
     authenticated_context: AuthenticatedFormalContext | None = None,
+    compatible_provenance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Persist five authenticated Admission rows and report whether v4 wire size is estimable."""
+    """Persist selected authenticated Admission rows and report the v4 wire floor."""
     _, root, session_dir, document = _session_context(session_path)
+    selected_datasets = selected_datasets_for_session(document)
     supplied_root = Path(output_root)
     supplied_root = supplied_root if supplied_root.is_absolute() else local_path(supplied_root.as_posix(), "formal output root")
-    if supplied_root.resolve() != root.resolve() or not isinstance(records, list) or len(records) != len(DATASETS):
-        abort("fresh capacity report has an invalid output root or incomplete five-dataset record list")
+    if supplied_root.resolve() != root.resolve() or not isinstance(records, list) or len(records) != len(selected_datasets):
+        abort("fresh capacity report has an invalid output root or incomplete selected-dataset record list")
     by_dataset = {row.get("dataset"): row for row in records if isinstance(row, dict)}
-    if set(by_dataset) != set(DATASETS) or len(by_dataset) != len(records):
-        abort("fresh capacity rows do not match the canonical five datasets")
-    # Re-read all five anchored files here instead of trusting caller-built rows.
-    rows = [_fresh_row(document, root, session_dir, name) for name in DATASETS]
+    if tuple(by_dataset) != selected_datasets or len(by_dataset) != len(records):
+        abort("fresh capacity rows do not match the immutable canonical dataset selection")
+    # Re-read every selected anchored file instead of trusting caller-built rows.
+    admission_root = None
+    retained_setup = None
+    if compatible_provenance is not None:
+        document, admission_root, retained_setup = _compatible_provenance_document(
+            document, session_dir, authenticated_context, compatible_provenance,
+        )
+    rows = [
+        _fresh_row(
+            document, root, session_dir, name, admission_root=admission_root,
+            retained_setup_override=retained_setup.get(name) if isinstance(retained_setup, dict) else None,
+        )
+        for name in selected_datasets
+    ]
     provenance = _authenticate_fresh_provenance(document, authenticated_context)
     hardware = _sample_hardware(root)
     missing = [row["dataset"] for row in rows if row.get("admission_status") != "authenticated_current_session_admission"]
@@ -728,6 +1047,7 @@ def write_and_require_fresh_report(
     report = {
         "schema": _REPORT_SCHEMA, "report_kind": "current_fresh_admission_pre_setup",
         "baseline": "ezkl", "session_id": document["session_id"], "sampled_at_utc": datetime.now(timezone.utc).isoformat(),
+        "selected_datasets": list(selected_datasets),
         "gate_status": status, "readiness": "NOT_ESTABLISHED",
         "source_identity": provenance["capacity_source_identity"],
         "current_provenance": provenance,

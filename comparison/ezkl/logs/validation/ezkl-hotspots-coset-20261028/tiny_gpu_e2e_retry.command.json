@@ -1,0 +1,21 @@
+{
+  "command": [
+    "/usr/bin/python3.12",
+    "scripts/run_tiny_cpu_e2e.py",
+    "--backend",
+    "gpu",
+    "--max-srs-logrows",
+    "17",
+    "--stage-timeout",
+    "600",
+    "--overall-timeout",
+    "1800",
+    "--cleanup",
+    "never"
+  ],
+  "exit_code": 2,
+  "finished_at_utc": "2026-10-28T06:24:44.018720+00:00",
+  "retry_of": "tiny_gpu_e2e.command.json",
+  "scope": "one bounded synthetic GPU proof with independent Verify; no formal dataset; retry after removing invalid session_dir kwargs",
+  "started_at_utc": "2026-10-28T06:23:03.506904+00:00"
+}

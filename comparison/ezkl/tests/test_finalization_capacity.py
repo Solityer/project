@@ -366,11 +366,17 @@ class FinalizationCapacityTest(unittest.TestCase):
         with self.assertRaisesRegex(FinalizationCapacityError, "oversized small JSON"):
             _host_requirements(proofs, results, 4096, small_json_sizes={"artifact_manifest": 1024 * 1024 + 1})
 
-    def test_dataset_axis_is_exactly_five(self) -> None:
+    def test_capacity_axis_matches_immutable_selected_datasets(self) -> None:
         proofs, results = self._sizes()
         del proofs[DATASETS[-1]]
-        with self.assertRaisesRegex(FinalizationCapacityError, "exact five"):
+        with self.assertRaisesRegex(FinalizationCapacityError, "immutable selected EZKL datasets"):
             _host_requirements(proofs, results, 1024)
+        all_proofs, all_results = self._sizes()
+        selected = DATASETS[-2:]
+        selected_proofs = {name: all_proofs[name] for name in selected}
+        selected_results = {name: all_results[name] for name in selected}
+        accounting = _host_requirements(selected_proofs, selected_results, 1024, datasets=selected)
+        self.assertEqual(accounting["selected_dataset_count"], len(selected))
 
 
 if __name__ == "__main__":

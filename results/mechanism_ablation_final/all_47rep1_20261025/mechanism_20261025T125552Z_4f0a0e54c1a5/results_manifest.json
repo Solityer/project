@@ -1,0 +1,33 @@
+{
+  "expected_cell_count": 94,
+  "expected_config_count": 47,
+  "expected_pair_count": 47,
+  "files": {
+    "results_csv": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/results.csv",
+      "sha256": "92ecfebb3a08321285f30b004c922b9beedc6b262b38c48c3f9abcc14d245bea"
+    },
+    "summary_markdown": {
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/summary.md",
+      "sha256": "fa87531d7257266f6d05f0308f93024269cc72f130f887cc0df764cbbc884111"
+    }
+  },
+  "results_csv": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/results.csv",
+    "sha256": "92ecfebb3a08321285f30b004c922b9beedc6b262b38c48c3f9abcc14d245bea"
+  },
+  "selection": {
+    "input_scope": "all",
+    "mechanism": "all"
+  },
+  "session_id": "mechanism_20261025T125552Z_4f0a0e54c1a5",
+  "session_status": "incomplete",
+  "summary_json": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/summary.json",
+    "sha256": "ff1f97a533df916844f9971c4a72b7ee24ad9a08fb220a4f3239564488fec132"
+  },
+  "summary_markdown": {
+    "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/summary.md",
+    "sha256": "fa87531d7257266f6d05f0308f93024269cc72f130f887cc0df764cbbc884111"
+  }
+}

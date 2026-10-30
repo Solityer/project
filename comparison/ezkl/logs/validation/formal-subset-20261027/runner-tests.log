@@ -1,0 +1,29 @@
+Command: python3 -m unittest <9 explicitly selected pure/mock/AST/capacity test methods>
+Working directory: comparison/ezkl/tests
+Formal start/build/preflight: not run
+
+Result: Ran 9 tests in 0.061s; FAILED (2 failures, 2 errors)
+
+Passed (6):
+- LocalFormalEntryTest.test_public_formal_entry_executes_only_the_local_runner
+- LocalFormalEntryTest.test_public_formal_entry_forwards_explicit_all_five_datasets_on_resume
+- LocalFormalEntryTest.test_resume_selection_mismatch_is_rejected_before_mutation_and_omitted_selection_inherits
+- LocalFormalEntryTest.test_cub_workspace_receipt_and_phase_recheck_are_session_bound
+- FormalRecoveryReceiptTest.test_formal_owner_accepts_only_bound_matrix_execv_transition
+- FinalizationCapacityTest.test_capacity_axis_matches_immutable_selected_datasets
+
+Failures/errors requiring review:
+- test_native_srs_copy_budget_counts_pending_cells_and_fails_closed_at_disk_boundary: new selected-tail SRS assertions passed; existing remainder fails because fixture path /capacity/formal does not exist, so _filesystem_type cannot resolve /capacity. The second subcase's expected mapped/key artifact gate is masked by the same fixture path error.
+- test_five_dataset_capacity_preflight_precedes_cells_and_preserves_resume_scope: fixture Admission lacks an authenticated regular settings snapshot, and _native_json_output_bounds rejects it before the intended mocked setup-capacity assertion.
+- test_capacity_gates_precede_collector_and_independent_validator: runner AST finds only the collector-phase check_finalization_capacity call; no validator-phase call exists in run_hybrid_formal._run_session. validate_final.py does not import this helper. This is a production capacity-gate closure question reported to the parent.
+
+No tests were rerun after this invocation.
+
+Independent checks after the single test invocation:
+- python3 -m py_compile scripts/run_formal_matrix.py scripts/ezkl_formal_control.py scripts/run_hybrid_formal.py scripts/resource_capacity_precheck.py scripts/finalization_capacity.py: PASS
+- python3 scripts/ezkl_formal_control.py start --help: PASS; exposes --datasets and output/matrix flags; help only, no start launched
+- python3 scripts/run_formal_matrix.py --help: PASS; exposes --datasets; help only, no formal entry execution
+
+Final authorized rerun: 3 previously failing mock/AST selectors passed (Ran 3 tests, OK).
+Final source compile: python3 -m py_compile scripts/run_formal_matrix.py scripts/ezkl_formal_control.py scripts/run_hybrid_formal.py scripts/resource_capacity_precheck.py scripts/finalization_capacity.py — exit 0.
+No formal experiment, preflight, GPU build, or real start was run.

@@ -2,7 +2,7 @@ use group::{ff::{PrimeField, Field}, Group};
 use icicle_bn254::curve::{CurveCfg, G1Projective, ScalarField};
 use halo2curves::bn256::{Fr as Bn256Fr, G1Affine as Bn256G1Affine};
 use icicle_cuda_runtime::memory::{DeviceVec, HostOrDeviceSlice, HostSlice};
-use crate::h_eval::{GateProgram, GATE_OP_ADD, GATE_OP_DOUBLE, GATE_OP_FOLD, GATE_OP_LOAD_CONST, GATE_OP_LOAD_QUERY, GATE_OP_MUL, GATE_OP_NEGATE, GATE_OP_SQUARE, GATE_OP_SUB};
+use crate::h_eval::{GateProgram, GATE_OP_ADD, GATE_OP_COMMIT_BLOCK, GATE_OP_DOUBLE, GATE_OP_FOLD, GATE_OP_FOLD_BLOCK, GATE_OP_LOAD_CONST, GATE_OP_LOAD_QUERY, GATE_OP_MUL, GATE_OP_MV_LOOKUP_FOLD, GATE_OP_NEGATE, GATE_OP_SCALE_ACCUMULATOR, GATE_OP_SQUARE, GATE_OP_STORE_OUTPUT, GATE_OP_SUB};
 use crate::poly::{LagrangeCoeff, Polynomial};
 use crate::arithmetic::FftGroup;
 use std::any::{TypeId, Any};
@@ -14,7 +14,7 @@ use icicle_core::{
 };
 use std::{env, io, mem};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::collections::HashMap;
 use std::fmt;
 use icicle_cuda_runtime::{device, stream::CudaStream};
@@ -32,7 +32,10 @@ static GPU_H_EVAL_ROWS: AtomicU64 = AtomicU64::new(0);
 static GPU_H_EVAL_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 static GPU_H_EVAL_CHUNKS: AtomicU64 = AtomicU64::new(0);
 static GPU_H_EVAL_SYNCS: AtomicU64 = AtomicU64::new(0);
+static GPU_H_TRANSFER_SYNCS: AtomicU64 = AtomicU64::new(0);
 static GPU_H_WORKSPACE_PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
+static GPU_H_RESIDENT_CURRENT_BYTES: AtomicUsize = AtomicUsize::new(0);
+static GPU_H_RESIDENT_PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 static GPU_H_LOCAL_PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 static GPU_H_RESOURCE_REPORT: AtomicUsize = AtomicUsize::new(0);
 static GPU_H_FALLBACK_DIAGNOSTIC_REPORTED: AtomicUsize = AtomicUsize::new(0);
@@ -56,11 +59,89 @@ struct NttWorkspace {
     capacity: usize,
     input: Option<DeviceVec<ScalarField>>,
     output: Option<DeviceVec<ScalarField>>,
+    coset_powers: Option<DeviceVec<ScalarField>>,
+    coset_key: Option<(usize, [u32; 8])>,
     host_values: Vec<ScalarField>,
 }
 
+/// A device allocation owned by the selected CUDA device and released while
+/// that device is current. These buffers are scoped to one proof-part H
+/// accumulation and never enter the persistent MSM cache.
+struct OwnerBoundHBuffer {
+    device_id: usize,
+    bytes: usize,
+    buffer: Option<DeviceVec<ScalarField>>,
+}
+
+impl OwnerBoundHBuffer {
+    fn try_allocate(elements: usize, device_id: usize) -> io::Result<Self> {
+        let bytes = elements.checked_mul(mem::size_of::<ScalarField>()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "resident H allocation size overflow")
+        })?;
+        if elements == 0 || bytes == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "resident H allocation must be nonempty"));
+        }
+        let buffer = DeviceVec::<ScalarField>::cuda_malloc_for_device(elements, device_id)
+            .map_err(|error| io::Error::new(io::ErrorKind::Other, format!("resident H device allocation failed: {:?}", error)))?;
+        let previous = GPU_H_RESIDENT_CURRENT_BYTES.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_add(bytes))
+            .map_err(|_| io::Error::new(io::ErrorKind::Other, "resident H byte counter overflow"))?;
+        let live = previous + bytes;
+        GPU_H_RESIDENT_PEAK_BYTES.fetch_max(live, Ordering::Relaxed);
+        Ok(Self { device_id, bytes, buffer: Some(buffer) })
+    }
+
+    fn slice(&self) -> &icicle_cuda_runtime::memory::DeviceSlice<ScalarField> {
+        self.buffer.as_ref().expect("resident H device allocation was released")
+    }
+
+    fn slice_mut(&mut self) -> &mut icicle_cuda_runtime::memory::DeviceSlice<ScalarField> {
+        self.buffer.as_mut().expect("resident H device allocation was released")
+    }
+}
+
+impl Drop for OwnerBoundHBuffer {
+    fn drop(&mut self) {
+        let Some(buffer) = self.buffer.take() else { return; };
+        let previous = device::get_device().expect("cannot read CUDA device while releasing resident H workspace");
+        if previous != self.device_id {
+            device::set_device(self.device_id).expect("cannot select owner device while releasing resident H workspace");
+        }
+        drop(buffer);
+        if previous != self.device_id {
+            device::set_device(previous).expect("cannot restore CUDA device after releasing resident H workspace");
+        }
+        let previous_live = GPU_H_RESIDENT_CURRENT_BYTES.fetch_sub(self.bytes, Ordering::AcqRel);
+        assert!(previous_live >= self.bytes, "resident H byte counter underflow");
+    }
+}
+
+/// Per-part H accumulator kept on the selected device while a sequence of
+/// multi-lookup programs is evaluated. Each program synchronizes before
+/// releasing the shared NTT staging lock; CPU coset preparation can therefore
+/// run between programs without racing a CUDA transfer.
+pub(crate) struct ResidentHLookupSession {
+    rows: usize,
+    h: OwnerBoundHBuffer,
+    device_id: usize,
+    permutation: Option<ResidentPermutationBuffers>,
+    kernel_local_bytes_per_thread: usize,
+    kernel_local_row_capacity: usize,
+}
+
+struct ResidentPermutationBuffers {
+    row_twiddles: OwnerBoundHBuffer,
+    left: OwnerBoundHBuffer,
+    right: OwnerBoundHBuffer,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResidentHKernelCapacity {
+    local_bytes_per_thread: usize,
+    row_capacity: usize,
+}
+
 impl NttWorkspace {
-    fn new() -> Self { Self { capacity: 0, input: None, output: None, host_values: Vec::new() } }
+    fn new() -> Self { Self { capacity: 0, input: None, output: None, coset_powers: None, coset_key: None, host_values: Vec::new() } }
 }
 
 /// Maximum scalar/base slice handed to one native ICICLE MSM invocation.
@@ -76,7 +157,7 @@ pub const FORMAL_GPU_NTT_MAX_SIZE: usize = 1 << 25;
 /// Upper bound, in bytes, for transient device scratch during NTT domain initialization.
 pub const FORMAL_GPU_NTT_INIT_SCRATCH_BYTES: usize = 4 * 64 * std::mem::size_of::<ScalarField>();
 /// Fixed formal GPU profile: bounded BN254 ICICLE NTT and chunked ICICLE MSM.
-pub const FORMAL_GPU_EXECUTION_POLICY: &str = "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5";
+pub const FORMAL_GPU_EXECUTION_POLICY: &str = "halo2_icicle-bn254-gpu-hgraph-fused-coset-ntt-16-25-msm-lagrange-resident-f4-sparse-m-cpu32-v8";
 
 const _: [(); 32] = [(); mem::size_of::<Bn256Fr>()];
 const _: [(); 8] = [(); mem::align_of::<Bn256Fr>()];
@@ -215,10 +296,11 @@ pub fn initialize_device(device_id: usize) -> Result<(), String> {
 }
 
 /// Counts successful native operations and explicit synchronization in this process.
-/// Tuple tail (indices 17..24): H program calls, rows, preflight fallbacks,
-/// successful launches, actual H sync calls, borrowed NTT workspace bytes,
-/// conservative local-plus-stack memory upper-bound bytes, and attempted groups.
-pub fn execution_stats() -> (u64, u64, u64, u64, u64, usize, u64, usize, usize, usize, usize, usize, u64, u64, u64, usize, usize, u64, u64, u64, u64, u64, usize, usize, u64) {
+/// Tuple tail (indices 17..26): H program calls, rows, preflight fallbacks,
+/// successful kernel chunks, kernel syncs, borrowed NTT workspace bytes,
+/// conservative local-plus-stack memory upper-bound bytes, attempted groups,
+/// transfer-only syncs, and owner-bound resident H/permutation high-water bytes.
+pub fn execution_stats() -> (u64, u64, u64, u64, u64, usize, u64, usize, usize, usize, usize, usize, u64, u64, u64, usize, usize, u64, u64, u64, u64, u64, usize, usize, u64, u64, usize) {
     (
         MSM_OPERATIONS.load(Ordering::Relaxed),
         GPU_MSM_CHUNK_CALLS.load(Ordering::Relaxed),
@@ -245,6 +327,8 @@ pub fn execution_stats() -> (u64, u64, u64, u64, u64, usize, u64, usize, usize, 
         GPU_H_WORKSPACE_PEAK_BYTES.load(Ordering::Relaxed),
         GPU_H_LOCAL_PEAK_BYTES.load(Ordering::Relaxed),
         GPU_H_EVAL_GROUPS.load(Ordering::Relaxed),
+        GPU_H_TRANSFER_SYNCS.load(Ordering::Relaxed),
+        GPU_H_RESIDENT_PEAK_BYTES.load(Ordering::Relaxed),
     )
 }
 
@@ -261,6 +345,8 @@ pub fn reset_execution_operation_stats() {
     GPU_H_EVAL_FALLBACKS.store(0, Ordering::Relaxed);
     GPU_H_EVAL_CHUNKS.store(0, Ordering::Relaxed);
     GPU_H_EVAL_SYNCS.store(0, Ordering::Relaxed);
+    GPU_H_TRANSFER_SYNCS.store(0, Ordering::Relaxed);
+    GPU_H_RESIDENT_PEAK_BYTES.store(0, Ordering::Relaxed);
     GPU_H_FALLBACK_DIAGNOSTIC_REPORTED.store(0, Ordering::Relaxed);
     NTT_CALLS.store(0, Ordering::Relaxed);
     CPU_FFT_CALLS.store(0, Ordering::Relaxed);
@@ -334,6 +420,11 @@ pub fn is_gpu_supported_field<G: Any>(_sample_element: &G) -> bool {
     }
 }
 
+/// The fused coefficient-coset path requires the guarded raw BN254 Fr bridge.
+pub fn is_gpu_supported_coset_field<G: PrimeField + 'static>() -> bool {
+    raw_montgomery_layout_supported::<G>()
+}
+
 /// Check whether a curve type matches the BN254 G1 point representation used by ICICLE.
 pub fn is_gpu_supported_curve<C: CurveAffine + 'static>() -> bool { TypeId::of::<C>() == TypeId::of::<Bn256G1Affine>() }
 
@@ -343,6 +434,14 @@ const BN254_NEG_MONTGOMERY_R_LIMBS: [u64; 4] = [0x974bc177a0000006, 0xf13771b2da
 
 extern "C" {
     fn bn254_h_eval_program(input: *const u32, output: *mut u32, rows: usize, instruction_count: usize, constant_count: usize, query_count: usize, scratch_slots: usize) -> i32;
+    fn bn254_h_eval_mv_lookup_program(input: *const u32, h: *mut u32, scratch: *mut u32, rows: usize, instruction_count: usize, constant_count: usize, query_count: usize, scratch_slots: usize, graph_query_count: usize, lookup_count: usize) -> i32;
+    fn bn254_h_permutation_scale(scale_words: *const u32, h: *mut u32, rows: usize) -> i32;
+    fn bn254_h_permutation_twiddles(twiddles: *mut u32, rows: usize, row_offset: usize, omega_words: *const u32, part_stride: usize, part_index: usize) -> i32;
+    fn bn254_h_permutation_begin_set(z: *const u32, l0: *const u32, h: *mut u32, left: *mut u32, right: *mut u32, rows: usize, row_offset: usize, full_size: usize, part_index: usize, part_stride: usize, rot_scale: i32, isize: i32, last_rotation: i32, set_index: usize, set_count: usize, scales: *const u32) -> i32;
+    fn bn254_h_permutation_last_boundary(l_last: *const u32, h: *mut u32, right: *const u32, rows: usize, scale_words: *const u32) -> i32;
+    fn bn254_h_permutation_column(source: *const u32, sigma: *const u32, row_twiddles: *const u32, left: *mut u32, right: *mut u32, rows: usize, scalars: *const u32) -> i32;
+    fn bn254_h_permutation_copy_term(l_active: *const u32, left: *const u32, right: *const u32, h: *mut u32, rows: usize, scale_words: *const u32) -> i32;
+    fn bn254_h_coset_scale(input_words: *mut u32, powers_words: *mut u32, row_offset: usize, rows: usize, factor_words: *const u32, generate_powers: bool) -> i32;
     fn bn254_h_eval_kernel_attributes(local_bytes_per_thread: *mut usize, shared_bytes_per_block: *mut usize, stack_bytes_per_thread: *mut usize, registers_per_thread: *mut i32, max_threads_per_block: *mut i32) -> i32;
 }
 
@@ -393,9 +492,27 @@ fn validate_gate_program<F: PrimeField>(program: &GateProgram<F>) -> io::Result<
     if initialized.try_reserve_exact(program.scratch_slots).is_err() { return Ok(false); }
     initialized.resize(program.scratch_slots, false);
     let mut folds = 0usize;
+    let mut lookup_folds = 0usize;
+    let mut lookup_output_stores = 0usize;
+    let lookup = program.mv_lookup.as_ref();
+    let weighted = program
+        .instructions
+        .first()
+        .is_some_and(|instruction| instruction[0] == GATE_OP_SCALE_ACCUMULATOR);
+    if weighted
+        && !program
+            .instructions
+            .last()
+            .is_some_and(|instruction| instruction[0] == GATE_OP_COMMIT_BLOCK)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "GPU H weighted block program is missing its final commit",
+        ));
+    }
     let check_slot = |slot: u32| -> io::Result<()> { if (slot as usize) < program.scratch_slots { Ok(()) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program scratch index is out of bounds")) } };
     let check_source = |slot: u32, initialized: &[bool]| -> io::Result<()> { check_slot(slot)?; if initialized[slot as usize] { Ok(()) } else { Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program reads an uninitialized scratch slot")) } };
-    for instruction in &program.instructions {
+    for (instruction_index, instruction) in program.instructions.iter().enumerate() {
         let op = instruction[0];
         let dst = instruction[1];
         if op == GATE_OP_LOAD_QUERY {
@@ -418,26 +535,147 @@ fn validate_gate_program<F: PrimeField>(program: &GateProgram<F>) -> io::Result<
             check_source(instruction[2], &initialized)?;
             initialized[dst as usize] = true;
         } else if op == GATE_OP_FOLD {
-            if instruction[2..].iter().any(|word| *word != 0) { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H fold instruction is malformed")); }
+            if weighted || instruction[2..].iter().any(|word| *word != 0) { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H fold instruction is malformed")); }
             check_source(dst, &initialized)?;
             folds += 1;
+        } else if op == GATE_OP_SCALE_ACCUMULATOR {
+            if !weighted || instruction_index != 0 || instruction[1] as usize >= program.constants.len() || instruction[2..].iter().any(|word| *word != 0) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H accumulator-scale instruction is malformed"));
+            }
+        } else if op == GATE_OP_FOLD_BLOCK {
+            if !weighted || instruction[2..].iter().any(|word| *word != 0) { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H block-fold instruction is malformed")); }
+            check_source(dst, &initialized)?;
+            folds += 1;
+        } else if op == GATE_OP_COMMIT_BLOCK {
+            if !weighted || instruction_index + 1 != program.instructions.len() || instruction[1] as usize >= program.constants.len() || instruction[2..].iter().any(|word| *word != 0) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H block-commit instruction is malformed"));
+            }
+        } else if op == GATE_OP_STORE_OUTPUT {
+            let Some(lookup) = lookup else { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H output-store instruction requires multi-lookup metadata")); };
+            let dst = instruction[1] as usize;
+            let output_count = lookup.input_counts.iter().try_fold(0usize, |total, count| total.checked_add(count.checked_add(1)?)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H lookup output range overflows"))?;
+            let output_end = lookup.output_base.checked_add(output_count).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H lookup output range overflows"))?;
+            if instruction[3..].iter().any(|word| *word != 0) || dst < lookup.output_base || dst >= output_end || dst >= program.scratch_slots {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H output-store instruction is malformed"));
+            }
+            check_source(instruction[2], &initialized)?;
+            if initialized[dst] { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H lookup output slot is written more than once")); }
+            initialized[dst] = true;
+            lookup_output_stores += 1;
+        } else if op == GATE_OP_MV_LOOKUP_FOLD {
+            let Some(lookup) = lookup else { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup fold requires lookup metadata")); };
+            let lookup_index = instruction[3] as usize;
+            let Some(input_count) = lookup.input_counts.get(lookup_index) else { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup index is invalid")); };
+            let graph_offset = lookup.input_counts.iter().take(lookup_index).try_fold(0usize, |total, count| total.checked_add(count.checked_add(1)?)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup output offset overflows"))?;
+            let output_start = lookup.output_base.checked_add(graph_offset).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup output offset overflows"))?;
+            if weighted || lookup_index != lookup_folds || instruction[1] as usize != output_start || instruction[2] as usize != *input_count || instruction[4..].iter().any(|word| *word != 0) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup fold instruction is malformed"));
+            }
+            for output in output_start..=output_start + input_count {
+                if !initialized.get(output).copied().unwrap_or(false) { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup reads an uninitialized graph output")); }
+            }
+            lookup_folds += 1;
+            folds += 3;
         } else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program uses an unknown opcode"));
         }
+    }
+    if let Some(lookup) = lookup {
+        let output_count = lookup.input_counts.iter().try_fold(0usize, |total, count| total.checked_add(count.checked_add(1)?)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H lookup output count overflows"))?;
+        if lookup_folds != lookup.input_counts.len() || lookup_output_stores != output_count || lookup.graph_query_count != program.queries.len() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H multi-lookup program metadata does not match its instruction stream"));
+        }
+    } else if lookup_folds != 0 || lookup_output_stores != 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H program has unbound lookup instructions"));
     }
     if folds != program.fold_count { return Err(io::Error::new(io::ErrorKind::InvalidData, "GPU H fold count does not match its instruction stream")); }
     Ok(true)
 }
 
-fn query_column_len<F: PrimeField>(query_kind: u32, column: usize, fixed: &[Polynomial<F, LagrangeCoeff>], advice: &[Polynomial<F, LagrangeCoeff>], instance: &[Polynomial<F, LagrangeCoeff>]) -> Option<usize> {
-    match query_kind { 0 => fixed.get(column).map(|poly| poly.len()), 1 => advice.get(column).map(|poly| poly.len()), 2 => instance.get(column).map(|poly| poly.len()), _ => None }
+fn query_column_values<'a, F: PrimeField>(query_kind: u32, column: usize, fixed: &'a [Polynomial<F, LagrangeCoeff>], advice: &'a [Polynomial<F, LagrangeCoeff>], instance: &'a [Polynomial<F, LagrangeCoeff>]) -> Option<&'a [F]> {
+    match query_kind { 0 => fixed.get(column).map(|poly| &poly[..]), 1 => advice.get(column).map(|poly| &poly[..]), 2 => instance.get(column).map(|poly| &poly[..]), _ => None }
 }
 
-fn query_value<'a, F: PrimeField>(query_kind: u32, column: usize, row: usize, fixed: &'a [Polynomial<F, LagrangeCoeff>], advice: &'a [Polynomial<F, LagrangeCoeff>], instance: &'a [Polynomial<F, LagrangeCoeff>]) -> Option<&'a F> {
-    match query_kind { 0 => fixed.get(column)?.get(row), 1 => advice.get(column)?.get(row), 2 => instance.get(column)?.get(row), _ => None }
+struct ResolvedHQuery<'a> {
+    values: &'a [Bn256Fr],
+    rotation_offset: i32,
+    rotation_rows: usize,
+}
+
+fn h_query_uses_bulk_copy(rot_scale: i32, part_stride: usize) -> bool {
+    usize::try_from(rot_scale).ok() == Some(part_stride)
+}
+
+/// Pack one contiguous H-query row range directly into ICICLE's raw
+/// Montgomery staging representation. The caller has already established
+/// that the source field is the pinned BN254 Fr layout and has normalized
+/// the query rotation for the base domain.
+fn copy_bn254_h_query_chunk(source: &[Bn256Fr], start: usize, rows: usize, rotation_rows: usize, base_n: usize, destination: &mut [ScalarField]) -> io::Result<()> {
+    if base_n == 0 || source.len() != base_n || start >= base_n || rows == 0 || rows > base_n || rotation_rows >= base_n || destination.len() != rows {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H query chunk shape is invalid"));
+    }
+    let origin = start.checked_add(rotation_rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H query origin overflow"))? % base_n;
+    let first_rows = rows.min(base_n - origin);
+    let second_rows = rows - first_rows;
+    let first_bytes = first_rows.checked_mul(mem::size_of::<ScalarField>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H query copy size overflow"))?;
+    let second_bytes = second_rows.checked_mul(mem::size_of::<ScalarField>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H query copy size overflow"))?;
+
+    // SAFETY: the caller established exact BN254 Fr identity and the pinned
+    // raw-Montgomery representation probes before constructing `source`.
+    // The compile-time size checks make both element layouts 32 bytes. The
+    // slices are separately borrowed input polynomials and workspace-owned
+    // staging memory, so the ranges do not overlap. Bounds and byte lengths
+    // were checked above. At most one wrap is possible because rows <= N.
+    unsafe {
+        if first_rows != 0 {
+            std::ptr::copy_nonoverlapping(source.as_ptr().add(origin).cast::<u8>(), destination.as_mut_ptr().cast::<u8>(), first_bytes);
+        }
+        if second_rows != 0 {
+            std::ptr::copy_nonoverlapping(source.as_ptr().cast::<u8>(), destination.as_mut_ptr().add(first_rows).cast::<u8>(), second_bytes);
+        }
+    }
+    Ok(())
+}
+
+/// Validate a complete ICICLE output chunk before replacing the caller's
+/// accumulator, then restore the validated raw Montgomery values in bulk.
+fn copy_validated_bn254_h_output_chunk(source: &[ScalarField], destination: &mut [Bn256Fr]) -> io::Result<()> {
+    if source.len() != destination.len() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H output chunk shape is invalid"));
+    }
+    for output in source {
+        if !is_reduced_bn254_limb(&words_to_u64_limbs(raw_scalar_words(output))) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "ICICLE H output is not a reduced BN254 Montgomery residue"));
+        }
+    }
+    let bytes = source.len().checked_mul(mem::size_of::<ScalarField>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H output copy size overflow"))?;
+    // SAFETY: all source residues were checked against the BN254 modulus
+    // above; both scalar types have compile-time-checked 32-byte layouts.
+    // The source is NTT workspace staging, and the destination is the
+    // caller's disjoint H accumulator slice. The checked length covers the
+    // full destination and the entire chunk is validated before mutation.
+    unsafe {
+        std::ptr::copy_nonoverlapping(source.as_ptr().cast::<u8>(), destination.as_mut_ptr().cast::<u8>(), bytes);
+    }
+    Ok(())
+}
+
+/// Copy one already-validated BN254 Fr value into the ICICLE raw-Montgomery
+/// staging buffer without canonical serialization.
+fn copy_raw_bn254_fr(source: &Bn256Fr, destination: &mut ScalarField) {
+    // SAFETY: the caller passed the pinned BN254 Fr raw-layout guard and both
+    // field types have compile-time checked 32-byte layouts.
+    unsafe {
+        std::ptr::copy_nonoverlapping(source as *const Bn256Fr as *const u8, destination as *mut ScalarField as *mut u8, 32);
+    }
 }
 
 pub(crate) fn record_gpu_h_eval_group() { GPU_H_EVAL_GROUPS.fetch_add(1, Ordering::Relaxed); }
+
+pub(crate) fn record_gpu_h_eval_fallback_group() {
+    record_gpu_h_eval_group();
+    record_gpu_h_eval_fallback();
+}
 
 pub(crate) fn record_gpu_h_eval_fallback() { GPU_H_EVAL_FALLBACKS.fetch_add(1, Ordering::Relaxed); }
 
@@ -453,6 +691,759 @@ fn synchronize_h_stream(stream: &CudaStream) -> io::Result<()> {
     GPU_H_EVAL_SYNCS.fetch_add(1, Ordering::Relaxed);
     SYNCHRONIZED_CALLS.fetch_add(1, Ordering::Relaxed);
     stream.synchronize().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ICICLE H stream synchronization failed: {:?}", e)))
+}
+
+/// Synchronize H initialization/final readback transfers without counting
+/// them as H-kernel launches. The aggregate native synchronization counter
+/// still records every actual wait; `gpu_h_eval_syncs` remains paired with
+/// successful H evaluation chunks for the strict proof receipt.
+fn synchronize_h_transfer_stream(stream: &CudaStream) -> io::Result<()> {
+    GPU_H_TRANSFER_SYNCS.fetch_add(1, Ordering::Relaxed);
+    SYNCHRONIZED_CALLS.fetch_add(1, Ordering::Relaxed);
+    stream.synchronize().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("ICICLE H transfer synchronization failed: {:?}", e)))
+}
+
+fn panic_after_ntt_stream_drain(stream: &CudaStream, operation: &'static str, error: impl fmt::Debug) -> ! {
+    match stream.synchronize() {
+        Ok(()) => panic!("ICICLE fused NTT {} failed: {:?}", operation, error),
+        Err(sync_error) => panic!("ICICLE fused NTT {} failed: {:?}; draining the owner stream also failed: {:?}", operation, error, sync_error),
+    }
+}
+
+/// Prepare shared H staging before the first device-side accumulator update.
+/// The returned capacity is authenticated by the existing NTT workspace
+/// envelope; the separate resident H allocation is accounted independently.
+fn ensure_resident_h_staging(device_id: usize, rows: usize) -> io::Result<Option<usize>> {
+    let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+    let workspaces = workspaces.get_or_insert_with(HashMap::new);
+    let workspace = workspaces.entry(device_id).or_insert_with(NttWorkspace::new);
+    let requested = workspace.capacity.max(rows).max(FORMAL_GPU_NTT_MIN_SIZE).max(workspace.host_values.capacity());
+    let Some(target) = requested.checked_next_power_of_two() else { return Ok(None); };
+    if target > FORMAL_GPU_NTT_MAX_SIZE { return Ok(None); }
+
+    if workspace.host_values.capacity() != target {
+        workspace.host_values = Vec::new();
+        if workspace.host_values.try_reserve_exact(target).is_err() || workspace.host_values.capacity() != target {
+            workspace.host_values = Vec::new();
+            return Ok(None);
+        }
+    }
+    if workspace.host_values.len() < target {
+        workspace.host_values.resize_with(target, || ScalarField::from([0u32; 8]));
+    }
+    if workspace.host_values.len() != target || workspace.host_values.capacity() != target {
+        return Ok(None);
+    }
+
+    let has_buffers = workspace.capacity >= target
+        && workspace.input.as_ref().is_some_and(|buffer| buffer.len() >= target)
+        && workspace.output.as_ref().is_some_and(|buffer| buffer.len() >= target)
+        && workspace.coset_powers.as_ref().is_some_and(|buffer| buffer.len() >= target);
+    if !has_buffers {
+        workspace.input = None;
+        workspace.output = None;
+        workspace.coset_powers = None;
+        workspace.coset_key = None;
+        workspace.capacity = 0;
+        let input = match DeviceVec::<ScalarField>::cuda_malloc_for_device(target, device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        let output = match DeviceVec::<ScalarField>::cuda_malloc_for_device(target, device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        let coset_powers = match DeviceVec::<ScalarField>::cuda_malloc_for_device(target, device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        if input.len() < target || output.len() < target || coset_powers.len() < target { return Ok(None); }
+        workspace.input = Some(input);
+        workspace.output = Some(output);
+        workspace.coset_powers = Some(coset_powers);
+        workspace.capacity = target;
+    }
+
+    let ntt_workspace_bytes = target.checked_mul(3).and_then(|n| n.checked_mul(mem::size_of::<ScalarField>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE NTT workspace size overflows"))?;
+    let h_workspace_bytes = target.checked_mul(2).and_then(|n| n.checked_mul(mem::size_of::<ScalarField>()))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "ICICLE H staging size overflows"))?;
+    NTT_WORKSPACE_CAPACITY_BYTES.fetch_max(ntt_workspace_bytes, Ordering::Relaxed);
+    NTT_MAX_SIZE.fetch_max(target, Ordering::Relaxed);
+    GPU_H_WORKSPACE_PEAK_BYTES.fetch_max(h_workspace_bytes, Ordering::Relaxed);
+    NTT_HOST_STAGING_CAPACITY_BYTES.fetch_max(target.saturating_mul(mem::size_of::<ScalarField>()), Ordering::Relaxed);
+    Ok(Some(target))
+}
+
+/// Start a BN254 resident H lookup session only when its complete persistent
+/// H allocation and shared bounded staging can be admitted before any H fold.
+pub(crate) fn resident_h_lookup_kernel_capacity() -> io::Result<Option<ResidentHKernelCapacity>> {
+    if !native_prove_ntt_scope_active() || env::var_os("ENABLE_ICICLE_GPU").is_none() {
+        return Ok(None);
+    }
+    let device_id = DEVICE_ID.load(Ordering::Relaxed);
+    if device::set_device(device_id).is_err() { return Ok(None); }
+    let mut local_bytes_per_thread = 0usize;
+    let mut shared_bytes_per_block = 0usize;
+    let mut stack_bytes_per_thread = 0usize;
+    let mut registers_per_thread = 0i32;
+    let mut max_threads_per_block = 0i32;
+    let attr_status = unsafe {
+        bn254_h_eval_kernel_attributes(
+            &mut local_bytes_per_thread,
+            &mut shared_bytes_per_block,
+            &mut stack_bytes_per_thread,
+            &mut registers_per_thread,
+            &mut max_threads_per_block,
+        )
+    };
+    if attr_status != 0 || shared_bytes_per_block != 0 || max_threads_per_block < 128 {
+        return Ok(None);
+    }
+    let Some(local_bytes_per_thread) = local_bytes_per_thread
+        .checked_add(stack_bytes_per_thread)
+        .and_then(|bytes| bytes.checked_add(2 * mem::size_of::<ScalarField>()))
+    else {
+        return Ok(None);
+    };
+    let local_thread_capacity = if local_bytes_per_thread == 0 {
+        usize::MAX
+    } else {
+        FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES / local_bytes_per_thread
+    };
+    let row_capacity = local_thread_capacity / 128 * 128;
+    if row_capacity < 128 { return Ok(None); }
+    let _ = registers_per_thread;
+    Ok(Some(ResidentHKernelCapacity { local_bytes_per_thread, row_capacity }))
+}
+
+pub(crate) fn try_begin_resident_h_session<F: PrimeField + 'static>(values: &[F], kernel_capacity: ResidentHKernelCapacity, with_permutation: bool) -> io::Result<Option<ResidentHLookupSession>> {
+    if !native_prove_ntt_scope_active() || env::var_os("ENABLE_ICICLE_GPU").is_none() { return Ok(None); }
+    if !raw_montgomery_layout_supported::<F>() || values.len() < 32 { return Ok(None); }
+    let device_id = DEVICE_ID.load(Ordering::Relaxed);
+    if device::set_device(device_id).is_err() { return Ok(None); }
+    if ensure_resident_h_staging(device_id, values.len())?.is_none() { return Ok(None); }
+    let resident_elements = if with_permutation {
+        values.len().checked_mul(4)
+    } else {
+        Some(values.len())
+    }.ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H and permutation allocation count overflows"))?;
+    let resident_bytes = resident_elements.checked_mul(mem::size_of::<ScalarField>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H and permutation allocation size overflows"))?;
+    let (free_bytes, total_bytes) = match device::get_memory_info() {
+        Ok(memory) => memory,
+        Err(error) => return Err(io::Error::new(io::ErrorKind::Other, format!("ICICLE resident H memory query failed: {:?}", error))),
+    };
+    let required = resident_bytes.checked_add(FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H admission size overflows"))?;
+    if total_bytes == 0 || free_bytes > total_bytes || free_bytes < required {
+        return Ok(None);
+    }
+    let mut h = match OwnerBoundHBuffer::try_allocate(values.len(), device_id) {
+        Ok(buffer) => buffer,
+        Err(_) => { return Ok(None); }
+    };
+    let permutation = if with_permutation {
+        let row_twiddles = match OwnerBoundHBuffer::try_allocate(values.len(), device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        let left = match OwnerBoundHBuffer::try_allocate(values.len(), device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        let right = match OwnerBoundHBuffer::try_allocate(values.len(), device_id) {
+            Ok(buffer) => buffer,
+            Err(_) => return Ok(None),
+        };
+        Some(ResidentPermutationBuffers { row_twiddles, left, right })
+    } else {
+        None
+    };
+    let stream = CudaStream::default();
+    // SAFETY: raw_montgomery_layout_supported established the exact field type
+    // and Montgomery encoding before this pointer conversion.
+    let values_bn = unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<Bn256Fr>(), values.len()) };
+    let h_source = unsafe { std::slice::from_raw_parts(values_bn.as_ptr().cast::<ScalarField>(), values_bn.len()) };
+    if let Err(error) = h.slice_mut().copy_from_host_async(HostSlice::from_slice(h_source), &stream) {
+        synchronize_h_transfer_stream(&stream).map_err(|sync_error| io::Error::new(io::ErrorKind::Other, format!("resident H initialization transfer failed: {:?}; draining the owner stream also failed: {}", error, sync_error)))?;
+        return Err(io::Error::new(io::ErrorKind::Other, format!("resident H initialization transfer failed after device mutation began: {:?}", error)));
+    }
+    synchronize_h_transfer_stream(&stream)?;
+    Ok(Some(ResidentHLookupSession {
+        rows: values_bn.len(),
+        h,
+        device_id,
+        permutation,
+        kernel_local_bytes_per_thread: kernel_capacity.local_bytes_per_thread,
+        kernel_local_row_capacity: kernel_capacity.row_capacity,
+    }))
+}
+
+impl ResidentHLookupSession {
+    fn resident_transfer_error(stream: &CudaStream, operation: &'static str, error: impl std::fmt::Debug) -> io::Error {
+        let transfer_error = io::Error::new(io::ErrorKind::Other, format!("resident H {} transfer failed: {:?}", operation, error));
+        match synchronize_h_transfer_stream(stream) {
+            Ok(()) => transfer_error,
+            Err(sync_error) => io::Error::new(io::ErrorKind::Other, format!("{}; draining the owner stream also failed: {}", transfer_error, sync_error)),
+        }
+    }
+
+    fn resident_kernel_launch_error(stream: &CudaStream, operation: &'static str, status: i32) -> io::Error {
+        let launch_error = io::Error::new(io::ErrorKind::Other, format!("resident H {} kernel launch failed with CUDA status {}", operation, status));
+        match synchronize_h_transfer_stream(stream) {
+            Ok(()) => launch_error,
+            Err(sync_error) => io::Error::new(io::ErrorKind::Other, format!("{}; draining the owner stream also failed: {}", launch_error, sync_error)),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot_for_test<F: PrimeField + 'static>(&mut self) -> io::Result<Vec<F>> {
+        if !raw_montgomery_layout_supported::<F>() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H test snapshot field layout is unsupported"));
+        }
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&self.device_id))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident H test snapshot staging workspace is missing"))?;
+        if workspace.host_values.len() < self.rows {
+            return Err(io::Error::new(io::ErrorKind::Other, "resident H test snapshot staging capacity is too small"));
+        }
+        let stream = CudaStream::default();
+        let destination = HostSlice::from_mut_slice(&mut workspace.host_values[..self.rows]);
+        if let Err(error) = self.h.slice().copy_to_host_async(destination, &stream) {
+            return Err(Self::resident_transfer_error(&stream, "test snapshot readback", error));
+        }
+        synchronize_h_transfer_stream(&stream)?;
+        let mut values = vec![F::ZERO; self.rows];
+        // SAFETY: the field raw-layout guard and exact vector length passed
+        // above, matching the production finish() conversion.
+        let values_bn = unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<Bn256Fr>(), values.len()) };
+        copy_validated_bn254_h_output_chunk(&workspace.host_values[..self.rows], values_bn)?;
+        Ok(values)
+    }
+
+    fn permutation_scale<F: Field>(y: F, total_terms: usize, term_index: usize) -> io::Result<F> {
+        let exponent = total_terms.checked_sub(term_index.checked_add(1).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "resident permutation term index overflows")
+        })?).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation term exceeds fold length"))?;
+        let exponent = u64::try_from(exponent).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation exponent exceeds field width"))?;
+        Ok(y.pow_vartime([exponent]))
+    }
+
+    fn raw_field_scalar<F: PrimeField>(value: &F) -> io::Result<ScalarField> {
+        canonical_field_words(value)
+            .map(ScalarField::from)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident H scalar is not a canonical BN254 field element"))
+    }
+
+    // Record one successful chunk without waiting. The stage caller batches
+    // chunks and synchronizes before reusing staging memory or stack scalars.
+    fn record_permutation_kernel(rows: usize, local_bytes_per_thread: usize, status: i32, operation: &'static str, stream: &CudaStream) -> io::Result<()> {
+        if status != 0 {
+            let launch_error = io::Error::new(io::ErrorKind::Other, format!("resident permutation {} kernel launch failed with CUDA status {}", operation, status));
+            return match synchronize_h_transfer_stream(stream) {
+                Ok(()) => Err(launch_error),
+                Err(sync_error) => Err(io::Error::new(io::ErrorKind::Other, format!("{}; draining the owner stream also failed: {}", launch_error, sync_error))),
+            };
+        }
+        GPU_H_EVAL_CHUNKS.fetch_add(1, Ordering::Relaxed);
+        let launched_threads = rows.saturating_add(127) / 128 * 128;
+        let local_upper_bytes = match launched_threads.checked_mul(local_bytes_per_thread) {
+            Some(bytes) => bytes,
+            None => {
+                let error = io::Error::new(io::ErrorKind::InvalidInput, "resident permutation local-memory upper bound overflows");
+                return match synchronize_h_stream(stream) {
+                    Ok(()) => Err(error),
+                    Err(sync_error) => Err(io::Error::new(io::ErrorKind::Other, format!("{}; draining the owner stream also failed: {}", error, sync_error))),
+                };
+            }
+        };
+        GPU_H_LOCAL_PEAK_BYTES.fetch_max(local_upper_bytes, Ordering::Relaxed);
+        if local_upper_bytes > FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES {
+            let error = io::Error::new(io::ErrorKind::InvalidInput, "resident permutation kernel exceeds its local-memory reserve");
+            return match synchronize_h_stream(stream) {
+                Ok(()) => Err(error),
+                Err(sync_error) => Err(io::Error::new(io::ErrorKind::Other, format!("{}; draining the owner stream also failed: {}", error, sync_error))),
+            };
+        }
+        Ok(())
+    }
+
+    pub(crate) fn initialize_permutation_twiddles<F: PrimeField + 'static>(
+        &mut self,
+        extended_omega: F,
+        part_stride: usize,
+        part_index: usize,
+    ) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation field layout changed after preflight"));
+        }
+        if self.rows < 32 || part_stride == 0 || part_index >= part_stride || self.rows.checked_mul(part_stride).is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation part geometry is invalid"));
+        }
+        let permutation = self.permutation.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident permutation buffers were not admitted"))?;
+        let device_id = self.device_id;
+        if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation could not select its owner device")); }
+        let omega = Self::raw_field_scalar(&extended_omega)?;
+        let omega_ptr = &omega as *const ScalarField as *const u32;
+        let max_chunk = (self.kernel_local_row_capacity.min(1 << 20) / 128) * 128;
+        if max_chunk < 128 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation tile is below one CUDA block")); }
+        // Validate every `start * 8` chunk offset before any asynchronous work is queued.
+        self.rows.checked_mul(8).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation twiddle pointer range overflows"))?;
+        let stream = CudaStream::default();
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let word_offset = start * 8;
+            let twiddles_ptr = unsafe { (permutation.row_twiddles.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let status = unsafe { bn254_h_permutation_twiddles(twiddles_ptr, rows, start, omega_ptr, part_stride, part_index) };
+            Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "twiddle", &stream)?;
+            start += rows;
+        }
+        synchronize_h_stream(&stream)
+    }
+
+    pub(crate) fn scale_permutation_h<F: PrimeField + 'static>(&mut self, y: F, total_terms: usize) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() || self.permutation.is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation scale was not preflighted"));
+        }
+        let scale = Self::raw_field_scalar(&y.pow_vartime([u64::try_from(total_terms).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation fold length exceeds field width"))?]))?;
+        let scale_ptr = &scale as *const ScalarField as *const u32;
+        let max_chunk = (self.kernel_local_row_capacity.min(1 << 20) / 128) * 128;
+        if max_chunk < 128 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation tile is below one CUDA block")); }
+        // Validate every `start * 8` chunk offset before any asynchronous work is queued.
+        self.rows.checked_mul(8).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation scale pointer range overflows"))?;
+        let stream = CudaStream::default();
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let word_offset = start * 8;
+            let h_ptr = unsafe { (self.h.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let status = unsafe { bn254_h_permutation_scale(scale_ptr, h_ptr, rows) };
+            Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "scale", &stream)?;
+            start += rows;
+        }
+        synchronize_h_stream(&stream)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_permutation_set<F: PrimeField + 'static>(
+        &mut self,
+        z: &[F],
+        l0: &[F],
+        l_last: &[F],
+        y: F,
+        total_terms: usize,
+        set_index: usize,
+        set_count: usize,
+        last_rotation: i32,
+        part_index: usize,
+        part_stride: usize,
+        rot_scale: i32,
+        isize: i32,
+    ) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() || self.permutation.is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation set was not preflighted"));
+        }
+        let full_size = usize::try_from(isize).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "resident permutation extended size is invalid"))?;
+        if part_stride == 0 || part_index >= part_stride || full_size % part_stride != 0 || full_size / part_stride != self.rows || z.len() != self.rows || l0.len() != full_size || l_last.len() != full_size || set_count == 0 || set_index >= set_count {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation set geometry is invalid"));
+        }
+        let z_bn = unsafe { std::slice::from_raw_parts(z.as_ptr().cast::<Bn256Fr>(), z.len()) };
+        let z_raw = unsafe { std::slice::from_raw_parts(z_bn.as_ptr().cast::<ScalarField>(), z_bn.len()) };
+        let l0_bn = unsafe { std::slice::from_raw_parts(l0.as_ptr().cast::<Bn256Fr>(), l0.len()) };
+        let l_last_bn = unsafe { std::slice::from_raw_parts(l_last.as_ptr().cast::<Bn256Fr>(), l_last.len()) };
+        let first_scale = if set_index == 0 { Self::permutation_scale(y, total_terms, 0)? } else { F::ZERO };
+        let incoming_term = set_index.checked_add(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident incoming permutation term index overflows"))?;
+        let incoming_scale = if set_index != 0 { Self::permutation_scale(y, total_terms, incoming_term)? } else { F::ZERO };
+        let outgoing_term = set_index.checked_add(2).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident outgoing permutation term index overflows"))?;
+        let outgoing_scale = if set_index + 1 < set_count { Self::permutation_scale(y, total_terms, outgoing_term)? } else { F::ZERO };
+        let scales = [Self::raw_field_scalar(&first_scale)?, Self::raw_field_scalar(&incoming_scale)?, Self::raw_field_scalar(&outgoing_scale)?];
+        let scales_ptr = scales.as_ptr() as *const u32;
+        let device_id = self.device_id;
+        if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation could not select its owner device")); }
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&device_id)).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation staging workspace is missing"))?;
+        let input = workspace.input.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation input workspace is missing"))?;
+        let output = workspace.output.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation output workspace is missing"))?;
+        if input.len() < self.rows || output.len() < self.rows || workspace.host_values.len() < self.rows {
+            return Err(io::Error::new(io::ErrorKind::Other, "resident permutation staging capacity is below its admitted bound"));
+        }
+        for row in 0..self.rows {
+            let index = row.checked_mul(part_stride).and_then(|value| value.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation L0 row index overflows"))?;
+            let source = l0_bn.get(index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident permutation L0 source index is out of bounds"))?;
+            copy_raw_bn254_fr(source, &mut workspace.host_values[row]);
+        }
+        let z_ptr = unsafe { input[..self.rows].as_ptr() as *const u32 };
+        let max_chunk = (self.kernel_local_row_capacity.min(1 << 20) / 128) * 128;
+        if max_chunk < 128 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation tile is below one CUDA block")); }
+        // Validate every `start * 8` chunk offset before any asynchronous work is queued.
+        self.rows.checked_mul(8).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation boundary pointer range overflows"))?;
+        let stream = CudaStream::default();
+        let permutation = self.permutation.as_mut().expect("permutation buffer was checked above");
+        if let Err(error) = input[..self.rows].copy_from_host_async(HostSlice::from_slice(z_raw), &stream) {
+            return Err(Self::resident_transfer_error(&stream, "Z", error));
+        }
+        if let Err(error) = output[..self.rows].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..self.rows]), &stream) {
+            return Err(Self::resident_transfer_error(&stream, "L0", error));
+        }
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let word_offset = start * 8;
+            let l0_ptr = unsafe { (output[..self.rows].as_ptr() as *const u32).add(word_offset) };
+            let h_ptr = unsafe { (self.h.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let left_ptr = unsafe { (permutation.left.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let right_ptr = unsafe { (permutation.right.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let status = unsafe { bn254_h_permutation_begin_set(z_ptr, l0_ptr, h_ptr, left_ptr, right_ptr, rows, start, full_size, part_index, part_stride, rot_scale, isize, last_rotation, set_index, set_count, scales_ptr) };
+            Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "set-boundary", &stream)?;
+            start += rows;
+        }
+        // L0 is copied asynchronously from the reusable host staging arena.
+        // Drain all begin-set kernels before replacing that arena with Llast.
+        synchronize_h_stream(&stream)?;
+        if set_index + 1 == set_count {
+            let last_scale = Self::permutation_scale(y, total_terms, 1)?;
+            let last_scale = Self::raw_field_scalar(&last_scale)?;
+            let last_scale_ptr = &last_scale as *const ScalarField as *const u32;
+            for row in 0..self.rows {
+                let index = row.checked_mul(part_stride).and_then(|value| value.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation Llast row index overflows"))?;
+                let source = l_last_bn.get(index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident permutation Llast source index is out of bounds"))?;
+                copy_raw_bn254_fr(source, &mut workspace.host_values[row]);
+            }
+            output[..self.rows].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..self.rows]), &stream)
+                .map_err(|error| Self::resident_transfer_error(&stream, "Llast", error))?;
+            let mut start = 0usize;
+            while start < self.rows {
+                let rows = max_chunk.min(self.rows - start);
+                let word_offset = start * 8;
+                let right_ptr = unsafe { (permutation.right.slice().as_ptr() as *const u32).add(word_offset) };
+                let h_ptr = unsafe { (self.h.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+                let llast_ptr = unsafe { (output[..self.rows].as_ptr() as *const u32).add(word_offset) };
+                let status = unsafe { bn254_h_permutation_last_boundary(llast_ptr, h_ptr, right_ptr, rows, last_scale_ptr) };
+                Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "last-boundary", &stream)?;
+                start += rows;
+            }
+            synchronize_h_stream(&stream)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn multiply_permutation_column<F: PrimeField + 'static>(
+        &mut self,
+        source: &[F],
+        sigma: &[F],
+        beta: F,
+        gamma: F,
+        delta_start: F,
+    ) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() || self.permutation.is_none() || source.len() != self.rows || sigma.len() != self.rows {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation column shape or admission is invalid"));
+        }
+        let source_bn = unsafe { std::slice::from_raw_parts(source.as_ptr().cast::<Bn256Fr>(), source.len()) };
+        let sigma_bn = unsafe { std::slice::from_raw_parts(sigma.as_ptr().cast::<Bn256Fr>(), sigma.len()) };
+        let source_raw = unsafe { std::slice::from_raw_parts(source_bn.as_ptr().cast::<ScalarField>(), source_bn.len()) };
+        let sigma_raw = unsafe { std::slice::from_raw_parts(sigma_bn.as_ptr().cast::<ScalarField>(), sigma_bn.len()) };
+        let scalars = [Self::raw_field_scalar(&beta)?, Self::raw_field_scalar(&gamma)?, Self::raw_field_scalar(&delta_start)?];
+        let scalars_ptr = scalars.as_ptr() as *const u32;
+        let device_id = self.device_id;
+        if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation could not select its owner device")); }
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&device_id)).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation staging workspace is missing"))?;
+        let input = workspace.input.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation input workspace is missing"))?;
+        let output = workspace.output.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation output workspace is missing"))?;
+        if input.len() < self.rows || output.len() < self.rows { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation column staging capacity is below its admitted bound")); }
+        let stream = CudaStream::default();
+        let max_chunk = (self.kernel_local_row_capacity.min(1 << 20) / 128) * 128;
+        if max_chunk < 128 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation tile is below one CUDA block")); }
+        // Validate every `start * 8` chunk offset before any asynchronous work is queued.
+        self.rows.checked_mul(8).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation column pointer range overflows"))?;
+        let permutation = self.permutation.as_mut().expect("permutation buffer was checked above");
+        if let Err(error) = input[..self.rows].copy_from_host_async(HostSlice::from_slice(source_raw), &stream) {
+            return Err(Self::resident_transfer_error(&stream, "source", error));
+        }
+        if let Err(error) = output[..self.rows].copy_from_host_async(HostSlice::from_slice(sigma_raw), &stream) {
+            return Err(Self::resident_transfer_error(&stream, "sigma", error));
+        }
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let word_offset = start * 8;
+            let source_ptr = unsafe { (input[..self.rows].as_ptr() as *const u32).add(word_offset) };
+            let sigma_ptr = unsafe { (output[..self.rows].as_ptr() as *const u32).add(word_offset) };
+            let twiddle_ptr = unsafe { (permutation.row_twiddles.slice().as_ptr() as *const u32).add(word_offset) };
+            let left_ptr = unsafe { (permutation.left.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let right_ptr = unsafe { (permutation.right.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let status = unsafe { bn254_h_permutation_column(source_ptr, sigma_ptr, twiddle_ptr, left_ptr, right_ptr, rows, scalars_ptr) };
+            Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "column", &stream)?;
+            start += rows;
+        }
+        synchronize_h_stream(&stream)
+    }
+
+    pub(crate) fn finish_permutation_set<F: PrimeField + 'static>(
+        &mut self,
+        l_active: &[F],
+        y: F,
+        total_terms: usize,
+        set_index: usize,
+        set_count: usize,
+        part_index: usize,
+        part_stride: usize,
+        isize: i32,
+    ) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() || self.permutation.is_none() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation copy fold was not preflighted"));
+        }
+        let full_size = usize::try_from(isize).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "resident permutation copy size is invalid"))?;
+        if set_count == 0 || set_index >= set_count || part_stride == 0 || part_index >= part_stride || full_size % part_stride != 0 || full_size / part_stride != self.rows || l_active.len() != full_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation copy-fold geometry is invalid"));
+        }
+        let term_index = set_count.checked_add(1).and_then(|index| index.checked_add(set_index))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation copy term index overflows"))?;
+        let scale = Self::raw_field_scalar(&Self::permutation_scale(y, total_terms, term_index)?)?;
+        let scale_ptr = &scale as *const ScalarField as *const u32;
+        let l_active_bn = unsafe { std::slice::from_raw_parts(l_active.as_ptr().cast::<Bn256Fr>(), l_active.len()) };
+        let device_id = self.device_id;
+        if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation could not select its owner device")); }
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&device_id)).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation staging workspace is missing"))?;
+        let output = workspace.output.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident permutation output workspace is missing"))?;
+        if output.len() < self.rows || workspace.host_values.len() < self.rows { return Err(io::Error::new(io::ErrorKind::Other, "resident permutation copy staging capacity is below its admitted bound")); }
+        let max_chunk = (self.kernel_local_row_capacity.min(1 << 20) / 128) * 128;
+        if max_chunk < 128 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident permutation tile is below one CUDA block")); }
+        // Validate every `start * 8` chunk offset before any asynchronous work is queued.
+        self.rows.checked_mul(8).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation copy pointer range overflows"))?;
+        for row in 0..self.rows {
+            let index = row.checked_mul(part_stride).and_then(|value| value.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident permutation active-row index overflows"))?;
+            let source = l_active_bn.get(index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident permutation active-row source index is out of bounds"))?;
+            copy_raw_bn254_fr(source, &mut workspace.host_values[row]);
+        }
+        let stream = CudaStream::default();
+        let permutation = self.permutation.as_mut().expect("permutation buffer was checked above");
+        if let Err(error) = output[..self.rows].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..self.rows]), &stream) {
+            return Err(Self::resident_transfer_error(&stream, "active-row", error));
+        }
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let word_offset = start * 8;
+            let l_active_ptr = unsafe { (output[..self.rows].as_ptr() as *const u32).add(word_offset) };
+            let left_ptr = unsafe { (permutation.left.slice().as_ptr() as *const u32).add(word_offset) };
+            let right_ptr = unsafe { (permutation.right.slice().as_ptr() as *const u32).add(word_offset) };
+            let h_ptr = unsafe { (self.h.slice_mut().as_mut_ptr() as *mut u32).add(word_offset) };
+            let status = unsafe { bn254_h_permutation_copy_term(l_active_ptr, left_ptr, right_ptr, h_ptr, rows, scale_ptr) };
+            Self::record_permutation_kernel(rows, self.kernel_local_bytes_per_thread, status, "copy-term", &stream)?;
+            start += rows;
+        }
+        synchronize_h_stream(&stream)?;
+        GPU_H_EVAL_CALLS.fetch_add(1, Ordering::Relaxed);
+        GPU_H_EVAL_ROWS.fetch_add(self.rows as u64, Ordering::Relaxed);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn evaluate_mv_lookup_program<F: PrimeField + 'static>(
+        &mut self,
+        program: &GateProgram<F>,
+        fixed: &[Polynomial<F, LagrangeCoeff>],
+        advice: &[Polynomial<F, LagrangeCoeff>],
+        instance: &[Polynomial<F, LagrangeCoeff>],
+        phi: &[F],
+        multiplicity: &[F],
+        l0: &[F],
+        l_last: &[F],
+        l_active: &[F],
+        part_index: usize,
+        part_stride: usize,
+        rot_scale: i32,
+        isize: i32,
+        y: F,
+    ) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup field layout changed after preflight"));
+        }
+        let Some(lookup) = program.mv_lookup.as_ref() else {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup received a non-lookup program"));
+        };
+        if lookup.input_counts.len() != 1 || lookup.input_counts[0] == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup program must contain one nonempty lookup"));
+        }
+        if program.scratch_slots == 0 || program.instructions.is_empty() || part_stride == 0 || part_index >= part_stride || rot_scale <= 0 || isize <= 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup geometry is invalid"));
+        }
+        let full_size = usize::try_from(isize).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "resident H lookup domain size is invalid"))?;
+        if full_size % part_stride != 0 { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup part geometry is invalid")); }
+        let base_n = full_size / part_stride;
+        if self.rows != base_n || phi.len() != base_n || multiplicity.len() != base_n || l0.len() != full_size || l_last.len() != full_size || l_active.len() != full_size {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup query source shape is invalid"));
+        }
+        if program.queries.len() != lookup.graph_query_count || !validate_gate_program(program)? {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup program failed validation"));
+        }
+        if canonical_field_words(&y).is_none() || program.constants.iter().any(|value| canonical_field_words(value).is_none()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup field constant is not canonical"));
+        }
+
+        let instruction_count = program.instructions.len();
+        let constant_count = program.constants.len();
+        let graph_query_count = lookup.graph_query_count;
+        let query_count = graph_query_count.checked_add(6).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup query count overflows"))?;
+        let fixed_input = instruction_count.checked_add(constant_count).and_then(|count| count.checked_add(1)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup input size overflows"))?;
+        let _metadata_bytes = instruction_count.checked_mul(mem::size_of::<[u32; 8]>())
+            .and_then(|bytes| program.constants.capacity().checked_mul(mem::size_of::<F>()).and_then(|constant_bytes| bytes.checked_add(constant_bytes)))
+            .and_then(|bytes| program.queries.capacity().checked_mul(mem::size_of::<crate::h_eval::GateQuery>()).and_then(|query_bytes| bytes.checked_add(query_bytes)))
+            .and_then(|bytes| program.scratch_slots.checked_mul(mem::size_of::<bool>()).and_then(|validation_bytes| bytes.checked_add(validation_bytes)))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup metadata size overflows"))?;
+        let raw_query_copy = h_query_uses_bulk_copy(rot_scale, part_stride);
+        let mut resolved_queries = Vec::new();
+        resolved_queries.try_reserve_exact(program.queries.len()).map_err(|error| io::Error::new(io::ErrorKind::Other, format!("resident H lookup query allocation failed: {}", error)))?;
+        for (query_index, query) in program.queries.iter().enumerate() {
+            let source = query_column_values(query.kind, query.column, fixed, advice, instance).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, format!("resident H lookup query {} references a missing column", query_index)))?;
+            if source.len() != base_n { return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup graph query has the wrong part length")); }
+            let rotation_offset = query.rotation.checked_mul(rot_scale).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident H lookup query rotation overflows"))?;
+            let rotation_rows = if raw_query_copy { (query.rotation as i64).rem_euclid(base_n as i64) as usize } else { 0 };
+            // SAFETY: the raw BN254 representation guard passed above.
+            let values = unsafe { std::slice::from_raw_parts(source.as_ptr().cast::<Bn256Fr>(), source.len()) };
+            resolved_queries.push(ResolvedHQuery { values, rotation_offset, rotation_rows });
+        }
+
+        let device_id = self.device_id;
+        if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "resident H lookup could not select its owner device")); }
+        let local_bytes_per_thread = self.kernel_local_bytes_per_thread;
+        let local_row_capacity = self.kernel_local_row_capacity;
+        if local_row_capacity < 128 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H lookup session has an invalid kernel capacity"));
+        }
+
+        // The shared NTT staging allocations are serialized by this same mutex;
+        // the whole CUDA transfer/kernel sequence below is synchronized before
+        // the guard leaves scope.
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&device_id))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident H lookup staging workspace is missing"))?;
+        let input_capacity = workspace.input.as_ref().map_or(0, |buffer| buffer.len());
+        let output_capacity = workspace.output.as_ref().map_or(0, |buffer| buffer.len());
+        if input_capacity < fixed_input || output_capacity < program.scratch_slots {
+            return Err(io::Error::new(io::ErrorKind::Other, "resident H lookup staging capacity is below its preflight bound"));
+        }
+        if workspace.host_values.len() != workspace.capacity || workspace.host_values.capacity() != workspace.capacity {
+            return Err(io::Error::new(io::ErrorKind::Other, "resident H lookup host staging arena is not authenticated"));
+        }
+        let rows_by_input = input_capacity.saturating_sub(fixed_input) / query_count;
+        let rows_by_output = output_capacity / program.scratch_slots;
+        let max_chunk = (rows_by_input.min(rows_by_output).min(local_row_capacity).min(1 << 16) / 32) * 32;
+        if max_chunk < 32 { return Err(io::Error::new(io::ErrorKind::Other, "resident H lookup tile is below the supported minimum")); }
+        let constant_words: Vec<[u32; 8]> = program.constants.iter().map(|value| canonical_field_words(value).expect("constants were prevalidated")).collect();
+        let y_words = canonical_field_words(&y).expect("y was prevalidated");
+        let instruction_words = program.instructions.iter().map(|instruction| ScalarField::from(*instruction)).collect::<Vec<_>>();
+        let constant_values = constant_words.iter().copied().map(ScalarField::from).collect::<Vec<_>>();
+        let stream = CudaStream::default();
+        let mut start = 0usize;
+        while start < self.rows {
+            let rows = max_chunk.min(self.rows - start);
+            let launched_threads = rows.saturating_add(127) / 128 * 128;
+            let local_upper_bytes = launched_threads.checked_mul(local_bytes_per_thread).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup local memory bound overflows"))?;
+            if local_upper_bytes > FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES { return Err(io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup tile exceeds its local-memory reserve")); }
+            let query_elements = query_count.checked_mul(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup query staging size overflows"))?;
+            let input_elements = fixed_input.checked_add(query_elements).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup input staging size overflows"))?;
+            let scratch_elements = program.scratch_slots.checked_mul(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup scratch size overflows"))?;
+            for (index, instruction) in instruction_words.iter().enumerate() { workspace.host_values[index] = *instruction; }
+            for (index, constant) in constant_values.iter().enumerate() { workspace.host_values[instruction_count + index] = *constant; }
+            workspace.host_values[instruction_count + constant_count] = ScalarField::from(y_words);
+            for (query_index, query) in resolved_queries.iter().enumerate() {
+                let query_start = fixed_input.checked_add(query_index.checked_mul(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup query offset overflows"))?).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup query offset overflows"))?;
+                let destination = workspace.host_values.get_mut(query_start..query_start + rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup query destination is out of bounds"))?;
+                if raw_query_copy {
+                    copy_bn254_h_query_chunk(query.values, start, rows, query.rotation_rows, base_n, destination)?;
+                } else {
+                    for offset in 0..rows {
+                        let row = start + offset;
+                        let full_index = row.checked_mul(part_stride).and_then(|n| n.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup full row index overflows"))?;
+                        let rotated = (i64::try_from(full_index).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup row exceeds signed index width"))? + i64::from(query.rotation_offset)).rem_euclid(i64::from(isize)) as usize / part_stride;
+                        let source = query.values.get(rotated).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident H lookup rotated query index is inconsistent"))?;
+                        copy_raw_bn254_fr(source, &mut destination[offset]);
+                    }
+                }
+            }
+            let auxiliary_base = fixed_input.checked_add(graph_query_count.checked_mul(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary offset overflows"))?).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary offset overflows"))?;
+            let auxiliary_sources = [
+                (phi, true, 0usize),
+                (phi, true, 1usize),
+                (multiplicity, true, 0usize),
+                (l0, false, 0usize),
+                (l_last, false, 0usize),
+                (l_active, false, 0usize),
+            ];
+            for (aux_index, (source, is_part, rotation)) in auxiliary_sources.iter().enumerate() {
+                let query_start = auxiliary_base.checked_add(aux_index.checked_mul(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary query offset overflows"))?).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary query offset overflows"))?;
+                let destination = workspace.host_values.get_mut(query_start..query_start + rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary query range is out of bounds"))?;
+                // SAFETY: the field raw-layout guard passed before the session
+                // began, and every auxiliary field has the same scalar type.
+                let source = unsafe { std::slice::from_raw_parts(source.as_ptr().cast::<Bn256Fr>(), source.len()) };
+                if *is_part {
+                    copy_bn254_h_query_chunk(source, start, rows, *rotation, base_n, destination)?;
+                } else {
+                    for (offset, slot) in destination.iter_mut().enumerate() {
+                        let row = start + offset;
+                        let full_index = row.checked_mul(part_stride).and_then(|n| n.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup auxiliary row overflows"))?;
+                        let source_value = source.get(full_index).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "resident H lookup auxiliary source index is out of bounds"))?;
+                        copy_raw_bn254_fr(source_value, slot);
+                    }
+                }
+            }
+            let input = workspace.input.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident H lookup input workspace is missing"))?;
+            let scratch = workspace.output.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident H lookup scratch workspace is missing"))?;
+            let h_end = start.checked_add(rows)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup tile end overflows"))?;
+            if h_end > self.rows {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup tile exceeds the accumulator allocation"));
+            }
+            if let Err(error) = input[..input_elements].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..input_elements]), &stream) {
+                return Err(Self::resident_transfer_error(&stream, "lookup input", error));
+            }
+            // SAFETY: owner-bound H and NTT scratch buffers are contiguous and
+            // remain live until the stream synchronization below completes.
+            let input_ptr = unsafe { input[..input_elements].as_ptr() } as *const u32;
+            let h_word_offset = start.checked_mul(mem::size_of::<ScalarField>() / mem::size_of::<u32>())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "resident H lookup accumulator offset overflows"))?;
+            let h_ptr = unsafe { (self.h.slice_mut().as_mut_ptr() as *mut u32).add(h_word_offset) };
+            let scratch_ptr = unsafe { scratch[..scratch_elements].as_mut_ptr() } as *mut u32;
+            let status = unsafe { bn254_h_eval_mv_lookup_program(input_ptr, h_ptr, scratch_ptr, rows, instruction_count, constant_count, query_count, program.scratch_slots, graph_query_count, 1) };
+            if status != 0 {
+                return Err(Self::resident_kernel_launch_error(&stream, "lookup", status));
+            }
+            GPU_H_EVAL_CHUNKS.fetch_add(1, Ordering::Relaxed);
+            GPU_H_LOCAL_PEAK_BYTES.fetch_max(local_upper_bytes, Ordering::Relaxed);
+            synchronize_h_stream(&stream)?;
+            start += rows;
+        }
+        GPU_H_EVAL_CALLS.fetch_add(1, Ordering::Relaxed);
+        GPU_H_EVAL_ROWS.fetch_add(self.rows as u64, Ordering::Relaxed);
+        let _ = _metadata_bytes;
+        Ok(())
+    }
+
+    pub(crate) fn finish<F: PrimeField + 'static>(self, values: &mut [F]) -> io::Result<()> {
+        if !raw_montgomery_layout_supported::<F>() || values.len() != self.rows {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "resident H result destination does not match its preflight shape"));
+        }
+        let mut workspaces = NTT_WORKSPACES.lock().map_err(|_| io::Error::new(io::ErrorKind::Other, "ICICLE NTT workspace mutex poisoned"))?;
+        let workspace = workspaces.as_mut().and_then(|all| all.get_mut(&self.device_id))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "resident H output staging workspace is missing"))?;
+        let rows = self.rows;
+        if workspace.host_values.len() < rows { return Err(io::Error::new(io::ErrorKind::Other, "resident H output staging capacity is too small")); }
+        let stream = CudaStream::default();
+        let destination = HostSlice::from_mut_slice(&mut workspace.host_values[..rows]);
+        if let Err(error) = self.h.slice().copy_to_host_async(destination, &stream) {
+            return Err(Self::resident_transfer_error(&stream, "output readback", error));
+        }
+        synchronize_h_transfer_stream(&stream)?;
+        // SAFETY: the raw BN254 layout guard and exact length check passed
+        // immediately above.
+        let values_bn = unsafe { std::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<Bn256Fr>(), values.len()) };
+        copy_validated_bn254_h_output_chunk(&workspace.host_values[..rows], values_bn)
+    }
 }
 
 /// Execute one grouped gate program on the shared ICICLE NTT workspace.
@@ -476,24 +1467,42 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
     let instruction_bytes = program.instructions.capacity().checked_mul(mem::size_of::<[u32; 8]>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H instruction metadata size overflow"))?;
     let constant_bytes = program.constants.capacity().checked_mul(mem::size_of::<F>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H constant metadata size overflow"))?;
     let query_bytes = program.queries.capacity().checked_mul(mem::size_of::<crate::h_eval::GateQuery>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H query metadata size overflow"))?;
+    let resolved_query_bytes = program.queries.len().checked_mul(mem::size_of::<ResolvedHQuery<'_>>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H resolved-query metadata size overflow"))?;
     let validation_bytes = program.scratch_slots.checked_mul(mem::size_of::<bool>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H scratch metadata size overflow"))?;
     let staging_bytes = fixed_input.checked_mul(mem::size_of::<ScalarField>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H metadata staging size overflow"))?;
     let canonical_constant_bytes = program.constants.len().checked_mul(mem::size_of::<[u32; 8]>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H canonical constant size overflow"))?;
-    let metadata_bytes = instruction_bytes.checked_add(constant_bytes).and_then(|n| n.checked_add(query_bytes)).and_then(|n| n.checked_add(validation_bytes)).and_then(|n| n.checked_add(staging_bytes)).and_then(|n| n.checked_add(canonical_constant_bytes)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H program metadata size overflow"))?;
+    let other_metadata_bytes = instruction_bytes.checked_add(constant_bytes).and_then(|n| n.checked_add(query_bytes)).and_then(|n| n.checked_add(validation_bytes)).and_then(|n| n.checked_add(staging_bytes)).and_then(|n| n.checked_add(canonical_constant_bytes)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H program metadata size overflow"))?;
+    let metadata_bytes = other_metadata_bytes.checked_add(resolved_query_bytes).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H program metadata size overflow"))?;
     if metadata_bytes > FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES { return unsupported_h_program(&format!("program_metadata_over_budget bytes={} limit={}", metadata_bytes, FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES)); }
     if !validate_gate_program(program)? { return unsupported_h_program("program_validation_workspace_unavailable"); }
-    for (query_index, query) in program.queries.iter().enumerate() {
-        let actual_len = query_column_len(query.kind, query.column, fixed, advice, instance);
-        if actual_len != Some(base_n) {
-            return unsupported_h_program(&format!("query_column_shape_mismatch query_index={} kind={} column={} expected_rows={} actual_len={:?} isize={} part_stride={}", query_index, query.kind, query.column, base_n, actual_len, isize, part_stride));
-        }
-    }
     if canonical_field_words(&y).is_none() { return unsupported_h_program("y_is_not_canonical_field_element"); }
     if program.constants.iter().any(|value| canonical_field_words(value).is_none()) { return unsupported_h_program("constant_is_not_canonical_field_element"); }
+    let raw_query_copy = h_query_uses_bulk_copy(rot_scale, part_stride);
+    let mut resolved_queries = Vec::new();
+    if resolved_queries.try_reserve_exact(program.queries.len()).is_err() {
+        return unsupported_h_program("resolved_query_workspace_unavailable");
+    }
+    let actual_resolved_query_bytes = resolved_queries.capacity().checked_mul(mem::size_of::<ResolvedHQuery<'_>>()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H resolved-query workspace size overflow"))?;
+    let actual_metadata_bytes = other_metadata_bytes.checked_add(actual_resolved_query_bytes).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H program metadata size overflow"))?;
+    if actual_metadata_bytes > FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES {
+        return unsupported_h_program(&format!("program_metadata_over_budget bytes={} limit={}", actual_metadata_bytes, FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES));
+    }
     for (query_index, query) in program.queries.iter().enumerate() {
-        if query.rotation.checked_mul(rot_scale).is_none() {
-            return unsupported_h_program(&format!("query_rotation_overflow query_index={} rotation={} rot_scale={}", query_index, query.rotation, rot_scale));
+        let Some(source) = query_column_values(query.kind, query.column, fixed, advice, instance) else {
+            return unsupported_h_program(&format!("query_column_shape_mismatch query_index={} kind={} column={} expected_rows={} actual_len=None isize={} part_stride={}", query_index, query.kind, query.column, base_n, isize, part_stride));
+        };
+        if source.len() != base_n {
+            return unsupported_h_program(&format!("query_column_shape_mismatch query_index={} kind={} column={} expected_rows={} actual_len=Some({}) isize={} part_stride={}", query_index, query.kind, query.column, base_n, source.len(), isize, part_stride));
         }
+        let Some(rotation_offset) = query.rotation.checked_mul(rot_scale) else {
+            return unsupported_h_program(&format!("query_rotation_overflow query_index={} rotation={} rot_scale={}", query_index, query.rotation, rot_scale));
+        };
+        let rotation_rows = if raw_query_copy { (query.rotation as i64).rem_euclid(base_n as i64) as usize } else { 0 };
+        // SAFETY: raw_montgomery_layout_supported::<F>() passed before this
+        // function body continued, including exact TypeId and ZERO/ONE/-ONE
+        // representation probes for the pinned BN254 Fr layout.
+        let raw_source = unsafe { std::slice::from_raw_parts(source.as_ptr() as *const Bn256Fr, source.len()) };
+        resolved_queries.push(ResolvedHQuery { values: raw_source, rotation_offset, rotation_rows });
     }
     let device_id = DEVICE_ID.load(Ordering::Relaxed);
     if device::set_device(device_id).is_err() { return Err(io::Error::new(io::ErrorKind::Other, "ICICLE could not select the H evaluator device")); }
@@ -505,10 +1514,11 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
     let attributes_status = unsafe { bn254_h_eval_kernel_attributes(&mut local_bytes_per_thread, &mut shared_bytes_per_block, &mut stack_bytes_per_thread, &mut registers_per_thread, &mut max_threads_per_block) };
     if attributes_status != 0 { return Err(io::Error::new(io::ErrorKind::Other, format!("ICICLE H kernel resource query failed with CUDA status {}", attributes_status))); }
     if GPU_H_RESOURCE_REPORT.swap(1, Ordering::Relaxed) == 0 {
-        eprintln!("[ezkl-gpu-h] kernel attrs local_bytes_per_thread={} stack_limit_bytes_per_thread={} shared_bytes_per_block={} registers_per_thread={} max_threads_per_block={} local_upper_formula=rounded_threads*(local+stack_limit)", local_bytes_per_thread, stack_bytes_per_thread, shared_bytes_per_block, registers_per_thread, max_threads_per_block);
+        eprintln!("[ezkl-gpu-h] kernel attrs local_bytes_per_thread={} stack_limit_bytes_per_thread={} extra_scalar_accumulator_reserve_bytes_per_thread={} shared_bytes_per_block={} registers_per_thread={} max_threads_per_block={} local_upper_formula=rounded_threads*(local+stack_limit+extra_scalar_accumulator_reserve)", local_bytes_per_thread, stack_bytes_per_thread, 2 * mem::size_of::<ScalarField>(), shared_bytes_per_block, registers_per_thread, max_threads_per_block);
     }
     if shared_bytes_per_block != 0 || max_threads_per_block < 128 { return unsupported_h_program(&format!("kernel_attributes_unsupported shared_bytes_per_block={} max_threads_per_block={}", shared_bytes_per_block, max_threads_per_block)); }
-    let local_bytes_per_thread = match local_bytes_per_thread.checked_add(stack_bytes_per_thread) { Some(bytes) => bytes, None => return unsupported_h_program("kernel_local_bytes_overflow") };
+    let scalar_accumulator_reserve = match mem::size_of::<ScalarField>().checked_mul(2) { Some(bytes) => bytes, None => return unsupported_h_program("kernel_scalar_accumulator_reserve_overflow") };
+    let local_bytes_per_thread = match local_bytes_per_thread.checked_add(stack_bytes_per_thread).and_then(|bytes| bytes.checked_add(scalar_accumulator_reserve)) { Some(bytes) => bytes, None => return unsupported_h_program("kernel_local_bytes_overflow") };
     let local_thread_capacity = if local_bytes_per_thread == 0 { usize::MAX } else { FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES / local_bytes_per_thread };
     let local_row_capacity = local_thread_capacity / 128 * 128;
     if local_row_capacity < 128 { return unsupported_h_program(&format!("kernel_local_memory_reserve_too_small per_thread_bytes={} row_capacity={} reserve_bytes={}", local_bytes_per_thread, local_row_capacity, FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES)); }
@@ -546,7 +1556,15 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
     }
     let existing_input_capacity = workspace.input.as_ref().map_or(0, |buffer| buffer.len());
     let existing_output_capacity = workspace.output.as_ref().map_or(0, |buffer| buffer.len());
-    if workspace.capacity < target_capacity || existing_input_capacity < target_capacity || existing_output_capacity < target_capacity {
+    let existing_coset_capacity = workspace.coset_powers.as_ref().map_or(0, |buffer| buffer.len());
+    if workspace.capacity < target_capacity || existing_input_capacity < target_capacity || existing_output_capacity < target_capacity || existing_coset_capacity < target_capacity {
+        // Drop all old device workspace before reserving the larger envelope;
+        // replacement must not temporarily double the authenticated peak.
+        workspace.input = None;
+        workspace.output = None;
+        workspace.coset_powers = None;
+        workspace.coset_key = None;
+        workspace.capacity = 0;
         let new_input = match DeviceVec::<ScalarField>::cuda_malloc_for_device(target_capacity, device_id) {
             Ok(buffer) => buffer,
             Err(error) => {
@@ -561,24 +1579,34 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
                 return Err(io::Error::new(io::ErrorKind::Other, format!("ICICLE H output workspace allocation failed: {:?}", error)));
             }
         };
-        if new_input.len() < target_capacity || new_output.len() < target_capacity {
+        let new_coset_powers = match DeviceVec::<ScalarField>::cuda_malloc_for_device(target_capacity, device_id) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                if replaced_host_arena { workspace.host_values = Vec::new(); }
+                return Err(io::Error::new(io::ErrorKind::Other, format!("ICICLE H coset-power workspace allocation failed: {:?}", error)));
+            }
+        };
+        if new_input.len() < target_capacity || new_output.len() < target_capacity || new_coset_powers.len() < target_capacity {
             if replaced_host_arena { workspace.host_values = Vec::new(); }
             return Err(io::Error::new(io::ErrorKind::Other, "ICICLE H allocated device workspace is below authenticated workspace size"));
         }
         workspace.input = Some(new_input);
         workspace.output = Some(new_output);
+        workspace.coset_powers = Some(new_coset_powers);
         workspace.capacity = target_capacity;
     }
     let input_capacity = workspace.input.as_ref().map_or(0, |buffer| buffer.len());
     let output_capacity = workspace.output.as_ref().map_or(0, |buffer| buffer.len());
-    if input_capacity < target_capacity || output_capacity < target_capacity {
+    let coset_capacity = workspace.coset_powers.as_ref().map_or(0, |buffer| buffer.len());
+    if input_capacity < target_capacity || output_capacity < target_capacity || coset_capacity < target_capacity {
         if replaced_host_arena { workspace.host_values = Vec::new(); }
         return Err(io::Error::new(io::ErrorKind::Other, "ICICLE H device workspace length is below authenticated workspace size"));
     }
-    let workspace_bytes = target_capacity.saturating_mul(2).saturating_mul(mem::size_of::<ScalarField>());
-    NTT_WORKSPACE_CAPACITY_BYTES.fetch_max(workspace_bytes, Ordering::Relaxed);
+    let ntt_workspace_bytes = target_capacity.saturating_mul(3).saturating_mul(mem::size_of::<ScalarField>());
+    let h_workspace_bytes = target_capacity.saturating_mul(2).saturating_mul(mem::size_of::<ScalarField>());
+    NTT_WORKSPACE_CAPACITY_BYTES.fetch_max(ntt_workspace_bytes, Ordering::Relaxed);
     NTT_MAX_SIZE.fetch_max(target_capacity, Ordering::Relaxed);
-    GPU_H_WORKSPACE_PEAK_BYTES.fetch_max(workspace_bytes, Ordering::Relaxed);
+    GPU_H_WORKSPACE_PEAK_BYTES.fetch_max(h_workspace_bytes, Ordering::Relaxed);
     NTT_HOST_STAGING_CAPACITY_BYTES.fetch_max(workspace.host_values.capacity().saturating_mul(mem::size_of::<ScalarField>()), Ordering::Relaxed);
     let query_count = program.queries.len();
     let rows_by_input = if query_count == 0 { input_capacity.saturating_sub(fixed_input) } else { input_capacity.saturating_sub(fixed_input) / query_count };
@@ -590,6 +1618,11 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
     let constant_words: Vec<[u32; 8]> = program.constants.iter().map(|value| canonical_field_words(value).unwrap()).collect();
     let y_words = canonical_field_words(&y).unwrap();
     let stream = CudaStream::default();
+    // Every unsupported-program return above this point occurs before the
+    // first tile mutates `values`. After this point runtime errors are
+    // returned as `Err`, never as a CPU-fallback `Ok(false)`: an earlier tile
+    // may already have committed the weighted H update, and replaying it on
+    // CPU would apply the scale/fold twice.
     let mut start = 0usize;
     while start < values.len() {
         let rows = max_chunk.min(values.len() - start);
@@ -601,16 +1634,20 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
         for (index, instruction) in program.instructions.iter().enumerate() { workspace.host_values[index] = ScalarField::from(*instruction); }
         for (index, words) in constant_words.iter().enumerate() { workspace.host_values[instruction_count + index] = ScalarField::from(*words); }
         workspace.host_values[instruction_count + constant_count] = ScalarField::from(y_words);
-        for (query_index, query) in program.queries.iter().enumerate() {
-            for row_offset in 0..rows {
-                let row = start + row_offset;
-                let idx = row.checked_mul(part_stride).and_then(|n| n.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H row index overflow"))?;
-                let rotated = ((idx as i32).checked_add(query.rotation.checked_mul(rot_scale).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H rotation overflow"))?).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H rotated index overflow"))?.rem_euclid(isize) as usize) / part_stride;
-                let value = query_value(query.kind, query.column, rotated, fixed, advice, instance).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H query column index is inconsistent"))?;
-                // SAFETY: the preflight above established exact TypeId<F> ==
-                // Bn256Fr and passed the pinned-layout Montgomery probes.
-                let fr = unsafe { &*(value as *const F as *const Bn256Fr) };
-                workspace.host_values[fixed_input + query_index * rows + row_offset] = ScalarField::from(fr_raw_montgomery_words(fr));
+        for (query_index, query) in resolved_queries.iter().enumerate() {
+            let query_start = query_index.checked_mul(rows).and_then(|offset| fixed_input.checked_add(offset)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H query staging offset overflow"))?;
+            let query_end = query_start.checked_add(rows).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H query staging range overflow"))?;
+            let query_destination = workspace.host_values.get_mut(query_start..query_end).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H query staging range is out of bounds"))?;
+            if raw_query_copy {
+                copy_bn254_h_query_chunk(query.values, start, rows, query.rotation_rows, base_n, query_destination)?;
+            } else {
+                for row_offset in 0..rows {
+                    let row = start + row_offset;
+                    let idx = row.checked_mul(part_stride).and_then(|n| n.checked_add(part_index)).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H row index overflow"))?;
+                    let rotated = ((idx as i32).checked_add(query.rotation_offset).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "GPU H rotated index overflow"))?.rem_euclid(isize) as usize) / part_stride;
+                    let fr = query.values.get(rotated).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "GPU H query column index is inconsistent"))?;
+                    query_destination[row_offset] = ScalarField::from(fr_raw_montgomery_words(fr));
+                }
             }
         }
         let input = workspace.input.as_mut().ok_or_else(|| io::Error::new(io::ErrorKind::Other, "ICICLE H input workspace is missing"))?;
@@ -643,14 +1680,10 @@ pub(crate) fn try_evaluate_h_program<F: PrimeField + 'static>(program: &GateProg
             return Err(io::Error::new(io::ErrorKind::Other, format!("ICICLE H output copy failed: {:?}", error)));
         }
         synchronize_h_stream(&stream)?;
-        for output in &workspace.host_values[..rows] { if !is_reduced_bn254_limb(&words_to_u64_limbs(raw_scalar_words(output))) { return Err(io::Error::new(io::ErrorKind::InvalidData, "ICICLE H output is not a reduced BN254 Montgomery residue")); } }
-        for (destination, output) in values[start..start + rows].iter_mut().zip(workspace.host_values[..rows].iter()) {
-            let words = words_to_u64_limbs(raw_scalar_words(output));
-            // SAFETY: the enclosing exact-Fr preflight, pinned field-layout
-            // guard, and reduced-limb check above permit restoring these raw
-            // Montgomery limbs into this exact Fr value.
-            unsafe { std::ptr::write(destination as *mut F as *mut [u64; 4], words); }
-        }
+        // SAFETY: raw_montgomery_layout_supported::<F>() passed before any
+        // tile ran, so this accumulator slice has the pinned BN254 Fr layout.
+        let destination = unsafe { std::slice::from_raw_parts_mut(values[start..start + rows].as_mut_ptr() as *mut Bn256Fr, rows) };
+        copy_validated_bn254_h_output_chunk(&workspace.host_values[..rows], destination)?;
         start += rows;
     }
     GPU_H_EVAL_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -908,6 +1941,29 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
     log_n: u32, 
     inverse: bool
 ) {
+    fft_on_device_inner(scalars, omega, log_n, inverse, None);
+}
+
+/// Perform coefficient coset scaling on device, then execute the ordinary
+/// forward NTT with `coset_gen = 1`. The per-device power vector is cached by
+/// exact `(length, coset)` and shares the normal NTT workspace lifetime.
+pub fn fft_on_device_with_coset<G: Field + ff::PrimeField + FftGroup<G> + 'static>(
+    scalars: &mut [G],
+    omega: G,
+    log_n: u32,
+    coset_gen: G,
+    host_factors: Option<&[G]>,
+) {
+    fft_on_device_inner(scalars, omega, log_n, false, Some((coset_gen, host_factors)));
+}
+
+fn fft_on_device_inner<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeField>(
+    scalars: &mut [G],
+    omega: Scalar,
+    log_n: u32,
+    inverse: bool,
+    coset: Option<(G, Option<&[G]>)>,
+) {
     select_device();
     let size = scalars.len();
     assert_eq!(size, 1usize << log_n, "native ICICLE FFT shape mismatch");
@@ -917,6 +1973,15 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
     // A raw byte bridge is safe only for this pinned Fr representation. Keep
     // the canonical conversion path for any generic field that fails a probe.
     let raw_montgomery_bridge = raw_montgomery_layout_supported::<G>();
+    let coset_key = coset.as_ref().map(|(factor, _)| {
+        assert!(!inverse && raw_montgomery_bridge, "fused ICICLE coset NTT requires the BN254 Fr forward path");
+        assert!(is_gpu_supported_field(factor), "fused ICICLE coset NTT received an unsupported field");
+        let words = canonical_field_words(factor).expect("fused ICICLE coset factor is not canonical");
+        words
+    });
+    if let Some((_, Some(factors))) = coset.as_ref() {
+        assert_eq!(factors.len(), size, "fused ICICLE coset factor vector has the wrong size");
+    }
     let omega = if inverse { omega.invert().unwrap() } else { omega };
     assert!(omega.pow_vartime([1u64 << log_n]) == Scalar::ONE && omega.pow_vartime([1u64 << (log_n - 1)]) != Scalar::ONE, "invalid native ICICLE FFT root");
     let root_repr = unsafe { mem::transmute_copy(&omega.to_repr()) };
@@ -940,16 +2005,25 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
     let mut workspaces = NTT_WORKSPACES.lock().expect("ICICLE NTT workspace mutex poisoned");
     let workspaces = workspaces.get_or_insert_with(HashMap::new);
     let workspace = workspaces.entry(device_id).or_insert_with(NttWorkspace::new);
-    if workspace.capacity < size {
+    if workspace.capacity < size
+        || workspace.input.as_ref().map_or(true, |buffer| buffer.len() < size)
+        || workspace.output.as_ref().map_or(true, |buffer| buffer.len() < size)
+        || workspace.coset_powers.as_ref().map_or(true, |buffer| buffer.len() < size)
+    {
         workspace.input = None;
         workspace.output = None;
+        workspace.coset_powers = None;
+        workspace.coset_key = None;
         workspace.capacity = 0;
         let input = DeviceVec::<ScalarField>::cuda_malloc_for_device(size, device_id).expect("ICICLE NTT input buffer allocation failed");
         let output = DeviceVec::<ScalarField>::cuda_malloc_for_device(size, device_id).expect("ICICLE NTT output buffer allocation failed");
+        let coset_powers = DeviceVec::<ScalarField>::cuda_malloc_for_device(size, device_id).expect("ICICLE NTT coset-power buffer allocation failed");
         workspace.input = Some(input);
         workspace.output = Some(output);
+        workspace.coset_powers = Some(coset_powers);
         workspace.capacity = size;
-        NTT_WORKSPACE_CAPACITY_BYTES.fetch_max(2 * size * mem::size_of::<ScalarField>(), Ordering::Relaxed);
+        let workspace_bytes = 3usize.checked_mul(size).and_then(|elements| elements.checked_mul(mem::size_of::<ScalarField>())).expect("ICICLE NTT workspace size overflow");
+        NTT_WORKSPACE_CAPACITY_BYTES.fetch_max(workspace_bytes, Ordering::Relaxed);
     }
     if workspace.host_values.capacity() < size {
         workspace.host_values = Vec::new();
@@ -981,12 +2055,71 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
     }
     NTT_HOST_STAGING_CAPACITY_BYTES.fetch_max(workspace.host_values.capacity() * mem::size_of::<ScalarField>(), Ordering::Relaxed);
     let stream = CudaStream::default();
-    workspace.input.as_mut().expect("ICICLE NTT input buffer is missing")[..size].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..size]), &stream).expect("ICICLE NTT host-to-device copy failed");
+    let cache_key = coset_key.map(|words| (size, words));
+    let refresh_coset_powers = cache_key.is_some_and(|key| workspace.coset_key != Some(key));
+    if refresh_coset_powers {
+        // Never leave an old key published after its device vector is about
+        // to be overwritten. Publish the new key only after the whole stream
+        // has completed successfully below.
+        workspace.coset_key = None;
+    }
+    let coset_factor_scalar = coset.as_ref().map(|(factor, _)| {
+        // SAFETY: the exact Fr type and raw Montgomery representation were
+        // checked above, before this bridge to ICICLE's pinned scalar type.
+        let factor_bn = unsafe { &*(factor as *const G).cast::<Bn256Fr>() };
+        ScalarField::from(fr_raw_montgomery_words(factor_bn))
+    });
+    if refresh_coset_powers {
+        if let Some((_, Some(host_factors))) = coset.as_ref() {
+            // SAFETY: the factor helper produces this exact field type and
+            // the Fr bridge was checked above. The caller's factors remain
+            // borrowed until the owner stream is synchronized.
+            let host_factors = unsafe {
+                std::slice::from_raw_parts(host_factors.as_ptr().cast::<ScalarField>(), host_factors.len())
+            };
+            let powers = workspace.coset_powers.as_mut().expect("ICICLE NTT coset-power buffer is missing");
+            if let Err(error) = powers[..size].copy_from_host_async(HostSlice::from_slice(host_factors), &stream) {
+                panic_after_ntt_stream_drain(&stream, "coset-power upload", error);
+            }
+        }
+    }
+    let input = workspace.input.as_mut().expect("ICICLE NTT input buffer is missing");
+    if let Err(error) = input[..size].copy_from_host_async(HostSlice::from_slice(&workspace.host_values[..size]), &stream) {
+        panic_after_ntt_stream_drain(&stream, "host-to-device input copy", error);
+    }
+    if let Some(factor) = coset_factor_scalar.as_ref() {
+        let input_ptr = unsafe { input[..size].as_mut_ptr() } as *mut u32;
+        let powers = workspace.coset_powers.as_mut().expect("ICICLE NTT coset-power buffer is missing");
+        let powers_ptr = unsafe { powers[..size].as_mut_ptr() } as *mut u32;
+        let factor_ptr = factor as *const ScalarField as *const u32;
+        let generate_powers = refresh_coset_powers && coset.as_ref().is_some_and(|(_, factors)| factors.is_none());
+        let mut row_offset = 0usize;
+        const COSET_SCALE_TILE_ROWS: usize = 1 << 20;
+        while row_offset < size {
+            let rows = COSET_SCALE_TILE_ROWS.min(size - row_offset);
+            let status = unsafe { bn254_h_coset_scale(input_ptr, powers_ptr, row_offset, rows, factor_ptr, generate_powers) };
+            if status != 0 {
+                panic_after_ntt_stream_drain(&stream, "coset-scale kernel launch", status);
+            }
+            row_offset += rows;
+        }
+    }
     let mut cfg = cfg;
     cfg.is_async = true;
-    ntt::<ScalarField, ScalarField>(&workspace.input.as_ref().unwrap()[..size], dir, &cfg, &mut workspace.output.as_mut().unwrap()[..size]).expect("ICICLE NTT execution failed");
-    workspace.output.as_ref().unwrap()[..size].copy_to_host_async(HostSlice::from_mut_slice(&mut workspace.host_values[..size]), &stream).expect("ICICLE NTT device-to-host copy failed");
-    stream.synchronize().expect("ICICLE NTT operation synchronization failed");
+    if let Err(error) = ntt::<ScalarField, ScalarField>(&input[..size], dir, &cfg, &mut workspace.output.as_mut().expect("ICICLE NTT output buffer is missing")[..size]) {
+        panic_after_ntt_stream_drain(&stream, "transform", error);
+    }
+    if let Err(error) = workspace.output.as_ref().expect("ICICLE NTT output buffer is missing")[..size]
+        .copy_to_host_async(HostSlice::from_mut_slice(&mut workspace.host_values[..size]), &stream)
+    {
+        panic_after_ntt_stream_drain(&stream, "device-to-host output copy", error);
+    }
+    if let Err(error) = stream.synchronize() {
+        panic!("ICICLE NTT operation synchronization failed: {:?}", error);
+    }
+    if refresh_coset_powers {
+        workspace.coset_key = cache_key;
+    }
     if raw_montgomery_bridge {
         // ICICLE's NTT field operations use canonical Barrett residues and
         // are linear, so raw Fr inputs R*x produce raw Fr outputs R*FFT(x).
@@ -1042,7 +2175,7 @@ pub fn fft_on_device<Scalar: ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeFiel
         0
     } else {
         retained_high_water
-            .saturating_mul(3 * size_of_scalar)
+            .saturating_mul(4 * size_of_scalar)
             .saturating_add((1 + 64 + 6) * size_of_scalar)
             .saturating_add(FORMAL_GPU_NTT_INIT_SCRATCH_BYTES)
     };
@@ -1081,6 +2214,79 @@ mod h_eval_gpu_fixture {
         let slot0 = slot0 + slot0;
         let slot3 = -slot2;
         (initial * y + slot1) * y + slot3
+    }
+
+    #[test]
+    fn raw_h_query_pack_and_writeback_match_legacy_word_path() {
+        assert!(raw_montgomery_layout_supported::<Bn256Fr>());
+        assert!(!raw_montgomery_layout_supported::<halo2curves::pasta::Fp>());
+        assert!(h_query_uses_bulk_copy(3, 3));
+        assert!(!h_query_uses_bulk_copy(1, 3), "non-row-aligned contracts must retain the checked legacy index path");
+        assert!(!h_query_uses_bulk_copy(-3, 3));
+
+        let base_n = 37usize;
+        let source: Vec<_> = (0..base_n).map(|row| Bn256Fr::from((row as u64 + 1) * 97)).collect();
+        let rotations = [3i32, -5, 1_000_003, -1_000_007];
+        for stride in [1usize, 3, 8] {
+            for part in 0..stride {
+                for rotation in rotations {
+                    assert!(rotation.checked_mul(stride as i32).is_some());
+                    for (start, rows) in [(0usize, 13usize), (base_n - 5, 5usize)] {
+                        let rotation_rows = (rotation as i64).rem_euclid(base_n as i64) as usize;
+                        let mut packed: Vec<_> = (0..rows).map(|_| ScalarField::from([0u32; 8])).collect();
+                        copy_bn254_h_query_chunk(&source, start, rows, rotation_rows, base_n, &mut packed).expect("bulk raw-Montgomery query packing");
+
+                        let mut legacy: Vec<_> = (0..rows).map(|_| ScalarField::from([0u32; 8])).collect();
+                        let domain = base_n * stride;
+                        let rotation_offset = rotation.checked_mul(stride as i32).expect("bounded test rotation");
+                        for row_offset in 0..rows {
+                            let row = start + row_offset;
+                            let index = row * stride + part;
+                            let rotated = ((index as i32 + rotation_offset).rem_euclid(domain as i32) as usize) / stride;
+                            legacy[row_offset] = ScalarField::from(fr_raw_montgomery_words(&source[rotated]));
+                        }
+                        assert_eq!(packed.iter().map(raw_scalar_words).collect::<Vec<_>>(), legacy.iter().map(raw_scalar_words).collect::<Vec<_>>(), "packing differs for stride={} part={} rotation={} start={}", stride, part, rotation, start);
+                    }
+                }
+            }
+        }
+
+        let mut weighted_input: Vec<_> = source.clone();
+        weighted_input[0] = Bn256Fr::ZERO;
+        weighted_input[1] = Bn256Fr::ONE;
+        weighted_input[2] = -Bn256Fr::ONE;
+        let weighted_input_before = weighted_input.clone();
+        let fold_values: Vec<_> = (0..base_n).map(|row| Bn256Fr::from((row as u64 + 11) * 19)).collect();
+        let y = Bn256Fr::from(29);
+        let expected_output: Vec<_> = weighted_input.iter().zip(&fold_values).map(|(accumulator, fold)| *accumulator * y + fold).collect();
+        let raw_output: Vec<_> = expected_output.iter().map(|value| ScalarField::from(fr_raw_montgomery_words(value))).collect();
+
+        let mut legacy_output = weighted_input.clone();
+        for (destination, output) in legacy_output.iter_mut().zip(&raw_output) {
+            let limbs = words_to_u64_limbs(raw_scalar_words(output));
+            // SAFETY: these test values came from canonical BN254 Fr values
+            // and are restored using the same pinned raw-Montgomery layout
+            // as the former element-by-element output path.
+            unsafe { std::ptr::write(destination as *mut Bn256Fr as *mut [u64; 4], limbs); }
+        }
+        let mut bulk_output = weighted_input.clone();
+        copy_validated_bn254_h_output_chunk(&raw_output, &mut bulk_output).expect("validated bulk H output writeback");
+        assert_eq!(bulk_output, expected_output, "bulk output writeback differs from the weighted H field oracle");
+        assert_eq!(bulk_output, legacy_output, "bulk output writeback differs from the legacy word path");
+        assert_eq!(weighted_input, weighted_input_before, "query packing must not mutate the weighted H input accumulator");
+
+        let invalid_residue = ScalarField::from([
+            BN254_MODULUS_LIMBS[0] as u32, (BN254_MODULUS_LIMBS[0] >> 32) as u32,
+            BN254_MODULUS_LIMBS[1] as u32, (BN254_MODULUS_LIMBS[1] >> 32) as u32,
+            BN254_MODULUS_LIMBS[2] as u32, (BN254_MODULUS_LIMBS[2] >> 32) as u32,
+            BN254_MODULUS_LIMBS[3] as u32, (BN254_MODULUS_LIMBS[3] >> 32) as u32,
+        ]);
+        let invalid_chunk = [raw_output[0].clone(), invalid_residue];
+        let mut unchanged = [Bn256Fr::from(101), Bn256Fr::from(202)];
+        let before_invalid_write = unchanged;
+        let error = copy_validated_bn254_h_output_chunk(&invalid_chunk, &mut unchanged).expect_err("noncanonical H output must fail");
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(unchanged, before_invalid_write, "invalid output must not partially mutate the accumulator chunk");
     }
 
     #[test]
@@ -1157,6 +2363,7 @@ mod h_eval_gpu_fixture {
             ],
             scratch_slots: 5,
             fold_count: 2,
+            mv_lookup: None,
         };
 
         let _scope = native_prove_ntt_scope();

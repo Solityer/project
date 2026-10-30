@@ -46,6 +46,673 @@ fn accumulate_scaled<F: Field, B: Basis>(
     });
 }
 
+enum QueryPolynomialSource<'a, F> {
+    Borrowed(&'a Polynomial<F, Coeff>),
+    Owned(Polynomial<F, Coeff>),
+}
+
+struct PreparedQueryContribution<'a, F> {
+    source: Option<QueryPolynomialSource<'a, F>>,
+    low_degree_equivalent: &'a [F],
+    constant_correction: Option<F>,
+    power: F,
+}
+
+impl<F> QueryPolynomialSource<'_, F> {
+    fn as_slice(&self) -> &[F] {
+        match self {
+            Self::Borrowed(polynomial) => polynomial,
+            Self::Owned(polynomial) => polynomial,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        accumulate_scaled, accumulate_scaled_query, accumulate_scaled_query_batch,
+        Polynomial, PreparedQueryContribution, QueryPolynomialSource,
+    };
+    use ff::Field;
+    use halo2curves::bn256::Fr;
+
+    fn legacy_accumulate_query(
+        accumulator: &mut Option<Polynomial<Fr, super::Coeff>>,
+        mut polynomial: Polynomial<Fr, super::Coeff>,
+        low_degree_equivalent: &[Fr],
+        constant_correction: Option<Fr>,
+        power: Fr,
+    ) {
+        for (destination, source) in polynomial.as_mut_slice()[..low_degree_equivalent.len()]
+            .iter_mut()
+            .zip(low_degree_equivalent.iter())
+        {
+            *destination -= *source;
+        }
+        if let Some(correction) = constant_correction {
+            polynomial[0] -= correction;
+        }
+        accumulate_scaled(accumulator, polynomial, power);
+    }
+
+    #[test]
+    fn fused_query_accumulation_matches_materialize_scale_and_add() {
+        let values = vec![
+            vec![Fr::from(3), Fr::from(5), Fr::from(7), Fr::from(11), Fr::from(13)],
+            vec![Fr::from(17), Fr::from(19), Fr::from(23), Fr::from(29), Fr::from(31), Fr::from(37), Fr::from(41), Fr::from(43)],
+            vec![Fr::from(47), Fr::from(53), Fr::from(59), Fr::from(61), Fr::from(67), Fr::from(71), Fr::from(73), Fr::from(79)],
+            vec![Fr::from(83), Fr::from(89), Fr::from(97), Fr::from(101), Fr::from(103), Fr::from(107), Fr::from(109), Fr::from(113)],
+            vec![Fr::from(127), Fr::from(131), Fr::from(137), Fr::from(139), Fr::from(149), Fr::from(151), Fr::from(157), Fr::from(163)],
+            vec![Fr::from(167), Fr::from(173), Fr::from(179), Fr::from(181), Fr::from(191), Fr::from(193), Fr::from(197), Fr::from(199)],
+            vec![Fr::from(211), Fr::from(223), Fr::from(227), Fr::from(229), Fr::from(233), Fr::from(239), Fr::from(241), Fr::from(251)],
+            vec![Fr::from(257), Fr::from(263), Fr::from(269), Fr::from(271), Fr::from(277), Fr::from(281), Fr::from(283), Fr::from(293)],
+        ];
+        let polynomials = values
+            .into_iter()
+            .map(Polynomial::<Fr, super::Coeff>::from_vec)
+            .collect::<Vec<_>>();
+        let low_degree_equivalents = vec![
+            vec![Fr::from(2), Fr::from(4)],
+            vec![Fr::from(6)],
+            vec![],
+            vec![Fr::from(8), Fr::from(10), Fr::from(12)],
+            vec![Fr::from(14)],
+            vec![Fr::from(16), Fr::from(18)],
+            vec![],
+            vec![Fr::from(20), Fr::from(22), Fr::from(24)],
+        ];
+        let powers = [Fr::ONE, Fr::from(5), Fr::from(25), Fr::from(125)];
+        let constants = [
+            None,
+            Some(Fr::from(3)),
+            Some(Fr::from(9)),
+            None,
+            Some(Fr::from(15)),
+            Some(Fr::from(21)),
+            None,
+            Some(Fr::from(27)),
+        ];
+        // Borrowed Dense and owned deferred materializations (fixed, sigma,
+        // and lookup sources) share one coefficient accumulator. Splitting
+        // each set into batches exercises the original challenge ranks.
+        let owned_sources = [false, true, true, true, true, true, true, true];
+        let rotation_sets = [&[0usize, 1, 2, 3][..], &[4usize, 5, 6, 7][..]];
+
+        for rotation_set in rotation_sets {
+            let mut legacy = None;
+            let mut fused = None;
+            let mut tiled = None;
+            for batch in rotation_set.chunks(2) {
+                let mut prepared = Vec::with_capacity(batch.len());
+                for &index in batch {
+                    let power = powers[index % 4];
+                    let source = polynomials[index].try_clone().unwrap();
+                    legacy_accumulate_query(
+                        &mut legacy,
+                        source,
+                        &low_degree_equivalents[index],
+                        constants[index],
+                        power,
+                    );
+
+                    let source = if owned_sources[index] {
+                        QueryPolynomialSource::Owned(polynomials[index].try_clone().unwrap())
+                    } else {
+                        QueryPolynomialSource::Borrowed(&polynomials[index])
+                    };
+                    accumulate_scaled_query(
+                        &mut fused,
+                        source,
+                        &low_degree_equivalents[index],
+                        constants[index],
+                        power,
+                    )
+                    .unwrap();
+
+                    // Leave cached positions empty while retaining their
+                    // original challenge rank in the next contribution.
+                    let cached = index % 4 == 2;
+                    let source = if cached {
+                        None
+                    } else if owned_sources[index] {
+                        Some(QueryPolynomialSource::Owned(
+                            polynomials[index].try_clone().unwrap(),
+                        ))
+                    } else {
+                        Some(QueryPolynomialSource::Borrowed(&polynomials[index]))
+                    };
+                    prepared.push(PreparedQueryContribution {
+                        source,
+                        low_degree_equivalent: &low_degree_equivalents[index],
+                        constant_correction: constants[index],
+                        power,
+                    });
+                }
+                accumulate_scaled_query_batch(&mut tiled, prepared).unwrap();
+            }
+            assert_eq!(&legacy.unwrap()[..], &fused.unwrap()[..]);
+            let mut legacy_with_cached = None;
+            for &index in rotation_set {
+                if index % 4 != 2 {
+                    legacy_accumulate_query(
+                        &mut legacy_with_cached,
+                        polynomials[index].try_clone().unwrap(),
+                        &low_degree_equivalents[index],
+                        constants[index],
+                        powers[index % 4],
+                    );
+                }
+            }
+            assert_eq!(&legacy_with_cached.unwrap()[..], &tiled.unwrap()[..]);
+        }
+
+        // A zero challenge keeps the first term and zeros every later rank.
+        let mut legacy_zero_challenge = None;
+        let mut fused_zero_challenge = None;
+        for index in 0..4 {
+            let power = if index == 0 { Fr::ONE } else { Fr::ZERO };
+            legacy_accumulate_query(
+                &mut legacy_zero_challenge,
+                polynomials[index].try_clone().unwrap(),
+                &low_degree_equivalents[index],
+                constants[index],
+                power,
+            );
+            let source = if owned_sources[index] {
+                QueryPolynomialSource::Owned(polynomials[index].try_clone().unwrap())
+            } else {
+                QueryPolynomialSource::Borrowed(&polynomials[index])
+            };
+            accumulate_scaled_query(
+                &mut fused_zero_challenge,
+                source,
+                &low_degree_equivalents[index],
+                constants[index],
+                power,
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            &legacy_zero_challenge.unwrap()[..],
+            &fused_zero_challenge.unwrap()[..]
+        );
+
+        let constant = Polynomial::<Fr, super::Coeff>::from_vec(vec![Fr::from(17)]);
+        let zero = Polynomial::<Fr, super::Coeff>::from_vec(vec![Fr::ZERO, Fr::ZERO, Fr::ZERO]);
+        let constant_equivalent = [Fr::from(5)];
+        let zero_equivalent = [Fr::ZERO, Fr::ZERO];
+        let mut legacy_short = None;
+        let mut fused_short = None;
+        legacy_accumulate_query(
+            &mut legacy_short,
+            constant.try_clone().unwrap(),
+            &constant_equivalent,
+            None,
+            Fr::ONE,
+        );
+        legacy_accumulate_query(
+            &mut legacy_short,
+            zero.try_clone().unwrap(),
+            &zero_equivalent,
+            None,
+            Fr::from(5),
+        );
+        accumulate_scaled_query(
+            &mut fused_short,
+            QueryPolynomialSource::Borrowed(&constant),
+            &constant_equivalent,
+            None,
+            Fr::ONE,
+        )
+        .unwrap();
+        accumulate_scaled_query(
+            &mut fused_short,
+            QueryPolynomialSource::Owned(zero.try_clone().unwrap()),
+            &zero_equivalent,
+            None,
+            Fr::from(5),
+        )
+        .unwrap();
+        assert_eq!(&legacy_short.unwrap()[..], &fused_short.unwrap()[..]);
+
+        // The low-degree correction keeps the former checked slice boundary.
+        let invalid_source = Polynomial::<Fr, super::Coeff>::from_vec(vec![Fr::ONE, Fr::ONE]);
+        let invalid_equivalent = [Fr::ONE, Fr::ONE, Fr::ONE];
+        let legacy_panics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut accumulator = None;
+            legacy_accumulate_query(
+                &mut accumulator,
+                invalid_source.try_clone().unwrap(),
+                &invalid_equivalent,
+                None,
+                Fr::ONE,
+            );
+        }));
+        let fused_panics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut accumulator = None;
+            accumulate_scaled_query(
+                &mut accumulator,
+                QueryPolynomialSource::Borrowed(&invalid_source),
+                &invalid_equivalent,
+                None,
+                Fr::ONE,
+            )
+            .unwrap();
+        }));
+        assert!(legacy_panics.is_err());
+        assert!(fused_panics.is_err());
+    }
+
+    #[test]
+    fn batch_accumulation_preserves_lengths_empty_sources_and_validation() {
+        let long = Polynomial::<Fr, super::Coeff>::from_vec(
+            (1..=9).map(Fr::from).collect::<Vec<_>>(),
+        );
+        let short = Polynomial::<Fr, super::Coeff>::from_vec(
+            vec![Fr::from(21), Fr::from(22), Fr::from(23)],
+        );
+        let empty = Polynomial::<Fr, super::Coeff>::from_vec(Vec::new());
+        let long_equivalent = [Fr::from(2), Fr::from(3)];
+        let short_equivalent = [Fr::from(4)];
+        let challenge = Fr::from(5);
+
+        // The first contribution fixes output length. Later sources may be
+        // shorter or longer; coefficient-wise zip behavior clips each source.
+        let mut expected = long.try_clone().unwrap();
+        for (index, coefficient) in expected.as_mut_slice().iter_mut().enumerate() {
+            if index < long_equivalent.len() {
+                *coefficient -= long_equivalent[index];
+            }
+            if index == 0 {
+                *coefficient -= Fr::from(7);
+            }
+        }
+        for (index, (destination, source)) in expected
+            .as_mut_slice()
+            .iter_mut()
+            .zip(short.as_slice().iter())
+            .enumerate()
+        {
+            let mut contribution = *source;
+            if index < short_equivalent.len() {
+                contribution -= short_equivalent[index];
+            }
+            if index == 0 {
+                contribution -= Fr::from(11);
+            }
+            contribution *= challenge;
+            *destination += contribution;
+        }
+        let mut tiled = None;
+        accumulate_scaled_query_batch(
+            &mut tiled,
+            vec![
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&long)),
+                    low_degree_equivalent: &long_equivalent,
+                    constant_correction: Some(Fr::from(7)),
+                    power: Fr::ONE,
+                },
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Owned(short.try_clone().unwrap())),
+                    low_degree_equivalent: &short_equivalent,
+                    constant_correction: Some(Fr::from(11)),
+                    power: challenge,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(&expected[..], &tiled.unwrap()[..]);
+
+        // The first term keeps rank zero; a zero challenge zeros every later
+        // query rank without changing the batch's source order.
+        let mut legacy_zero = None;
+        legacy_accumulate_query(
+            &mut legacy_zero,
+            long.try_clone().unwrap(),
+            &long_equivalent,
+            Some(Fr::from(7)),
+            Fr::ONE,
+        );
+        legacy_accumulate_query(
+            &mut legacy_zero,
+            long.try_clone().unwrap(),
+            &long_equivalent,
+            Some(Fr::from(11)),
+            Fr::ZERO,
+        );
+        let mut tiled_zero = None;
+        accumulate_scaled_query_batch(
+            &mut tiled_zero,
+            vec![
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&long)),
+                    low_degree_equivalent: &long_equivalent,
+                    constant_correction: Some(Fr::from(7)),
+                    power: Fr::ONE,
+                },
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&long)),
+                    low_degree_equivalent: &long_equivalent,
+                    constant_correction: Some(Fr::from(11)),
+                    power: Fr::ZERO,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(&legacy_zero.unwrap()[..], &tiled_zero.unwrap()[..]);
+
+        // An empty first source still fixes the accumulator length at zero.
+        let mut legacy_empty = None;
+        legacy_accumulate_query(
+            &mut legacy_empty,
+            empty.try_clone().unwrap(),
+            &[],
+            None,
+            Fr::ONE,
+        );
+        legacy_accumulate_query(
+            &mut legacy_empty,
+            long.try_clone().unwrap(),
+            &[],
+            None,
+            challenge,
+        );
+        let mut tiled_empty = None;
+        accumulate_scaled_query_batch(
+            &mut tiled_empty,
+            vec![
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&empty)),
+                    low_degree_equivalent: &[],
+                    constant_correction: None,
+                    power: Fr::ONE,
+                },
+                PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&long)),
+                    low_degree_equivalent: &[],
+                    constant_correction: None,
+                    power: challenge,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            &legacy_empty.as_ref().unwrap()[..],
+            &tiled_empty.as_ref().unwrap()[..]
+        );
+
+        // An all-cached batch must leave an existing accumulator untouched.
+        let before = tiled_empty.as_ref().unwrap().try_clone().unwrap();
+        accumulate_scaled_query_batch(
+            &mut tiled_empty,
+            vec![
+                PreparedQueryContribution {
+                    source: None,
+                    low_degree_equivalent: &[],
+                    constant_correction: None,
+                    power: Fr::ONE,
+                },
+                PreparedQueryContribution {
+                    source: None,
+                    low_degree_equivalent: &[],
+                    constant_correction: None,
+                    power: challenge,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(&before[..], &tiled_empty.as_ref().unwrap()[..]);
+
+        // Validate every source boundary before changing an existing output.
+        let mut unchanged = Some(long.try_clone().unwrap());
+        let before = unchanged.as_ref().unwrap().try_clone().unwrap();
+        let invalid_correction = [Fr::ONE, Fr::ONE, Fr::ONE, Fr::ONE];
+        let panics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = accumulate_scaled_query_batch(
+                &mut unchanged,
+                vec![PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&short)),
+                    low_degree_equivalent: &invalid_correction,
+                    constant_correction: None,
+                    power: Fr::ONE,
+                }],
+            );
+        }));
+        assert!(panics.is_err());
+        assert_eq!(&before[..], &unchanged.unwrap()[..]);
+
+        let mut unchanged = Some(long.try_clone().unwrap());
+        let before = unchanged.as_ref().unwrap().try_clone().unwrap();
+        let empty_source = Polynomial::<Fr, super::Coeff>::from_vec(Vec::new());
+        let panics = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = accumulate_scaled_query_batch(
+                &mut unchanged,
+                vec![PreparedQueryContribution {
+                    source: Some(QueryPolynomialSource::Borrowed(&empty_source)),
+                    low_degree_equivalent: &[],
+                    constant_correction: Some(Fr::ONE),
+                    power: Fr::ONE,
+                }],
+            );
+        }));
+        assert!(panics.is_err());
+        assert_eq!(&before[..], &unchanged.unwrap()[..]);
+    }
+}
+
+fn query_polynomial_source<'com, C: CurveAffine>(
+    commitment: &CommitmentExtension<'com, C>,
+    own_dense: bool,
+) -> io::Result<QueryPolynomialSource<'com, C::Scalar>>
+where
+    C::Scalar: WithSmallOrderMulGroup<3>,
+{
+    let polynomial = commitment.commitment.get();
+    if own_dense {
+        return polynomial
+            .materialize()
+            .map(QueryPolynomialSource::Owned);
+    }
+
+    match polynomial.poly {
+        ProverPolynomial::Dense(polynomial) => Ok(QueryPolynomialSource::Borrowed(polynomial)),
+        _ => polynomial
+            .materialize()
+            .map(QueryPolynomialSource::Owned),
+    }
+}
+
+#[cfg(test)]
+fn apply_scaled_correction<F: Field>(
+    polynomial: &mut Polynomial<F, Coeff>,
+    low_degree_equivalent: &[F],
+    constant_correction: Option<F>,
+    power: F,
+) {
+    // Keep the same range contract as the former low-degree subtraction.
+    let _ = &polynomial.as_slice()[..low_degree_equivalent.len()];
+    if constant_correction.is_some() {
+        let _ = polynomial[0];
+    }
+
+    if power == F::ZERO {
+        parallelize(polynomial.as_mut_slice(), |chunk, _| chunk.fill(F::ZERO));
+        return;
+    }
+
+    parallelize(polynomial.as_mut_slice(), |chunk, start| {
+        for (offset, coefficient) in chunk.iter_mut().enumerate() {
+            let index = start + offset;
+            if index < low_degree_equivalent.len() {
+                *coefficient -= low_degree_equivalent[index];
+            }
+            if index == 0 {
+                if let Some(correction) = constant_correction {
+                    *coefficient -= correction;
+                }
+            }
+            if power != F::ONE {
+                *coefficient *= power;
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+fn accumulate_scaled_query<F: Field>(
+    accumulator: &mut Option<Polynomial<F, Coeff>>,
+    source: QueryPolynomialSource<'_, F>,
+    low_degree_equivalent: &[F],
+    constant_correction: Option<F>,
+    power: F,
+) -> io::Result<()> {
+    let Some(accumulated) = accumulator.as_mut() else {
+        let mut polynomial = match source {
+            QueryPolynomialSource::Borrowed(polynomial) => polynomial.try_clone()?,
+            QueryPolynomialSource::Owned(polynomial) => polynomial,
+        };
+        apply_scaled_correction(
+            &mut polynomial,
+            low_degree_equivalent,
+            constant_correction,
+            power,
+        );
+        *accumulator = Some(polynomial);
+        return Ok(());
+    };
+
+    let source = source.as_slice();
+    // Validate the same low-degree range before touching the accumulator.
+    let _ = &source[..low_degree_equivalent.len()];
+    if constant_correction.is_some() {
+        let _ = source[0];
+    }
+
+    parallelize(accumulated.as_mut_slice(), |chunk, start| {
+        // Matching the former Polynomial addition's start-indexed slice and
+        // zip behavior preserves the established coefficient-length contract.
+        let source = &source[start..];
+        for (offset, (destination, source_coefficient)) in
+            chunk.iter_mut().zip(source.iter()).enumerate()
+        {
+            if power == F::ZERO {
+                continue;
+            }
+            let index = start + offset;
+            let mut contribution = *source_coefficient;
+            if index < low_degree_equivalent.len() {
+                contribution -= low_degree_equivalent[index];
+            }
+            if index == 0 {
+                if let Some(correction) = constant_correction {
+                    contribution -= correction;
+                }
+            }
+            if power != F::ONE {
+                contribution *= power;
+            }
+            *destination += contribution;
+        }
+    });
+    Ok(())
+}
+
+fn accumulate_scaled_query_batch<F: Field>(
+    accumulator: &mut Option<Polynomial<F, Coeff>>,
+    mut contributions: Vec<PreparedQueryContribution<'_, F>>,
+) -> io::Result<()> {
+    let mut first_contribution = None;
+    // Validate all prepared source boundaries in original query order before
+    // modifying the destination. Cached entries still occupy their rank.
+    for (index, contribution) in contributions.iter().enumerate() {
+        if let Some(source) = contribution.source.as_ref() {
+            let source = source.as_slice();
+            let _ = &source[..contribution.low_degree_equivalent.len()];
+            if contribution.constant_correction.is_some() {
+                let _ = source[0];
+            }
+            if first_contribution.is_none() {
+                first_contribution = Some(index);
+            }
+        }
+    }
+
+    let Some(first_contribution) = first_contribution else {
+        return Ok(());
+    };
+
+    let had_accumulator = accumulator.is_some();
+    let mut output = if let Some(output) = accumulator.take() {
+        output
+    } else {
+        let first = &mut contributions[first_contribution];
+        match first
+            .source
+            .take()
+            .expect("validated first SHPLONK contribution must have a source")
+        {
+            QueryPolynomialSource::Borrowed(polynomial) => polynomial.try_clone()?,
+            QueryPolynomialSource::Owned(polynomial) => polynomial,
+        }
+    };
+
+    parallelize(output.as_mut_slice(), |chunk, start| {
+        for (offset, destination) in chunk.iter_mut().enumerate() {
+            let coefficient_index = start + offset;
+            if !had_accumulator {
+                // The first source is already in `output`; initialize its
+                // corrected, weighted value before folding later sources.
+                let first = &contributions[first_contribution];
+                if first.power == F::ZERO {
+                    *destination = F::ZERO;
+                } else {
+                    if coefficient_index < first.low_degree_equivalent.len() {
+                        *destination -= first.low_degree_equivalent[coefficient_index];
+                    }
+                    if coefficient_index == 0 {
+                        if let Some(correction) = first.constant_correction {
+                            *destination -= correction;
+                        }
+                    }
+                    if first.power != F::ONE {
+                        *destination *= first.power;
+                    }
+                }
+            }
+
+            for (index, contribution) in contributions.iter().enumerate() {
+                if !had_accumulator && index == first_contribution {
+                    continue;
+                }
+                if contribution.power == F::ZERO {
+                    continue;
+                }
+                let Some(source) = contribution.source.as_ref() else {
+                    continue;
+                };
+                let Some(mut value) = source.as_slice().get(coefficient_index).copied() else {
+                    continue;
+                };
+                if coefficient_index < contribution.low_degree_equivalent.len() {
+                    value -= contribution.low_degree_equivalent[coefficient_index];
+                }
+                if coefficient_index == 0 {
+                    if let Some(correction) = contribution.constant_correction {
+                        value -= correction;
+                    }
+                }
+                if contribution.power != F::ONE {
+                    value *= contribution.power;
+                }
+                *destination += value;
+            }
+        }
+    });
+    *accumulator = Some(output);
+    Ok(())
+}
+
 fn shplonk_batch_budget<E: Engine>(
     params: &ParamsKZG<E>,
     requested_width: usize,
@@ -53,7 +720,9 @@ fn shplonk_batch_budget<E: Engine>(
     let field_bytes = std::mem::size_of::<E::Fr>() as u128;
     let polynomial_header = std::mem::size_of::<Polynomial<E::Fr, Coeff>>() as u128;
     let domain = u128::from(params.n);
-    // A live task touches the opened source polynomial and one spilled clone.
+    // Conservatively bound one opened source and one owned polynomial per
+    // task. Dense query sources are borrowed after initializing the output
+    // accumulator, so this preserves the existing cap with extra headroom.
     let per_task = domain
         .checked_mul(2)
         .and_then(|bytes| bytes.checked_mul(field_bytes))
@@ -100,32 +769,6 @@ impl<'a, C: CurveAffine> Commitment<C::Scalar, PolynomialPointer<'a, C>> {
             commitment: self.clone(),
             low_degree_equivalent,
         }
-    }
-}
-
-impl<'a, C: CurveAffine> CommitmentExtension<'a, C> {
-    fn linearisation_contribution(
-        &self,
-        u: C::Scalar,
-    ) -> io::Result<Polynomial<C::Scalar, Coeff>> {
-        let r_eval = eval_polynomial(&self.low_degree_equivalent[..], u);
-        let mut contribution = self.commitment.get().materialize()?;
-        contribution[0] -= r_eval;
-        Ok(contribution)
-    }
-
-    fn quotient_contribution(&self) -> io::Result<Polynomial<C::Scalar, Coeff>> {
-        let len = self.low_degree_equivalent.len();
-        let mut p_x = self.commitment.get().materialize()?;
-        parallelize(&mut p_x[0..len], |lhs, start| {
-            for (lhs, rhs) in lhs
-                .iter_mut()
-                .zip(self.low_degree_equivalent[start..].iter())
-            {
-                *lhs -= *rhs;
-            }
-        });
-        Ok(p_x)
     }
 }
 
@@ -468,10 +1111,19 @@ where
          -> io::Result<Polynomial<E::Fr, Coeff>> {
             // Preserve the original commitment order and complete R_i
             // accumulator, but retain at most one budgeted indexed batch of
-            // spilled per-polynomial contributions at a time.
+            // source views and owned deferred materializations at a time.
             let mut n_x = None;
             let mut power_of_y = E::Fr::ONE;
             let total = rotation_set.commitments.len();
+            // The first non-cached contribution becomes the output accumulator;
+            // only that dense input needs an owned copy.
+            let first_contribution = rotation_set.commitments.iter().enumerate().find_map(|(index, _)| {
+                if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, index)) {
+                    None
+                } else {
+                    Some(index)
+                }
+            });
             for batch_start in (0..total).step_by(batch_width) {
                 let batch_end = batch_start.saturating_add(batch_width).min(total);
                 let batch_started = std::time::Instant::now();
@@ -490,19 +1142,31 @@ where
                     .into_par_iter()
                     .enumerate()
                     .map(|(offset, commitment)| {
-                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, batch_start + offset)) {
+                        let index = batch_start + offset;
+                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, index)) {
                             Ok(None)
                         } else {
-                            commitment.quotient_contribution().map(Some)
+                            let source = query_polynomial_source(
+                                commitment,
+                                first_contribution == Some(index),
+                            )?;
+                            let _ = &source.as_slice()[..commitment.low_degree_equivalent.len()];
+                            Ok(Some(source))
                         }
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                for numerator in numerators {
-                    if let Some(numerator) = numerator {
-                        accumulate_scaled(&mut n_x, numerator, power_of_y);
-                    }
+                let mut prepared = Vec::with_capacity(numerators.len());
+                for (offset, numerator) in numerators.into_iter().enumerate() {
+                    let commitment = &rotation_set.commitments[batch_start + offset];
+                    prepared.push(PreparedQueryContribution {
+                        source: numerator,
+                        low_degree_equivalent: commitment.low_degree_equivalent.as_slice(),
+                        constant_correction: None,
+                        power: power_of_y,
+                    });
                     power_of_y *= *y;
                 }
+                accumulate_scaled_query_batch(&mut n_x, prepared)?;
                 println!(
                     "EZKL_NATIVE_PHASE DONE stage=shplonk_quotient_batch rotation_set={} first_commitment={} end_commitment={} elapsed_ms={:.3}",
                     set_index,
@@ -652,6 +1316,15 @@ where
             let mut l_x = None;
             let mut power_of_y = E::Fr::ONE;
             let total = rotation_set.commitments.len();
+            // As for the quotient sum, only the first non-cached dense source
+            // is copied into the output accumulator.
+            let first_contribution = rotation_set.commitments.iter().enumerate().find_map(|(index, _)| {
+                if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, index)) {
+                    None
+                } else {
+                    Some(index)
+                }
+            });
             for batch_start in (0..total).step_by(batch_width) {
                 let batch_end = batch_start.saturating_add(batch_width).min(total);
                 let batch_started = std::time::Instant::now();
@@ -670,19 +1343,34 @@ where
                     .into_par_iter()
                     .enumerate()
                     .map(|(offset, commitment)| {
-                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, batch_start + offset)) {
+                        let index = batch_start + offset;
+                        if fixed_aggregate.map_or(false, |aggregate| fixed_aggregate_contains(aggregate, index)) {
                             Ok(None)
                         } else {
-                            commitment.linearisation_contribution(*u).map(Some)
+                            let source = query_polynomial_source(
+                                commitment,
+                                first_contribution == Some(index),
+                            )?;
+                            let _ = source.as_slice()[0];
+                            Ok(Some(source))
                         }
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                for contribution in inner_contributions {
-                    if let Some(contribution) = contribution {
-                        accumulate_scaled(&mut l_x, contribution, power_of_y);
-                    }
+                let mut prepared = Vec::with_capacity(inner_contributions.len());
+                for (offset, contribution) in inner_contributions.into_iter().enumerate() {
+                    let commitment = &rotation_set.commitments[batch_start + offset];
+                    let constant_correction = contribution.as_ref().map(|_| {
+                        eval_polynomial(&commitment.low_degree_equivalent[..], *u)
+                    });
+                    prepared.push(PreparedQueryContribution {
+                        source: contribution,
+                        low_degree_equivalent: &[],
+                        constant_correction,
+                        power: power_of_y,
+                    });
                     power_of_y *= *y;
                 }
+                accumulate_scaled_query_batch(&mut l_x, prepared)?;
                 println!(
                     "EZKL_NATIVE_PHASE DONE stage=shplonk_linearisation_batch rotation_set={} first_commitment={} end_commitment={} elapsed_ms={:.3}",
                     set_index,

@@ -543,6 +543,7 @@ int main(int argc, char **argv)
 
             progress(mode_label + ":context:start");
             const auto context_start = std::chrono::steady_clock::now();
+            // 图、模型、SRS、证明上下文
             const auto context = gatzk::protocol::build_context(run_config, &metrics, false);
             const auto context_end = std::chrono::steady_clock::now();
             progress(mode_label + ":context:done");
@@ -554,6 +555,7 @@ int main(int argc, char **argv)
                                               context.kzg.manifest.manifest_hash.substr(0, 12);
             if (context.compiler_artifact == nullptr)
                 throw std::runtime_error("formal run is missing its compiler artifact");
+            // 检查安全预算及正式输入范围
             const auto security_budget = gatzk::protocol::evaluate_security_budget(context, *context.compiler_artifact);
             metrics.security_budget_passed = security_budget.passed;
             metrics.security_budget_ledger_digest = security_budget.ledger_digest;
@@ -569,8 +571,10 @@ int main(int argc, char **argv)
             progress(mode_label + ":trace:start");
             if (metrics.commitment_time_ms != 0.0)
                 throw std::runtime_error("online commitment work was measured before the trace interval");
+            // 证明时间开始
             gatzk::protocol::timing::start_prove_timer(&metrics);
             const auto trace_start = std::chrono::steady_clock::now();
+            // GAT 计算、Trace、动态承诺
             auto trace = gatzk::protocol::build_trace(context, &metrics);
             const auto trace_elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - trace_start).count();
             metrics.lookup_trace_ms = metrics.lookup_table_pack_ms + metrics.lookup_query_pack_ms + metrics.lookup_key_build_ms +
@@ -791,7 +795,7 @@ int main(int argc, char **argv)
 
             if (log_benchmark)
             {
-                std::cout << "dataset=" << metrics.dataset << " config=" << config_path << " backend=" << console_backend_label(metrics)
+                std::cout << "dataset=" << metrics.dataset << " config=" << config_path
                           << " status=" << (final_accepted ? "VERIFY_OK" : "VERIFY_FAIL") << " commitment_time_ms="
                           << format_ms(metrics.commitment_time_ms)
                           << " prove_time_ms=" << format_ms(metrics.prove_time_ms) << " verify_time_ms=" << format_ms(metrics.verify_time_ms)

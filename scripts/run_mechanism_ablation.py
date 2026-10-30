@@ -1194,6 +1194,33 @@ def safe_output_root(value: pathlib.Path) -> pathlib.Path:
     return resolved
 
 
+def safe_existing_output_root(value: pathlib.Path) -> pathlib.Path:
+    candidate = value.expanduser()
+    if not candidate.is_absolute():
+        candidate = PROJECT_ROOT / candidate
+    lexical = pathlib.Path(os.path.abspath(candidate))
+    root_resolved = PROJECT_ROOT.resolve()
+    allowed = (DEFAULT_OUTPUT_ROOT, *ALLOWED_TEMP_OUTPUT_ROOTS)
+    require(any(lexical == pathlib.Path(os.path.abspath(item)) or
+                pathlib.Path(os.path.abspath(item)) in lexical.parents for item in allowed),
+            "existing mechanism output root must be inside results/mechanism_ablation_final")
+    try:
+        lexical.relative_to(root_resolved)
+    except ValueError as exc:
+        raise ValueError("existing mechanism output root must remain inside the project workspace") from exc
+    current = root_resolved
+    for part in lexical.relative_to(root_resolved).parts:
+        current = current / part
+        require(not current.is_symlink(), f"output root path cannot traverse a symlink: {current}")
+    resolved = lexical.resolve(strict=True)
+    require(resolved == lexical and resolved.is_dir(),
+            "existing mechanism output root must be a regular directory")
+    forbidden = (PROJECT_ROOT / "results" / "paper_secure").resolve()
+    require(resolved != forbidden and forbidden not in resolved.parents and resolved not in forbidden.parents,
+            "mechanism output cannot overlap results/paper_secure")
+    return resolved
+
+
 def create_session_dir(output_root: pathlib.Path) -> tuple[str, pathlib.Path]:
     output_root.mkdir(parents=True, exist_ok=True, mode=0o700)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2063,7 +2090,16 @@ def mark_real_pair(cells: list[dict[str, Any]], config_id: str, repetition: int)
     pair_cells = [cell for cell in cells if cell["config_id"] == config_id and cell["repetition"] == repetition]
     by_variant = {cell["variant"]: cell for cell in pair_cells}
     original, control = by_variant.get("original"), by_variant.get("control")
-    pair_ok = bool(
+    pair_ok = real_pair_compatible(original, control)
+    for cell in pair_cells:
+        cell["pair_status"] = "paired" if pair_ok else "invalid_pair"
+        if not pair_ok and cell.get("failure_reason") is None:
+            cell["failure_reason"] = "paired real input, relation digest, SRS, CUDA device, or security policy differs"
+        atomic_write_json(pathlib.Path(cell["cell_json_path"]), cell)
+
+
+def real_pair_compatible(original: dict[str, Any] | None, control: dict[str, Any] | None) -> bool:
+    return bool(
         original and control
         and original.get("cell_status") == "complete" and control.get("cell_status") == "complete"
         and original.get("verification_status") == "VERIFY_OK" and control.get("verification_status") == "VERIFY_OK"
@@ -2082,11 +2118,6 @@ def mark_real_pair(cells: list[dict[str, Any]], config_id: str, repetition: int)
         and original.get("security_budget_valid") is True and control.get("security_budget_valid") is True
         and original.get("security_policy") == control.get("security_policy")
     )
-    for cell in pair_cells:
-        cell["pair_status"] = "paired" if pair_ok else "invalid_pair"
-        if not pair_ok and cell.get("failure_reason") is None:
-            cell["failure_reason"] = "paired real input, relation digest, SRS, CUDA device, or security policy differs"
-        atomic_write_json(pathlib.Path(cell["cell_json_path"]), cell)
 
 
 def require_repetition_input_stability(cells: list[dict[str, Any]], config_id: str) -> None:
@@ -2364,6 +2395,12 @@ def write_summary_markdown(path: pathlib.Path, document: dict[str, Any]) -> None
         "- main 范围表示消融主表输入：PPI 仅用原始 component 0；ppi_full 表示完整 295 个图及原始边界。",
         "",
     ]
+    if document.get("aggregation_mode") == "multi_execution_continuation":
+        lines.extend([
+            "- 本表按配置键聚合原始不完整会话与独立续跑会话；每个单元的 Prover/Verifier 会话、构建摘要及原始收据见 `aggregate_manifest.json`。",
+            "- 原始会话保持不完整状态且未改写；原始失败 Verify 保留为历史尝试，汇总仅采用其后通过的独立 Verify。",
+            "",
+        ])
     selected_mechanisms = {spec["mechanism"] for spec in configs}
     metric_columns = [
         ("commitment_time_ms", "承诺在线(ms)"), ("prove_time_ms", "证明在线(ms)"),
@@ -3773,6 +3810,994 @@ def publication_integrity_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def continuation_key(config_id: str, repetition: int, variant: str) -> tuple[str, int, str]:
+    return (config_id, repetition, variant)
+
+
+def continuation_key_text(key: tuple[str, int, str]) -> str:
+    return f"{key[0]}|{key[1]}|{key[2]}"
+
+
+def continuation_artifact_roots(output_root: pathlib.Path, parent_session: pathlib.Path) -> dict[str, pathlib.Path]:
+    roots = {parent_session.name: parent_session}
+    continuations = output_root / "continuations"
+    if continuations.exists():
+        require(continuations.is_dir() and not continuations.is_symlink(),
+                "continuation artifact root is not a regular directory")
+        for child in sorted(continuations.iterdir()):
+            if child.is_dir() and not child.is_symlink():
+                roots[child.name] = child
+    return roots
+
+
+def snapshot_execution_segment(
+    *, segment_root: pathlib.Path, session_id: str, source: dict[str, Any], build: dict[str, Any],
+    dataset_info: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    snapshot_root = segment_root / "provenance_snapshot"
+    snapshot_root.mkdir(mode=0o700, exist_ok=False)
+    build_root = pathlib.Path(build["build_root"])
+    files: list[dict[str, Any]] = []
+
+    def copy_bytes(name: str, data: bytes, mode: int) -> None:
+        target = snapshot_root / name
+        with target.open("xb") as stream:
+            stream.write(data)
+        os.chmod(target, mode)
+        files.append({"path": str(target), "sha256": sha256_file(target),
+                      "size_bytes": target.stat().st_size, "mode": format(mode, "04o")})
+
+    binary_path = pathlib.Path(build["binary_path"])
+    cache_path = build_root / "CMakeCache.txt"
+    build_manifest_path = pathlib.Path(build["source_manifest_path"])
+    copy_bytes("gatzk_mechanism", binary_path.read_bytes(), binary_path.stat().st_mode & 0o777)
+    copy_bytes("CMakeCache.txt", cache_path.read_bytes(), cache_path.stat().st_mode & 0o777)
+    source_manifest_bytes = (json.dumps(source["source_manifest"], indent=2, sort_keys=True,
+                                        allow_nan=False) + "\n").encode("utf-8")
+    copy_bytes("source_manifest.json", source_manifest_bytes, 0o600)
+    copy_bytes("build_source_manifest.json", build_manifest_path.read_bytes(), 0o600)
+    configuration = {
+        name: {
+            "config_path": info["config_path"], "config_sha256": info["config_sha256"],
+            "checkpoint_path": info["checkpoint_path"],
+            "srs": {key: value for key, value in info["srs"].items() if key != "manifest"},
+            "srs_manifest": info["srs"]["manifest"],
+        }
+        for name, info in dataset_info.items()
+    }
+    configuration_bytes = (json.dumps(configuration, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    copy_bytes("configuration_and_srs_manifest.json", configuration_bytes, 0o600)
+    manifest = {
+        "format": "zkgat_mechanism_execution_segment_snapshot_v1",
+        "session_id": session_id,
+        "source": {key: value for key, value in source.items() if key != "source_manifest"},
+        "build": {key: value for key, value in build.items() if key != "source_manifest"},
+        "dataset_config_srs": configuration,
+        "files": files,
+    }
+    manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
+    manifest_path = snapshot_root / "snapshot_manifest.json"
+    with manifest_path.open("xb") as stream:
+        stream.write(manifest_bytes)
+    return {"path": str(manifest_path), "sha256": sha256_file(manifest_path),
+            "session_id": session_id, "source_tree_hash": source["source_tree_hash"],
+            "binary_sha256": build["binary_sha256"],
+            "build_source_manifest_sha256": build["source_manifest_sha256"]}
+
+
+def validate_execution_segment_snapshot(segment: dict[str, Any], segment_root: pathlib.Path) -> dict[str, Any]:
+    snapshot = segment.get("snapshot")
+    require(isinstance(snapshot, dict) and snapshot.get("session_id") == segment.get("session_id"),
+            "continuation execution segment has no source/build snapshot receipt")
+    manifest_path = pathlib.Path(snapshot.get("path", ""))
+    require(manifest_path.is_file() and not manifest_path.is_symlink(),
+            "continuation source/build snapshot manifest is missing")
+    require_session_artifact(segment_root, str(manifest_path), snapshot.get("sha256", ""),
+                             "continuation source/build snapshot manifest")
+    manifest = load_json(manifest_path, "continuation source/build snapshot manifest")
+    require(manifest.get("format") == "zkgat_mechanism_execution_segment_snapshot_v1" and
+            manifest.get("session_id") == segment.get("session_id"),
+            "continuation source/build snapshot identity is invalid")
+    files = manifest.get("files")
+    expected_names = {"gatzk_mechanism", "CMakeCache.txt", "source_manifest.json",
+                      "build_source_manifest.json", "configuration_and_srs_manifest.json"}
+    require(isinstance(files, list) and len(files) == len(expected_names),
+            "continuation source/build snapshot has an incomplete file inventory")
+    records_by_name: dict[str, dict[str, Any]] = {}
+    for record in files:
+        require(isinstance(record, dict), "continuation snapshot contains a malformed file record")
+        name = pathlib.Path(str(record.get("path", ""))).name
+        require(name in expected_names and name not in records_by_name,
+                "continuation snapshot has an unexpected or duplicate file role")
+        require_session_artifact(segment_root, record.get("path", ""), record.get("sha256", ""),
+                                 "continuation source/build snapshot file")
+        require(type(record.get("size_bytes")) is int and
+                pathlib.Path(record["path"]).stat().st_size == record["size_bytes"],
+                "continuation source/build snapshot file size mismatch")
+        records_by_name[name] = record
+    require(set(records_by_name) == expected_names,
+            "continuation source/build snapshot omits a required file role")
+    source_manifest = load_json(pathlib.Path(records_by_name["source_manifest.json"]["path"]),
+                                "continuation source manifest snapshot")
+    build_source_manifest = load_json(pathlib.Path(records_by_name["build_source_manifest.json"]["path"]),
+                                      "continuation build source manifest snapshot")
+    config_srs = load_json(pathlib.Path(records_by_name["configuration_and_srs_manifest.json"]["path"]),
+                           "continuation config/SRS snapshot")
+    build = manifest.get("build", {})
+    source = manifest.get("source", {})
+    require(records_by_name["gatzk_mechanism"]["sha256"] == build.get("binary_sha256") and
+            records_by_name["CMakeCache.txt"]["sha256"] == build.get("cmake_cache_sha256") and
+            records_by_name["build_source_manifest.json"]["sha256"] == build.get("source_manifest_sha256") and
+            source_manifest.get("source_tree_hash") == source.get("source_tree_hash") and
+            source_manifest.get("inventory_id") == source.get("source_inventory_id") and
+            build_source_manifest.get("source_tree_hash") == build.get("built_source_tree_hash") and
+            build_source_manifest.get("source_tree_hash") == source.get("source_tree_hash") and
+            config_srs == manifest.get("dataset_config_srs"),
+            "continuation snapshot file contents do not match their source/build/config identities")
+    source_start = segment.get("source_start", {})
+    build_start = segment.get("build_start", {})
+    require(source.get("source_tree_hash") == source_start.get("source_tree_hash") and
+            source.get("git_diff_sha256") == source_start.get("git_diff_sha256") and
+            source.get("git_status_sha256") == source_start.get("git_status_sha256") and
+            build.get("binary_sha256") == build_start.get("binary_sha256") and
+            build.get("cmake_cache_sha256") == build_start.get("cmake_cache_sha256") and
+            build.get("source_manifest_sha256") == build_start.get("source_manifest_sha256"),
+            "continuation source/build snapshot differs from the segment startup identity")
+    require(manifest.get("source", {}).get("source_tree_hash") == snapshot.get("source_tree_hash") and
+            manifest.get("build", {}).get("binary_sha256") == snapshot.get("binary_sha256") and
+            manifest.get("build", {}).get("source_manifest_sha256") ==
+            snapshot.get("build_source_manifest_sha256"),
+            "continuation source/build snapshot does not match its segment receipt")
+    return manifest
+
+
+def validate_parent_closure(output_root: pathlib.Path, parent_session: pathlib.Path,
+                            parent_document: dict[str, Any]) -> dict[str, Any]:
+    closure_path = output_root / "aggregate_provenance" / "segment_000_original_closure.json"
+    closure = load_json(closure_path, "original session epoch closure")
+    require(closure.get("format") == "zkgat_mechanism_epoch_closure_v1" and
+            closure.get("session_id") == parent_document.get("session_id") and
+            closure.get("closure_status") == "MATCHES_ORIGINAL_START" and
+            closure.get("parent_summary", {}).get("path") == str(parent_session / "summary.json") and
+            closure.get("parent_summary", {}).get("sha256") == sha256_file(parent_session / "summary.json"),
+            "original session epoch closure does not bind its immutable incomplete parent summary")
+    original_provenance = parent_document.get("provenance", {})
+    original_source = original_provenance.get("source", {})
+    original_build = original_provenance.get("build", {})
+    closure_source = closure.get("source", {})
+    closure_build = closure.get("build", {})
+    require(all(closure_source.get(name) == original_source.get(name) for name in
+                ("source_tree_hash", "git_diff_sha256", "git_status_sha256")) and
+            all(closure_build.get(name) == original_build.get(name) for name in
+                ("binary_sha256", "cmake_cache_sha256", "source_manifest_sha256", "built_source_tree_hash")),
+            "original source/build epoch closure differs from the parent session startup identity")
+    snapshot_root = parent_session / "provenance_segments" / "segment_000_original"
+    snapshot_path = snapshot_root / "snapshot_manifest.json"
+    require(snapshot_path.is_file() and not snapshot_path.is_symlink(),
+            "original execution session has no binary/source snapshot")
+    snapshot = load_json(snapshot_path, "original execution binary/source snapshot")
+    require(sha256_file(snapshot_path) == closure.get("original_binary_snapshot_manifest_sha256") and
+            snapshot.get("format") == "zkgat_formal_resume_original_provenance_snapshot_v1" and
+            snapshot.get("session_id") == parent_document.get("session_id"),
+            "original binary/source snapshot does not match the epoch closure")
+    expected_names = {"gatzk_mechanism", "CMakeCache.txt", "source_manifest.json",
+                      "build_source_manifest.json", "configuration_and_srs_manifest.json"}
+    snapshot_files = snapshot.get("files")
+    require(isinstance(snapshot_files, list) and len(snapshot_files) == len(expected_names),
+            "original binary/source snapshot has an incomplete file inventory")
+    files_by_name: dict[str, dict[str, Any]] = {}
+    for record in snapshot_files:
+        require(isinstance(record, dict), "original binary/source snapshot has a malformed file record")
+        name = pathlib.Path(str(record.get("path", ""))).name
+        require(name in expected_names and name not in files_by_name,
+                "original binary/source snapshot has an unexpected or duplicate file role")
+        require_session_artifact(snapshot_root, record.get("path", ""), record.get("sha256", ""),
+                                 "original binary/source snapshot file")
+        require(type(record.get("size_bytes")) is int and
+                pathlib.Path(record["path"]).stat().st_size == record["size_bytes"],
+                "original binary/source snapshot file size mismatch")
+        files_by_name[name] = record
+    require(set(files_by_name) == expected_names and
+            files_by_name["gatzk_mechanism"]["sha256"] == original_build.get("binary_sha256") and
+            files_by_name["CMakeCache.txt"]["sha256"] == original_build.get("cmake_cache_sha256") and
+            files_by_name["build_source_manifest.json"]["sha256"] == original_build.get("source_manifest_sha256") and
+            snapshot.get("source_tree_hash") == original_source.get("source_tree_hash") and
+            snapshot.get("git_diff_sha256") == original_source.get("git_diff_sha256") and
+            snapshot.get("git_status_sha256") == original_source.get("git_status_sha256") and
+            snapshot.get("binary_sha256") == original_build.get("binary_sha256") and
+            snapshot.get("cmake_cache_sha256") == original_build.get("cmake_cache_sha256") and
+            snapshot.get("build_source_manifest_sha256") == original_build.get("source_manifest_sha256"),
+            "original snapshot files do not match the source/build epoch recorded at startup")
+    original_source_manifest = load_json(pathlib.Path(files_by_name["source_manifest.json"]["path"]),
+                                         "original source manifest snapshot")
+    original_build_manifest = load_json(pathlib.Path(files_by_name["build_source_manifest.json"]["path"]),
+                                        "original build source manifest snapshot")
+    original_config_srs = load_json(pathlib.Path(files_by_name["configuration_and_srs_manifest.json"]["path"]),
+                                    "original config/SRS manifest snapshot")
+    require(original_source_manifest.get("source_tree_hash") == original_source.get("source_tree_hash") and
+            original_source_manifest.get("inventory_id") == original_source.get("source_inventory_id") and
+            original_build_manifest.get("source_tree_hash") == original_build.get("built_source_tree_hash") ==
+            original_source.get("source_tree_hash") and
+            set(original_config_srs) == set(closure.get("dataset_config_srs", {})) and
+            all(original_config_srs[name].get("config_sha256") ==
+                closure["dataset_config_srs"][name].get("config_sha256") and
+                original_config_srs[name].get("srs", {}).get("manifest_sha256") ==
+                closure["dataset_config_srs"][name].get("srs_manifest_sha256")
+                for name in original_config_srs),
+            "original source/config/SRS snapshot does not match its closure receipt")
+    closure_prepared = {item.get("bundle_key"): item for item in closure.get("prepared_inputs", [])}
+    prepared = {item.get("bundle_key"): item for item in parent_document.get("prepared_inputs", [])}
+    require(set(closure_prepared) == set(prepared) and all(
+        closure_prepared[key].get("bundle_sha256") == prepared[key].get("bundle_sha256") and
+        closure_prepared[key].get("metadata_sha256") == prepared[key].get("metadata_sha256") and
+        closure_prepared[key].get("witness_sha256") == prepared[key].get("witness_sha256")
+        for key in prepared), "original prepared inputs differ from the epoch closure receipt")
+    return {"path": str(closure_path), "sha256": sha256_file(closure_path), "document": closure}
+
+
+def validate_saved_cell(
+    cell: dict[str, Any], *, spec: dict[str, Any], input_record: dict[str, Any],
+    srs_info: dict[str, Any], prover_root: pathlib.Path, verifier_root: pathlib.Path,
+    cell_root: pathlib.Path, require_verified: bool, prior_verifier_root: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    key = continuation_key(cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+    require(key[0] == matrix_config_id(spec) and type(key[1]) is int and key[1] > 0 and
+            key[2] in VARIANTS,
+            f"saved cell identity is invalid: {key}")
+    require(cell.get("dataset") == spec["dataset"] and cell.get("mechanism") == spec["mechanism"] and
+            cell.get("D") == spec["width"], f"saved cell configuration differs from the registered matrix: {key}")
+    bundle_path = pathlib.Path(input_record["input_bundle_path"])
+    metadata_path = pathlib.Path(input_record["metadata_path"])
+    require(cell.get("input_bundle_path") == str(bundle_path) and
+            cell.get("input_bundle_sha256") == input_record["bundle_sha256"] and
+            cell.get("input_metadata_path") == str(metadata_path) and
+            cell.get("input_metadata_sha256") == input_record["metadata_sha256"] and
+            cell.get("input_witness_sha256") == input_record["witness_sha256"],
+            f"saved cell does not bind the prepared real input: {key}")
+    check_regular_digest(str(bundle_path), input_record["bundle_sha256"], "prepared real input")
+    check_regular_digest(str(metadata_path), input_record["metadata_sha256"], "prepared real-input metadata")
+    for path_field, digest_field, root, label in (
+        ("proof_path", "proof_sha256", prover_root, "saved proof"),
+        ("statement_path", "statement_file_sha256", prover_root, "saved public statement"),
+        ("prover_result_path", "prover_result_sha256", prover_root, "saved prover receipt"),
+        ("prover_log", "prover_log_sha256", prover_root, "saved prover log"),
+        ("cell_json_path", None, cell_root, "saved cell record"),
+    ):
+        require(isinstance(cell.get(path_field), str) and cell[path_field],
+                f"saved cell has no {path_field}: {key}")
+        digest = cell.get(digest_field) if digest_field else sha256_file(pathlib.Path(cell[path_field]))
+        require_session_artifact(root, cell[path_field], digest or "", label)
+    proof_path = pathlib.Path(cell["proof_path"])
+    statement_path = pathlib.Path(cell["statement_path"])
+    prover_result = load_json(pathlib.Path(cell["prover_result_path"]), "saved prover receipt")
+    expected_proof_hash = cell.get("proof_sha256") or cell.get("partial_proof_sha256")
+    expected_statement_hash = cell.get("statement_file_sha256") or cell.get("partial_statement_sha256")
+    receipt = validate_run_result(
+        prover_result, mechanism=spec["mechanism"], variant=cell["variant"], dataset=spec["dataset"],
+        width=spec["width"], device=int(cell["device"]), real_input=input_record["metadata"],
+        proof_path=proof_path, statement_path=statement_path, proof_bytes=proof_path.stat().st_size,
+        expected_srs=srs_info,
+    )
+    require(receipt["proof_sha256"] == expected_proof_hash and
+            receipt["statement_sha256"] == expected_statement_hash and
+            cell.get("prover_exit_code") == 0,
+            f"saved proof or prover receipt is not the exact successful attempt: {key}")
+    if not require_verified:
+        rejected_root = prior_verifier_root or prover_root
+        if cell.get("proof_sha256"):
+            require(cell.get("proof_sha256") == receipt["proof_sha256"] and
+                    cell.get("statement_file_sha256") == receipt["statement_sha256"],
+                    f"failed cell has inconsistent partial proof identity: {key}")
+        for path_field, digest_field, partial_field, label in (
+            ("verifier_result_path", "verifier_result_sha256", "partial_verifier_result_sha256",
+             "prior rejected verifier receipt"),
+            ("verifier_log", "verifier_log_sha256", None, "prior rejected verifier log"),
+        ):
+            path_text = cell.get(path_field)
+            if isinstance(path_text, str) and pathlib.Path(path_text).is_file():
+                digest = cell.get(digest_field) or cell.get(partial_field)
+                require_session_artifact(rejected_root, path_text, digest or "", label)
+                if path_field == "verifier_result_path":
+                    load_json(pathlib.Path(path_text), label)
+            else:
+                require(path_text is None or not pathlib.Path(path_text).exists(),
+                        f"prior verifier artifact is not a regular file: {key}")
+        original_cell = load_json(pathlib.Path(cell["cell_json_path"]), "saved failed cell record")
+        require(original_cell == cell, f"failed cell record differs from its session summary: {key}")
+        return receipt
+    require(cell.get("cell_status") == "complete" and cell.get("verification_status") == "VERIFY_OK" and
+            cell.get("verifier_exit_code") == 0,
+            f"saved cell was not independently accepted: {key}")
+    require_session_artifact(verifier_root, cell.get("verifier_result_path", ""),
+                             cell.get("verifier_result_sha256", ""), "saved independent verifier receipt")
+    require_session_artifact(verifier_root, cell.get("verifier_log", ""),
+                             cell.get("verifier_log_sha256", ""), "saved independent verifier log")
+    verifier_result = load_json(pathlib.Path(cell["verifier_result_path"]), "saved independent verifier receipt")
+    verifier_receipt = validate_verify_result(
+        verifier_result, proof_sha256=receipt["proof_sha256"], statement_sha256=receipt["statement_sha256"],
+        srs=receipt["srs"],
+    )
+    require(cell.get("verifier_process_pid") != cell.get("prover_process_pid") and
+            cell.get("verifier_cuda_kernel_invocations_delta") == 0 and
+            cell.get("verify_time_ms") == verifier_receipt["verify_time_ms"],
+            f"saved cell lacks separate CPU verifier evidence: {key}")
+    cell_document = load_json(pathlib.Path(cell["cell_json_path"]), "saved cell record")
+    require(cell_document == cell, f"saved cell record differs from its parent summary: {key}")
+    return receipt
+
+
+def load_continuation_state(parent_value: pathlib.Path) -> dict[str, Any]:
+    parent_session = parent_value.expanduser().resolve(strict=True)
+    require(parent_session.is_dir() and not parent_value.is_symlink(),
+            "--parent-session must name a regular mechanism session directory")
+    output_root = safe_existing_output_root(parent_session.parent)
+    try:
+        parent_session.relative_to(output_root)
+    except ValueError as exc:
+        raise ValueError("parent session escapes its mechanism output root") from exc
+    parent_document = load_json(parent_session / "summary.json", "incomplete parent session summary")
+    require(parent_document.get("format") == EXPERIMENT_FORMAT and
+            parent_document.get("session_root") == str(parent_session) and
+            parent_document.get("session_status") == "incomplete",
+            "continuation requires an immutable incomplete formal parent session")
+    require(not (output_root / "summary.json").exists() and
+            not (output_root / "aggregate_manifest.json").exists(),
+            "the output root already contains a completed aggregate result")
+    parent_id = parent_document.get("session_id")
+    require(isinstance(parent_id, str) and parent_id == parent_session.name,
+            "parent session id does not match its directory name")
+    closure = validate_parent_closure(output_root, parent_session, parent_document)
+    configs = configs_for_document(parent_document)
+    repetitions = parent_document.get("repetitions")
+    require(type(repetitions) is int and repetitions > 0,
+            "parent session has an invalid repetition count")
+    expected_keys = expected_cell_keys(repetitions, configs)
+    require(parent_document.get("expected_cell_count") == len(expected_keys) and
+            parent_document.get("expected_pair_count") == len(configs) * repetitions,
+            "parent session plan differs from its canonical registered matrix")
+    prepared = parent_document.get("prepared_inputs")
+    require(isinstance(prepared, list), "parent session has no prepared real inputs")
+    expected_bundle_keys = {key for key, _, _ in unique_bundle_specs(configs)}
+    prepared_by_key = {item.get("bundle_key"): item for item in prepared if isinstance(item, dict)}
+    require(len(prepared_by_key) == len(prepared) and set(prepared_by_key) == expected_bundle_keys,
+            "parent session prepared-input inventory differs from its selected matrix")
+    for bundle in prepared:
+        check_regular_digest(bundle.get("input_bundle_path", ""), bundle.get("bundle_sha256", ""),
+                             "parent prepared input bundle")
+        check_regular_digest(bundle.get("metadata_path", ""), bundle.get("metadata_sha256", ""),
+                             "parent prepared input metadata")
+    revalidate_input_sources(parent_document)
+    datasets = selected_datasets(configs)
+    dataset_info = {name: config_snapshot(name) for name in datasets}
+    parent_datasets = parent_document.get("provenance", {}).get("datasets", {})
+    require(isinstance(parent_datasets, dict) and set(parent_datasets) == set(datasets),
+            "parent session config/SRS inventory differs from the selected datasets")
+    for name, info in dataset_info.items():
+        recorded = parent_datasets[name]
+        require(info["config_sha256"] == recorded.get("config_sha256") and
+                info["srs"]["manifest_sha256"] == recorded.get("srs", {}).get("manifest_sha256"),
+                f"{name} config or SRS changed since the parent session")
+    config_by_id = {matrix_config_id(spec): spec for spec in configs}
+    cells = parent_document.get("cells")
+    require(isinstance(cells, list), "parent session cell inventory is malformed")
+    accepted: dict[tuple[str, int, str], dict[str, Any]] = {}
+    candidates: dict[tuple[str, int, str], dict[str, Any]] = {}
+    seen: set[tuple[str, int, str]] = set()
+    input_by_key = {item["bundle_key"]: item for item in prepared}
+    for cell in cells:
+        require(isinstance(cell, dict), "parent session contains a malformed cell")
+        key = continuation_key(cell.get("config_id"), cell.get("repetition"), cell.get("variant"))
+        require(key in expected_keys and key not in seen, f"parent session has an invalid or duplicate cell key: {key}")
+        seen.add(key)
+        spec = config_by_id[key[0]]
+        input_record = input_by_key[bundle_key(spec["dataset"], spec["components"])]
+        srs = dataset_info[spec["dataset"]]["srs"]
+        cell_path = pathlib.Path(cell.get("cell_json_path", ""))
+        if cell.get("cell_status") == "complete" and cell.get("verification_status") == "VERIFY_OK":
+            validate_saved_cell(cell, spec=spec, input_record=input_record, srs_info=srs,
+                                 prover_root=parent_session, verifier_root=parent_session,
+                                 cell_root=parent_session, require_verified=True)
+            accepted[key] = {
+                "cell": cell, "prover_session_id": parent_id, "verifier_session_id": parent_id,
+                "prover_root": str(parent_session), "verifier_root": str(parent_session),
+                "cell_root": str(parent_session), "source_kind": "original_session",
+                "prover_build_sha256": parent_document["provenance"]["build"]["binary_sha256"],
+                "verifier_build_sha256": parent_document["provenance"]["build"]["binary_sha256"],
+            }
+        elif type(cell.get("prover_exit_code")) is int and cell["prover_exit_code"] == 0:
+            saved_receipt = validate_saved_cell(
+                cell, spec=spec, input_record=input_record, srs_info=srs,
+                prover_root=parent_session, verifier_root=parent_session,
+                cell_root=parent_session, require_verified=False)
+            require(cell.get("verification_status") != "VERIFY_OK",
+                    f"parent cell has contradictory accepted/failed state: {key}")
+            candidates[key] = {
+                "cell": cell, "prover_session_id": parent_id,
+                "prover_root": str(parent_session), "cell_root": str(parent_session),
+                "source_kind": "original_session",
+                "prover_build_sha256": parent_document["provenance"]["build"]["binary_sha256"],
+                "prover_receipt": saved_receipt,
+            }
+        else:
+            if cell.get("cell_json_path"):
+                require_session_artifact(parent_session, str(cell_path), sha256_file(cell_path),
+                                         "failed parent cell attempt")
+    continuation_root = output_root / "continuations"
+    segment_docs: list[dict[str, Any]] = []
+    known_segment_roots = {parent_id: parent_session}
+    known_segment_builds = {
+        parent_id: parent_document["provenance"]["build"]["binary_sha256"]
+    }
+    if continuation_root.exists():
+        require(continuation_root.is_dir() and not continuation_root.is_symlink(),
+                "continuation directory is not a regular directory")
+        for segment_root in sorted(continuation_root.iterdir()):
+            if not segment_root.is_dir() or segment_root.is_symlink():
+                continue
+            manifest_path = segment_root / "continuation.json"
+            require(manifest_path.is_file() and not manifest_path.is_symlink(),
+                    f"continuation session has no final state manifest: {segment_root}")
+            segment = load_json(manifest_path, "continuation session manifest")
+            require(segment.get("format") == "zkgat_mechanism_continuation_v1" and
+                    segment.get("parent_session_id") == parent_id and
+                    segment.get("parent_summary_sha256") == sha256_file(parent_session / "summary.json") and
+                    segment.get("session_id") == segment_root.name,
+                    f"continuation session does not bind the original parent: {segment_root}")
+            require(segment.get("provenance_stable") is True,
+                    f"continuation session lacks a closed stable source/build epoch: {segment_root}")
+            source_start, source_end = segment.get("source_start"), segment.get("source_end")
+            build_start, build_end = segment.get("build_start"), segment.get("build_end")
+            require(isinstance(source_start, dict) and isinstance(source_end, dict) and
+                    source_start.get("source_tree_hash") == source_end.get("source_tree_hash") and
+                    source_start.get("git_diff_sha256") == source_end.get("git_diff_sha256") and
+                    source_start.get("git_status_sha256") == source_end.get("git_status_sha256") and
+                    isinstance(build_start, dict) and isinstance(build_end, dict) and
+                    build_start.get("binary_sha256") == build_end.get("binary_sha256") and
+                    build_start.get("cmake_cache_sha256") == build_end.get("cmake_cache_sha256") and
+                    build_start.get("source_manifest_sha256") == build_end.get("source_manifest_sha256") and
+                    segment.get("dataset_config_srs") == segment.get("dataset_config_srs_end") and
+                    segment.get("status") in ("complete", "incomplete"),
+                    f"continuation session source/build identity changed during execution: {segment_root}")
+            segment_snapshot = validate_execution_segment_snapshot(segment, segment_root)
+            segment_cells = segment.get("cell_entries")
+            require(isinstance(segment_cells, list), "continuation session has no cell-entry inventory")
+            segment_seen: set[tuple[str, int, str]] = set()
+            for entry in segment_cells:
+                require(isinstance(entry, dict), "continuation session has a malformed cell entry")
+                key = continuation_key(entry.get("config_id"), entry.get("repetition"), entry.get("variant"))
+                require(key in expected_keys and key not in segment_seen,
+                        f"continuation session has an invalid or duplicate cell key: {key}")
+                segment_seen.add(key)
+                cell_path = pathlib.Path(entry.get("cell_json_path", ""))
+                require_session_artifact(segment_root, str(cell_path), entry.get("cell_json_sha256", ""),
+                                         "continuation cell record")
+                cell = load_json(cell_path, "continuation cell record")
+                require(continuation_key(cell.get("config_id"), cell.get("repetition"), cell.get("variant")) == key,
+                        f"continuation cell record key differs from its manifest: {key}")
+                spec = config_by_id[key[0]]
+                input_record = input_by_key[bundle_key(spec["dataset"], spec["components"])]
+                srs = dataset_info[spec["dataset"]]["srs"]
+                role = {
+                    "cell": cell, "prover_session_id": entry.get("prover_session_id"),
+                    "verifier_session_id": entry.get("verifier_session_id"),
+                    "prover_root": entry.get("prover_root"), "verifier_root": entry.get("verifier_root"),
+                    "cell_root": str(segment_root), "source_kind": "continuation_session",
+                    "prover_build_sha256": entry.get("prover_build_sha256"),
+                    "verifier_build_sha256": entry.get("verifier_build_sha256"),
+                }
+                for role_name in ("prover", "verifier"):
+                    role_session = role[f"{role_name}_session_id"]
+                    role_root_text = role[f"{role_name}_root"]
+                    role_build = role[f"{role_name}_build_sha256"]
+                    require(isinstance(role_session, str) and isinstance(role_root_text, str) and
+                            isinstance(role_build, str),
+                            f"continuation cell omits {role_name} execution provenance: {key}")
+                    if role_session == segment.get("session_id"):
+                        expected_root = segment_root
+                        expected_build = build_start.get("binary_sha256")
+                    else:
+                        expected_root = known_segment_roots.get(role_session)
+                        expected_build = known_segment_builds.get(role_session)
+                    require(expected_root is not None and pathlib.Path(role_root_text).resolve() == expected_root.resolve() and
+                            role_build == expected_build,
+                            f"continuation cell {role_name} role does not bind a known immutable execution segment: {key}")
+                if entry.get("accepted") is True:
+                    validate_saved_cell(cell, spec=spec, input_record=input_record, srs_info=srs,
+                                         prover_root=pathlib.Path(role["prover_root"]),
+                                         verifier_root=pathlib.Path(role["verifier_root"]),
+                                         cell_root=segment_root, require_verified=True)
+                    require(key not in accepted, f"more than one execution segment accepted cell {key}")
+                    accepted[key] = role
+                    require(cell.get("cell_status") == "complete" and
+                            cell.get("verification_status") == "VERIFY_OK",
+                            f"accepted continuation entry is not independently verified: {key}")
+                elif type(cell.get("prover_exit_code")) is int and cell["prover_exit_code"] == 0:
+                    saved_receipt = validate_saved_cell(
+                        cell, spec=spec, input_record=input_record, srs_info=srs,
+                        prover_root=pathlib.Path(role["prover_root"]),
+                        verifier_root=segment_root, cell_root=segment_root,
+                        require_verified=False, prior_verifier_root=segment_root)
+                    role["prover_receipt"] = saved_receipt
+                    if key not in accepted:
+                        candidates[key] = role
+            known_segment_roots[segment["session_id"]] = segment_root
+            known_segment_builds[segment["session_id"]] = build_start.get("binary_sha256")
+            segment["_root"] = str(segment_root)
+            segment["_snapshot_manifest"] = segment_snapshot
+            segment_docs.append(segment)
+    return {
+        "output_root": output_root, "parent_session": parent_session,
+        "parent_document": parent_document, "parent_summary_sha256": sha256_file(parent_session / "summary.json"),
+        "parent_closure": closure, "configs": configs, "repetitions": repetitions,
+        "expected_keys": expected_keys, "prepared_by_key": prepared_by_key,
+        "dataset_info": dataset_info, "accepted": accepted, "candidates": candidates,
+        "segments": segment_docs,
+    }
+
+
+def verify_only_retry(
+    *, candidate: dict[str, Any], segment_root: pathlib.Path, session_log: pathlib.Path,
+    binary: pathlib.Path, srs_info: dict[str, Any], timeout_seconds: int,
+) -> dict[str, Any]:
+    prior = candidate["cell"]
+    key = continuation_key(prior["config_id"], prior["repetition"], prior["variant"])
+    cell_root = (segment_root / "verification_only" / key[0] / f"rep_{key[1]:03d}" /
+                 key[2] / "attempt_001")
+    cell_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+    cell = dict(prior)
+    prior_attempt = {
+        "verifier_result_path": prior.get("verifier_result_path"),
+        "verifier_result_sha256": prior.get("verifier_result_sha256") or prior.get("partial_verifier_result_sha256"),
+        "verifier_log": prior.get("verifier_log"),
+        "verifier_log_sha256": prior.get("verifier_log_sha256"),
+        "verifier_exit_code": prior.get("verifier_exit_code"),
+        "verifier_process_pid": prior.get("verifier_process_pid"),
+        "verification_status": prior.get("verification_status"),
+        "failure_reason": prior.get("failure_reason"),
+    }
+    attempts = list(prior.get("prior_verification_attempts", []))
+    attempts.append(prior_attempt)
+    cell["prior_verification_attempts"] = attempts
+    verifier_result_path = cell_root / "verifier_result.json"
+    verifier_log = cell_root / "verifier.log"
+    cell.update({
+        "cell_json_path": str(cell_root / "cell.json"),
+        "verifier_result_path": str(verifier_result_path), "verifier_log": str(verifier_log),
+        "verifier_result_sha256": None, "verifier_log_sha256": None,
+        "verifier_exit_code": None, "verifier_process_pid": None,
+        "verification_status": "NOT_RUN", "cell_status": "failed", "pair_status": "incomplete",
+        "failure_reason": None,
+    })
+    started = time.monotonic()
+    try:
+        require(_INTERRUPT_SIGNAL is None, "continuation session received a stop signal before Verify retry")
+        command = [str(binary), "verify", "--proof", prior["proof_path"],
+                   "--statement", prior["statement_path"], "--srs", srs_info["path"],
+                   "--result-json", str(verifier_result_path)]
+        process = run_process(command, verifier_log,
+                              remaining_timeout(started, timeout_seconds, "verify-only retry"),
+                              "continuation-independent-cpu-verifier")
+        cell["verifier_exit_code"] = process["return_code"]
+        cell["verifier_process_pid"] = process["pid"]
+        cell["verify_wall_time_seconds"] = process["wall_time_seconds"]
+        require(not process["timed_out"] and not process["interrupted"],
+                "verify-only retry timed out or was interrupted")
+        require(process["return_code"] == 0,
+                f"verify-only retry exited with code {process['return_code']}")
+        result = load_json(verifier_result_path, "continuation independent verifier result")
+        receipt = validate_verify_result(
+            result, proof_sha256=prior["proof_sha256"],
+            statement_sha256=prior["statement_file_sha256"],
+            srs=candidate["prover_receipt"]["srs"],
+        )
+        require(cell.get("prover_process_pid") != cell.get("verifier_process_pid"),
+                "verify-only retry did not use a process independent from its original prover")
+        cell.update({
+            "verify_time_ms": receipt["verify_time_ms"],
+            "verifier_cuda_kernel_invocations_delta": receipt["verifier_cuda_kernel_invocations_delta"],
+            "verifier_result_sha256": sha256_file(verifier_result_path),
+            "verification_status": "VERIFY_OK", "cell_status": "complete",
+            "failure_reason": None,
+        })
+    except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+        cell["failure_reason"] = str(exc) or "verify-only retry failed"
+        if verifier_result_path.is_file() and not verifier_result_path.is_symlink():
+            cell["partial_verifier_result_sha256"] = sha256_file(verifier_result_path)
+    cell["cell_wall_time_seconds"] = time.monotonic() - started
+    if verifier_log.is_file() and not verifier_log.is_symlink():
+        cell["verifier_log_sha256"] = sha256_file(verifier_log)
+    atomic_write_json(cell_root / "cell.json", cell)
+    emit(f"VERIFY_RETRY_END config={key[0]} rep={key[1]} variant={key[2]} "
+         f"status={cell['cell_status']} verify={cell['verification_status']} "
+         f"exit={cell['verifier_exit_code']}", session_log)
+    return cell
+
+
+def continuation_cell_entry(
+    key: tuple[str, int, str], cell: dict[str, Any], *, segment_id: str,
+    binary_sha256: str, parent_id: str, parent_build_sha256: str,
+    prover_session_id: str, verifier_session_id: str,
+    prover_root: pathlib.Path, verifier_root: pathlib.Path,
+) -> dict[str, Any]:
+    return {
+        "config_id": key[0], "repetition": key[1], "variant": key[2],
+        "accepted": cell.get("cell_status") == "complete" and cell.get("verification_status") == "VERIFY_OK",
+        "cell_json_path": cell["cell_json_path"], "cell_json_sha256": sha256_file(pathlib.Path(cell["cell_json_path"])),
+        "prover_session_id": prover_session_id, "verifier_session_id": verifier_session_id,
+        "prover_root": str(prover_root), "verifier_root": str(verifier_root),
+        "prover_build_sha256": parent_build_sha256 if prover_session_id == parent_id else binary_sha256,
+        "verifier_build_sha256": parent_build_sha256 if verifier_session_id == parent_id else binary_sha256,
+        "continuation_session_id": segment_id,
+        "proof_sha256": cell.get("proof_sha256") or cell.get("partial_proof_sha256"),
+        "statement_sha256": cell.get("statement_file_sha256") or cell.get("partial_statement_sha256"),
+    }
+
+
+def continue_formal(args: argparse.Namespace) -> int:
+    require(type(args.device) is int and args.device >= 0, "continuation requires a non-negative --device")
+    require(0 <= args.timeout_seconds <= 599,
+            "continuation timeout must be 0 (unlimited) or between 1 and 599 seconds")
+    state = load_continuation_state(args.parent_session)
+    output_root = state["output_root"]
+    parent_session = state["parent_session"]
+    parent_document = state["parent_document"]
+    parent_id = parent_document["session_id"]
+    configs = state["configs"]
+    dataset_info = state["dataset_info"]
+    configs_by_id = {matrix_config_id(spec): spec for spec in configs}
+    prepared_by_key = state["prepared_by_key"]
+    for config in configs:
+        spec = configs_by_id[matrix_config_id(config)]
+        bundle = prepared_by_key[bundle_key(spec["dataset"], spec["components"])]
+        check_expected_spec(spec, bundle)
+
+    lock_stream = acquire_cuda_lock(args.device)
+    segment_root: pathlib.Path | None = None
+    segment: dict[str, Any] | None = None
+    failure_reason: str | None = None
+    complete = False
+    session_log: pathlib.Path | None = None
+    try:
+        device_snapshot = cuda_snapshot(args.device)
+        assert_no_external_cuda_compute(device_snapshot)
+        initial_activity = cuda_activity_snapshot(device_snapshot)
+        require(not initial_activity.get("external_compute_processes"),
+                "exclusive continuation requires an idle selected CUDA device")
+        original_uuid = parent_document.get("provenance", {}).get("device", {}).get("selected_device", {}).get("uuid")
+        require(isinstance(original_uuid, str) and
+                device_snapshot.get("selected_device", {}).get("uuid") == original_uuid,
+                "continuation must use the same physical CUDA device as the original session")
+        binary = resolve_cuda_binary(args.binary)
+        source_start = source_snapshot()
+        build_start = build_snapshot(binary, "cuda")
+        require(build_start.get("built_source_tree_hash") == source_start["source_tree_hash"],
+                "continuation CUDA binary was not built from the current source inventory")
+        current_configs = {name: config_snapshot(name) for name in dataset_info}
+        require(all(current_configs[name]["config_sha256"] == dataset_info[name]["config_sha256"] and
+                    current_configs[name]["srs"]["manifest_sha256"] ==
+                    dataset_info[name]["srs"]["manifest_sha256"] for name in dataset_info),
+                "dataset config or trusted SRS changed while preparing the continuation")
+        continuations_root = output_root / "continuations"
+        require(not continuations_root.is_symlink(), "continuation root cannot be a symlink")
+        continuations_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        session_id = "continuation_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:10]
+        segment_root = continuations_root / session_id
+        segment_root.mkdir(mode=0o700, exist_ok=False)
+        session_log = segment_root / "session.log"
+        snapshot = snapshot_execution_segment(
+            segment_root=segment_root, session_id=session_id, source=source_start,
+            build=build_start, dataset_info=current_configs,
+        )
+        segment = {
+            "format": "zkgat_mechanism_continuation_v1", "session_id": session_id,
+            "created_utc": utc_now(), "status": "running",
+            "parent_session_id": parent_id,
+            "parent_session_root": str(parent_session),
+            "parent_summary_sha256": state["parent_summary_sha256"],
+            "parent_closure_path": state["parent_closure"]["path"],
+            "parent_closure_sha256": state["parent_closure"]["sha256"],
+            "snapshot": snapshot, "source_start": source_start, "build_start": build_start,
+            "dataset_config_srs": snapshot_execution_segment_config(current_configs),
+            "source_end": None, "build_end": None, "provenance_stable": False,
+            "device": device_snapshot, "gpu_sharing_mode": "exclusive_required",
+            "expected_keys": [continuation_key_text(key) for key in sorted(state["expected_keys"])],
+            "initial_accepted_keys": [continuation_key_text(key) for key in sorted(state["accepted"])],
+            "cell_entries": [],
+        }
+        atomic_write_json(segment_root / "continuation.json", segment)
+        emit(f"CONTINUATION_STARTED session_id={session_id} parent={parent_id} "
+             f"accepted={len(state['accepted'])}/{len(state['expected_keys'])} "
+             f"output={segment_root}", session_log)
+        used_seed_tokens: set[bytes] = set()
+        entry_by_key: dict[tuple[str, int, str], dict[str, Any]] = {}
+        parent_build_sha = parent_document["provenance"]["build"]["binary_sha256"]
+        pair_index = 0
+        for spec, repetition in formal_schedule(state["repetitions"], configs):
+            config_id = matrix_config_id(spec)
+            input_record = prepared_by_key[bundle_key(spec["dataset"], spec["components"])]
+            srs_info = dataset_info[spec["dataset"]]["srs"]
+            variants = pair_variant_order(pair_index)
+            emit(f"CONTINUATION_PAIR config={config_id} rep={repetition} "
+                 f"order={','.join(variants)}", session_log)
+            for variant in variants:
+                key = continuation_key(config_id, repetition, variant)
+                if key in state["accepted"]:
+                    continue
+                candidate = state["candidates"].get(key)
+                if candidate is not None:
+                    cell = verify_only_retry(
+                        candidate=candidate, segment_root=segment_root, session_log=session_log,
+                        binary=binary, srs_info=srs_info, timeout_seconds=args.timeout_seconds,
+                    )
+                    prover_session_id = candidate["prover_session_id"]
+                    prover_root = pathlib.Path(candidate["prover_root"])
+                    verifier_session_id = session_id
+                    verifier_root = segment_root
+                else:
+                    assert_no_external_cuda_compute(device_snapshot)
+                    cell = run_real_cell(
+                        binary=binary, session_root=segment_root, spec=spec,
+                        input_record=input_record, srs_info=srs_info, device=args.device,
+                        timeout_seconds=args.timeout_seconds, pair_index=pair_index,
+                        repetition=repetition, variant=variant, used_seed_tokens=used_seed_tokens,
+                        device_snapshot=device_snapshot, allow_shared_gpu=False,
+                        activity_sampler=None, session_log=session_log,
+                    )
+                    prover_session_id = session_id
+                    prover_root = segment_root
+                    verifier_session_id = session_id
+                    verifier_root = segment_root
+                entry = continuation_cell_entry(
+                    key, cell, segment_id=session_id, binary_sha256=build_start["binary_sha256"],
+                    parent_id=parent_id, parent_build_sha256=parent_build_sha,
+                    prover_session_id=prover_session_id, verifier_session_id=verifier_session_id,
+                    prover_root=prover_root, verifier_root=verifier_root,
+                )
+                entry_by_key[key] = entry
+                segment["cell_entries"].append(entry)
+                atomic_write_json(segment_root / "continuation.json", segment)
+                if entry["accepted"]:
+                    state["accepted"][key] = {
+                        "cell": cell, "prover_session_id": prover_session_id,
+                        "verifier_session_id": verifier_session_id,
+                        "prover_root": str(prover_root), "verifier_root": str(verifier_root),
+                        "cell_root": str(segment_root), "source_kind": "continuation_session",
+                        "prover_build_sha256": entry["prover_build_sha256"],
+                        "verifier_build_sha256": entry["verifier_build_sha256"],
+                    }
+                elif type(cell.get("prover_exit_code")) is int and cell["prover_exit_code"] == 0:
+                    state["candidates"][key] = {
+                        "cell": cell, "prover_session_id": prover_session_id,
+                        "prover_root": str(prover_root), "cell_root": str(segment_root),
+                        "source_kind": "continuation_session",
+                        "prover_build_sha256": entry["prover_build_sha256"],
+                    }
+                if not entry["accepted"]:
+                    raise ValueError(cell.get("failure_reason") or
+                                     f"continuation cell failed: {continuation_key_text(key)}")
+                atomic_write_json(segment_root / "status.json", {
+                    "session_id": session_id, "status": "running",
+                    "accepted_cell_count": len(state["accepted"]),
+                    "expected_cell_count": len(state["expected_keys"]),
+                    "last_cell": continuation_key_text(key),
+                    "last_cell_status": cell.get("cell_status"),
+                    "last_verification_status": cell.get("verification_status"),
+                    "updated_utc": utc_now(),
+                })
+            pair_roles = [state["accepted"].get(continuation_key(config_id, repetition, variant))
+                          for variant in VARIANTS]
+            require(all(role is not None for role in pair_roles),
+                    f"continuation pair is missing an independently verified cell: {config_id} rep {repetition}")
+            original = next(role["cell"] for role in pair_roles if role["cell"].get("variant") == "original")
+            control = next(role["cell"] for role in pair_roles if role["cell"].get("variant") == "control")
+            require(real_pair_compatible(original, control),
+                    f"Original/Control identity checks failed: {config_id} repetition {repetition}")
+            for variant in VARIANTS:
+                key = continuation_key(config_id, repetition, variant)
+                role = state["accepted"][key]
+                cell = dict(role["cell"])
+                cell["pair_status"] = "paired"
+                cell["failure_reason"] = None
+                role["cell"] = cell
+                state["accepted"][key] = role
+                if role["cell_root"] == str(segment_root):
+                    atomic_write_json(pathlib.Path(cell["cell_json_path"]), cell)
+                    entry = entry_by_key.get(key)
+                    if entry is not None:
+                        entry["cell_json_sha256"] = sha256_file(pathlib.Path(cell["cell_json_path"]))
+            if entry_by_key:
+                atomic_write_json(segment_root / "continuation.json", segment)
+            pair_index += 1
+            emit(f"CONTINUATION_PAIR_END config={config_id} rep={repetition} status=paired", session_log)
+        require(set(state["accepted"]) == state["expected_keys"],
+                "continuation ended without accepting every canonical cell key")
+        source_end = source_snapshot()
+        build_end = build_snapshot(binary, "cuda")
+        configs_end = {name: config_snapshot(name) for name in current_configs}
+        revalidate_input_sources(parent_document)
+        stable = (
+            source_start["source_tree_hash"] == source_end["source_tree_hash"] and
+            source_start["git_diff_sha256"] == source_end["git_diff_sha256"] and
+            source_start["git_status_sha256"] == source_end["git_status_sha256"] and
+            source_start["publication_document_snapshot"] == source_end["publication_document_snapshot"] and
+            build_start["binary_sha256"] == build_end["binary_sha256"] and
+            build_start["cmake_cache_sha256"] == build_end["cmake_cache_sha256"] and
+            build_start["source_manifest_sha256"] == build_end["source_manifest_sha256"] and
+            all(current_configs[name]["config_sha256"] == configs_end[name]["config_sha256"] and
+                current_configs[name]["srs"]["manifest_sha256"] ==
+                configs_end[name]["srs"]["manifest_sha256"] for name in current_configs)
+        )
+        require(stable, "continuation source/config/build/SRS/data identity changed during execution")
+        segment.update({
+            "source_end": source_end, "build_end": build_end,
+            "dataset_config_srs_end": snapshot_execution_segment_config(configs_end),
+            "provenance_stable": True, "status": "complete",
+            "closed_utc": utc_now(), "accepted_cell_count": len(state["accepted"]),
+        })
+        complete = True
+    except (OSError, ValueError, subprocess.SubprocessError, KeyboardInterrupt) as exc:
+        failure_reason = str(exc) or "continuation interrupted"
+        emit(f"CONTINUATION_FAILURE reason={failure_reason}", session_log)
+    finally:
+        if segment_root is not None and segment is not None:
+            try:
+                if segment.get("source_end") is None:
+                    binary_for_close = resolve_cuda_binary(args.binary)
+                    source_end = source_snapshot()
+                    build_end = build_snapshot(binary_for_close, "cuda")
+                    configs_end = {name: config_snapshot(name) for name in dataset_info}
+                    dataset_config_srs_end = snapshot_execution_segment_config(configs_end)
+                    stable = (
+                        segment["source_start"]["source_tree_hash"] == source_end["source_tree_hash"] and
+                        segment["source_start"]["git_diff_sha256"] == source_end["git_diff_sha256"] and
+                        segment["source_start"]["git_status_sha256"] == source_end["git_status_sha256"] and
+                        segment["source_start"]["publication_document_snapshot"] ==
+                        source_end["publication_document_snapshot"] and
+                        segment["build_start"]["binary_sha256"] == build_end["binary_sha256"] and
+                        segment["build_start"]["cmake_cache_sha256"] == build_end["cmake_cache_sha256"] and
+                        segment["build_start"]["source_manifest_sha256"] == build_end["source_manifest_sha256"] and
+                        segment["dataset_config_srs"] == dataset_config_srs_end
+                    )
+                    if stable:
+                        revalidate_input_sources(parent_document)
+                    segment.update({
+                        "source_end": source_end, "build_end": build_end,
+                        "dataset_config_srs_end": dataset_config_srs_end,
+                        "provenance_stable": stable,
+                        "status": "complete" if complete and stable else "incomplete",
+                        "closed_utc": utc_now(), "failure_reason": failure_reason,
+                        "accepted_cell_count": len(state.get("accepted", {})),
+                    })
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                segment["status"] = "incomplete"
+                segment["provenance_stable"] = False
+                segment["failure_reason"] = failure_reason or str(exc) or "could not close continuation epoch"
+            atomic_write_json(segment_root / "continuation.json", segment)
+            atomic_write_json(segment_root / "status.json", {
+                "session_id": segment["session_id"], "status": segment.get("status"),
+                "accepted_cell_count": segment.get("accepted_cell_count", 0),
+                "expected_cell_count": len(state["expected_keys"]),
+                "failure_reason": segment.get("failure_reason"), "updated_utc": utc_now(),
+            })
+            if session_log is not None:
+                emit(f"CONTINUATION_END session_id={segment['session_id']} "
+                     f"status={segment.get('status')} accepted={segment.get('accepted_cell_count')}/"
+                     f"{len(state['expected_keys'])} log={session_log}", session_log)
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+        lock_stream.close()
+    if not complete:
+        print(f"CONTINUATION_INCOMPLETE output={segment_root} reason={failure_reason or 'provenance closure failed'}",
+              file=sys.stderr)
+        return 1
+
+    ordered_keys: list[tuple[str, int, str]] = []
+    for spec, repetition in formal_schedule(state["repetitions"], configs):
+        for variant in VARIANTS:
+            ordered_keys.append(continuation_key(matrix_config_id(spec), repetition, variant))
+    aggregate_cells: list[dict[str, Any]] = []
+    cell_provenance: list[dict[str, Any]] = []
+    for key in ordered_keys:
+        role = state["accepted"][key]
+        cell = dict(role["cell"])
+        cell["pair_status"] = "paired"
+        cell["failure_reason"] = None
+        aggregate_cells.append(cell)
+        cell_provenance.append({
+            "config_id": key[0], "repetition": key[1], "variant": key[2],
+            "cell_json_path": cell.get("cell_json_path"),
+            "cell_json_sha256": sha256_file(pathlib.Path(cell["cell_json_path"])),
+            "proof_path": cell.get("proof_path"), "proof_sha256": cell.get("proof_sha256"),
+            "statement_path": cell.get("statement_path"),
+            "statement_sha256": cell.get("statement_file_sha256"),
+            "prover_session_id": role["prover_session_id"],
+            "prover_root": role["prover_root"],
+            "prover_build_sha256": role["prover_build_sha256"],
+            "verifier_session_id": role["verifier_session_id"],
+            "verifier_root": role["verifier_root"],
+            "verifier_build_sha256": role["verifier_build_sha256"],
+            "prior_verification_attempts": cell.get("prior_verification_attempts", []),
+        })
+    aggregate_id = "aggregate_" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "_" + uuid.uuid4().hex[:10]
+    document = empty_summary(aggregate_id, output_root, state["repetitions"], "all", "all")
+    document.update({
+        "session_status": "complete", "aggregation_mode": "multi_execution_continuation",
+        "parent_session_id": parent_id,
+        "parent_session_root": str(parent_session),
+        "parent_summary_sha256": state["parent_summary_sha256"],
+        "parent_session_status": parent_document["session_status"],
+        "parent_epoch_closure_sha256": state["parent_closure"]["sha256"],
+        "prepared_inputs": parent_document["prepared_inputs"],
+        "provenance": {"datasets": parent_document.get("provenance", {}).get("datasets", {})},
+        "execution_segments": [
+            {"session_id": parent_id, "session_root": str(parent_session),
+             "source_tree_hash": parent_document["provenance"]["source"]["source_tree_hash"],
+             "binary_sha256": parent_document["provenance"]["build"]["binary_sha256"],
+             "role": "original_32_accepted_plus_preserved_failed_attempt"},
+            {"session_id": segment["session_id"], "session_root": str(segment_root),
+             "source_tree_hash": segment["source_end"]["source_tree_hash"],
+             "binary_sha256": segment["build_end"]["binary_sha256"],
+             "role": "verify_only_retry_and_missing_cells"},
+        ],
+    })
+    update_summary_counts(document, aggregate_cells)
+    require(document["cell_count"] == document["expected_cell_count"] and
+            document["verified_cells"] == document["expected_cell_count"] and
+            document["complete_pairs"] == document["expected_pair_count"],
+            "aggregate does not cover every canonical independently verified cell and pair")
+    generate_reports(output_root, document)
+    aggregate_manifest = {
+        "format": "zkgat_mechanism_multi_execution_aggregate_v1",
+        "aggregate_session_id": aggregate_id, "created_utc": utc_now(),
+        "aggregation_mode": "multi_execution_continuation",
+        "parent": {
+            "session_id": parent_id, "session_root": str(parent_session),
+            "session_status": parent_document["session_status"],
+            "summary_sha256": state["parent_summary_sha256"],
+            "epoch_closure_path": state["parent_closure"]["path"],
+            "epoch_closure_sha256": state["parent_closure"]["sha256"],
+        },
+        "continuation": {
+            "session_id": segment["session_id"], "session_root": str(segment_root),
+            "manifest_path": str(segment_root / "continuation.json"),
+            "manifest_sha256": sha256_file(segment_root / "continuation.json"),
+            "snapshot": segment["snapshot"], "source_start": segment["source_start"],
+            "source_end": segment["source_end"], "build_start": segment["build_start"],
+            "build_end": segment["build_end"],
+        },
+        "expected_config_count": document["expected_config_count"],
+        "expected_pair_count": document["expected_pair_count"],
+        "expected_cell_count": document["expected_cell_count"],
+        "verified_cells": document["verified_cells"],
+        "complete_pairs": document["complete_pairs"],
+        "cells": cell_provenance,
+        "reports": {
+            "summary_json": {"path": str(output_root / "summary.json"),
+                              "sha256": sha256_file(output_root / "summary.json")},
+            "summary_markdown": {"path": str(output_root / "summary.md"),
+                                 "sha256": sha256_file(output_root / "summary.md")},
+            "results_csv": {"path": str(output_root / "results.csv"),
+                            "sha256": sha256_file(output_root / "results.csv")},
+        },
+    }
+    atomic_write_json(output_root / "aggregate_manifest.json", aggregate_manifest)
+    print(f"CONTINUATION_COMPLETE aggregate={aggregate_id} cells={document['verified_cells']}/"
+          f"{document['expected_cell_count']} pairs={document['complete_pairs']}/"
+          f"{document['expected_pair_count']} output={output_root}")
+    return 0
+
+
+def snapshot_execution_segment_config(dataset_info: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    return {
+        name: {
+            "config_path": info["config_path"], "config_sha256": info["config_sha256"],
+            "checkpoint_path": info["checkpoint_path"],
+            "srs": {key: value for key, value in info["srs"].items() if key != "manifest"},
+            "srs_manifest": info["srs"]["manifest"],
+        }
+        for name, info in dataset_info.items()
+    }
+
+
 def launch_formal(args: argparse.Namespace) -> int:
     require(type(args.repetitions) is int and args.repetitions > 0, "--repetitions must be a positive integer")
     require(0 <= args.timeout_seconds <= 599 and 0 <= args.prepare_timeout_seconds <= 599,
@@ -3874,6 +4899,17 @@ def build_parser() -> argparse.ArgumentParser:
                         help="real-input preparation timeout; 0 means unlimited")
     add_selection_arguments(launch)
 
+    continuation = subparsers.add_parser(
+        "continue", help="continue an immutable incomplete session in a new execution segment")
+    continuation.add_argument("--parent-session", type=pathlib.Path, required=True,
+                               help="incomplete original session printed by the initial formal runner")
+    continuation.add_argument("--binary", type=pathlib.Path,
+                               help="CUDA gatzk_mechanism binary; defaults to build_cuda/gatzk_mechanism")
+    continuation.add_argument("--device", type=integer_arg, required=True,
+                               help="exclusive CUDA device index for missing prover cells")
+    continuation.add_argument("--timeout-seconds", type=integer_arg, default=0,
+                               help="per-cell prove+verify or verify-only retry timeout; 0 means unlimited")
+
     audit = subparsers.add_parser("audit", help="audit exact cell/artifact/hash receipts and optionally reverify all proofs")
     audit.add_argument("session", type=pathlib.Path, help="session directory printed by the runner")
     audit.add_argument("--reverify", action="store_true", help="run the independent CPU verifier again for every proof in this session")
@@ -3901,6 +4937,8 @@ def main() -> int:
             return execute_formal(args)
         if args.command == "launch":
             return launch_formal(args)
+        if args.command == "continue":
+            return continue_formal(args)
         if args.command == "audit":
             return audit_session(args)
         if args.command == "summarize":

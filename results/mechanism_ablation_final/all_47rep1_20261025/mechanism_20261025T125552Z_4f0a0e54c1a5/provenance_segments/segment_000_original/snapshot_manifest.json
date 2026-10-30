@@ -1,0 +1,49 @@
+{
+  "binary_sha256": "15b59a01169e4469fe5ecd772e0323e2b6266df470e4bb5ff7d8ed32b3409b30",
+  "build_source_manifest_sha256": "f59dcb7237711a705b91e75c33281dfdfa557618586e8b46a7dfa5cf96e49aae",
+  "cmake_cache_sha256": "febb5cfa955e2fba71446e7f852c8aa9d81192279249cce40090e7ddcf126d27",
+  "created_utc": "2026-10-25T13:07:49.219702Z",
+  "files": [
+    {
+      "mode": "0775",
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/provenance_segments/segment_000_original/gatzk_mechanism",
+      "sha256": "15b59a01169e4469fe5ecd772e0323e2b6266df470e4bb5ff7d8ed32b3409b30",
+      "size_bytes": 16792480,
+      "source_path": "/home/pzh/project/build_cuda/gatzk_mechanism"
+    },
+    {
+      "mode": "0664",
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/provenance_segments/segment_000_original/CMakeCache.txt",
+      "sha256": "febb5cfa955e2fba71446e7f852c8aa9d81192279249cce40090e7ddcf126d27",
+      "size_bytes": 35453,
+      "source_path": "/home/pzh/project/build_cuda/CMakeCache.txt"
+    },
+    {
+      "mode": "0600",
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/provenance_segments/segment_000_original/source_manifest.json",
+      "sha256": "ea82b5f8d74a1030616b5e91683bc88834ea3e77c3931d5aa7c800170700823f",
+      "size_bytes": 35114,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/source_manifest.json"
+    },
+    {
+      "mode": "0600",
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/provenance_segments/segment_000_original/build_source_manifest.json",
+      "sha256": "f59dcb7237711a705b91e75c33281dfdfa557618586e8b46a7dfa5cf96e49aae",
+      "size_bytes": 27916,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/build_source_manifest.json"
+    },
+    {
+      "mode": "0600",
+      "path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/provenance_segments/segment_000_original/configuration_and_srs_manifest.json",
+      "sha256": "c196b07997e55735b63cfa25efc0875127eb1858a3160a907f254571ab44f9f2",
+      "size_bytes": 48247,
+      "source_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/configuration_and_srs_manifest.json"
+    }
+  ],
+  "format": "zkgat_formal_resume_original_provenance_snapshot_v1",
+  "git_diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "git_head": "4de787d5b151caed356759692db232ffc2745f56",
+  "git_status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "session_id": "mechanism_20261025T125552Z_4f0a0e54c1a5",
+  "source_tree_hash": "d1d0519f0108293b35e5dae68182fa5bb72ca909896965e9e1235796ad7793dd"
+}

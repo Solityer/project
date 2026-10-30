@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the baseline-local ezkl formal chain for all five datasets.
+"""Run the baseline-local EZKL formal chain for the selected datasets.
 
 The command authenticates the prepared five-dataset resources and official
 native ``get-srs`` cache, reuses a source-matched GPU-enabled build or builds it once,
@@ -55,6 +55,7 @@ from formal_common import (
     FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES,
     FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES,
     NATIVE_FORMAL_BACKEND,
+    NATIVE_LAYOUT_REVISION,
     ROOT,
     SRS_MANIFEST,
     ContractError,
@@ -76,6 +77,8 @@ from formal_common import (
     require_final_authenticated_formal_context,
     canonical_json_digest,
     validate_config,
+    normalize_selected_datasets,
+    selected_datasets_for_session,
     validate_native_srs_manifest,
     native_srs_contract,
     validate_gpu_environment,
@@ -95,8 +98,32 @@ from process_guardian import (
     terminate_guarded_process_locally,
 )
 from finalization_capacity import FinalizationCapacityError, check_finalization_capacity
+from compatible_resume import (
+    BASELINE_MANIFEST_SHA256 as COMPAT_BASELINE_MANIFEST_SHA256,
+    BASELINE_SESSION_ID as COMPAT_BASELINE_SESSION_ID,
+    COMPATIBILITY_SCHEMA as COMPAT_RECEIPT_SCHEMA,
+    REQUEST_SCHEMA as COMPAT_REQUEST_SCHEMA,
+    admission_semantics_digest,
+    compatible_source_review_index_digest,
+    compare_admission_semantics,
+    freeze_original_session_snapshot,
+    install_compatible_artifact_manifest,
+    validate_compatible_resume_request,
+    validate_compatible_artifact_manifest,
+    validate_compatibility_receipt,
+    validate_original_artifact_manifest,
+    validate_source_review,
+    validate_retained_setup_chain,
+    validate_retained_witness_chain,
+    write_immutable_json,
+    write_exclusive_json,
+    snapshot_immutable_file,
+    snapshot_legacy_json_files,
+)
 
 _PROCESS_GUARDIAN: ProcessGuardian | None = None
+_COMPAT_OUTPUT_ROOT = "runs/formal_ppi_ogbn_20261029_001"
+_COMPAT_SELECTED_DATASETS = ("ppi", "ogbn_arxiv")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -104,9 +131,16 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--binary")
     result.add_argument("--output-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
+    result.add_argument("--datasets", nargs="+", choices=DATASETS, default=None, help="canonical dataset selection; omitted means all five datasets")
     result.add_argument("--preflight-only", action="store_true", help="authenticate all prerequisites without setup/build/prove")
-    result.add_argument("--capacity-preflight-only", action="store_true", help="reuse the current formal GPU build, authenticate all five native Admissions, and stop before Setup")
+    result.add_argument("--capacity-preflight-only", action="store_true", help="reuse the current formal GPU build, authenticate selected native Admissions, and stop before Setup")
     result.add_argument("--resume-session", help="resume this exact interrupted/failed formal session")
+    result.add_argument(
+        "--compatible-prove-only",
+        action="store_true",
+        help="explicitly retain an authenticated historical Setup while using a current Prover identity",
+    )
+    result.add_argument("--compatible-source-review", help="exact source-delta approval JSON for this one compatible resume")
     result.add_argument("--_session-id", help=argparse.SUPPRESS)
     result.add_argument("--_from-ezkl-entry", action="store_true", help=argparse.SUPPRESS)
     result.add_argument("--_ld-preload-cleared", action="store_true", help=argparse.SUPPRESS)
@@ -748,7 +782,7 @@ def _formal_gpu_environment(session_id: str) -> tuple[dict[str, object], dict[st
     return runtime_identity, selected_device, build_environment, gpu_identity
 
 
-def check_output_paths(output_root: Path, matrix: Path) -> None:
+def check_output_paths(output_root: Path, matrix: Path, *, datasets: tuple[str, ...] = DATASETS) -> None:
     for path, label in ((output_root, "output-root"), (matrix.parent, "matrix parent")):
         for parent in (path, *path.parents):
             if parent == ROOT.parent:
@@ -757,7 +791,7 @@ def check_output_paths(output_root: Path, matrix: Path) -> None:
                 abort(f"{label} has a non-directory path: {parent}")
     if matrix.exists() and not matrix.is_file():
         abort(f"matrix is not a regular file: {matrix}")
-    for dataset in DATASETS:
+    for dataset in datasets:
         for path in (output_root / dataset, output_root / ".incomplete", output_root / ".incomplete" / dataset):
             if path.is_symlink() or (path.exists() and not path.is_dir()):
                 abort(f"formal output path is not a regular directory: {path}")
@@ -789,6 +823,89 @@ def _load_resume_identity(session_file: Path) -> dict[str, object]:
     return identity
 
 
+def _compatible_review_request(
+    args: argparse.Namespace,
+    *,
+    session_id: str,
+    output_root: Path,
+    matrix: Path,
+    selected_datasets: tuple[str, ...],
+) -> dict[str, object]:
+    value = getattr(args, "compatible_source_review", None)
+    if not isinstance(value, str) or not value:
+        abort("--compatible-prove-only requires --compatible-source-review")
+    if (
+        session_id != COMPAT_BASELINE_SESSION_ID
+        or output_root != ROOT / _COMPAT_OUTPUT_ROOT
+        or matrix != output_root / "formal_matrix.json"
+        or selected_datasets != _COMPAT_SELECTED_DATASETS
+    ):
+        abort("compatible prove-only is bound to the exact interrupted PPI+OGBN session, output, matrix, and selection")
+    session_file = output_root / ".sessions" / f"{session_id}.json"
+    snapshot_path, snapshot_digest, original = freeze_original_session_snapshot(session_file, session_id=session_id)
+    selected = Path(value)
+    path = selected if selected.is_absolute() else ROOT / selected
+    review, digest, delta = validate_source_review(path, expected_session_id=session_id)
+    try:
+        relative_path = path.resolve(strict=True).relative_to(ROOT.resolve()).as_posix()
+    except (OSError, ValueError):
+        abort("compatible source review path must resolve below this EZKL baseline")
+    request: dict[str, object] = {
+        "schema": COMPAT_REQUEST_SCHEMA,
+        "session_id": session_id,
+        "output_root": _COMPAT_OUTPUT_ROOT,
+        "matrix": f"{_COMPAT_OUTPUT_ROOT}/formal_matrix.json",
+        "selected_datasets": list(_COMPAT_SELECTED_DATASETS),
+        "retained_setup_datasets": ["ppi"],
+        "source_review_path": relative_path,
+        "source_review_sha256": digest,
+        "baseline_manifest_sha256": COMPAT_BASELINE_MANIFEST_SHA256,
+        "baseline_source_tree_sha256": delta["baseline_source_tree_sha256"],
+        "source_delta_sha256": delta["diff_summary"]["combined_diff_sha256"],
+        "snapshot_index_inventory_sha256": compatible_source_review_index_digest(delta),
+        "old_session_snapshot_path": snapshot_path.relative_to(ROOT).as_posix(),
+        "old_session_snapshot_sha256": snapshot_digest,
+    }
+    if review.get("decision") != "APPROVED":
+        abort("compatible source review must be explicitly approved")
+    if original.get("status") != "INTERRUPTED" or original.get("completed_cells") not in (None, {}):
+        abort("compatible resume requires the original interrupted session with no completed result cells")
+    snapshot_legacy_json_files(
+        output_root / "ppi",
+        output_root / ".sessions" / session_id / "compatibility",
+        ("native_prove_budget.json",),
+    )
+    existing = load_json(session_file, "compatible resume session request").get("compatible_resume_request")
+    if existing is not None:
+        if existing != request:
+            abort("compatible source review request differs from its immutable session binding")
+        validate_compatible_resume_request(load_json(session_file, "compatible resume session"), expected_session_id=session_id)
+    elif load_json(session_file, "original compatible resume session") != original:
+        abort("compatible resume session changed after its original snapshot but before request binding")
+    for dataset in selected_datasets:
+        output = output_root / dataset
+        if output.is_symlink():
+            abort(f"compatible resume output must not be a symlink: {output}")
+        for artifact in ("proof.json", "result.json", "native_verify_metrics.json", "core_run_manifest.json"):
+            path = output / artifact
+            if path.exists() or path.is_symlink():
+                abort(f"compatible resume refuses to rerun or overwrite an existing {dataset} proof/result artifact: {artifact}")
+    return request
+
+
+def _bind_compatible_review_request(session_file: Path, request: dict[str, object]) -> None:
+    document = load_json(session_file, "formal session record for compatible source review")
+    if not isinstance(document, dict) or document.get("session_id") != request.get("session_id"):
+        abort("compatible source review request does not match the exact session")
+    existing = document.get("compatible_resume_request")
+    if existing is not None and existing != request:
+        abort("compatible source review request differs from its immutable session binding")
+    if existing is None:
+        document["compatible_resume_request"] = request
+        _write_session_record(session_file, document)
+    validate_compatible_resume_request(load_json(session_file, "bound compatible resume session"), expected_session_id=str(request["session_id"]))
+
+
 def _require_resume_identity_subset(expected: dict[str, object], current: dict[str, object], label: str) -> None:
     for key, value in current.items():
         if expected.get(key) != value:
@@ -805,10 +922,12 @@ def _formal_resume_identity(
     authenticated_context: object,
     srs: Path,
     binary: Path,
+    selected_datasets: tuple[str, ...] = DATASETS,
 ) -> dict[str, object]:
     build_receipt = ROOT / "artifacts" / "build" / NATIVE_FORMAL_BACKEND / "build_receipt.json"
     return {
         "schema": "ezkl-formal-resume-identity-v1",
+        "selected_datasets": list(selected_datasets),
         "source_tree_sha256": authenticated_context.source_tree_sha256,
         "resource_manifest_sha256": authenticated_context.resource_manifest_sha256,
         "config_sha256s": [[dataset, digest] for dataset, digest in preflight_config_sha256s],
@@ -896,7 +1015,10 @@ def begin_formal_session(
     matrix: Path,
     resume_session_id: str | None = None,
     requested_session_id: str | None = None,
+    selected_datasets: tuple[str, ...] | None = None,
+    compatible_request_factory: Callable[[str, Path], dict[str, object]] | None = None,
 ) -> tuple[str, Path, int]:
+    requested_selection = normalize_selected_datasets(selected_datasets) if selected_datasets is not None else None
     if output_root.is_symlink() or matrix.is_symlink():
         abort("formal output-root and matrix paths must not be symlinks")
     lock_dir = ROOT / "runs"
@@ -915,6 +1037,14 @@ def begin_formal_session(
         abort("another formal ezkl session currently holds the baseline lock")
 
     try:
+        if compatible_request_factory is not None and resume_session_id is None:
+            abort("compatible resume request factory requires one exact resumed session")
+        compatible_request: dict[str, object] | None = None
+        if compatible_request_factory is not None:
+            # Freeze and validate the original session while holding the formal
+            # lock, before any helper can mark or rewrite session state.
+            compatible_session_file = output_root / ".sessions" / f"{resume_session_id}.json"
+            compatible_request = compatible_request_factory(resume_session_id, compatible_session_file)
         _mark_released_session_interrupted(lock_fd, output_root)
         session_dir = output_root / ".sessions"
         if session_dir.is_symlink() or (session_dir.exists() and not session_dir.is_dir()):
@@ -944,11 +1074,23 @@ def begin_formal_session(
                 or not isinstance(document.get("resume_identity"), dict)
             ):
                 abort("resume session identity/status/output paths are not eligible for exact-session recovery")
+            saved_selection = selected_datasets_for_session(document)
+            if requested_selection is not None and requested_selection != saved_selection:
+                abort("explicit resume --datasets differs from this immutable session selection")
+            if "selected_datasets" not in document:
+                document["selected_datasets"] = list(saved_selection)
+            if compatible_request is not None:
+                existing_request = document.get("compatible_resume_request")
+                if existing_request is not None and existing_request != compatible_request:
+                    abort("compatible source review request differs from its immutable session binding")
+                document["compatible_resume_request"] = compatible_request
             document["status"] = "PREFLIGHT_STARTED"
             document["stage"] = "session_resume_started"
             document["resumed_at_utc"] = datetime.now(timezone.utc).isoformat()
             document["resume_count"] = int(document.get("resume_count", 0)) + 1
             document.pop("error", None)
+            if compatible_request is not None:
+                validate_compatible_resume_request(document, expected_session_id=session_id)
             _write_session_record(session_file, document)
             print(f"[ezkl-formal] resuming exact interrupted session {session_id}", flush=True)
         else:
@@ -968,6 +1110,7 @@ def begin_formal_session(
                     "archived_previous_outputs": [],
                     "output_root": output_root.relative_to(ROOT).as_posix(),
                     "matrix": matrix.relative_to(ROOT).as_posix(),
+                    "selected_datasets": list(requested_selection or DATASETS),
                 },
             )
             print(f"[ezkl-formal] started formal session {session_id}; prior outputs remain intact until admission passes", flush=True)
@@ -996,12 +1139,19 @@ def begin_formal_session(
         raise
 
 
-def archive_prior_outputs(output_root: Path, matrix: Path, session_id: str, session_file: Path) -> None:
+def archive_prior_outputs(
+    output_root: Path,
+    matrix: Path,
+    session_id: str,
+    session_file: Path,
+    *,
+    datasets: tuple[str, ...] = DATASETS,
+) -> None:
     """Archive prior outputs after the first dataset passes its exact capacity gate."""
     document = json.loads(session_file.read_text())
     if document.get("outputs_archived_for_session") is True:
         return
-    for dataset in DATASETS:
+    for dataset in datasets:
         old_output = output_root / dataset
         if (old_output.exists() or old_output.is_symlink()) and (old_output.is_symlink() or not old_output.is_dir()):
             abort(f"prior formal output is not a regular directory: {old_output}")
@@ -1013,7 +1163,7 @@ def archive_prior_outputs(output_root: Path, matrix: Path, session_id: str, sess
     if not isinstance(archived_value, list) or any(not isinstance(value, str) for value in archived_value):
         abort("formal prior-output archive receipt is malformed")
     archived: list[str] = list(archived_value)
-    for dataset in DATASETS:
+    for dataset in datasets:
         old_output = output_root / dataset
         destination = archive_root / "datasets" / dataset
         if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
@@ -1157,6 +1307,7 @@ def native_admit_all_datasets(
     command_runner: Callable[[list[str], str], None] | None = None,
     reuse_receipt: object = None,
     receipt_callback: Callable[[str, dict[str, object]], None] | None = None,
+    admission_root_override: Path | None = None,
 ) -> dict[str, dict[str, object]]:
     if not datasets or len(set(datasets)) != len(datasets) or any(dataset not in DATASETS for dataset in datasets):
         abort("native admission dataset selection is empty, duplicated, or unsupported")
@@ -1175,7 +1326,9 @@ def native_admit_all_datasets(
         except ValueError:
             abort(f"{label} is outside the native admission baseline: {path}")
 
-    admission_root = output_root / ".sessions" / session_id / "admission"
+    admission_root = admission_root_override or (output_root / ".sessions" / session_id / "admission")
+    if admission_root.is_symlink() or (admission_root.exists() and not admission_root.is_dir()):
+        abort("native admission output root is missing or symlinked")
     if reuse_receipt is not None and (
         not isinstance(reuse_receipt, dict)
         or any(dataset not in DATASETS or not isinstance(value, dict) for dataset, value in reuse_receipt.items())
@@ -1278,7 +1431,7 @@ def native_admit_all_datasets(
             abort(f"{dataset} native admission JSON has an incompatible schema")
         _validate_native_admission_domain(dataset, admission, native_srs_max_logrows)
         if (
-            admission["schema_version"] != 8
+            admission["schema_version"] != 10
             or admission["shape_evidence_kind"] != "configured_geometry_source_upper_bounds_before_native_synthesis_v1"
             or admission["relation_id"] != "R_GAT-ezkl"
             or admission["dataset"] != dataset
@@ -1287,7 +1440,13 @@ def native_admit_all_datasets(
         relation_identity = admission["relation_identity"]
         if (
             not isinstance(relation_identity, dict)
-            or relation_identity.get("dataset") != dataset
+            or relation_identity.get("native_layout_revision") != NATIVE_LAYOUT_REVISION
+        ):
+            abort(
+                f"{dataset} native admission layout revision is stale; preserve its artifacts and start a fresh formal session to reprepare"
+            )
+        if (
+            relation_identity.get("dataset") != dataset
             or relation_identity.get("resource_manifest_sha256") != manifest_sha256
             or admission["resource_manifest_sha256"] != manifest_sha256
             or not isinstance(admission["settings_sha256"], str)
@@ -1323,6 +1482,7 @@ def native_admit_all_datasets(
             "icicle_ntt_min_log_size",
             "icicle_ntt_max_log_size",
             "icicle_ntt_capacity_elements",
+            "icicle_h_resident_device_upper_bytes",
             "icicle_ntt_device_workspace_upper_bytes",
             "icicle_ntt_domain_cache_upper_bytes",
             "icicle_ntt_init_scratch_upper_bytes",
@@ -1440,7 +1600,7 @@ def native_admit_all_datasets(
             "native_successor_read_cache_bytes",
             "native_target_bitmap_fixed_cache_bytes",
         }
-        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v20" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt":
+        if not isinstance(memory, dict) or set(memory) != memory_keys or memory.get("schema") != "ezkl-halo2-static-envelope-v22" or memory.get("evidence_kind") != "source_derived_upper_bounds_and_configured_geometry" or memory.get("coverage") != "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt":
             abort(f"{dataset} native admission has an incompatible source memory model")
         positive_memory_keys = {
             "proof_logrows",
@@ -1448,6 +1608,7 @@ def native_admit_all_datasets(
             "icicle_ntt_min_log_size",
             "icicle_ntt_max_log_size",
             "icicle_ntt_capacity_elements",
+            "icicle_h_resident_device_upper_bytes",
             "icicle_ntt_device_workspace_upper_bytes",
             "icicle_ntt_domain_cache_upper_bytes",
             "icicle_ntt_init_scratch_upper_bytes",
@@ -1579,11 +1740,12 @@ def native_admit_all_datasets(
         expected_twiddle_elements = 2 * (memory["proof_domain_size"] - 1 + expected_proof_logrows) if expected_recursive_fft else 0
         expected_parallel_lut_elements = 1 << expected_proof_logrows if expected_proof_logrows < 10 else (1 << 10) + (1 << (expected_proof_logrows - 10))
         expected_ntt_capacity_elements = min(max(admission["domain_size"], memory["proof_domain_size"]), 1 << 25)
-        expected_ntt_device_workspace_upper = 64 * expected_ntt_capacity_elements
+        expected_ntt_device_workspace_upper = 96 * expected_ntt_capacity_elements
         expected_ntt_domain_cache_upper = 32 * (expected_ntt_capacity_elements + 1 + 64 + 6)
         expected_ntt_init_scratch_upper = 4 * 64 * 32
         expected_ntt_device_peak_upper = expected_ntt_device_workspace_upper + expected_ntt_domain_cache_upper + expected_ntt_init_scratch_upper
         expected_ntt_host_staging_upper = 32 * expected_ntt_capacity_elements
+        expected_h_resident_upper = 32 * expected_ntt_capacity_elements * (4 if cs["num_permutation_columns"] > 0 else 1)
         expected_msm_precomputed_basis_upper = admission["domain_size"] * 64 * 4
         expected_msm_point_staging_upper = min(admission["domain_size"], 1 << 20) * 64
         if (
@@ -1592,6 +1754,7 @@ def native_admit_all_datasets(
             or memory["icicle_ntt_min_log_size"] != 16
             or memory["icicle_ntt_max_log_size"] != 25
             or memory["icicle_ntt_capacity_elements"] != expected_ntt_capacity_elements
+            or memory["icicle_h_resident_device_upper_bytes"] != expected_h_resident_upper
             or memory["icicle_ntt_device_workspace_upper_bytes"] != expected_ntt_device_workspace_upper
             or memory["icicle_ntt_domain_cache_upper_bytes"] != expected_ntt_domain_cache_upper
             or memory["icicle_ntt_init_scratch_upper_bytes"] != expected_ntt_init_scratch_upper
@@ -3280,6 +3443,11 @@ def _native_capacity_requirements(
     # One active input expression is evaluated at a time. Its expression Vec
     # overlaps the mapped compressed Q, and the count conversion briefly owns
     # both AtomicU64 and u64 vectors bounded by the largest table codebook.
+    # m's bounded indexed entries and CPU projective temporaries are also live
+    # in Argument::prepare and follow the existing per-task worker multiplier.
+    lookup_sparse_m_commitment_task_bytes = (
+        32 * (usize_bytes + fr) + vec_header + 8 * g1_projective
+    )
     lookup_prepare_task_bytes = (
         (
             n * fr
@@ -3287,6 +3455,7 @@ def _native_capacity_requirements(
             + polynomial_header
             + prepared_header
             + 2 * vec_header
+            + lookup_sparse_m_commitment_task_bytes
         )
         if lookup_arguments
         else 0
@@ -3299,8 +3468,9 @@ def _native_capacity_requirements(
         + lookup_prepare_mmap_active_window
     )
     # Compact grand-sum reconstruction has one R-row heap accumulator and
-    # one N-row mapped phi polynomial. The shared beta-inverse codebook and
-    # all encoded tapes are retained-source backing, counted above.
+    # one N-row mapped phi polynomial.
+    # The shared beta-inverse codebook and all encoded tapes are retained-
+    # source backing, counted above.
     lookup_commit_heap_per_task = active_lookup_rows * fr
     lookup_commit_task_bytes = (
         lookup_commit_heap_per_task
@@ -3362,6 +3532,18 @@ def _native_capacity_requirements(
     )
     lookup_eval_workers = min(parallel_threads, max(1, (proof_domain + 4095) // 4096)) if lookup_arguments else 0
     lookup_eval_task_host_peak = (lookup_eval_workers * 4096 * max_lookup_input_count * (fr + batch_invert_entry)) if lookup_arguments else 0
+    # Sparse multiplicity evaluation runs after H has finished. It retains
+    # only bounded CPU vectors and is mutually exclusive with the H lookup
+    # task/source window above; keep it in the same transient maximum.
+    sparse_m_eval_scratch = (
+        32 * (usize_bytes + fr)
+        + vec_header
+        + 32 * fr
+        + vec_header
+        + 32 * (fr + usize_bytes)
+        + vec_header
+        + 8 * fr
+    ) if lookup_arguments else 0
     proof_eval_h_host_peak = (
         proof_nonprepare_heap
         + lookup_table_cache_retained_host
@@ -3371,6 +3553,7 @@ def _native_capacity_requirements(
         + max(
             proof_h_fft_transient,
             lookup_eval_task_host_peak + lookup_h_source_rebuild_host_window_bytes,
+            sparse_m_eval_scratch,
         )
         + FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
     )
@@ -3581,6 +3764,7 @@ def _native_capacity_requirements(
         "icicle_ntt_min_log_size": int(memory["icicle_ntt_min_log_size"]),
         "icicle_ntt_max_log_size": int(memory["icicle_ntt_max_log_size"]),
         "icicle_ntt_capacity_elements": int(memory["icicle_ntt_capacity_elements"]),
+        "icicle_h_resident_device_upper_bytes": int(memory["icicle_h_resident_device_upper_bytes"]),
         "icicle_ntt_device_workspace_upper_bytes": int(memory["icicle_ntt_device_workspace_upper_bytes"]),
         "icicle_ntt_domain_cache_upper_bytes": int(memory["icicle_ntt_domain_cache_upper_bytes"]),
         "icicle_ntt_init_scratch_upper_bytes": int(memory["icicle_ntt_init_scratch_upper_bytes"]),
@@ -3630,8 +3814,9 @@ def _check_dataset_capacity(
     prove_phase = phase in {"witness_prove_verify", "tiny_witness_prove_verify"}
     ntt_device_peak = int(requirements["icicle_ntt_device_peak_upper_bytes"]) if prove_phase else 0
     msm_resident_cache_upper = int(requirements["icicle_msm_precomputed_basis_device_upper_bytes"]) if prove_phase else 0
+    h_resident_device_upper = int(requirements["icicle_h_resident_device_upper_bytes"]) if prove_phase else 0
     h_kernel_local_memory_upper = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES if prove_phase else 0
-    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_kernel_local_memory_upper
+    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_resident_device_upper + h_kernel_local_memory_upper
     device_headroom = device_peak if integrated else 0
     host_required = requirements["host_known_bytes"] + device_headroom + os_reserve
     if host_required > host_available:
@@ -3646,7 +3831,7 @@ def _check_dataset_capacity(
         )
     if device_peak > device_free:
         abort(
-            f"{dataset} {phase} ICICLE MSM-plus-NTT source-sized workspace gate needs {device_peak} CUDA bytes, "
+            f"{dataset} {phase} ICICLE MSM/NTT/resident-H source-sized workspace gate needs {device_peak} CUDA bytes, "
             f"but only {device_free} are currently free on {device_sample['device_uuid']}"
         )
     return {
@@ -3717,6 +3902,7 @@ def _pending_srs_copy_disk_budget(
     pending_finalize_datasets: set[str],
     *,
     dataset_index: int = 0,
+    datasets: tuple[str, ...] = DATASETS,
 ) -> dict[str, object]:
     """Account one full native final-prepare SRS copy per not-yet-finalized cell."""
     if (
@@ -3726,11 +3912,12 @@ def _pending_srs_copy_disk_budget(
         or srs_copy_size_bytes > sys.maxsize
     ):
         abort("native SRS copy size is invalid/unrepresentable for capacity accounting")
-    if isinstance(dataset_index, bool) or not isinstance(dataset_index, int) or not 0 <= dataset_index <= len(DATASETS):
+    selected = normalize_selected_datasets(datasets)
+    if isinstance(dataset_index, bool) or not isinstance(dataset_index, int) or not 0 <= dataset_index <= len(selected):
         abort("pending native SRS copy dataset index is invalid")
-    if not isinstance(pending_finalize_datasets, set) or not pending_finalize_datasets.issubset(set(DATASETS)):
+    if not isinstance(pending_finalize_datasets, set) or not pending_finalize_datasets.issubset(set(selected)):
         abort("pending final-prepare dataset selection does not match the formal dataset set")
-    pending = [name for index, name in enumerate(DATASETS) if index >= dataset_index and name in pending_finalize_datasets]
+    pending = [name for index, name in enumerate(selected) if index >= dataset_index and name in pending_finalize_datasets]
     count = len(pending)
     if count and srs_copy_size_bytes > sys.maxsize // count:
         abort("pending native SRS copy budget exceeds the representable byte range")
@@ -3936,9 +4123,22 @@ def _write_native_prove_budget_receipt(
     capacity: dict[str, object],
     prove_check: dict[str, object],
     workspace_query: dict[str, object],
+    trusted_setup_files: dict[str, object] | None = None,
+    replace_existing_sha256: str | None = None,
 ) -> str:
     path = output / "native_prove_budget.json"
-    if path.exists() or path.is_symlink():
+    if path.is_symlink():
+        abort(f"{dataset} native prove budget refuses to overwrite an existing receipt")
+    if replace_existing_sha256 is not None:
+        if (
+            dataset != "ppi"
+            or trusted_setup_files is None
+            or re.fullmatch(r"[0-9a-f]{64}", replace_existing_sha256) is None
+            or not path.is_file()
+            or sha256(path) != replace_existing_sha256
+        ):
+            abort("compatible PPI prove budget replacement is not bound to the frozen legacy bytes")
+    elif path.exists():
         abort(f"{dataset} native prove budget refuses to overwrite an existing receipt")
     disk_available = prove_check.get("disk_available_bytes")
     disk_required = prove_check.get("disk_required_known_bytes")
@@ -4051,6 +4251,7 @@ def _write_native_prove_budget_receipt(
         int(workspace_query["device_workspace_peak_bytes"])
         + int(capacity["icicle_ntt_device_peak_upper_bytes"])
         + int(msm_resident_cache_upper)
+        + int(capacity["icicle_h_resident_device_upper_bytes"])
         + h_kernel_local_memory_upper
     )
     if (
@@ -4064,7 +4265,7 @@ def _write_native_prove_budget_receipt(
     if not isinstance(required_identity, dict):
         abort(f"{dataset} native prove budget lacks the admitted relation identity")
     value = {
-        "schema": "ezkl.native-prove-budget.v6",
+        "schema": "ezkl.native-prove-budget.v8",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -4073,9 +4274,9 @@ def _write_native_prove_budget_receipt(
         "build_environment_sha256": resume_identity.get("build_environment_sha256"),
         "binary_sha256": resume_identity.get("binary_sha256"),
         "settings_sha256": admission.get("settings_sha256"),
-        "compiled_circuit_sha256": sha256(require_file(output / "compiled.circuit", f"{dataset} compiled circuit")),
-        "vk_sha256": sha256(require_file(output / "vk.key", f"{dataset} verifying key")),
-        "pk_sha256": sha256(require_file(output / "pk.key", f"{dataset} proving key")),
+        "compiled_circuit_sha256": _native_setup_artifact_digest(output, "compiled.circuit", trusted_setup_files),
+        "vk_sha256": _native_setup_artifact_digest(output, "vk.key", trusted_setup_files),
+        "pk_sha256": _native_setup_artifact_digest(output, "pk.key", trusted_setup_files),
         "setup_receipt_sha256": setup_receipt_sha256,
         "native_keygen_budget_sha256": native_keygen_budget_sha256,
         "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
@@ -4097,6 +4298,7 @@ def _write_native_prove_budget_receipt(
         "icicle_ntt_min_log_size": capacity["icicle_ntt_min_log_size"],
         "icicle_ntt_max_log_size": capacity["icicle_ntt_max_log_size"],
         "icicle_ntt_capacity_elements": capacity["icicle_ntt_capacity_elements"],
+        "icicle_h_resident_device_upper_bytes": capacity["icicle_h_resident_device_upper_bytes"],
         "icicle_ntt_device_workspace_upper_bytes": capacity["icicle_ntt_device_workspace_upper_bytes"],
         "icicle_ntt_domain_cache_upper_bytes": capacity["icicle_ntt_domain_cache_upper_bytes"],
         "icicle_ntt_init_scratch_upper_bytes": capacity["icicle_ntt_init_scratch_upper_bytes"],
@@ -4131,6 +4333,8 @@ def _write_native_prove_budget_receipt(
         "backing_scope": "packed_authenticated_pk_view_plus_one_cell_domain_target_bitmap",
         "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
     }
+    if replace_existing_sha256 is not None and sha256(path) != replace_existing_sha256:
+        abort("compatible PPI legacy prove budget changed while its replacement was being prepared")
     _write_session_record(path, value)
     return sha256(path)
 
@@ -4147,6 +4351,8 @@ def _load_reusable_native_prove_budget_receipt(
     native_keygen_receipt_sha256: str,
     capacity: dict[str, object],
     workspace_query: dict[str, object],
+    trusted_setup_files: dict[str, object] | None = None,
+    replace_existing_sha256: str | None = None,
 ) -> str | None:
     """Reuse only an exact session-bound prove budget; never rewrite a proven stage's input."""
     path = output / "native_prove_budget.json"
@@ -4154,6 +4360,15 @@ def _load_reusable_native_prove_budget_receipt(
         return None
     if path.is_symlink() or not path.is_file():
         return None
+    if replace_existing_sha256 is not None:
+        if (
+            dataset != "ppi"
+            or trusted_setup_files is None
+            or re.fullmatch(r"[0-9a-f]{64}", replace_existing_sha256) is None
+        ):
+            abort("compatible PPI prove-budget reuse has an invalid frozen legacy reference")
+        if sha256(path) == replace_existing_sha256:
+            return None
     try:
         budget = load_json(path, f"{dataset} native prove budget")
     except ContractError:
@@ -4161,8 +4376,14 @@ def _load_reusable_native_prove_budget_receipt(
     relation = admission.get("relation_identity")
     if not isinstance(budget, dict) or not isinstance(relation, dict):
         return None
+    def current_setup_digest(filename: str) -> str | None:
+        artifact = output / filename
+        if trusted_setup_files is None and (not artifact.is_file() or artifact.is_symlink()):
+            return None
+        return _native_setup_artifact_digest(output, filename, trusted_setup_files)
+
     expected = {
-        "schema": "ezkl.native-prove-budget.v6",
+        "schema": "ezkl.native-prove-budget.v8",
         "session_id": session_id,
         "dataset": dataset,
         "admission_sha256": admission.get("sha256"),
@@ -4171,9 +4392,9 @@ def _load_reusable_native_prove_budget_receipt(
         "build_environment_sha256": resume_identity.get("build_environment_sha256"),
         "binary_sha256": resume_identity.get("binary_sha256"),
         "settings_sha256": admission.get("settings_sha256"),
-        "compiled_circuit_sha256": sha256(output / "compiled.circuit") if (output / "compiled.circuit").is_file() else None,
-        "vk_sha256": sha256(output / "vk.key") if (output / "vk.key").is_file() else None,
-        "pk_sha256": sha256(output / "pk.key") if (output / "pk.key").is_file() else None,
+        "compiled_circuit_sha256": current_setup_digest("compiled.circuit"),
+        "vk_sha256": current_setup_digest("vk.key"),
+        "pk_sha256": current_setup_digest("pk.key"),
         "setup_receipt_sha256": setup_receipt_sha256,
         "native_keygen_budget_sha256": native_keygen_budget_sha256,
         "native_keygen_receipt_sha256": native_keygen_receipt_sha256,
@@ -4187,6 +4408,7 @@ def _load_reusable_native_prove_budget_receipt(
             int(workspace_query.get("device_workspace_peak_bytes"))
             + int(capacity.get("icicle_ntt_device_peak_upper_bytes"))
             + int(capacity.get("icicle_msm_precomputed_basis_device_upper_bytes"))
+            + int(capacity.get("icicle_h_resident_device_upper_bytes"))
             + FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
         ),
         "icicle_msm_max_concurrency": capacity.get("icicle_msm_max_concurrency"),
@@ -4206,6 +4428,7 @@ def _load_reusable_native_prove_budget_receipt(
         "icicle_ntt_min_log_size": capacity.get("icicle_ntt_min_log_size"),
         "icicle_ntt_max_log_size": capacity.get("icicle_ntt_max_log_size"),
         "icicle_ntt_capacity_elements": capacity.get("icicle_ntt_capacity_elements"),
+        "icicle_h_resident_device_upper_bytes": capacity.get("icicle_h_resident_device_upper_bytes"),
         "icicle_ntt_device_workspace_upper_bytes": capacity.get("icicle_ntt_device_workspace_upper_bytes"),
         "icicle_ntt_domain_cache_upper_bytes": capacity.get("icicle_ntt_domain_cache_upper_bytes"),
         "icicle_ntt_init_scratch_upper_bytes": capacity.get("icicle_ntt_init_scratch_upper_bytes"),
@@ -4459,9 +4682,16 @@ def _nested_array_payload_upper(element_counts: list[int], atom_bytes: int | lis
     return total
 
 
-def _native_json_output_bounds(admission: dict[str, object], dataset: str) -> dict[str, int]:
+def _native_json_output_bounds(
+    admission: dict[str, object], dataset: str, *, prepared_dir_override: Path | None = None
+) -> dict[str, int]:
     """Bound formal witness/proof JSON from authenticated settings and Admission geometry."""
-    prepared = local_path(str(admission.get("prepared_dir")), f"{dataset} authenticated Admission directory")
+    if prepared_dir_override is None:
+        prepared = local_path(str(admission.get("prepared_dir")), f"{dataset} authenticated Admission directory")
+    else:
+        if not prepared_dir_override.is_absolute():
+            abort(f"{dataset} output JSON bound Admission directory override must be absolute")
+        prepared = prepared_dir_override
     settings_path = prepared / "settings.json"
     settings_sha256 = admission.get("settings_sha256")
     if (
@@ -4723,9 +4953,10 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
     msm_device_peak = int(workspace_query["device_workspace_peak_bytes"])
     ntt_device_peak = int(requirements["icicle_ntt_device_peak_upper_bytes"])
     msm_resident_cache_upper = int(requirements["icicle_msm_precomputed_basis_device_upper_bytes"])
+    h_resident_device_upper = int(requirements["icicle_h_resident_device_upper_bytes"])
     h_kernel_local_memory_upper = FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
     h_program_metadata_upper = FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES
-    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_kernel_local_memory_upper
+    device_peak = msm_device_peak + ntt_device_peak + msm_resident_cache_upper + h_resident_device_upper + h_kernel_local_memory_upper
     device_headroom = device_peak if integrated else 0
     baseline_heap = requirements["proof_nonprepare_heap_host_bytes"]
     # Include the active mmap pages and the kernel dirty-page ceiling in the
@@ -4780,6 +5011,7 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
         "icicle_ntt_min_log_size": int(requirements["icicle_ntt_min_log_size"]),
         "icicle_ntt_max_log_size": int(requirements["icicle_ntt_max_log_size"]),
         "icicle_ntt_capacity_elements": int(requirements["icicle_ntt_capacity_elements"]),
+        "icicle_h_resident_device_upper_bytes": int(requirements["icicle_h_resident_device_upper_bytes"]),
         "icicle_ntt_device_workspace_upper_bytes": int(requirements["icicle_ntt_device_workspace_upper_bytes"]),
         "icicle_ntt_domain_cache_upper_bytes": int(requirements["icicle_ntt_domain_cache_upper_bytes"]),
         "icicle_ntt_init_scratch_upper_bytes": int(requirements["icicle_ntt_init_scratch_upper_bytes"]),
@@ -4789,7 +5021,8 @@ def _native_prepare_budget(requirements: dict[str, int], *, initial_available_by
 
 
 def _validated_native_prepare_exports(
-    budget: object, cardinality_bounds: object, *, domain_size: int, expected_lookup_groups: int
+    budget: object, cardinality_bounds: object, *, domain_size: int, expected_lookup_groups: int,
+    expected_h_resident_device_upper_bytes: int,
 ) -> tuple[str, str, str]:
     """Fail closed before exporting values consumed by native lookup preparation."""
     expected_keys = {
@@ -4820,6 +5053,7 @@ def _validated_native_prepare_exports(
         "icicle_ntt_min_log_size",
         "icicle_ntt_max_log_size",
         "icicle_ntt_capacity_elements",
+        "icicle_h_resident_device_upper_bytes",
         "icicle_ntt_device_workspace_upper_bytes",
         "icicle_ntt_domain_cache_upper_bytes",
         "icicle_ntt_init_scratch_upper_bytes",
@@ -4847,15 +5081,18 @@ def _validated_native_prepare_exports(
         or budget["icicle_msm_precomputed_basis_count"] != 1
         or budget["icicle_msm_precomputed_basis_device_upper_bytes"] <= 0
         or budget["icicle_msm_point_staging_host_upper_bytes"] <= 0
+        or budget["icicle_h_resident_device_upper_bytes"] != expected_h_resident_device_upper_bytes
         or budget["icicle_ntt_min_log_size"] != 16
         or budget["icicle_ntt_max_log_size"] != 25
         or budget["icicle_ntt_capacity_elements"] <= 0
         or budget["icicle_ntt_capacity_elements"] > (1 << 25)
         or budget["icicle_ntt_capacity_elements"] & (budget["icicle_ntt_capacity_elements"] - 1)
-        or budget["icicle_ntt_device_workspace_upper_bytes"] != 64 * budget["icicle_ntt_capacity_elements"]
+        or budget["icicle_h_resident_device_upper_bytes"] <= 0
+        or budget["icicle_h_resident_device_upper_bytes"] > 128 * budget["icicle_ntt_capacity_elements"]
+        or budget["icicle_ntt_device_workspace_upper_bytes"] != 96 * budget["icicle_ntt_capacity_elements"]
         or budget["icicle_ntt_domain_cache_upper_bytes"] != 32 * (budget["icicle_ntt_capacity_elements"] + 1 + 64 + 6)
         or budget["icicle_ntt_init_scratch_upper_bytes"] != 4 * 64 * 32
-        or budget["icicle_ntt_device_peak_upper_bytes"] != 96 * budget["icicle_ntt_capacity_elements"] + 10464
+        or budget["icicle_ntt_device_peak_upper_bytes"] != 128 * budget["icicle_ntt_capacity_elements"] + 10464
         or budget["icicle_ntt_host_staging_upper_bytes"] != 32 * budget["icicle_ntt_capacity_elements"]
         or budget["icicle_msm_precomputed_basis_device_upper_bytes"] != domain_size * 64 * 4
         or budget["icicle_msm_point_staging_host_upper_bytes"] != min(domain_size, 1 << 20) * 64
@@ -4864,6 +5101,7 @@ def _validated_native_prepare_exports(
             budget["msm_device_workspace_upper_bytes"]
             + budget["ntt_device_workspace_upper_bytes"]
             + budget["icicle_msm_precomputed_basis_device_upper_bytes"]
+            + budget["icicle_h_resident_device_upper_bytes"]
             + budget["h_kernel_local_memory_upper_bytes"]
             if budget["integrated_device"] else 0
         )
@@ -4991,12 +5229,18 @@ def _remaining_setup_disk_bytes(
     *,
     include_current_transient: bool,
     setup_required_datasets: set[str] | None = None,
+    datasets: tuple[str, ...] = DATASETS,
 ) -> int:
-    setup_required = set(DATASETS) if setup_required_datasets is None else setup_required_datasets
-    remaining = [name for name in DATASETS[dataset_index:] if name in setup_required]
+    selected = normalize_selected_datasets(datasets)
+    if isinstance(dataset_index, bool) or not isinstance(dataset_index, int) or not 0 <= dataset_index < len(selected):
+        abort("remaining native Setup dataset index is invalid")
+    setup_required = set(selected) if setup_required_datasets is None else setup_required_datasets
+    if not setup_required.issubset(set(selected)):
+        abort("remaining native Setup dataset selection does not match the formal session")
+    remaining = [name for name in selected[dataset_index:] if name in setup_required]
     retained = sum(requirements[name]["setup_key_artifact_upper_bytes"] for name in remaining)
-    if include_current_transient and DATASETS[dataset_index] in setup_required:
-        retained += requirements[DATASETS[dataset_index]]["setup_mapped_peak_bytes"]
+    if include_current_transient and selected[dataset_index] in setup_required:
+        retained += requirements[selected[dataset_index]]["setup_mapped_peak_bytes"]
     return retained
 
 
@@ -5005,11 +5249,13 @@ def _remaining_srs_copy_disk_budget(
     dataset_index: int,
     *,
     pending_finalize_datasets: set[str],
+    datasets: tuple[str, ...] = DATASETS,
 ) -> dict[str, object]:
     return _pending_srs_copy_disk_budget(
         srs_copy_size_bytes,
         pending_finalize_datasets,
         dataset_index=dataset_index,
+        datasets=datasets,
     )
 
 
@@ -5422,7 +5668,7 @@ def _finalization_result_identity(
     session_file: Path,
     session_id: str,
 ) -> tuple[str, dict[str, object]]:
-    """Bind the five independently verified results to their original stages and logs."""
+    """Bind the selected independently verified results to their original stages and logs."""
     document = load_json(session_file, "formal session record before finalization")
     if not isinstance(document, dict) or document.get("session_id") != session_id:
         abort("finalization receipts require the exact active formal session")
@@ -5431,9 +5677,41 @@ def _finalization_result_identity(
     setups = document.get("setup_reuse_receipts")
     all_stage_receipts = document.get("stage_receipts")
     resume_identity = document.get("resume_identity")
+    compatible_mode = document.get("compatible_resume_request") is not None
+    original_session: dict[str, object] | None = None
+    current_resume_identity: dict[str, object] | None = None
+    current_resume_digest: str | None = None
+    compatible_stage_receipts: dict[str, object] | None = None
+    compatible_admissions: dict[str, object] | None = None
+    if compatible_mode:
+        _request, original_session = validate_compatible_resume_request(document, expected_session_id=session_id)
+        current_value = document.get("compatible_prover_identity")
+        compatible_stage_receipts_value = document.get("compatible_stage_receipts")
+        compatible_admissions_value = document.get("compatible_native_admissions")
+        if (
+            not isinstance(current_value, dict)
+            or document.get("compatible_prover_identity_sha256") != canonical_json_digest(current_value)
+            or not isinstance(compatible_stage_receipts_value, dict)
+            or not isinstance(compatible_admissions_value, dict)
+            or set(compatible_admissions_value) != set(_COMPAT_SELECTED_DATASETS)
+        ):
+            abort("compatible finalization lacks its current identity, Admission, or stage anchors")
+        current_resume_identity = current_value
+        current_resume_digest = canonical_json_digest(current_value)
+        compatible_stage_receipts = compatible_stage_receipts_value
+        compatible_admissions = compatible_admissions_value
+    selected_datasets = selected_datasets_for_session(document)
     if not all(isinstance(value, dict) for value in (completed, admissions, setups, all_stage_receipts, resume_identity)):
         abort("finalization receipt inputs lack complete session, Admission, setup, or stage anchors")
-    resume_digest = canonical_json_digest(resume_identity)
+    if any(
+        not set(value).issubset(set(selected_datasets))
+        for value in (completed, admissions, setups, all_stage_receipts)
+    ):
+        abort("finalization receipt maps contain datasets outside the immutable session selection")
+    resume_digest = current_resume_digest if compatible_mode else canonical_json_digest(resume_identity)
+    result_identity = current_resume_identity if compatible_mode else resume_identity
+    if not isinstance(result_identity, dict):
+        abort("finalization result identity is malformed")
     datasets: list[dict[str, object]] = []
     output_names = {
         "producer": {"statement": "statement.json", "public_output": "public_output.json", "producer_manifest": "producer_manifest.json"},
@@ -5442,7 +5720,7 @@ def _finalization_result_identity(
         "prove": {"proof": "proof.json", "native_proof_metrics": "native_proof_metrics.json", "native_pk_read_timing": "native_pk_read_timing.json", "gpu_evidence": "gpu_evidence.json", "gpu_prover_record": "gpu_prover_record.json", "prove_log": "logs/prove.log"},
         "verify": {"native_verify_metrics": "native_verify_metrics.json", "core_run_manifest": "core_run_manifest.json", "verify_log": "logs/verify.log"},
     }
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         output = output_root / dataset
         result_path = output / "result.json"
         result = load_json(result_path, f"{dataset} finalization result")
@@ -5451,6 +5729,61 @@ def _finalization_result_identity(
         admission = admissions.get(dataset)
         setup_digest = setups.get(dataset)
         dataset_receipts = all_stage_receipts.get(dataset)
+        stage_resume_digests: dict[str, str] = {stage: str(resume_digest) for stage in _FORMAL_STAGE_ORDER}
+        if compatible_mode:
+            assert original_session is not None and current_resume_identity is not None
+            assert current_resume_digest is not None and compatible_stage_receipts is not None and compatible_admissions is not None
+            if dataset == "ppi":
+                old_stage_map = original_session.get("stage_receipts")
+                old_ppi_map = old_stage_map.get("ppi") if isinstance(old_stage_map, dict) else None
+                current_ppi_map = dataset_receipts
+                if (
+                    not isinstance(old_ppi_map, dict)
+                    or set(old_ppi_map) != {"producer", "final", "witness"}
+                    or current_ppi_map != old_ppi_map
+                    or set(compatible_stage_receipts) != {"schema", "session_id", "current_prover_identity_sha256", "ppi"}
+                    or compatible_stage_receipts.get("schema") != "ezkl.compatible-stage-receipts.v1"
+                    or compatible_stage_receipts.get("session_id") != session_id
+                    or compatible_stage_receipts.get("current_prover_identity_sha256") != current_resume_digest
+                    or not isinstance(compatible_stage_receipts.get("ppi"), dict)
+                    or set(compatible_stage_receipts["ppi"]) != {"prove", "verify"}
+                ):
+                    abort("compatible PPI stage receipts do not preserve the old stages and exact current Prove/Verify pair")
+                dataset_receipts = {**old_ppi_map, **compatible_stage_receipts["ppi"]}
+                admission = original_session.get("native_admissions", {}).get("ppi")
+                old_digest = canonical_json_digest(original_session["resume_identity"])
+                stage_resume_digests = {
+                    "producer": old_digest,
+                    "final": old_digest,
+                    "witness": old_digest,
+                    "prove": current_resume_digest,
+                    "verify": current_resume_digest,
+                }
+                expected_receipt_path = f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/compatible_resume_receipt.json"
+                if result.get("compatible_resume_receipt_path") != expected_receipt_path:
+                    abort("compatible PPI result does not bind the authoritative sidecar receipt path")
+                _compat_receipt, compat_digest = validate_compatibility_receipt(
+                    ROOT / expected_receipt_path, session_id=session_id,
+                )
+                if result.get("compatible_resume_receipt_sha256") != compat_digest:
+                    abort("compatible PPI result does not bind the exact authoritative sidecar receipt digest")
+            else:
+                compatible_map = compatible_stage_receipts.get("ppi")
+                if (
+                    set(compatible_stage_receipts) != {"schema", "session_id", "current_prover_identity_sha256", "ppi"}
+                    or compatible_stage_receipts.get("schema") != "ezkl.compatible-stage-receipts.v1"
+                    or compatible_stage_receipts.get("session_id") != session_id
+                    or compatible_stage_receipts.get("current_prover_identity_sha256") != current_resume_digest
+                    or not isinstance(compatible_map, dict)
+                    or set(compatible_map) != {"prove", "verify"}
+                    or "compatible_resume_receipt_path" in result
+                    or "compatible_resume_receipt_sha256" in result
+                ):
+                    abort("ordinary OGBN finalization inherited malformed PPI compatibility state")
+                admission = compatible_admissions.get(dataset)
+                if not isinstance(dataset_receipts, dict):
+                    abort("ordinary OGBN current stage receipt map is missing")
+                stage_resume_digests = {stage: current_resume_digest for stage in _FORMAL_STAGE_ORDER}
         if (
             not isinstance(checkpoint, dict)
             or checkpoint.get("session_id") != session_id
@@ -5461,8 +5794,8 @@ def _finalization_result_identity(
             or result.get("formal_session_id") != session_id
             or result.get("status") != "VERIFY_OK"
             or result.get("native_verify_result") is not True
-            or result.get("source_tree_sha256") != resume_identity.get("source_tree_sha256")
-            or result.get("resource_manifest_sha256") != resume_identity.get("resource_manifest_sha256")
+            or result.get("source_tree_sha256") != result_identity.get("source_tree_sha256")
+            or result.get("resource_manifest_sha256") != result_identity.get("resource_manifest_sha256")
             or not isinstance(admission, dict)
             or not isinstance(admission.get("sha256"), str)
             or not isinstance(admission.get("settings_sha256"), str)
@@ -5474,8 +5807,12 @@ def _finalization_result_identity(
         setup_path = output / "setup_receipt.json"
         if setup_path.is_symlink() or not setup_path.is_file() or sha256(setup_path) != setup_digest:
             abort(f"{dataset} finalization setup receipt differs from its session anchor")
-        admission_path = session_dir / "admission" / dataset / "admission.json"
-        settings_path = session_dir / "admission" / dataset / "settings.json"
+        if compatible_mode:
+            admission_path = local_path(str(admission.get("path")), f"{dataset} finalization Admission")
+            settings_path = local_path(str(admission.get("prepared_dir")), f"{dataset} finalization Admission directory") / "settings.json"
+        else:
+            admission_path = session_dir / "admission" / dataset / "admission.json"
+            settings_path = session_dir / "admission" / dataset / "settings.json"
         if (
             admission_path.is_symlink() or not admission_path.is_file() or sha256(admission_path) != admission["sha256"]
             or settings_path.is_symlink() or not settings_path.is_file() or sha256(settings_path) != admission["settings_sha256"]
@@ -5502,7 +5839,7 @@ def _finalization_result_identity(
                 or receipt.get("session_id") != session_id
                 or receipt.get("dataset") != dataset
                 or receipt.get("stage") != stage
-                or receipt.get("resume_identity_sha256") != resume_digest
+                or receipt.get("resume_identity_sha256") != stage_resume_digests[stage]
                 or receipt.get("admission_sha256") != admission.get("sha256")
                 or receipt.get("setup_receipt_sha256") != setup_digest
                 or isinstance(elapsed, bool)
@@ -5516,7 +5853,29 @@ def _finalization_result_identity(
             ):
                 abort(f"{dataset} {stage} stage receipt has invalid identity, raw timing, or digest maps")
             expected_paths = {name: output / path for name, path in output_names[stage].items()}
-            if stage == "prove":
+            if compatible_mode and dataset == "ppi" and stage == "final":
+                assert original_session is not None
+                original_manifest, _original_manifest_sha256, _original_manifest_ref = validate_original_artifact_manifest(
+                    original_session, session_id=session_id,
+                )
+                original_final_anchor = original_session["stage_receipts"]["ppi"]["final"]
+                original_final_receipt = original_final_anchor["receipt"]
+                original_outputs = original_final_receipt["outputs_sha256"]
+                current_srs = expected_paths["srs"]
+                current_final_log = expected_paths["final_log"]
+                if (
+                    current_srs.is_symlink() or not current_srs.is_file()
+                    or current_final_log.is_symlink() or not current_final_log.is_file()
+                    or sha256(current_srs) != original_outputs.get("srs")
+                    or sha256(current_final_log) != original_outputs.get("final_log")
+                    or outputs != original_outputs
+                ):
+                    abort("retained PPI Final stage artifacts differ from the frozen original receipt")
+                # The current PPI manifest is intentionally transformed. Its old
+                # Final-stage identity is checked against the immutable manifest
+                # snapshot above, while the unchanged SRS and log are checked here.
+                current_outputs = original_outputs
+            elif stage == "prove":
                 checkpoint_proof_sha256 = checkpoint.get("proof_sha256")
                 prove_path = expected_paths["proof"]
                 if (
@@ -5535,7 +5894,7 @@ def _finalization_result_identity(
             else:
                 current_outputs = _stage_paths_digest_map(stage, expected_paths)
             if outputs != current_outputs:
-                abort(f"{dataset} {stage} receipt outputs changed before five-result collection")
+                abort(f"{dataset} {stage} receipt outputs changed before selected-result collection")
             if stage == "verify" and inputs.get("proof") != checkpoint.get("proof_sha256"):
                 abort(f"{dataset} independent Verify receipt does not consume the durable proof checkpoint")
             log_exit_field = "return_code" if stage == "producer" else "phase_exit_code"
@@ -5613,8 +5972,9 @@ def _finalization_result_identity(
             "phase_timings_ms": result.get("phase_timings_ms"),
         })
     identity: dict[str, object] = {
-        "schema": "ezkl.formal-five-result-inputs.v1",
+        "schema": "ezkl.formal-selected-result-inputs.v1",
         "session_id": session_id,
+        "selected_datasets": list(selected_datasets),
         "source_tree_sha256": document.get("source_tree_sha256"),
         "resource_manifest_sha256": document.get("resource_manifest_sha256"),
         "resume_identity_sha256": resume_digest,
@@ -5775,6 +6135,41 @@ _POST_SETUP_FILES = (
     "result.json",
 )
 
+_TRUSTED_SETUP_FILE_KEYS = {
+    "settings_sha256",
+    "compiled_circuit_sha256",
+    "vk_sha256",
+    "pk_sha256",
+    "static_tables_sha256",
+    "integer_ledger_sha256",
+}
+
+
+def _native_setup_artifact_digest(
+    output: Path,
+    filename: str,
+    trusted_setup_files: dict[str, object] | None,
+) -> str:
+    fields = {
+        "compiled.circuit": "compiled_circuit_sha256",
+        "vk.key": "vk_sha256",
+        "pk.key": "pk_sha256",
+    }
+    path = require_file(output / filename, f"retained {filename}")
+    if trusted_setup_files is None:
+        return sha256(path)
+    if set(trusted_setup_files) != _TRUSTED_SETUP_FILE_KEYS:
+        abort("retained Setup digest map has an unknown or incomplete file census")
+    field = fields.get(filename)
+    if field is None:
+        abort(f"retained Setup digest shortcut is not permitted for {filename}")
+    digest = trusted_setup_files.get(field)
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        abort(f"retained Setup digest is malformed for {filename}")
+    if path.stat().st_size <= 0:
+        abort(f"retained Setup artifact is empty: {filename}")
+    return digest
+
 
 def _load_native_keygen_receipt(
     output: Path,
@@ -5782,6 +6177,8 @@ def _load_native_keygen_receipt(
     session_id: str,
     resume_identity: dict[str, object],
     admission: dict[str, object],
+    *,
+    trusted_setup_files: dict[str, object] | None = None,
 ) -> tuple[dict[str, object], dict[str, object], str]:
     budget_path = output / "native_keygen_budget.json"
     receipt_path = output / "native_keygen_receipt.json"
@@ -5992,9 +6389,9 @@ def _load_native_keygen_receipt(
         "resource_manifest_sha256": relation_identity.get("resource_manifest_sha256"),
         "budget_receipt_sha256": sha256(budget_path),
         "settings_sha256": admission.get("settings_sha256"),
-        "compiled_circuit_sha256": sha256(require_file(output / "compiled.circuit", f"{dataset} compiled circuit")),
-        "vk_sha256": sha256(require_file(output / "vk.key", f"{dataset} verifying key")),
-        "pk_sha256": sha256(require_file(output / "pk.key", f"{dataset} proving key")),
+        "compiled_circuit_sha256": _native_setup_artifact_digest(output, "compiled.circuit", trusted_setup_files),
+        "vk_sha256": _native_setup_artifact_digest(output, "vk.key", trusted_setup_files),
+        "pk_sha256": _native_setup_artifact_digest(output, "pk.key", trusted_setup_files),
         "evidence_kind": "mandatory_vk_pk_native_keygen_synthesis_census",
         "coverage": "actual_vk_and_pk_synthesis_census; exact_selector_advice_fixed_permutation_and_lookup_bounds",
     }
@@ -6162,7 +6559,20 @@ def _completed_cell_checkpoint(
     checkpoint_map = document.get("completed_cells", {})
     if not isinstance(checkpoint_map, dict) or any(name not in DATASETS for name in checkpoint_map):
         abort("formal completed-cell checkpoint map is malformed")
-    resume_identity = document.get("resume_identity")
+    compatible_mode = document.get("compatible_resume_request") is not None
+    if compatible_mode:
+        request, original_session = validate_compatible_resume_request(document, expected_session_id=session_id)
+        resume_identity = document.get("compatible_prover_identity")
+        if (
+            not isinstance(resume_identity, dict)
+            or document.get("compatible_prover_identity_sha256") != canonical_json_digest(resume_identity)
+            or request.get("selected_datasets") != list(_COMPAT_SELECTED_DATASETS)
+            or original_session.get("resume_identity") != document.get("resume_identity")
+            or selected_datasets_for_session(document) != _COMPAT_SELECTED_DATASETS
+        ):
+            abort("compatible completed-cell checkpoint lacks its exact old/current identity pair")
+    else:
+        resume_identity = document.get("resume_identity")
     if not isinstance(resume_identity, dict):
         abort("formal completed-cell checkpoint has no immutable session identity")
     expected_source = resume_identity.get("source_tree_sha256")
@@ -6205,10 +6615,57 @@ def _completed_cell_checkpoint(
         if existing is not None:
             abort(f"{dataset} durable result checkpoint identity no longer matches its verified session")
         return False
+    if compatible_mode:
+        if dataset == "ppi":
+            expected_receipt_path = f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/compatible_resume_receipt.json"
+            receipt_path_value = result.get("compatible_resume_receipt_path")
+            receipt_sha_value = result.get("compatible_resume_receipt_sha256")
+            if receipt_path_value != expected_receipt_path or not isinstance(receipt_sha_value, str):
+                if existing is not None or require_existing:
+                    abort("compatible PPI result is missing its exact authoritative receipt binding")
+                return False
+            _compat_receipt, actual_receipt_sha = validate_compatibility_receipt(
+                ROOT / expected_receipt_path, session_id=session_id,
+            )
+            if receipt_sha_value != actual_receipt_sha:
+                abort("compatible PPI result receipt digest differs from its authoritative sidecar")
+        elif "compatible_resume_receipt_path" in result or "compatible_resume_receipt_sha256" in result:
+            abort("ordinary OGBN result must not inherit the PPI compatible receipt identity")
     proof_path = local_path(result.get("proof_path"), f"{dataset} completed proof")
     proof_sha256 = result.get("proof_sha256")
     stage_receipts = document.get("stage_receipts")
     dataset_receipts = stage_receipts.get(dataset) if isinstance(stage_receipts, dict) else None
+    if compatible_mode and dataset == "ppi":
+        old_stage_receipts = original_session.get("stage_receipts")
+        old_ppi_receipts = old_stage_receipts.get("ppi") if isinstance(old_stage_receipts, dict) else None
+        current_ppi_receipts = dataset_receipts
+        compatible_receipt_map = document.get("compatible_stage_receipts")
+        if (
+            not isinstance(old_ppi_receipts, dict)
+            or set(old_ppi_receipts) != {"producer", "final", "witness"}
+            or current_ppi_receipts != old_ppi_receipts
+            or not isinstance(compatible_receipt_map, dict)
+            or set(compatible_receipt_map) != {"schema", "session_id", "current_prover_identity_sha256", "ppi"}
+            or compatible_receipt_map.get("schema") != "ezkl.compatible-stage-receipts.v1"
+            or compatible_receipt_map.get("session_id") != session_id
+            or compatible_receipt_map.get("current_prover_identity_sha256") != canonical_json_digest(resume_identity)
+            or not isinstance(compatible_receipt_map.get("ppi"), dict)
+            or set(compatible_receipt_map["ppi"]) != {"prove", "verify"}
+        ):
+            abort("compatible PPI current Prove/Verify stage map or preserved old stages is malformed")
+        dataset_receipts = {**old_ppi_receipts, **compatible_receipt_map["ppi"]}
+    elif compatible_mode:
+        compatible_receipt_map = document.get("compatible_stage_receipts")
+        if (
+            not isinstance(compatible_receipt_map, dict)
+            or set(compatible_receipt_map) != {"schema", "session_id", "current_prover_identity_sha256", "ppi"}
+            or compatible_receipt_map.get("schema") != "ezkl.compatible-stage-receipts.v1"
+            or compatible_receipt_map.get("session_id") != session_id
+            or compatible_receipt_map.get("current_prover_identity_sha256") != canonical_json_digest(resume_identity)
+            or not isinstance(compatible_receipt_map.get("ppi"), dict)
+            or set(compatible_receipt_map["ppi"]) != {"prove", "verify"}
+        ):
+            abort("compatible session PPI stage sidecar is malformed while checking OGBN")
     verify_anchor = dataset_receipts.get("verify") if isinstance(dataset_receipts, dict) else None
     verify_receipt = verify_anchor.get("receipt") if isinstance(verify_anchor, dict) else None
     verify_inputs = verify_receipt.get("inputs_sha256") if isinstance(verify_receipt, dict) else None
@@ -6219,6 +6676,12 @@ def _completed_cell_checkpoint(
     verify_receipt_sha256 = verify_anchor.get("sha256") if isinstance(verify_anchor, dict) else None
     admissions = document.get("native_admissions")
     admission = admissions.get(dataset) if isinstance(admissions, dict) else None
+    if compatible_mode:
+        if dataset == "ppi":
+            admission = original_session.get("native_admissions", {}).get("ppi")
+        else:
+            current_admissions = document.get("compatible_native_admissions")
+            admission = current_admissions.get(dataset) if isinstance(current_admissions, dict) else None
     setups = document.get("setup_reuse_receipts")
     setup_receipt_sha256 = setups.get(dataset) if isinstance(setups, dict) else None
     verify_elapsed_ms = verify_receipt.get("elapsed_ms") if isinstance(verify_receipt, dict) else None
@@ -6388,18 +6851,67 @@ def _record_capacity_source_identity(
     *,
     session_file: Path,
     resume: bool,
+    compatible: bool = False,
 ) -> dict[str, object]:
     api = _capacity_precheck_api()
     identity = api.capacity_source_identity()
     if not isinstance(identity, dict):
         abort("current EZKL capacity source identity is malformed")
     session_document = load_json(session_file, "formal session record")
-    previous = session_document.get("capacity_source_identity")
-    if resume and previous != identity:
-        abort("resume capacity geometry/native-PK/config/resource identity changed or was never authenticated")
-    if not resume:
+    if compatible:
+        previous = session_document.get("compatible_capacity_source_identity")
+        if previous is not None and previous != identity:
+            abort("compatible current capacity-source identity changed during this session")
+        session_document["compatible_capacity_source_identity"] = identity
+        session_document["compatible_capacity_source_identity_sha256"] = canonical_json_digest(identity)
+        _write_session_record(session_file, session_document)
+    else:
+        previous = session_document.get("capacity_source_identity")
+        if resume and previous != identity:
+            abort("resume capacity geometry/native-PK/config/resource identity changed or was never authenticated")
+    if not resume and not compatible:
         session_document["capacity_source_identity"] = identity
         _write_session_record(session_file, session_document)
+    return identity
+
+
+def _compatible_capacity_provenance(
+    *,
+    session_document: dict[str, object],
+    session_id: str,
+    resume_identity: dict[str, object],
+    capacity_source_identity: dict[str, object],
+) -> dict[str, object]:
+    request, old_session = validate_compatible_resume_request(session_document, expected_session_id=session_id)
+    old_setup_identity, old_setup_identity_sha256, _setup_refs = validate_retained_setup_chain(
+        old_session, session_id=session_id,
+    )
+    if old_setup_identity.get("old_resume_identity_sha256") != canonical_json_digest(old_session["resume_identity"]):
+        abort("compatible old Setup identity is not derived from the frozen original prover identity")
+    snapshot_ref = {
+        "path": str(request["old_session_snapshot_path"]),
+        "sha256": str(request["old_session_snapshot_sha256"]),
+    }
+    if request.get("session_id") != session_id:
+        abort("compatible capacity provenance request is bound to another session")
+    receipts = session_document.get("compatible_native_admissions")
+    if not isinstance(receipts, dict) or set(receipts) != set(_COMPAT_SELECTED_DATASETS):
+        abort("compatible capacity provenance requires exact current PPI and OGBN Admissions")
+    identity = {
+        "schema": "ezkl.compatible-capacity-provenance.v1",
+        "session_id": session_id,
+        "compatible_resume_request": request,
+        "old_session_snapshot": snapshot_ref,
+        "old_resume_identity_sha256": canonical_json_digest(old_session["resume_identity"]),
+        "old_setup_identity_sha256": old_setup_identity_sha256,
+        "resume_identity": resume_identity,
+        "resume_identity_sha256": canonical_json_digest(resume_identity),
+        "capacity_source_identity": capacity_source_identity,
+        "capacity_source_identity_sha256": canonical_json_digest(capacity_source_identity),
+        "native_admissions": receipts,
+        "admission_root": f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/admission",
+        "retained_setup": {"ppi": True, "ogbn_arxiv": False},
+    }
     return identity
 
 
@@ -6414,13 +6926,24 @@ def _run_five_admission_preflight(
     selected_device: dict[str, object],
     saved_admissions: dict[str, dict[str, object]],
     capacity_only: bool,
+    selected_datasets: tuple[str, ...] = DATASETS,
+    compatible_resume_identity: dict[str, object] | None = None,
+    compatible_capacity_source_identity: dict[str, object] | None = None,
 ) -> dict[str, dict[str, object]]:
+    selected_datasets = normalize_selected_datasets(selected_datasets)
+    session_selection = selected_datasets_for_session(load_json(session_file, "formal session record"))
+    if session_selection != selected_datasets:
+        abort("Admission selection differs from the immutable formal session selection")
     api = _capacity_precheck_api()
     admissions: dict[str, dict[str, object]] = {}
     failures: dict[str, dict[str, str]] = {}
     session_dir = output_root / ".sessions" / session_id
     logs_dir = session_dir / "logs"
-    for dataset in DATASETS:
+    compatible = compatible_resume_identity is not None or compatible_capacity_source_identity is not None
+    if compatible and (compatible_resume_identity is None or compatible_capacity_source_identity is None):
+        abort("compatible Admission preflight lacks its current prover or capacity-source identity")
+    compatible_admission_root = session_dir / "compatibility" / "admission" if compatible else None
+    for dataset in selected_datasets:
         log_path = logs_dir / dataset / "native_admission.log"
         try:
             selected = native_admit_all_datasets(
@@ -6431,7 +6954,14 @@ def _run_five_admission_preflight(
                 selected_device,
                 datasets=(dataset,),
                 reuse_receipt=saved_admissions,
-                receipt_callback=lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt),
+                receipt_callback=(
+                    (lambda name, receipt: _persist_compatible_native_admission_receipt(
+                        session_file, name, receipt, session_id=session_id,
+                    ))
+                    if compatible
+                    else (lambda name, receipt: _persist_native_admission_receipt(session_file, name, receipt))
+                ),
+                admission_root_override=compatible_admission_root,
                 command_runner=lambda command, label, selected_log=log_path: run(
                     command,
                     label,
@@ -6444,11 +6974,34 @@ def _run_five_admission_preflight(
             saved_admissions[dataset] = admission
         except Exception as exc:
             failures[dataset] = {"exception_type": type(exc).__name__, "error": str(exc)[:2000]}
-            print(f"[ezkl-formal] Admission attempt failed dataset={dataset}; continuing all-five preflight: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[ezkl-formal] Admission attempt failed dataset={dataset}; continuing selected preflight: {type(exc).__name__}: {exc}", flush=True)
 
     records: list[dict[str, object]] = []
     audit_failures: dict[str, dict[str, str]] = {}
-    for dataset in DATASETS:
+    compatible_provenance: dict[str, object] | None = None
+    if compatible:
+        if set(admissions) != set(_COMPAT_SELECTED_DATASETS):
+            abort("compatible current Admission preflight did not produce both PPI and OGBN Admissions")
+        request, old_session = validate_compatible_resume_request(
+            load_json(session_file, "compatible Admission session"), expected_session_id=session_id,
+        )
+        for dataset in _COMPAT_SELECTED_DATASETS:
+            old_anchor = old_session["native_admissions"][dataset]
+            old_path = ROOT / str(old_anchor["path"])
+            current_path = local_path(str(admissions[dataset]["path"]), f"{dataset} compatible current Admission")
+            old_admission = load_json(old_path, f"{dataset} frozen original Admission")
+            current_admission = load_json(current_path, f"{dataset} current capacity Admission")
+            if sha256(old_path) != old_anchor["sha256"] or sha256(current_path) != admissions[dataset].get("sha256"):
+                abort(f"{dataset} compatible Admission bytes differ from the exact original/current receipt anchors")
+            compare_admission_semantics(old_admission, current_admission, dataset=dataset)
+        current_session_document = load_json(session_file, "formal session record")
+        compatible_provenance = _compatible_capacity_provenance(
+            session_document=current_session_document,
+            session_id=session_id,
+            resume_identity=compatible_resume_identity,
+            capacity_source_identity=compatible_capacity_source_identity,
+        )
+    for dataset in selected_datasets:
         admission = admissions.get(dataset)
         if admission is None:
             records.append(
@@ -6459,6 +7012,7 @@ def _run_five_admission_preflight(
                     None,
                     output_root=output_root,
                     authenticated_context=authenticated_context,
+                    **({"compatible_provenance": compatible_provenance} if compatible_provenance is not None else {}),
                 )
             )
             continue
@@ -6473,11 +7027,12 @@ def _run_five_admission_preflight(
                 settings_path,
                 output_root=output_root,
                 authenticated_context=authenticated_context,
+                **({"compatible_provenance": compatible_provenance} if compatible_provenance is not None else {}),
             )
             records.append(record)
         except Exception as exc:
             audit_failures[dataset] = {"exception_type": type(exc).__name__, "error": str(exc)[:2000]}
-            print(f"[ezkl-formal] current capacity audit failed dataset={dataset}; continuing all-five audit: {type(exc).__name__}: {exc}", flush=True)
+            print(f"[ezkl-formal] current capacity audit failed dataset={dataset}; continuing selected audit: {type(exc).__name__}: {exc}", flush=True)
             records.append(
                 api.audit_fresh_admission(
                     session_file,
@@ -6486,12 +7041,18 @@ def _run_five_admission_preflight(
                     None,
                     output_root=output_root,
                     authenticated_context=authenticated_context,
+                    **({"compatible_provenance": compatible_provenance} if compatible_provenance is not None else {}),
                 )
             )
 
     capacity_dir = session_dir / "capacity"
     capacity_dir.mkdir(parents=True, exist_ok=True)
-    report_path = capacity_dir / "resource_capacity_precheck.json"
+    report_path = (
+        session_dir / "compatibility" / "capacity_precheck_current.json"
+        if compatible
+        else capacity_dir / "resource_capacity_precheck.json"
+    )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
     # The helper writes its diagnostic report before raising for any gate or
     # provenance failure. Never let a prior report turn that exception into a
     # Setup authorization.
@@ -6501,18 +7062,19 @@ def _run_five_admission_preflight(
         report_path,
         output_root=output_root,
         authenticated_context=authenticated_context,
+        **({"compatible_provenance": compatible_provenance} if compatible_provenance is not None else {}),
     )
 
     session_document = load_json(session_file, "formal session record")
     session_document["capacity_admission_attempts"] = {
-        "datasets": [dataset for dataset in DATASETS if dataset in admissions],
+        "datasets": [dataset for dataset in selected_datasets if dataset in admissions],
         "failures": failures,
         "audit_failures": audit_failures,
         "report_path": report_path.relative_to(ROOT).as_posix(),
         "report_sha256": sha256(report_path),
         "gate_status": report.get("gate_status"),
         "readiness": report.get("readiness", "NOT_ESTABLISHED"),
-        "purpose": "all-five-native-admission-and-v4-PK-lower-bound-report-only; no setup or proof success implied",
+        "purpose": "selected-native-admission-and-v4-PK-lower-bound-report-only; no setup or proof success implied",
     }
     _write_session_record(session_file, session_document)
 
@@ -6525,9 +7087,9 @@ def _run_five_admission_preflight(
         if capacity_only:
             print(f"[ezkl-formal] admission/v4 PK metadata preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
         else:
-            print(f"[ezkl-formal] all-five Admission/v4 PK metadata preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
-        abort(f"five-dataset admission/capacity preflight did not pass before any Setup: {summary}")
-    print(f"[ezkl-formal] all-five Admission/v4 PK metadata report recorded; readiness remains unestablished and source-model Setup/actual-census Prove capacity gates remain mandatory; report={report_path.relative_to(ROOT)}", flush=True)
+            print(f"[ezkl-formal] selected Admission/v4 PK metadata preflight failed before Setup; {summary}", file=sys.stderr, flush=True)
+        abort(f"selected-dataset admission/capacity preflight did not pass before any Setup: {summary}")
+    print(f"[ezkl-formal] selected Admission/v4 PK metadata report recorded; readiness remains unestablished and source-model Setup/actual-census Prove capacity gates remain mandatory; report={report_path.relative_to(ROOT)}", flush=True)
     return admissions
 
 
@@ -6552,8 +7114,25 @@ def _run_five_native_capacity_preflight(
     completed_datasets: set[str],
     workspace_receipt: dict[str, object] | None,
     srs_copy_size_bytes: int,
+    selected_datasets: tuple[str, ...] = DATASETS,
+    compatible_resume_identity: dict[str, object] | None = None,
+    compatible_capacity_source_identity: dict[str, object] | None = None,
+    compatible_original_session: dict[str, object] | None = None,
+    compatible_old_resume_identity: dict[str, object] | None = None,
+    compatible_old_admission: dict[str, object] | None = None,
+    compatible_setup_refs: dict[str, object] | None = None,
 ) -> tuple[dict[str, dict[str, object]], dict[str, object] | None, dict[str, dict[str, int]], set[str], set[str]]:
-    """Authenticate all Admissions and gate every pending long phase before the first cell starts."""
+    """Authenticate selected Admissions and gate every pending long phase before the first cell starts."""
+    selected_datasets = normalize_selected_datasets(selected_datasets)
+    compatible = compatible_resume_identity is not None
+    if compatible != all(value is not None for value in (
+        compatible_capacity_source_identity,
+        compatible_original_session,
+        compatible_old_resume_identity,
+        compatible_old_admission,
+        compatible_setup_refs,
+    )):
+        abort("compatible native capacity preflight has an incomplete retained Setup identity")
     admissions = _run_five_admission_preflight(
         binary=binary,
         srs=srs,
@@ -6564,8 +7143,11 @@ def _run_five_native_capacity_preflight(
         selected_device=selected_device,
         saved_admissions=saved_admissions,
         capacity_only=False,
+        selected_datasets=selected_datasets,
+        compatible_resume_identity=compatible_resume_identity,
+        compatible_capacity_source_identity=compatible_capacity_source_identity,
     )
-    pending_datasets = tuple(dataset for dataset in DATASETS if dataset not in completed_datasets)
+    pending_datasets = tuple(dataset for dataset in selected_datasets if dataset not in completed_datasets)
     if not pending_datasets:
         return admissions, workspace_receipt, {}, set(), set()
     json_output_bounds = {
@@ -6611,7 +7193,16 @@ def _run_five_native_capacity_preflight(
         output = output_root / dataset
         if archived_outputs and (output.is_symlink() or (output.exists() and not output.is_dir())):
             abort(f"resume output directory must be a regular directory: {output}")
-        if is_resume and archived_outputs and output.exists() and validate_setup_reuse_receipt(
+        if compatible and dataset == "ppi":
+            if not output.is_dir() or output.is_symlink():
+                abort("compatible retained PPI Setup output is missing or symlinked")
+            _setup_identity, _setup_identity_sha256, verified_setup_refs = validate_retained_setup_chain(
+                compatible_original_session, session_id=session_id,
+            )
+            if verified_setup_refs != compatible_setup_refs or saved_setup_anchors.get("ppi") != verified_setup_refs["setup_receipt"]["sha256"]:
+                abort("compatible retained PPI Setup chain differs from the preflight-bound old identity")
+            setup_reused_datasets.add(dataset)
+        elif is_resume and archived_outputs and output.exists() and validate_setup_reuse_receipt(
             output,
             dataset,
             session_id,
@@ -6623,7 +7214,10 @@ def _run_five_native_capacity_preflight(
 
     pending_finalize_datasets = set(pending_datasets)
     for dataset in sorted(setup_reused_datasets):
-        if _reusable_final_stage_srs(
+        if compatible and dataset == "ppi":
+            validate_original_artifact_manifest(compatible_original_session, session_id=session_id)
+            pending_finalize_datasets.discard(dataset)
+        elif _reusable_final_stage_srs(
             session_file=session_file,
             session_dir=session_dir,
             output_root=output_root,
@@ -6649,6 +7243,7 @@ def _run_five_native_capacity_preflight(
         pending_srs = _pending_srs_copy_disk_budget(
             srs_copy_size_bytes,
             pending_finalize_datasets,
+            datasets=selected_datasets,
         )
         setup_disk_components = _disk_budget_components(
             pending_srs=pending_srs,
@@ -6658,7 +7253,7 @@ def _run_five_native_capacity_preflight(
             pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
             pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
         )
-        for dataset in DATASETS:
+        for dataset in selected_datasets:
             if dataset not in setup_required_datasets:
                 continue
             setup_check = _recheck_local_phase_capacity(
@@ -6679,16 +7274,20 @@ def _run_five_native_capacity_preflight(
             _write_session_record(session_file, session_document)
 
     reusable_proof_capacities: dict[str, dict[str, int]] = {}
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         if dataset not in setup_reused_datasets:
             continue
         output = output_root / dataset
+        keygen_identity = compatible_old_resume_identity if compatible and dataset == "ppi" else resume_identity
+        keygen_admission = compatible_old_admission if compatible and dataset == "ppi" else admissions[dataset]
+        trusted_setup_files = compatible_setup_refs.get("setup_files") if compatible and dataset == "ppi" else None
         native_keygen_budget, native_keygen_receipt, _ = _load_native_keygen_receipt(
             output,
             dataset,
             session_id,
-            resume_identity,
-            admissions[dataset],
+            keygen_identity,
+            keygen_admission,
+            trusted_setup_files=trusted_setup_files,
         )
         native_census = native_keygen_receipt.get("native_census")
         if not isinstance(native_census, dict):
@@ -6721,6 +7320,7 @@ def _run_five_native_capacity_preflight(
         pending_srs = _pending_srs_copy_disk_budget(
             srs_copy_size_bytes,
             pending_finalize_datasets,
+            datasets=selected_datasets,
         )
         proof_disk_components = _disk_budget_components(
             pending_srs=pending_srs,
@@ -6730,7 +7330,7 @@ def _run_five_native_capacity_preflight(
             pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
             pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
         )
-        for dataset in DATASETS:
+        for dataset in selected_datasets:
             requirements = reusable_proof_capacities.get(dataset)
             if requirements is None:
                 continue
@@ -6794,16 +7394,17 @@ def _require_formal_dataset_completion(
 ) -> None:
     if dataset_failures:
         failure_summary = "; ".join(f"{dataset} [{record['stage']}] {record['exception_type']}: {record['error']}" for dataset, record in sorted(dataset_failures.items()))
-        abort(f"formal dataset cells failed; skipping five-result collection and final validation: {failure_summary}")
+        abort(f"formal dataset cells failed; skipping selected-result collection and final validation: {failure_summary}")
     missing = [dataset for dataset in datasets if dataset not in completed_datasets]
     if missing:
-        abort(f"formal dataset cells are incomplete; skipping five-result collection and final validation: {', '.join(missing)}")
+        abort(f"formal dataset cells are incomplete; skipping selected-result collection and final validation: {', '.join(missing)}")
 
 
 def _persist_native_admission_receipt(session_file: Path, dataset: str, receipt: dict[str, object]) -> None:
     document = load_json(session_file, "formal session record")
     receipts = document.setdefault("native_admissions", {})
-    if not isinstance(receipts, dict) or any(name not in DATASETS for name in receipts):
+    selected_datasets = selected_datasets_for_session(document)
+    if not isinstance(receipts, dict) or dataset not in selected_datasets or any(name not in selected_datasets for name in receipts):
         abort("formal native admission receipt map is malformed")
     previous = receipts.get(dataset)
     if previous is not None and previous != receipt:
@@ -6812,23 +7413,54 @@ def _persist_native_admission_receipt(session_file: Path, dataset: str, receipt:
     _write_session_record(session_file, document)
 
 
-def _preflight_dataset_configs() -> dict[str, dict[str, str]]:
+def _persist_compatible_native_admission_receipt(
+    session_file: Path, dataset: str, receipt: dict[str, object], *, session_id: str,
+) -> None:
+    """Persist current capacity Admissions separately from the immutable old map."""
+    document = load_json(session_file, "formal session record")
+    request, _old_session = validate_compatible_resume_request(document, expected_session_id=session_id)
+    if dataset not in _COMPAT_SELECTED_DATASETS or selected_datasets_for_session(document) != _COMPAT_SELECTED_DATASETS:
+        abort("compatible current Admission does not match the exact PPI/OGBN selection")
+    expected_dir = f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/admission/{dataset}"
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("prepared_dir") != expected_dir
+        or receipt.get("path") != f"{expected_dir}/admission.json"
+        or not isinstance(receipt.get("sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", receipt["sha256"]) is None
+        or not isinstance(receipt.get("settings_sha256"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", receipt["settings_sha256"]) is None
+    ):
+        abort(f"{dataset} compatible current Admission receipt has an invalid sidecar identity")
+    receipts = document.setdefault("compatible_native_admissions", {})
+    if not isinstance(receipts, dict) or any(name not in _COMPAT_SELECTED_DATASETS for name in receipts):
+        abort("compatible current Admission receipt map is malformed")
+    previous = receipts.get(dataset)
+    if previous is not None and previous != receipt:
+        abort(f"{dataset} compatible current Admission receipt cannot be replaced")
+    receipts[dataset] = receipt
+    _write_session_record(session_file, document)
+
+
+def _preflight_dataset_configs(datasets: tuple[str, ...] = DATASETS) -> dict[str, dict[str, str]]:
     require_file(ROOT / "resources/canonical/configs/quantization_scale_chain.cfg", "canonical scale chain")
     checked: dict[str, dict[str, str]] = {}
     for dataset in DATASETS:
         config = ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg"
         metadata: dict[str, str] = {}
         values = validate_config(config, dataset, metadata_values=metadata)
-        data_dir = ROOT / values["cache_root"] / dataset
-        require_file(data_dir / "edges.txt", f"{dataset} canonical edges")
-        features = data_dir / "features.npy"
-        require_file(features if features.exists() else data_dir / "features.txt", f"{dataset} canonical features")
-        graph_count = int(metadata["graph_count"])
-        if graph_count > 1:
-            require_file(data_dir / "node_ptr.txt", f"{dataset} canonical graph boundaries")
+        if dataset in datasets:
+            data_dir = ROOT / values["cache_root"] / dataset
+            require_file(data_dir / "edges.txt", f"{dataset} canonical edges")
+            features = data_dir / "features.npy"
+            require_file(features if features.exists() else data_dir / "features.txt", f"{dataset} canonical features")
+            graph_count = int(metadata["graph_count"])
+            if graph_count > 1:
+                require_file(data_dir / "node_ptr.txt", f"{dataset} canonical graph boundaries")
         checked[dataset] = values
         print(
-            f"[ezkl-formal] dataset preflight PASS: {dataset} config, dataset-scoped metadata, " "checkpoint manifest/tensors, graph files, and schema",
+            f"[ezkl-formal] dataset preflight PASS: {dataset} config and canonical resource binding"
+            + (", dataset-scoped metadata, checkpoint tensors, and graph files" if dataset in datasets else ""),
             flush=True,
         )
     return checked
@@ -6853,6 +7485,7 @@ def _authenticate_or_provision_srs(
     *,
     allow_provision: bool,
     config_values: dict[str, dict[str, str]],
+    selected_datasets: tuple[str, ...] = DATASETS,
 ) -> tuple[dict[str, object], dict[str, dict[str, str]], bool]:
     try:
         srs_manifest = validate_native_srs_manifest(config_values=config_values)
@@ -6865,7 +7498,7 @@ def _authenticate_or_provision_srs(
     provisioner = ROOT / "scripts" / "provision_srs.py"
     require_file(provisioner, "official native SRS provisioner")
     run_prerequisite([python, "-u", str(provisioner)], "provision and authenticate official native get-srs material", timeout_seconds=21600)
-    updated_config_values = _preflight_dataset_configs()
+    updated_config_values = _preflight_dataset_configs(selected_datasets)
     srs_manifest = validate_native_srs_manifest(config_values=updated_config_values)
     _validate_config_srs_bindings(updated_config_values, srs_manifest)
     return srs_manifest, updated_config_values, True
@@ -6951,6 +7584,26 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         abort(f"output-root must not be a symlink: {output_root}")
     if matrix.exists() and matrix.is_symlink():
         abort(f"matrix must not be a symlink: {matrix}")
+    selected_datasets = selected_datasets_for_session(load_json(session_file, "formal session record"))
+    compatible_request: dict[str, object] | None = None
+    compatible_original_session: dict[str, object] | None = None
+    compatible_old_resume_identity: dict[str, object] | None = None
+    compatible_old_admission: dict[str, object] | None = None
+    compatible_old_setup_identity: dict[str, object] | None = None
+    compatible_old_setup_identity_sha256: str | None = None
+    compatible_setup_refs: dict[str, object] | None = None
+    compatible_original_manifest: dict[str, object] | None = None
+    compatible_original_manifest_sha256: str | None = None
+    compatible_original_manifest_ref: dict[str, str] | None = None
+    compatible_retained_witness: dict[str, object] | None = None
+    compatible_capacity_source_identity: dict[str, object] | None = None
+    compatible_current_admissions: dict[str, dict[str, object]] | None = None
+    compatible_capacity_report_path = output_root / ".sessions" / session_id / "compatibility" / "capacity_precheck_current.json"
+    compatible_capacity_report_snapshot_path = output_root / ".sessions" / session_id / "compatibility" / "capacity_precheck_ppi.json"
+    compatible_capacity_rechecks_path = output_root / ".sessions" / session_id / "compatibility" / "capacity_rechecks.json"
+    compatible_receipt_path = output_root / ".sessions" / session_id / "compatibility" / "compatible_resume_receipt.json"
+    compatible_receipt_copy_path = output_root / "ppi" / "compatible_resume_receipt.json"
+    compatible_stage_receipts_path = output_root / ".sessions" / session_id / "compatibility" / "compatible_stage_receipts.json"
 
     python = sys.executable
     resource_validator = ROOT / "scripts" / "validate_resources.py"
@@ -6963,7 +7616,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         if not path.is_file():
             abort(f"missing formal runner component: {path}")
 
-    check_output_paths(output_root, matrix)
+    check_output_paths(output_root, matrix, datasets=selected_datasets)
     _set_stage(session_file, "runtime_identity")
     runtime_identity = validate_formal_python_environment()
     selected_device = select_formal_cuda_device(runtime_identity["nvidia_smi_path"])
@@ -6996,10 +7649,14 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         os.environ.pop(name, None)
     os.environ["EZKL_FORMAL_SESSION_ID"] = session_id
 
-    _set_stage(session_file, "five_dataset_config_preflight")
-    config_values = _preflight_dataset_configs()
+    _set_stage(session_file, "selected_dataset_config_preflight")
+    config_values = _preflight_dataset_configs(selected_datasets)
     preflight_config_sha256s = tuple((dataset, sha256(ROOT / "resources/canonical/configs" / f"{dataset}_secure.cfg")) for dataset in DATASETS)
     saved_resume_identity = _load_resume_identity(session_file) if args.resume_session is not None else None
+    if saved_resume_identity is not None and "selected_datasets" not in saved_resume_identity:
+        if selected_datasets != DATASETS:
+            abort("legacy resume identity can only inherit the historical all-five-dataset selection")
+        saved_resume_identity["selected_datasets"] = list(DATASETS)
     _set_stage(session_file, "canonical_resource_authentication")
     (
         authenticated_resource_file_identities,
@@ -7013,7 +7670,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         preflight_config_sha256s=preflight_config_sha256s,
     )
     if authenticated_config_sha256s != preflight_config_sha256s:
-        config_values = _preflight_dataset_configs()
+        config_values = _preflight_dataset_configs(selected_datasets)
         preflight_config_sha256s = authenticated_config_sha256s
     print("[ezkl-formal] authenticated complete five-dataset canonical resources", flush=True)
 
@@ -7022,6 +7679,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         python,
         allow_provision=not (args.preflight_only or args.capacity_preflight_only) and args.resume_session is None,
         config_values=config_values,
+        selected_datasets=selected_datasets,
     )
     if srs_was_provisioned:
         (
@@ -7059,20 +7717,20 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         handoff_resource_manifest_sha256=handoff_resource_manifest_sha256,
     )
     if saved_resume_identity is not None:
-        _require_resume_identity_subset(
-            saved_resume_identity,
-            {
-                "source_tree_sha256": context.source_tree_sha256,
-                "resource_manifest_sha256": context.resource_manifest_sha256,
-                "config_sha256s": [[dataset, digest] for dataset, digest in preflight_config_sha256s],
-                "srs_manifest_sha256": context.srs_manifest_sha256,
-                "srs_sha256": context.srs_sha256,
-            },
-            "sealed-session",
-        )
-    _record_capacity_source_identity(
+        expected_identity_fields: dict[str, object] = {
+            "resource_manifest_sha256": context.resource_manifest_sha256,
+            "config_sha256s": [[dataset, digest] for dataset, digest in preflight_config_sha256s],
+            "selected_datasets": list(selected_datasets),
+            "srs_manifest_sha256": context.srs_manifest_sha256,
+            "srs_sha256": context.srs_sha256,
+        }
+        if not args.compatible_prove_only:
+            expected_identity_fields["source_tree_sha256"] = context.source_tree_sha256
+        _require_resume_identity_subset(saved_resume_identity, expected_identity_fields, "sealed-session")
+    compatible_capacity_source_identity = _record_capacity_source_identity(
         session_file=session_file,
         resume=args.resume_session is not None,
+        compatible=args.compatible_prove_only,
     )
 
     _set_stage(session_file, "gpu_runtime_identity")
@@ -7226,31 +7884,96 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         authenticated_context=context,
         srs=srs,
         binary=binary,
+        selected_datasets=selected_datasets,
     )
-    if saved_resume_identity is not None and saved_resume_identity != resume_identity:
-        changed = sorted(key for key in set(saved_resume_identity) | set(resume_identity) if saved_resume_identity.get(key) != resume_identity.get(key))
-        abort(f"resume immutable source/build/resource/config/SRS/GPU identity changed: {', '.join(changed)}")
     session_document = json.loads(session_file.read_text())
-    session_document["resume_identity"] = resume_identity
+    if args.compatible_prove_only:
+        request, old_session = validate_compatible_resume_request(session_document, expected_session_id=session_id)
+        if saved_resume_identity != old_session.get("resume_identity"):
+            abort("compatible Setup identity source differs from the frozen original session snapshot")
+        delta_identity = canonical_json_digest(resume_identity)
+        existing_current = session_document.get("compatible_prover_identity")
+        existing_current_digest = session_document.get("compatible_prover_identity_sha256")
+        if existing_current is not None or existing_current_digest is not None:
+            if (
+                existing_current != resume_identity
+                or existing_current_digest != delta_identity
+            ):
+                abort("compatible current Prover identity cannot be replaced after it is session-bound")
+        session_document["compatible_prover_identity"] = resume_identity
+        session_document["compatible_prover_identity_sha256"] = delta_identity
+    else:
+        if saved_resume_identity is not None and saved_resume_identity != resume_identity:
+            changed = sorted(key for key in set(saved_resume_identity) | set(resume_identity) if saved_resume_identity.get(key) != resume_identity.get(key))
+            abort(f"resume immutable source/build/resource/config/SRS/GPU identity changed: {', '.join(changed)}")
+        session_document["resume_identity"] = resume_identity
     _write_session_record(session_file, session_document)
 
+    if args.compatible_prove_only:
+        session_document = load_json(session_file, "compatible formal session identity")
+        compatible_request, compatible_original_session = validate_compatible_resume_request(
+            session_document, expected_session_id=session_id,
+        )
+        compatible_old_resume_identity = compatible_original_session["resume_identity"]
+        compatible_old_setup_identity, compatible_old_setup_identity_sha256, compatible_setup_refs = validate_retained_setup_chain(
+            compatible_original_session, session_id=session_id,
+        )
+        compatible_original_manifest, compatible_original_manifest_sha256, compatible_original_manifest_ref = validate_original_artifact_manifest(
+            compatible_original_session, session_id=session_id,
+        )
+        compatible_retained_witness = validate_retained_witness_chain(
+            compatible_original_session, session_id=session_id,
+        )
+        old_admission_anchor = compatible_original_session["native_admissions"]["ppi"]
+        old_admission_path = local_path(str(old_admission_anchor["path"]), "frozen original PPI Admission")
+        old_admission_document = load_json(old_admission_path, "frozen original PPI Admission")
+        if sha256(old_admission_path) != old_admission_anchor.get("sha256"):
+            abort("frozen original PPI Admission bytes changed after retained Setup validation")
+        compatible_old_admission = {**old_admission_document, **old_admission_anchor}
+        compatible_capacity_identity_ref = session_document.get("compatible_capacity_source_identity")
+        if (
+            compatible_capacity_identity_ref != compatible_capacity_source_identity
+            or session_document.get("compatible_capacity_source_identity_sha256") != canonical_json_digest(compatible_capacity_source_identity)
+            or session_document.get("compatible_prover_identity") != resume_identity
+            or session_document.get("compatible_prover_identity_sha256") != canonical_json_digest(resume_identity)
+        ):
+            abort("compatible current prover/capacity identity sidecar is not bound to the current authenticated context")
+    else:
+        compatible_old_setup_identity = None
+        compatible_old_setup_identity_sha256 = None
+        compatible_setup_refs = None
+        compatible_original_manifest = None
+        compatible_original_manifest_sha256 = None
+        compatible_original_manifest_ref = None
+        compatible_retained_witness = None
+        compatible_old_admission = None
+
     session_document = load_json(session_file, "formal session record")
-    saved_admissions = session_document.get("native_admissions", {})
-    if not isinstance(saved_admissions, dict) or any(name not in DATASETS or not isinstance(value, dict) for name, value in saved_admissions.items()):
+    if selected_datasets_for_session(session_document) != selected_datasets:
+        abort("formal session selection changed during resource authentication")
+    saved_admissions = session_document.get(
+        "compatible_native_admissions" if args.compatible_prove_only else "native_admissions", {}
+    )
+    expected_saved_admission_keys = set(_COMPAT_SELECTED_DATASETS) if args.compatible_prove_only else set(selected_datasets)
+    if (
+        not isinstance(saved_admissions, dict)
+        or any(name not in expected_saved_admission_keys or not isinstance(value, dict) for name, value in saved_admissions.items())
+        or (args.compatible_prove_only and not set(saved_admissions).issubset(expected_saved_admission_keys))
+    ):
         abort("formal native admission receipt map is malformed")
     saved_anchors = session_document.get("setup_reuse_receipts", {})
-    if not isinstance(saved_anchors, dict) or any(name not in DATASETS for name in saved_anchors):
+    if not isinstance(saved_anchors, dict) or any(name not in selected_datasets for name in saved_anchors):
         abort("formal setup receipt anchor map is malformed")
     checkpoint_map = session_document.get("completed_cells", {})
-    if not isinstance(checkpoint_map, dict) or any(name not in DATASETS for name in checkpoint_map):
+    if not isinstance(checkpoint_map, dict) or any(name not in selected_datasets for name in checkpoint_map):
         abort("formal completed-cell checkpoint map is malformed")
-    dataset_failures, dataset_failure_history = _load_dataset_failure_state(session_document, DATASETS)
+    dataset_failures, dataset_failure_history = _load_dataset_failure_state(session_document, selected_datasets)
     archived_value = session_document.get("outputs_archived_for_session", False)
     if not isinstance(archived_value, bool):
         abort("formal output archive state is malformed")
     completed_datasets: set[str] = set()
     if args.resume_session is not None and archived_value:
-        for dataset in DATASETS:
+        for dataset in selected_datasets:
             output = output_root / dataset
             if output.is_symlink():
                 abort(f"resume output directory must not be a symlink: {output}")
@@ -7265,7 +7988,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             ):
                 completed_datasets.add(dataset)
     if args.capacity_preflight_only:
-        _set_stage(session_file, "five_dataset_native_admission_preflight")
+        _set_stage(session_file, "selected_dataset_native_admission_preflight")
         admissions = _run_five_admission_preflight(
             binary=binary,
             srs=srs,
@@ -7276,6 +7999,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             selected_device=selected_device,
             saved_admissions=saved_admissions,
             capacity_only=True,
+            selected_datasets=selected_datasets,
         )
         session_document = load_json(session_file, "formal session record")
         session_document["capacity_preflight_only"] = {
@@ -7302,7 +8026,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     session_document["binary_sha256"] = sha256(binary)
     _write_session_record(session_file, session_document)
 
-    _set_stage(session_file, "five_dataset_native_capacity_preflight")
+    _set_stage(session_file, "selected_dataset_native_capacity_preflight")
     admissions, workspace_receipt, capacity_requirements, setup_reused_datasets, pending_finalize_datasets = _run_five_native_capacity_preflight(
         binary=binary,
         srs=srs,
@@ -7323,13 +8047,178 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         completed_datasets=completed_datasets,
         workspace_receipt=workspace_receipt,
         srs_copy_size_bytes=srs_copy_size_bytes,
+        selected_datasets=selected_datasets,
+        compatible_resume_identity=resume_identity if args.compatible_prove_only else None,
+        compatible_capacity_source_identity=compatible_capacity_source_identity if args.compatible_prove_only else None,
+        compatible_original_session=compatible_original_session,
+        compatible_old_resume_identity=compatible_old_resume_identity,
+        compatible_old_admission=compatible_old_admission,
+        compatible_setup_refs=compatible_setup_refs,
     )
+    if args.compatible_prove_only:
+        compatible_current_admissions = load_json(session_file, "compatible current Admission receipts").get("compatible_native_admissions")
+        if not isinstance(compatible_current_admissions, dict) or set(compatible_current_admissions) != set(_COMPAT_SELECTED_DATASETS):
+            abort("compatible capacity planning did not leave exactly the current PPI/OGBN Admission map")
+        if compatible_current_admissions != admissions:
+            abort("compatible Admission return map differs from the immutable session sidecar map")
 
     def execute_cell(dataset_index: int, dataset: str) -> None:
         dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
+        compatible_ppi = dataset == "ppi" and compatible_request is not None
+
+        def validate_retained_ppi_stage_receipts() -> dict[str, float]:
+            if not compatible_ppi:
+                return {}
+            original = compatible_original_session
+            if not isinstance(original, dict) or original.get("session_id") != session_id:
+                abort("compatible PPI retained-stage source is not the frozen original session")
+            original_stages = original.get("stage_receipts")
+            ppi_stages = original_stages.get("ppi") if isinstance(original_stages, dict) else None
+            if not isinstance(ppi_stages, dict) or set(ppi_stages) != {"producer", "final", "witness"}:
+                abort("compatible PPI original producer/final/witness stage set is incomplete or unexpected")
+            old_identity_digest = canonical_json_digest(compatible_old_resume_identity)
+            old_admission_anchor = original.get("native_admissions", {}).get("ppi")
+            old_admission_digest = old_admission_anchor.get("sha256") if isinstance(old_admission_anchor, dict) else None
+            old_setup_digest = compatible_setup_refs.get("setup_receipt", {}).get("sha256")
+            if (
+                not isinstance(old_admission_digest, str)
+                or old_admission_digest != compatible_old_admission.get("sha256")
+                or not isinstance(old_setup_digest, str)
+                or old_setup_digest != compatible_old_setup_identity.get("setup_receipt_sha256")
+                or compatible_setup_refs.get("setup_identity_sha256") != compatible_old_setup_identity_sha256
+            ):
+                abort("compatible PPI retained-stage anchors differ from the authenticated old Admission/Setup chain")
+
+            def receipt_for(stage: str, *, extra: set[str] | None = None) -> dict[str, object]:
+                anchor = ppi_stages.get(stage)
+                if (
+                    not isinstance(anchor, dict)
+                    or set(anchor) != {"receipt", "sha256"}
+                    or not isinstance(anchor.get("receipt"), dict)
+                    or anchor.get("sha256") != canonical_json_digest(anchor["receipt"])
+                ):
+                    abort(f"compatible PPI retained {stage} receipt is missing or unauthenticated")
+                receipt = anchor["receipt"]
+                expected_keys = {
+                    "schema", "session_id", "dataset", "stage", "resume_identity_sha256", "admission_sha256",
+                    "setup_receipt_sha256", "inputs_sha256", "outputs_sha256", "elapsed_ms", "recorded_at_utc",
+                } | (extra or set())
+                elapsed = receipt.get("elapsed_ms")
+                if (
+                    set(receipt) != expected_keys
+                    or receipt.get("schema") != "ezkl.formal-stage-receipt.v1"
+                    or receipt.get("session_id") != session_id
+                    or receipt.get("dataset") != "ppi"
+                    or receipt.get("stage") != stage
+                    or receipt.get("resume_identity_sha256") != old_identity_digest
+                    or receipt.get("admission_sha256") != old_admission_digest
+                    or receipt.get("setup_receipt_sha256") != old_setup_digest
+                    or isinstance(elapsed, bool)
+                    or not isinstance(elapsed, (int, float))
+                    or not math.isfinite(elapsed)
+                    or elapsed <= 0
+                    or not isinstance(receipt.get("recorded_at_utc"), str)
+                    or not receipt["recorded_at_utc"]
+                    or not isinstance(receipt.get("inputs_sha256"), dict)
+                    or not isinstance(receipt.get("outputs_sha256"), dict)
+                ):
+                    abort(f"compatible PPI retained {stage} receipt has an unsupported old identity or shape")
+                return receipt
+
+            manifest_records = {
+                record["path"]: record
+                for record in compatible_original_manifest.get("files", [])
+                if isinstance(record, dict) and isinstance(record.get("path"), str)
+            }
+            if not manifest_records:
+                abort("compatible PPI original manifest has no authenticated file census")
+            old_admission_path = local_path(str(old_admission_anchor.get("path")), "old PPI producer Admission")
+            producer_inputs = {
+                "setup_context": output / "producer_context.json",
+                "settings": output / "settings.json",
+                "secure_config": ROOT / "resources/canonical/configs/ppi_secure.cfg",
+                "resource_manifest": ROOT / "resources/resource_manifest.json",
+                "native_admission": old_admission_path,
+            }
+            producer_outputs = {
+                "statement": output / "statement.json",
+                "public_output": output / "public_output.json",
+                "producer_manifest": output / "producer_manifest.json",
+            }
+            producer_receipt = receipt_for("producer")
+            if (
+                producer_receipt.get("inputs_sha256") != _stage_paths_digest_map("input", producer_inputs)
+                or producer_receipt.get("outputs_sha256") != _stage_paths_digest_map("producer", producer_outputs)
+            ):
+                abort("compatible PPI retained producer receipt no longer matches its old inputs/outputs")
+
+            final_receipt = receipt_for("final", extra={"artifact_manifest_snapshot_sha256"})
+            config_digests = compatible_old_resume_identity.get("config_sha256s")
+            config_digest = next(
+                (entry[1] for entry in config_digests if isinstance(entry, list) and len(entry) == 2 and entry[0] == "ppi"),
+                None,
+            ) if isinstance(config_digests, list) else None
+            if not isinstance(config_digest, str):
+                abort("compatible PPI old Prover identity has no secure-config digest")
+            old_budget_digest = compatible_retained_witness.get("old_native_prove_budget", {}).get("sha256")
+            final_input_names = {
+                "statement": "statement.json",
+                "public_output": "public_output.json",
+                "producer_manifest": "producer_manifest.json",
+                "producer_context": "producer_context.json",
+                "settings": "settings.json",
+                "compiled_circuit": "compiled.circuit",
+                "verification_key": "vk.key",
+                "proving_key": "pk.key",
+                "admission": "admission.json",
+            }
+            final_inputs: dict[str, str] = {}
+            for input_name, manifest_name in final_input_names.items():
+                record = manifest_records.get(manifest_name)
+                if not isinstance(record, dict) or not isinstance(record.get("sha256"), str):
+                    abort(f"compatible PPI old artifact manifest omits final-stage input {manifest_name}")
+                final_inputs[input_name] = record["sha256"]
+            final_inputs.update({
+                "secure_config": config_digest,
+                "resource_manifest": compatible_original_manifest.get("resource_manifest_sha256"),
+                "native_prove_budget": old_budget_digest,
+            })
+            final_snapshot = ROOT / compatible_original_manifest_ref["path"]
+            final_log = output / "logs/final.log"
+            srs_path = output / "srs.kzg"
+            srs_record = manifest_records.get("srs.kzg")
+            if (
+                not isinstance(srs_record, dict)
+                or srs_path.is_symlink()
+                or not srs_path.is_file()
+                or srs_path.stat().st_size != srs_record.get("size")
+                or final_log.is_symlink()
+                or not final_log.is_file()
+                or final_receipt.get("artifact_manifest_snapshot_sha256") != compatible_original_manifest_ref.get("sha256")
+                or final_receipt.get("inputs_sha256") != final_inputs
+                or final_receipt.get("outputs_sha256") != {
+                    "artifact_manifest": _artifact_manifest_projection_sha256(final_snapshot),
+                    "srs": srs_record.get("sha256"),
+                    "final_log": sha256(final_log),
+                }
+            ):
+                abort("compatible PPI retained final receipt no longer matches its frozen manifest/SRS/log inputs")
+
+            witness_receipt = receipt_for("witness", extra={"native_prove_budget_sha256"})
+            if (
+                ppi_stages["witness"].get("sha256") != compatible_retained_witness.get("stage_receipt_sha256")
+                or witness_receipt.get("native_prove_budget_sha256") != old_budget_digest
+            ):
+                abort("compatible PPI retained Witness receipt differs from its helper-authenticated old chain")
+            return {
+                "producer": float(producer_receipt["elapsed_ms"]),
+                "final": float(final_receipt["elapsed_ms"]),
+                "witness": float(witness_receipt["elapsed_ms"]),
+            }
+
         pending_json_datasets = tuple(
-            name for name in DATASETS[dataset_index:] if name not in completed_datasets
+            name for name in selected_datasets[dataset_index:] if name not in completed_datasets
         )
         pending_json_bounds = {
             name: _native_json_output_bounds(admissions[name], name)
@@ -7342,19 +8231,51 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         _set_stage(session_file, f"{dataset}_configured_admission", active_dataset=dataset)
         admission = admissions.get(dataset)
         if not isinstance(admission, dict):
-            abort(f"{dataset} was not present in the authenticated all-five Admission preflight")
+            abort(f"{dataset} was not present in the authenticated selected Admission preflight")
         session_document = load_json(session_file, "formal session record")
         archived_value = session_document.get("outputs_archived_for_session", False)
         if not isinstance(archived_value, bool):
             abort("formal output archive state is malformed")
-        setup_reused = dataset in setup_reused_datasets
+        setup_reused = dataset in setup_reused_datasets or compatible_ppi
+        execution_admission = compatible_old_admission if compatible_ppi else admission
+        budget_admission = compatible_old_admission if compatible_ppi else admission
+        if compatible_ppi:
+            expected_identity_digest = canonical_json_digest(resume_identity)
+            if (
+                compatible_original_session is None
+                or compatible_old_resume_identity is None
+                or compatible_old_setup_identity is None
+                or compatible_setup_refs is None
+                or compatible_original_manifest is None
+                or compatible_original_manifest_ref is None
+                or compatible_retained_witness is None
+                or compatible_current_capacity_source_identity is None
+                or compatible_current_admissions is None
+                or compatible_old_admission is None
+                or len(selected_datasets) != 2
+                or selected_datasets != _COMPAT_SELECTED_DATASETS
+                or compatible_original_session.get("resume_identity") != compatible_old_resume_identity
+                or session_document.get("compatible_prover_identity") != resume_identity
+                or session_document.get("compatible_prover_identity_sha256") != expected_identity_digest
+                or session_document.get("compatible_capacity_source_identity") != compatible_current_capacity_source_identity
+                or session_document.get("compatible_capacity_source_identity_sha256") != canonical_json_digest(compatible_current_capacity_source_identity)
+                or not isinstance(execution_admission, dict)
+                or execution_admission.get("sha256") != compatible_setup_refs.get("bound_setup_admission", {}).get("sha256")
+            ):
+                abort("compatible PPI cell is missing an authenticated old Setup or current Prover/capacity identity")
+            compare_admission_semantics(compatible_old_admission, admission, dataset="ppi")
+            if not output.is_dir() or output.is_symlink():
+                abort("compatible PPI retained output directory is missing or unsafe")
+            retained_stage_timings = validate_retained_ppi_stage_receipts()
+        else:
+            retained_stage_timings = {}
         if archived_value and (output.is_symlink() or (output.exists() and not output.is_dir())):
             abort(f"resume output directory must be a regular directory: {output}")
         _set_stage(session_file, f"{dataset}_capacity_admission", active_dataset=dataset)
         session_document = load_json(session_file, "formal session record")
         archived_value = session_document.get("outputs_archived_for_session", False)
-        if not archived_value:
-            archive_prior_outputs(output_root, matrix, session_id, session_file)
+        if not archived_value and compatible_request is None:
+            archive_prior_outputs(output_root, matrix, session_id, session_file, datasets=selected_datasets)
         output = output_root / dataset
         if output.is_symlink():
             abort(f"formal output directory must not be a symlink: {output}")
@@ -7370,18 +8291,21 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 dataset_index,
                 include_current_transient=True,
                 setup_required_datasets={dataset},
+                datasets=selected_datasets,
             )
             setup_key_bytes = _remaining_setup_disk_bytes(
                 capacity_requirements,
                 dataset_index,
                 include_current_transient=False,
                 setup_required_datasets={dataset},
+                datasets=selected_datasets,
             )
             setup_disk_components = _disk_budget_components(
                 pending_srs=_remaining_srs_copy_disk_budget(
                     srs_copy_size_bytes,
                     dataset_index,
                     pending_finalize_datasets={dataset} if dataset in pending_finalize_datasets else set(),
+                    datasets=selected_datasets,
                 ),
                 setup_key_artifact_upper_bytes=setup_key_bytes,
                 setup_mapped_peak_bytes=setup_disk_required - setup_key_bytes,
@@ -7435,9 +8359,22 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         else:
             print(f"[ezkl-formal] reuse validated {dataset} native setup receipt and keys", flush=True)
             setup_receipt_sha256 = sha256(output / "setup_receipt.json")
-        _native_keygen_budget, native_keygen_receipt, native_keygen_receipt_sha256 = _load_native_keygen_receipt(
-            output, dataset, session_id, resume_identity, admission
-        )
+        if compatible_ppi:
+            setup_receipt_sha256 = str(compatible_setup_refs["setup_receipt"]["sha256"])
+            if sha256(output / "setup_receipt.json") != setup_receipt_sha256:
+                abort("compatible PPI output Setup receipt differs from the helper-authenticated retained chain")
+            _native_keygen_budget, native_keygen_receipt, native_keygen_receipt_sha256 = _load_native_keygen_receipt(
+                output,
+                dataset,
+                session_id,
+                compatible_old_resume_identity,
+                compatible_old_admission,
+                trusted_setup_files=compatible_setup_refs["setup_files"],
+            )
+        else:
+            _native_keygen_budget, native_keygen_receipt, native_keygen_receipt_sha256 = _load_native_keygen_receipt(
+                output, dataset, session_id, resume_identity, admission
+            )
         native_census = native_keygen_receipt.get("native_census")
         if not isinstance(native_census, dict):
             abort(f"{dataset} authenticated setup lacks the mandatory native keygen census")
@@ -7468,6 +8405,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 srs_copy_size_bytes,
                 dataset_index,
                 pending_finalize_datasets={dataset} if dataset in pending_finalize_datasets else set(),
+                datasets=selected_datasets,
             ),
             proof_spill_known_bytes=capacity_requirements[dataset]["proof_spill_known_bytes"],
             proof_spill_extra_bytes=max(
@@ -7496,23 +8434,30 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             output,
             dataset=dataset,
             session_id=session_id,
-            admission=admission,
+            admission=budget_admission,
             resume_identity=resume_identity,
             setup_receipt_sha256=setup_receipt_sha256,
             native_keygen_budget_sha256=sha256(output / "native_keygen_budget.json"),
             native_keygen_receipt_sha256=native_keygen_receipt_sha256,
             capacity=capacity_requirements[dataset],
             workspace_query=workspace_receipt["query"],
+            **(
+                {
+                    "trusted_setup_files": compatible_setup_refs["setup_files"],
+                    "replace_existing_sha256": compatible_retained_witness["old_native_prove_budget"]["sha256"],
+                }
+                if compatible_ppi else {}
+            ),
         )
         if native_prove_budget_sha256 is None:
             native_prove_budget_path = output / "native_prove_budget.json"
-            if native_prove_budget_path.exists() or native_prove_budget_path.is_symlink():
+            if (native_prove_budget_path.exists() or native_prove_budget_path.is_symlink()) and not compatible_ppi:
                 _quarantine_session_path(native_prove_budget_path, output_root, session_id, f"{dataset}-stale-native-prove-budget")
             native_prove_budget_sha256 = _write_native_prove_budget_receipt(
                 output,
                 dataset=dataset,
                 session_id=session_id,
-                admission=admission,
+                admission=budget_admission,
                 resume_identity=resume_identity,
                 setup_receipt_sha256=setup_receipt_sha256,
                 native_keygen_budget_sha256=sha256(output / "native_keygen_budget.json"),
@@ -7520,6 +8465,13 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 capacity=capacity_requirements[dataset],
                 prove_check=prove_check,
                 workspace_query=workspace_receipt["query"],
+                **(
+                    {
+                        "trusted_setup_files": compatible_setup_refs["setup_files"],
+                        "replace_existing_sha256": compatible_retained_witness["old_native_prove_budget"]["sha256"],
+                    }
+                    if compatible_ppi else {}
+                ),
             )
         prove_check["native_prove_budget_sha256"] = native_prove_budget_sha256
         prepare_budget = _native_prepare_budget(
@@ -7527,20 +8479,348 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         )
         prove_check["native_prepare_budget"] = prepare_budget
         session_document = load_json(session_file, "formal session record")
-        session_document.setdefault("capacity_checks", []).append(prove_check)
+        if compatible_ppi:
+            previous_checks = session_document.get("capacity_checks", [])
+            original_checks = compatible_original_session.get("capacity_checks", [])
+            if (
+                not isinstance(previous_checks, list)
+                or not isinstance(original_checks, list)
+                or previous_checks[: len(original_checks)] != original_checks
+                or any(
+                    isinstance(check, dict)
+                    and check.get("dataset") == "ppi"
+                    and check.get("phase") == "witness_prove_verify"
+                    for check in previous_checks[len(original_checks) :]
+                )
+                or compatible_capacity_report_path.is_symlink()
+                or not compatible_capacity_report_path.is_file()
+            ):
+                abort("compatible PPI capacity gate cannot be frozen over a conflicting prior gate/report")
+            current_identity_digest = canonical_json_digest(resume_identity)
+            capacity_source_digest = canonical_json_digest(compatible_current_capacity_source_identity)
+            capacity_report = load_json(compatible_capacity_report_path, "current compatible capacity report")
+            if not isinstance(capacity_report, dict):
+                abort("compatible PPI current capacity report is not an object")
+            report_provenance = capacity_report.get("current_provenance")
+            if (
+                capacity_report.get("source_identity") != compatible_current_capacity_source_identity
+                or not isinstance(report_provenance, dict)
+                or report_provenance.get("resume_identity_sha256") != current_identity_digest
+            ):
+                abort("compatible PPI current capacity report differs from the authenticated current Prover/source identity")
+            capacity_report_sha256 = snapshot_immutable_file(
+                compatible_capacity_report_path,
+                compatible_capacity_report_snapshot_path,
+                "PPI current capacity report",
+            )
+            prefix = list(previous_checks)
+            current_admission_refs: dict[str, dict[str, object]] = {}
+            if set(compatible_current_admissions) != set(_COMPAT_SELECTED_DATASETS):
+                abort("compatible PPI capacity boundary lacks both current selected Admission anchors")
+            for selected_dataset in _COMPAT_SELECTED_DATASETS:
+                anchor = compatible_current_admissions[selected_dataset]
+                if not isinstance(anchor, dict):
+                    abort(f"compatible current {selected_dataset} Admission anchor is malformed at the PPI gate")
+                ref = {name: anchor.get(name) for name in ("path", "sha256", "settings_sha256")}
+                if any(not isinstance(value, str) or not value for value in ref.values()):
+                    abort(f"compatible current {selected_dataset} Admission reference is incomplete at the PPI gate")
+                current_admission_refs[selected_dataset] = ref
+            recheck = {
+                "schema": "ezkl.compatible-current-capacity-rechecks.v1",
+                "session_id": session_id,
+                "selected_datasets": list(_COMPAT_SELECTED_DATASETS),
+                "current_prover_identity_sha256": current_identity_digest,
+                "capacity_source_identity_sha256": capacity_source_digest,
+                "current_admissions": current_admission_refs,
+                "capacity_checks_prefix": {
+                    "count": len(prefix),
+                    "sha256": canonical_json_digest(prefix),
+                },
+                "checks": [{
+                    "dataset": "ppi",
+                    "phase": "witness_prove_verify",
+                    "check": prove_check,
+                    "check_sha256": canonical_json_digest(prove_check),
+                }],
+            }
+            compatible_rechecks_sha256 = write_immutable_json(
+                compatible_capacity_rechecks_path, recheck, "PPI current capacity rechecks"
+            )
+            session_document["capacity_checks"] = [*prefix, prove_check]
+        else:
+            session_document.setdefault("capacity_checks", []).append(prove_check)
         _write_session_record(session_file, session_document)
-        stage_receipt_hooks = _stage_receipt_hooks(
-            session_file=session_file,
-            session_dir=session_dir,
-            output_root=output_root,
-            output=output,
-            dataset=dataset,
-            session_id=session_id,
-            resume_identity=resume_identity,
-            admission_sha256=str(admission.get("sha256")),
-            setup_receipt_sha256=setup_receipt_sha256,
-            native_prove_budget_sha256=native_prove_budget_sha256,
-        )
+        if compatible_ppi:
+            request = compatible_request
+            setup_refs = compatible_setup_refs
+            if not isinstance(setup_refs, dict) or not isinstance(compatible_old_admission, dict):
+                abort("compatible PPI old Admission/Setup anchors are malformed after capacity validation")
+            old_admission_sha256 = compatible_old_admission.get("sha256")
+            setup_receipt_ref = setup_refs.get("setup_receipt")
+            old_setup_sha256 = setup_receipt_ref.get("sha256") if isinstance(setup_receipt_ref, dict) else None
+            current_capacity_admission = compatible_current_admissions.get("ppi")
+            if (
+                not isinstance(request, dict)
+                or not isinstance(setup_refs, dict)
+                or not isinstance(old_admission_sha256, str)
+                or not isinstance(old_setup_sha256, str)
+                or not isinstance(current_capacity_admission, dict)
+                or not isinstance(compatible_rechecks_sha256, str)
+            ):
+                abort("compatible PPI receipt inputs are incomplete after the capacity gate")
+            source_review = {
+                "path": request.get("source_review_path"),
+                "sha256": request.get("source_review_sha256"),
+                "source_delta_sha256": request.get("source_delta_sha256"),
+                "snapshot_index_inventory_sha256": request.get("snapshot_index_inventory_sha256"),
+            }
+            old_session_snapshot = {
+                "path": request.get("old_session_snapshot_path"),
+                "sha256": request.get("old_session_snapshot_sha256"),
+            }
+            current_capacity_ref = {
+                name: current_capacity_admission.get(name)
+                for name in ("path", "sha256", "settings_sha256")
+            }
+            compatible_receipt = {
+                "schema": COMPAT_RECEIPT_SCHEMA,
+                "session_id": session_id,
+                "dataset": "ppi",
+                "status": "SEALED_FOR_PROVE_ONLY",
+                "baseline_manifest_sha256": COMPAT_BASELINE_MANIFEST_SHA256,
+                "old_session_snapshot": old_session_snapshot,
+                "source_review": source_review,
+                "old_setup_identity_sha256": compatible_old_setup_identity_sha256,
+                "current_prover_identity_sha256": canonical_json_digest(resume_identity),
+                "admission_semantics_sha256": admission_semantics_digest(admission, dataset="ppi"),
+                "bound_setup_admission": setup_refs.get("bound_setup_admission"),
+                "current_capacity_admission": current_capacity_ref,
+                "capacity_precheck": {
+                    "path": compatible_capacity_report_snapshot_path.relative_to(ROOT).as_posix(),
+                    "sha256": capacity_report_sha256,
+                    "capacity_source_identity_sha256": capacity_source_digest,
+                    "recheck_path": compatible_capacity_rechecks_path.relative_to(ROOT).as_posix(),
+                    "recheck_sha256": compatible_rechecks_sha256,
+                },
+                "setup_chain": {
+                    name: value for name, value in setup_refs.items() if name != "bound_setup_admission"
+                },
+                "current_prover_receipts": {
+                    "native_prove_budget": {
+                        "path": (output / "native_prove_budget.json").relative_to(ROOT).as_posix(),
+                        "sha256": native_prove_budget_sha256,
+                    },
+                    "binary_sha256": resume_identity.get("binary_sha256"),
+                    "build_receipt_sha256": resume_identity.get("build_receipt_sha256"),
+                    "build_environment_sha256": resume_identity.get("build_environment_sha256"),
+                    "retained_witness": compatible_retained_witness,
+                },
+                "shared_artifacts": {
+                    "statement_sha256": compatible_original_manifest.get("statement_sha256"),
+                    "public_output_sha256": compatible_original_manifest.get("public_output_sha256"),
+                    **setup_refs.get("setup_files", {}),
+                    "original_artifact_manifest": compatible_original_manifest_ref,
+                },
+            }
+            receipt_sha256 = write_immutable_json(
+                compatible_receipt_path, compatible_receipt, "PPI compatible resume receipt"
+            )
+            copied_receipt_sha256 = snapshot_immutable_file(
+                compatible_receipt_path,
+                compatible_receipt_copy_path,
+                "PPI compatible resume receipt copy",
+            )
+            if copied_receipt_sha256 != receipt_sha256:
+                abort("compatible PPI authoritative receipt and output copy differ")
+            validated_receipt, validated_receipt_sha256 = validate_compatibility_receipt(
+                compatible_receipt_path, session_id=session_id,
+            )
+            if validated_receipt != compatible_receipt or validated_receipt_sha256 != receipt_sha256:
+                abort("compatible PPI receipt failed its strict post-write validation")
+            existing_compatible_map = session_document.get("compatible_stage_receipts")
+            existing_ppi_map = existing_compatible_map.get("ppi") if isinstance(existing_compatible_map, dict) else None
+            if isinstance(existing_ppi_map, dict) and "prove" in existing_ppi_map:
+                validate_compatible_artifact_manifest(
+                    output / "artifact_manifest.json",
+                    original_session=compatible_original_session,
+                    session_id=session_id,
+                    current_identity=resume_identity,
+                    proof_complete=True,
+                )
+            else:
+                install_compatible_artifact_manifest(
+                    output / "artifact_manifest.json",
+                    original_session=compatible_original_session,
+                    session_id=session_id,
+                    current_identity=resume_identity,
+                    receipt_sha256=receipt_sha256,
+                )
+                validate_compatible_artifact_manifest(
+                    output / "artifact_manifest.json",
+                    original_session=compatible_original_session,
+                    session_id=session_id,
+                    current_identity=resume_identity,
+                    proof_complete=False,
+                )
+
+            compatible_identity_sha256 = canonical_json_digest(resume_identity)
+            compatible_stage_root_keys = {
+                "schema", "session_id", "current_prover_identity_sha256", "ppi",
+            }
+
+            def load_compatible_stage_map(*, create: bool = False) -> tuple[dict[str, object], dict[str, object]]:
+                document = load_json(session_file, "formal session record")
+                receipt_map = document.get("compatible_stage_receipts")
+                if receipt_map is None and not create:
+                    return document, {}
+                if receipt_map is None and create:
+                    receipt_map = {
+                        "schema": "ezkl.compatible-stage-receipts.v1",
+                        "session_id": session_id,
+                        "current_prover_identity_sha256": compatible_identity_sha256,
+                        "ppi": {},
+                    }
+                    document["compatible_stage_receipts"] = receipt_map
+                    _write_session_record(session_file, document)
+                if (
+                    not isinstance(receipt_map, dict)
+                    or set(receipt_map) != compatible_stage_root_keys
+                    or receipt_map.get("schema") != "ezkl.compatible-stage-receipts.v1"
+                    or receipt_map.get("session_id") != session_id
+                    or receipt_map.get("current_prover_identity_sha256") != compatible_identity_sha256
+                    or not isinstance(receipt_map.get("ppi"), dict)
+                ):
+                    abort("compatible PPI current stage receipt map is malformed")
+                ppi_map = receipt_map["ppi"]
+                if any(name not in {"prove", "verify"} for name in ppi_map):
+                    abort("compatible PPI current stage receipt map contains an unsupported stage")
+                return document, ppi_map
+
+            def expected_compatible_stage_base(stage: str) -> dict[str, object]:
+                if stage not in {"prove", "verify"}:
+                    abort(f"unsupported current compatible PPI stage: {stage}")
+                return {
+                    "schema": "ezkl.formal-stage-receipt.v1",
+                    "session_id": session_id,
+                    "dataset": "ppi",
+                    "stage": stage,
+                    "resume_identity_sha256": compatible_identity_sha256,
+                    "admission_sha256": str(old_admission_sha256),
+                    "setup_receipt_sha256": str(old_setup_sha256),
+                    "native_prove_budget_sha256": native_prove_budget_sha256,
+                }
+
+            def check_compatible_stage_receipt(
+                stage: str, inputs: dict[str, Path], outputs: dict[str, Path], *, required: bool,
+            ) -> float | None:
+                _document, ppi_map = load_compatible_stage_map()
+                anchor = ppi_map.get(stage)
+                if anchor is None:
+                    if required:
+                        abort(f"compatible PPI {stage} stage receipt disappeared during reuse")
+                    return None
+                receipt = anchor.get("receipt") if isinstance(anchor, dict) else None
+                if (
+                    not isinstance(anchor, dict)
+                    or set(anchor) != {"receipt", "sha256"}
+                    or not isinstance(receipt, dict)
+                    or anchor.get("sha256") != canonical_json_digest(receipt)
+                ):
+                    abort(f"compatible PPI {stage} stage receipt anchor is malformed")
+                expected_keys = set(expected_compatible_stage_base(stage)) | {
+                    "inputs_sha256", "outputs_sha256", "elapsed_ms", "recorded_at_utc",
+                }
+                if set(receipt) != expected_keys or any(
+                    receipt.get(name) != value for name, value in expected_compatible_stage_base(stage).items()
+                ):
+                    abort(f"compatible PPI {stage} stage receipt has a mismatched identity")
+                try:
+                    input_digests = _stage_paths_digest_map("input", inputs)
+                    output_digests = _stage_paths_digest_map(stage, outputs)
+                except (ContractError, OSError) as exc:
+                    abort(f"compatible PPI {stage} stage artifacts are unavailable for receipt validation: {exc}")
+                elapsed = receipt.get("elapsed_ms")
+                if (
+                    receipt.get("inputs_sha256") != input_digests
+                    or receipt.get("outputs_sha256") != output_digests
+                    or isinstance(elapsed, bool)
+                    or not isinstance(elapsed, (int, float))
+                    or not math.isfinite(elapsed)
+                    or elapsed <= 0
+                    or not isinstance(receipt.get("recorded_at_utc"), str)
+                    or not receipt["recorded_at_utc"]
+                ):
+                    abort(f"compatible PPI {stage} stage receipt no longer matches its files")
+                return float(elapsed)
+
+            def compatible_stage_try_reuse(stage: str, inputs: dict[str, Path], outputs: dict[str, Path]) -> float | None:
+                if stage in {"producer", "final", "witness"}:
+                    return retained_stage_timings[stage]
+                prior = check_compatible_stage_receipt(stage, inputs, outputs, required=False)
+                if prior is not None:
+                    return prior
+                residue = [
+                    path for name, path in outputs.items()
+                    if not (stage == "prove" and name == "artifact_manifest")
+                    and (path.exists() or path.is_symlink())
+                ]
+                if residue:
+                    abort(
+                        f"compatible PPI {stage} has unanchored output files: "
+                        + ", ".join(path.name for path in residue)
+                    )
+                return None
+
+            def compatible_stage_record(
+                stage: str, inputs: dict[str, Path], outputs: dict[str, Path], elapsed_ms: float,
+            ) -> None:
+                if stage in {"producer", "final", "witness"}:
+                    return
+                if stage not in {"prove", "verify"}:
+                    abort(f"unsupported current compatible PPI stage receipt: {stage}")
+                if isinstance(elapsed_ms, bool) or not isinstance(elapsed_ms, (int, float)) or not math.isfinite(elapsed_ms) or elapsed_ms <= 0:
+                    abort(f"compatible PPI {stage} stage produced an invalid wall timing")
+                document, ppi_map = load_compatible_stage_map(create=True)
+                if stage in ppi_map:
+                    abort(f"compatible PPI {stage} stage receipt cannot be replaced")
+                receipt = {
+                    **expected_compatible_stage_base(stage),
+                    "inputs_sha256": _stage_paths_digest_map("input", inputs),
+                    "outputs_sha256": _stage_paths_digest_map(stage, outputs),
+                    "elapsed_ms": float(elapsed_ms),
+                    "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+                }
+                ppi_map[stage] = {"receipt": receipt, "sha256": canonical_json_digest(receipt)}
+                _write_session_record(session_file, document)
+
+            def compatible_stage_invalidate(stage: str, reason: str) -> None:
+                if stage in {"producer", "final", "witness"}:
+                    abort(f"compatible PPI retained {stage} cannot be invalidated: {reason}")
+                if stage not in {"prove", "verify"}:
+                    abort(f"cannot invalidate unknown compatible PPI stage: {stage}")
+                _document, ppi_map = load_compatible_stage_map()
+                if stage in ppi_map:
+                    abort(f"compatible PPI {stage} receipt exists but the stage requested invalidation: {reason}")
+
+            stage_receipt_hooks = {
+                "try_reuse": compatible_stage_try_reuse,
+                "record": compatible_stage_record,
+                "invalidate_from": compatible_stage_invalidate,
+                "restore_final_manifest": lambda: abort("compatible PPI retained final manifest cannot be restored over its current identity"),
+            }
+        else:
+            stage_receipt_hooks = _stage_receipt_hooks(
+                session_file=session_file,
+                session_dir=session_dir,
+                output_root=output_root,
+                output=output,
+                dataset=dataset,
+                session_id=session_id,
+                resume_identity=resume_identity,
+                admission_sha256=str(admission.get("sha256")),
+                setup_receipt_sha256=setup_receipt_sha256,
+                native_prove_budget_sha256=native_prove_budget_sha256,
+            )
         producer_inputs = {
             "setup_context": output / "producer_context.json",
             "settings": output / "settings.json",
@@ -7573,6 +8853,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             cardinality_bounds,
             domain_size=int(admission["domain_size"]),
             expected_lookup_groups=int(admission["constraint_system"]["num_unique_lookup_table_expression_groups"]),
+            expected_h_resident_device_upper_bytes=int(capacity_requirements[dataset]["icicle_h_resident_device_upper_bytes"]),
         )
         os.environ["EZKL_NATIVE_PREPARE_BUDGET_BYTES"] = taskcap_env
         os.environ["EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES"] = device_headroom_env
@@ -7592,11 +8873,60 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         finally:
             for name in ("EZKL_NATIVE_PREPARE_BUDGET_BYTES", "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS"):
                 os.environ.pop(name, None)
+        if compatible_ppi:
+            _manifest, compatible_manifest_sha256 = validate_compatible_artifact_manifest(
+                output / "artifact_manifest.json",
+                original_session=compatible_original_session,
+                session_id=session_id,
+                current_identity=resume_identity,
+                proof_complete=True,
+            )
+            result_path = output / "result.json"
+            if result_path.is_symlink() or not result_path.is_file():
+                abort("compatible PPI did not produce a regular independently verified result")
+            result = load_json(result_path, "compatible PPI verified result")
+            if (
+                not isinstance(result, dict)
+                or result.get("status") != "VERIFY_OK"
+                or result.get("native_verify_result") is not True
+                or result.get("formal_session_id") != session_id
+                or result.get("dataset") != "ppi"
+                or result.get("binary_sha256") != resume_identity.get("binary_sha256")
+                or result.get("source_tree_sha256") != resume_identity.get("source_tree_sha256")
+                or result.get("artifact_manifest_sha256") != compatible_manifest_sha256
+            ):
+                abort("compatible PPI Verify result is not bound to the current binary/source/manifest identity")
+            receipt_digest = sha256(compatible_receipt_path)
+            receipt_copy_digest = sha256(compatible_receipt_copy_path)
+            if receipt_digest != receipt_copy_digest:
+                abort("compatible PPI receipt sidecar and output copy changed after Prove/Verify")
+            result["compatible_resume_receipt_path"] = compatible_receipt_path.relative_to(ROOT).as_posix()
+            result["compatible_resume_receipt_sha256"] = receipt_digest
+            payload = (json.dumps(result, indent=2) + "\n").encode()
+            temporary = result_path.with_name(f".{result_path.name}.{os.getpid()}.{time.time_ns()}.compatible")
+            descriptor = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+            )
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, result_path)
+                parent_descriptor = os.open(result_path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+                try:
+                    os.fsync(parent_descriptor)
+                finally:
+                    os.close(parent_descriptor)
+            finally:
+                temporary.unlink(missing_ok=True)
         if not _completed_cell_checkpoint(output, dataset, session_id, session_file):
             abort(f"{dataset} did not produce an independently verified formal result")
 
     _run_dataset_cells(
-        DATASETS,
+        selected_datasets,
         completed_datasets,
         dataset_failures,
         dataset_failure_history,
@@ -7604,7 +8934,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         execute_cell,
         log_paths_for_dataset=lambda dataset: _dataset_failure_log_paths(output_root, session_dir, dataset),
     )
-    _require_formal_dataset_completion(DATASETS, completed_datasets, dataset_failures)
+    _require_formal_dataset_completion(selected_datasets, completed_datasets, dataset_failures)
 
     result_inputs_sha256, finalization_inputs = _finalization_result_identity(
         output_root=output_root,
@@ -7622,8 +8952,8 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         for item in finalization_inputs["datasets"]
         if isinstance(item, dict) and isinstance(item.get("dataset"), str) and isinstance(item.get("proof_sha256"), str)
     }
-    if set(result_sha256s) != set(DATASETS) or set(proof_sha256s) != set(DATASETS):
-        abort("finalization checkpoint identities do not contain exactly five verified result/proof digests")
+    if set(result_sha256s) != set(selected_datasets) or set(proof_sha256s) != set(selected_datasets):
+        abort("finalization checkpoint identities do not match the immutable selected result/proof datasets")
     collect_log = session_dir / "logs" / "collect.log"
     collect_reuse = _try_reuse_finalization_receipt(
         session_file=session_file,
@@ -7636,7 +8966,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     )
     if collect_reuse is None:
         _clear_finalization_receipts(session_file, ("collector", "final_validator"), "collector receipt or one of its result/matrix/log identities is missing or stale")
-        _set_stage(session_file, "collect_five_results")
+        _set_stage(session_file, "collect_selected_results")
         try:
             finalization_capacity = check_finalization_capacity(
                 output_root=output_root,
@@ -7661,8 +8991,10 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 local_cli(matrix, "matrix"),
                 "--session-id",
                 session_id,
+                "--datasets",
+                *selected_datasets,
             ],
-            "collect pending five-dataset result matrix",
+            "collect pending selected-dataset result matrix",
             context=context,
             session_id=session_id,
             log_path=collect_log,
@@ -7679,11 +9011,12 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         )
     else:
         collector_ms, collector_receipt_sha256 = collect_reuse
-        print(f"[ezkl-formal] reuse authenticated five-result collection ({collector_ms:.3f} ms original wall)", flush=True)
+        print(f"[ezkl-formal] reuse authenticated selected-result collection ({collector_ms:.3f} ms original wall)", flush=True)
 
     validator_inputs_sha256 = canonical_json_digest({
-        "schema": "ezkl.formal-final-validator-inputs.v1",
-        "five_result_inputs_sha256": result_inputs_sha256,
+        "schema": "ezkl.formal-final-validator-inputs.v2",
+        "selected_result_inputs_sha256": result_inputs_sha256,
+        "selected_datasets": list(selected_datasets),
         "matrix_sha256": sha256(matrix),
         "collector_receipt_sha256": collector_receipt_sha256,
     })
@@ -7695,11 +9028,11 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         inputs_sha256=validator_inputs_sha256,
         matrix=matrix,
         log_path=validate_log,
-        status="FINAL_VALIDATION_OK",
+        status="FINAL_VALIDATION_OK" if selected_datasets == DATASETS else "SUBSET_COMPLETE",
         collector_receipt_sha256=collector_receipt_sha256,
     )
     if validator_reuse is not None:
-        for dataset in DATASETS:
+        for dataset in selected_datasets:
             output = output_root / dataset
             result_digest = result_sha256s.get(dataset)
             proof_digest = proof_sha256s.get(dataset)
@@ -7714,10 +9047,30 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     if validator_reuse is None:
         _clear_finalization_receipts(session_file, ("final_validator",), "final-validator receipt or its verified collection/matrix/log identities is missing or stale")
         _set_stage(session_file, "final_matrix_validation")
+        try:
+            final_validation_capacity = check_finalization_capacity(
+                output_root=output_root,
+                matrix_path=matrix,
+                session_file=session_file,
+                session_id=session_id,
+                source_tree_sha256=context.source_tree_sha256,
+                resource_manifest_sha256=context.resource_manifest_sha256,
+                phase="validator",
+            )
+        except FinalizationCapacityError as exc:
+            abort(str(exc))
+        session_document = json.loads(session_file.read_text())
+        session_document["final_validation_capacity"] = final_validation_capacity
+        _write_session_record(session_file, session_document)
         validation_ms = invoke_python_entrypoint(
             "validate_final",
-            ["--matrix", local_cli(matrix, "matrix"), "--session-id", session_id],
-            "validate five-dataset result matrix",
+            [
+                "--matrix", local_cli(matrix, "matrix"),
+                "--session-id", session_id,
+                "--runs-root", local_cli(output_root, "output-root"),
+                "--datasets", *selected_datasets,
+            ],
+            "validate selected-dataset result matrix",
             context=context,
             session_id=session_id,
             log_path=validate_log,
@@ -7730,7 +9083,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             inputs_sha256=validator_inputs_sha256,
             matrix=matrix,
             log_path=validate_log,
-            status="FINAL_VALIDATION_OK",
+            status="FINAL_VALIDATION_OK" if selected_datasets == DATASETS else "SUBSET_COMPLETE",
             elapsed_ms=validation_ms,
             collector_receipt_sha256=collector_receipt_sha256,
         )
@@ -7738,7 +9091,8 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         require_final_authenticated_formal_context(context, session_id=session_id)
         validation_ms, _ = validator_reuse
         print(f"[ezkl-formal] reuse authenticated final validation ({validation_ms:.3f} ms original wall)", flush=True)
-    print(f"validated five formal results: {matrix.relative_to(ROOT)}")
+    label = "five formal results" if selected_datasets == DATASETS else f"formal results for {', '.join(selected_datasets)}"
+    print(f"validated {label}: {matrix.relative_to(ROOT)}")
     print(f"view: {python} -m json.tool {matrix.relative_to(ROOT)}")
     return 0
 
@@ -7759,8 +9113,12 @@ def _main(args: argparse.Namespace) -> int:
     if not args._from_ezkl_entry:
         abort("start EZKL formal sessions with scripts/run_formal_matrix.py")
     normalize_formal_execution_environment()
-    if args.capacity_preflight_only and (args.preflight_only or args.resume_session is not None):
+    if args.capacity_preflight_only and (args.preflight_only or args.resume_session is not None or args.compatible_prove_only):
         abort("--capacity-preflight-only cannot be combined with --preflight-only or --resume-session")
+    if args.compatible_prove_only and args.resume_session is None:
+        abort("--compatible-prove-only requires --resume-session")
+    if args.compatible_source_review and not args.compatible_prove_only:
+        abort("--compatible-source-review requires --compatible-prove-only")
     if args.resume_session is not None:
         if args.preflight_only:
             abort("--resume-session cannot be combined with --preflight-only")
@@ -7773,8 +9131,47 @@ def _main(args: argparse.Namespace) -> int:
     args.output_root = output_root.relative_to(ROOT).as_posix()
     args.matrix = matrix.relative_to(ROOT).as_posix()
     args.binary = binary.relative_to(ROOT).as_posix()
-    check_output_paths(output_root, matrix)
-    session_id, session_file, lock_fd = begin_formal_session(output_root, matrix, args.resume_session, args._session_id)
+    raw_selection = getattr(args, "datasets", None)
+    requested_selection = normalize_selected_datasets(raw_selection) if raw_selection is not None else None
+    if args.compatible_prove_only:
+        if args.preflight_only or args.capacity_preflight_only:
+            abort("--compatible-prove-only requires the formal prove-only execution path")
+        if requested_selection is None:
+            abort("--compatible-prove-only requires an explicit --datasets ppi ogbn_arxiv selection")
+        if args.resume_session != COMPAT_BASELINE_SESSION_ID:
+            abort("--compatible-prove-only is bound to the one interrupted baseline session")
+    if args.resume_session is not None and requested_selection is None:
+        preview_session_file = output_root / ".sessions" / f"{args.resume_session}.json"
+        if preview_session_file.is_symlink() or not preview_session_file.is_file():
+            abort(f"resume session record is missing or symlinked: {preview_session_file}")
+        preview_selection = selected_datasets_for_session(load_json(preview_session_file, "resume session record"))
+    else:
+        preview_selection = requested_selection or DATASETS
+    check_output_paths(output_root, matrix, datasets=preview_selection)
+    compatible_request_factory = None
+    if args.compatible_prove_only:
+        compatible_request_factory = lambda selected_session_id, selected_session_file: _compatible_review_request(
+            args,
+            session_id=selected_session_id,
+            output_root=output_root,
+            matrix=matrix,
+            selected_datasets=preview_selection,
+        )
+    session_id, session_file, lock_fd = begin_formal_session(
+        output_root,
+        matrix,
+        args.resume_session,
+        getattr(args, "_session_id", None),
+        selected_datasets=requested_selection,
+        compatible_request_factory=compatible_request_factory,
+    )
+    args.selected_datasets = selected_datasets_for_session(load_json(session_file, "formal session record"))
+    if args.compatible_prove_only:
+        validate_compatible_resume_request(load_json(session_file, "bound compatible resume session"), expected_session_id=session_id)
+    if args.selected_datasets != preview_selection:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+        abort("formal session selection changed between preflight and session creation")
     try:
         guardian = ProcessGuardian.start(root=ROOT, session_id=session_id, session_file=session_file, lock_fd=lock_fd)
     except BaseException as exc:
@@ -7794,7 +9191,9 @@ def _main(args: argparse.Namespace) -> int:
             stage = str(json.loads(session_file.read_text()).get("stage", "preflight_complete"))
             status = "PREFLIGHT_BUILD_REQUIRED" if stage == "preflight_build_required" else "PREFLIGHT_ONLY_READY"
         else:
-            status, stage = "FINAL_VALIDATION_OK", "final_validation_complete"
+            selected_datasets = selected_datasets_for_session(load_json(session_file, "formal session record"))
+            status = "FINAL_VALIDATION_OK" if selected_datasets == DATASETS else "SUBSET_COMPLETE"
+            stage = "final_validation_complete"
         update_session_record(session_file, status=status, stage=stage)
         session_document = json.loads(session_file.read_text())
         session_document["completed_at_utc"] = datetime.now(timezone.utc).isoformat()

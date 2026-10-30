@@ -121,6 +121,22 @@ unset ENABLE_ICICLE_GPU
 
 **NOTE:** Even with the above environment variable set, icicle is disabled for circuits where k <= 8. To change the value of `k` where icicle is enabled, you can set the environment variable `ICICLE_SMALL_K`.
 
+### Formal GAT benchmark metrics
+
+The local formal GAT runner writes the four core result fields in milliseconds and bytes. In the current formal SHPLONK path, `commitment_time_ms` measures phase-0 advice KZG commitments plus affine normalization inside native proof creation; `instance_commitment_count` is zero, so no public-instance KZG commitment is included. Public-instance values are absorbed into the proof transcript and their processing is part of the Prove core. `prove_time_ms` measures the native proof-creation residual plus authenticated proving-key materialization. `verify_time_ms` measures proof decoding and the native Halo2 verifier call. These core fields exclude formal command preparation such as input, resource and artifact authentication, public-instance reconstruction, SRS and verification-key loading, and configuration loading. See the linked native metric files in each dataset's `result.json` for the recorded operation and scope.
+
+`prove_command_wall_ms` and `phase_timings_ms.verify` report the outer runner's full Prove command and Verify phase wall times. They include their respective command and preparation costs, so they answer a different question from the three core time fields. Read both sets when comparing end-to-end runtime with the native commitment, proof, or verifier work.
+
+`proof_size_bytes` is the exact file size of that cell's `proof.json`. Formal GAT proofs use a compact JSON envelope containing the native Halo2 transcript as lowercase hexadecimal plus an `instances_ref` digest and count. The raw transcript byte count is `proof.json`'s `proof_transcript.byte_length`; its hex string occupies twice that many bytes. The external public statement and public output are separate files and are not counted in `proof_size_bytes`. The proof artifact does not serialize the full public-instance vector; Verify reconstructs and binds those instances to the external statement and output.
+
+To run only the PPI and OGBN-Arxiv formal cells, start the detached baseline-local session with separate output locations:
+
+```bash
+python3 scripts/ezkl_formal_control.py start --datasets ppi ogbn_arxiv --output-root runs/formal_ppi_ogbn --matrix results/formal_ppi_ogbn_matrix.json
+```
+
+The selector limits formal Admission and the Setup, Prove, Verify, and result collection stages to those two datasets. Shared static resources are still prepared from the canonical five-dataset resource pack. Each selected proof still undergoes independent Verify and final validation, and reports the same four metrics above. Save the returned session ID to inspect that session; a successful detached launch only means it started, not that the experiment completed. A completed subset is reported as `SUBSET_COMPLETE` / `SUBSET_VALIDATION_OK`; it does not mean the five-dataset matrix is complete. Omitting `--datasets` keeps the default five-dataset run.
+
 ### Contributing 🌎
 
 If you're interested in contributing and are unsure where to start, reach out to one of the maintainers:

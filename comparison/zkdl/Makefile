@@ -20,7 +20,7 @@ GAT_RESOURCE_TARGET := gat_resource_setup
 BLST_LIBRARY := third_party/blst/libblst.a
 BLST_SOURCES := $(shell find third_party/blst/src third_party/blst/build third_party/blst/bindings -type f)
 
-.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check sorted-lookup-prefix-cache-check cpu-g1-blst-check output-stream-failure-check formal-closure-check hyrax-gpu-msm-fixture-check clean
+.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check sorted-lookup-prefix-cache-check public-field-vector-decode-check pointwise-eqmask-table-check cpu-g1-blst-check cpu-g1-msm-nbits-check output-stream-failure-check formal-closure-check hyrax-gpu-msm-fixture-check clean
 
 all: $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET)
 
@@ -47,8 +47,17 @@ sorted-lookup-descriptor-check: tests/authenticated_sorted_lookup_descriptor_che
 sorted-lookup-prefix-cache-check: tests/sorted_lookup_prefix_cache_check
 	timeout 60s ./tests/sorted_lookup_prefix_cache_check
 
+public-field-vector-decode-check: tests/public_field_vector_decode_check
+	timeout 60s ./tests/public_field_vector_decode_check
+
+pointwise-eqmask-table-check: tests/pointwise_eqmask_table_check
+	timeout 60s ./tests/pointwise_eqmask_table_check
+
 cpu-g1-blst-check: tests/cpu_g1_blst_check
 	./tests/cpu_g1_blst_check
+
+cpu-g1-msm-nbits-check: tests/cpu_g1_msm_nbits_check
+	timeout 60s ./tests/cpu_g1_msm_nbits_check
 
 hyrax-gpu-msm-fixture-check: tests/hyrax_gpu_msm_fixture
 	timeout 300s ./tests/hyrax_gpu_msm_fixture
@@ -105,7 +114,13 @@ tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_l
 tests/sorted_lookup_prefix_cache_check: tests/sorted_lookup_prefix_cache_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	timeout 300s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
+tests/public_field_vector_decode_check: tests/public_field_vector_decode_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
+
 tests/cpu_g1_blst_check: tests/cpu_g1_blst_check.cu proof.cuh cpu-backend.cuh g1-wire.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. $< $(BLST_LIBRARY) -o $@
+
+tests/cpu_g1_msm_nbits_check: tests/cpu_g1_msm_nbits_check.cu proof.cuh cpu-backend.cuh g1-wire.cuh $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. $< $(BLST_LIBRARY) -o $@
 
 tests/hyrax_gpu_msm_fixture: tests/hyrax_gpu_msm_fixture.cu gat_adapter/hyrax_gpu_fold.cu gat_adapter/hyrax_gpu_fold_api.hpp cpu-backend.cuh proof.cuh commitment.cuh fr-tensor.cuh g1-tensor.cuh $(BLST_LIBRARY)
@@ -116,6 +131,9 @@ tests/core_smoke: tests/core_smoke.cu proof.cuh commitment.cuh fr-tensor.cuh g1-
 
 tests/pointwise_algebra_check: tests/pointwise_algebra_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp
 	$(NVCC) $(NVCC_FLAGS) -std=c++17 $(INCLUDES) $(LIBS) -I. -Igat_adapter $< -o $@
+
+tests/pointwise_eqmask_table_check: tests/pointwise_eqmask_table_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 tests/sparse_route_hidden_smoke: tests/sparse_route_hidden_smoke.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_sparse_route.cuh $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@

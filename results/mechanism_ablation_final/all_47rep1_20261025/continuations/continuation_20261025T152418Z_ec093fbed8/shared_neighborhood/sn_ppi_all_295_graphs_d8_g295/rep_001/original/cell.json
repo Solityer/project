@@ -1,0 +1,3484 @@
+{
+  "D": 8,
+  "E": 850576,
+  "G": 295,
+  "N": 56944,
+  "backend": "cuda",
+  "cell_json_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/cell.json",
+  "cell_status": "complete",
+  "cell_wall_time_seconds": 261.83694704901427,
+  "checkpoint_bundle": {
+    "files": [
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/best_model.pt",
+        "sha256": "cb61946963d82ae2cd21353f035eb2caa50f899006300b101a83dcab1f43ce1d"
+      },
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/manifest.json",
+        "sha256": "786f29b61871e1d81d4954cc14d93cd4a4c7a44eaad9cc100f6f197e5ebbe58b"
+      },
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/qat_best_logits.npy",
+        "sha256": "d44f34c3c6188fdbe02248e4f6e00ad305b32890040a4d2d930bf03a25f30ef5"
+      },
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/tensors.npz",
+        "sha256": "1e7abf4f8468b36f9535a62b1e61bc1bbf327ff5b783c30e22217df0dc6f5062"
+      },
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/tensors.txt",
+        "sha256": "546e070e0c3e0132efe10e2a693dd3de2f8ed9f33227e04d33eb00bf39e52282"
+      },
+      {
+        "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat/training_summary.json",
+        "sha256": "f2eee8782c61a5af94a44d32b5ff5d8688acc4d9f5b7e19c92b2d1e7883c9e9d"
+      }
+    ],
+    "path": "/home/pzh/project/artifacts/checkpoints/ppi_gat",
+    "sha256": "65a226dbdb4999b944241cfc511a577991905a60c1e224bda5d37d9ab397a5df"
+  },
+  "commitment_time_ms": 7442.271576,
+  "component_ids": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    53,
+    54,
+    55,
+    56,
+    57,
+    58,
+    59,
+    60,
+    61,
+    62,
+    63,
+    64,
+    65,
+    66,
+    67,
+    68,
+    69,
+    70,
+    71,
+    72,
+    73,
+    74,
+    75,
+    76,
+    77,
+    78,
+    79,
+    80,
+    81,
+    82,
+    83,
+    84,
+    85,
+    86,
+    87,
+    88,
+    89,
+    90,
+    91,
+    92,
+    93,
+    94,
+    95,
+    96,
+    97,
+    98,
+    99,
+    100,
+    101,
+    102,
+    103,
+    104,
+    105,
+    106,
+    107,
+    108,
+    109,
+    110,
+    111,
+    112,
+    113,
+    114,
+    115,
+    116,
+    117,
+    118,
+    119,
+    120,
+    121,
+    122,
+    123,
+    124,
+    125,
+    126,
+    127,
+    128,
+    129,
+    130,
+    131,
+    132,
+    133,
+    134,
+    135,
+    136,
+    137,
+    138,
+    139,
+    140,
+    141,
+    142,
+    143,
+    144,
+    145,
+    146,
+    147,
+    148,
+    149,
+    150,
+    151,
+    152,
+    153,
+    154,
+    155,
+    156,
+    157,
+    158,
+    159,
+    160,
+    161,
+    162,
+    163,
+    164,
+    165,
+    166,
+    167,
+    168,
+    169,
+    170,
+    171,
+    172,
+    173,
+    174,
+    175,
+    176,
+    177,
+    178,
+    179,
+    180,
+    181,
+    182,
+    183,
+    184,
+    185,
+    186,
+    187,
+    188,
+    189,
+    190,
+    191,
+    192,
+    193,
+    194,
+    195,
+    196,
+    197,
+    198,
+    199,
+    200,
+    201,
+    202,
+    203,
+    204,
+    205,
+    206,
+    207,
+    208,
+    209,
+    210,
+    211,
+    212,
+    213,
+    214,
+    215,
+    216,
+    217,
+    218,
+    219,
+    220,
+    221,
+    222,
+    223,
+    224,
+    225,
+    226,
+    227,
+    228,
+    229,
+    230,
+    231,
+    232,
+    233,
+    234,
+    235,
+    236,
+    237,
+    238,
+    239,
+    240,
+    241,
+    242,
+    243,
+    244,
+    245,
+    246,
+    247,
+    248,
+    249,
+    250,
+    251,
+    252,
+    253,
+    254,
+    255,
+    256,
+    257,
+    258,
+    259,
+    260,
+    261,
+    262,
+    263,
+    264,
+    265,
+    266,
+    267,
+    268,
+    269,
+    270,
+    271,
+    272,
+    273,
+    274,
+    275,
+    276,
+    277,
+    278,
+    279,
+    280,
+    281,
+    282,
+    283,
+    284,
+    285,
+    286,
+    287,
+    288,
+    289,
+    290,
+    291,
+    292,
+    293,
+    294
+  ],
+  "config_id": "sn_ppi_all_295_graphs_d8_g295",
+  "config_path": "/home/pzh/project/configs/ppi_secure.cfg",
+  "config_sha256": "ca0d4f29915c258d5a032000835f68025f9b343094b31cd2fd3522448d92d8d2",
+  "cuda_actual": true,
+  "cuda_device_name": "NVIDIA GB10",
+  "cuda_kernel_invocations_delta": 323,
+  "cuda_ntt_forced": true,
+  "cuda_stats_delta": {
+    "d2h_bytes": 33415758144,
+    "d2h_operations": 73,
+    "h2d_bytes": 33952628896,
+    "h2d_operations": 69,
+    "intt_calls": 34,
+    "msm_batch_calls": 0,
+    "msm_single_calls": 46,
+    "ntt_calls": 30,
+    "opening_fold_calls": 21,
+    "quotient_calls": 0,
+    "resident_hits": 36,
+    "resident_misses": 5,
+    "stream_synchronizations": 84,
+    "t_edge_calls": 0,
+    "t_fh_calls": 0
+  },
+  "cuda_warmup_kernel_invocations": 1,
+  "cuda_warmup_time_ms": 185.595805,
+  "data_identity_sha256": "3dba2284c6dc97b0a5d409323705a184b8bf5eb49d4c02e5a24698fbb3ac9f75",
+  "data_sources": [
+    {
+      "path": "/home/pzh/project/data/cache/citeseer/edges.txt",
+      "sha256": "7a22a7fa347c89d013a87f5e475be356ad48714987afab990f0ec64978b9d0bd"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/citeseer/features.txt",
+      "sha256": "c2773bda52e719c5c2c5f007a152ee2a356106440cdf670af7752ab75b300daa"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/citeseer/labels.txt",
+      "sha256": "bb47cb2abf66935d45a9e09ff2cde1874560d24e791838b01edd44a2076419eb"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/citeseer/meta.cfg",
+      "sha256": "f7b96c1893069bc020c660bce8df6e946f218fd3fd7c466d30bfa48859645c10"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/citeseer/test.index",
+      "sha256": "2af990671580b6b2df5d158d1038f8292e30c9cd821b5453f399659b25b723d4"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/cora/edges.txt",
+      "sha256": "c41cf0e8321332492dd345ba54bee94817f217c19ca90a697050700235b12999"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/cora/features.txt",
+      "sha256": "5050ecc4784f04ab4ce1d2fc2c277bf354f328d3eacc0acab7458cc461965954"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/cora/labels.txt",
+      "sha256": "8f929c6f3a938980341b2bcfa82a96e69e8d494d0c741396fd4bd87f460385c4"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/cora/meta.cfg",
+      "sha256": "f5cfbfb57e5bef16cc2d7d94119d7571183519f6e1bfd8337665576a3458542c"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/cora/test.index",
+      "sha256": "297ce89af2b51a6a194181c7dbe1796c6a1cf9cd9349a88383b1b1e227867875"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/edges.txt",
+      "sha256": "b847b26c612b78a52fd785590bc4fbb6d6fc607337cda1b6d5ba5b6524151bf5"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/features.npy",
+      "sha256": "e2e4dda733eff8130a8e3ff0167ce091ee145eb6f0e6eedb8e04fef36100e40b"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/labels.txt",
+      "sha256": "7d16a4e399d6f89d2204735ca01e8e4667efae291ab154b56c2bd9110c47767c"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ogbn_arxiv/meta.cfg",
+      "sha256": "90c1ca1a28b4387c8d434ec3bc7a09a71d34eab786fb66160ab58abb53c78595"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/edges.txt",
+      "sha256": "b28ac7c1724769e59bb1941ae0cb3a7e9da0f8fc6d5567ec13be161f1e122507"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/features.npy",
+      "sha256": "b7528351c39f33759aa25411047696dc02306d2a55eec0a8cefe4ec32ce90efa"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/labels_multi.npy",
+      "sha256": "ea1c3e783dda9b1fe7a97e90bded98ce00421bb409f9810b902b124dc6288d8d"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/labels_multi.txt",
+      "sha256": "422cc2269e970d3ba8df4a4b30c084ec359b84a7beb3a2cf5fe88a3eeb7e6153"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/meta.cfg",
+      "sha256": "c847ba5d967bd9ce165faff3c51280f2a0a1522288e4047f7e8716b995ada5e4"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/node_ptr.txt",
+      "sha256": "b8c715ff62744f2f0859d3f310236e660278c72433cafd80a1849814cd7ed969"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/test_mask.npy",
+      "sha256": "b3b62173d34dcd7124a4e945ef5d0d642b052e8f12ffed8ec084e57e27f38abb"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/train_mask.npy",
+      "sha256": "efcfbbbe9ed6ae044508edb640ecb8d00aea2ae33e8f9754cd44b8986eb53a87"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/ppi/val_mask.npy",
+      "sha256": "3ae62bd5f0cba295f416ed5c39138edf12a443922eb2ce03cd6708307269792e"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/pubmed/edges.txt",
+      "sha256": "1eb9632dede5e3f3b392e5849fd779554d0c556d07c9073de829145bc3d72bf1"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/pubmed/features.txt",
+      "sha256": "f05e1c053284b3f47726693645deef159eb4abcec06ce50344769c516e11a037"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/pubmed/labels.txt",
+      "sha256": "d48a582e64f106deb746656dc18a446f13c11b421d1f7de19301c4415a6b354d"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/pubmed/meta.cfg",
+      "sha256": "f0c1a7e1816e2b5c40d663f5ad7e00af64a45a549aea195233a72ce92f034398"
+    },
+    {
+      "path": "/home/pzh/project/data/cache/pubmed/test.index",
+      "sha256": "b101d421688bbaecbd82e8a18f1e282378d6830f3a37666f28ebc47f844341b5"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.allx",
+      "sha256": "2ac30345d95c9ec933a817ee0bdd6a5f077f8c184a20e696910192d534414668"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.ally",
+      "sha256": "f704b2d986dde6c2669934de1f3ae5696a6cf9455c0f6b2646a2d135ea0a1c95"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.graph",
+      "sha256": "d79a4ef9d3e7169aee8946145f6b7306e35bc79bffad26346cfb94e10e9912a7"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.test.index",
+      "sha256": "b1611d77e7982b3907a4c4129b4f34407dbcc593d6bae7711f820073d2d6125f"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.tx",
+      "sha256": "539a8906a2da97628d212f2fdd668c109a8b3f0d36574b59e5d3fd5b5303da21"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.ty",
+      "sha256": "55e5bd1ba1e733a04598753ad1a8d57957f4b8f89e74519f41f4f4938767e4ce"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.x",
+      "sha256": "d20de19150741e555de0ed037195630fc194114ebc7fd72ced62810148aa22f6"
+    },
+    {
+      "path": "/home/pzh/project/data/citeseer/ind.citeseer.y",
+      "sha256": "8ba87e515d8e3ee3cf52f6d2c5b86aa73f11ecad825a808455209ec26cd54924"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.allx",
+      "sha256": "9419ba2f26f5c35243db64aba110e0f35a04851609e0dc5433450676ca6b8543"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.ally",
+      "sha256": "2b998f5cc7fedc86e7f97ca2498f47a1ffc1462c29e2d578b23bf3f62b6e7d71"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.graph",
+      "sha256": "58f13302f39dde8852dad6fe6d15b89b077b6d7f837626bce671ef80344b383d"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.test.index",
+      "sha256": "297ce89af2b51a6a194181c7dbe1796c6a1cf9cd9349a88383b1b1e227867875"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.tx",
+      "sha256": "b9afbaa4a400df991f6f02ef677e1e44da55ffc04801fd02f9e673987829226a"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.ty",
+      "sha256": "41f5ac76596a1699cc33f53084a2419e92961c42bb75f36fc38e616d348532ad"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.x",
+      "sha256": "23cfa55d91c6f624233f5eb7b6e3f141f1bd2b2ae39608a63cf5d084bb27baab"
+    },
+    {
+      "path": "/home/pzh/project/data/cora/ind.cora.y",
+      "sha256": "94465c14eb53e04ca262198dcbb2521ee8af60fb3f3d546cd6ca24a511b0e7d1"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/RELEASE_v1.txt",
+      "sha256": "e3187440866fa78010168ee76ed60eb791458b7056d5a2e63f525b1bfd0c0623"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/mapping/README.md",
+      "sha256": "45bb5a72cf18cd0fa2413d076ca24da6b00f13eec99adc9e69c40c16676bd536"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/mapping/labelidx2arxivcategeory.csv.gz",
+      "sha256": "a516ecd32007acca5817296bdd82f5b5db7e21b0917b94311ef4571e29305577"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/mapping/nodeidx2paperid.csv.gz",
+      "sha256": "3ad84bd49e905f457d1abb8d7586b52d9fa357efeb4a49f04ef2f2516817e2cf"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/edge.csv.gz",
+      "sha256": "47629e986116407d27eff4c9d2e923f06bf5da5c85cbae93b660f530bc9355df"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/node-feat.csv.gz",
+      "sha256": "60a844c7aff2f129335d34da2f6b9271bd1cac03aff8c70c229e6f0d13624718"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/node-label.csv.gz",
+      "sha256": "b06e7cf75d909de66ce49bc4188a6dc525224f85dd6dcb36137de3d9321830d1"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/node_year.csv.gz",
+      "sha256": "fb97e19d6003deb09197f6df6b10ea1ab86ee49d98885836c3c857ab58d897f3"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/num-edge-list.csv.gz",
+      "sha256": "430f1e00ae204bbb3208c5f494ab70170e9f2995fd3548d1754a74a8f59250d1"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/raw/num-node-list.csv.gz",
+      "sha256": "9aa60a342efd209408933ace51e6b0a814e81c2894a993c44f9b173e477e2e82"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/split/time/test.csv.gz",
+      "sha256": "588fb66ce57bcaef51ac0235f0a49a056370ac31fc27c8ebf556d3f5cdd02545"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/split/time/train.csv.gz",
+      "sha256": "84983391900af45194e5db8d977ec9e01d4eda96e20328f3d7575fdd45c6797c"
+    },
+    {
+      "path": "/home/pzh/project/data/ogbn-arxiv/split/time/valid.csv.gz",
+      "sha256": "ebe6cdcd77c75eedbce2064a05a49bc28e2c4a631f49d66b9e9ff317eef993eb"
+    },
+    {
+      "path": "/home/pzh/project/data/ppi/ppi-G.json",
+      "sha256": "7b323bbb677de2538c0b4c17d13a1bf691af6e6d76946035b7649c6c2fce3013"
+    },
+    {
+      "path": "/home/pzh/project/data/ppi/ppi-class_map.json",
+      "sha256": "388d404c24704a29b74940ca64df52ef7dc9affb3cfc96345210bf6aa1e31932"
+    },
+    {
+      "path": "/home/pzh/project/data/ppi/ppi-feats.npy",
+      "sha256": "953149689098eed72c0154fb40a8fff4e634d34c5ad139c7ae9d601db1cad3d3"
+    },
+    {
+      "path": "/home/pzh/project/data/ppi/ppi-id_map.json",
+      "sha256": "5b9f264c242f3078a347f037839105e069739f404fe603c82ca19e2b8e45c04e"
+    },
+    {
+      "path": "/home/pzh/project/data/ppi/ppi-walks.txt",
+      "sha256": "d0d5b5b3f2521d3727e88be3147029bac27a5409ee60c5106b9f12a58e75dbcc"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.allx",
+      "sha256": "508e538e2abdccdd54c4d3e9f49d638b4af7107d85845f66ddea5a5152658b7e"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.ally",
+      "sha256": "0c37bbe3b5014ec365e9d393cf4791925e5ed94fb194305d74f064a8d7b50f0e"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.graph",
+      "sha256": "5b89f0036ca22909471f1e6558eb42fa06e0c730a577bde5b058b40638f81dc9"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.test.index",
+      "sha256": "369709113b5f03046e6f4c3b0813fa7d7a81a20f47b7124f0d8c4eb5dfc90e4d"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.tx",
+      "sha256": "4eb5f5d0f30f26497eb0ac6ac9719d09c67e284f1ed0385c93f3ef27a671da3d"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.ty",
+      "sha256": "ee2e0d4819d9fbcc403689c3bf2e49face401b605932f093bc58ab6461130fdd"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.x",
+      "sha256": "fbe9cb5c47200d1b7769a26e579be3b7130b556831f9d850e77c4c74f2599b33"
+    },
+    {
+      "path": "/home/pzh/project/data/pubmed/ind.pubmed.y",
+      "sha256": "e6c807633307a07ed659249006536a147c7999c797f11a2560752990181b41b3"
+    }
+  ],
+  "dataset": "ppi",
+  "device": 0,
+  "edge_ptr": [
+    0,
+    17699,
+    17700,
+    17701,
+    17702,
+    17703,
+    17704,
+    17705,
+    17706,
+    17707,
+    33936,
+    33937,
+    33938,
+    33941,
+    33942,
+    33943,
+    33944,
+    33945,
+    33946,
+    33947,
+    33948,
+    66033,
+    66034,
+    66035,
+    66036,
+    66037,
+    66038,
+    66039,
+    66040,
+    66041,
+    66042,
+    66043,
+    101097,
+    101098,
+    101099,
+    101100,
+    101101,
+    101102,
+    101103,
+    101104,
+    101105,
+    101106,
+    101107,
+    120766,
+    120767,
+    120768,
+    120769,
+    120770,
+    120771,
+    120772,
+    120773,
+    120774,
+    120775,
+    130904,
+    130905,
+    130906,
+    130907,
+    130908,
+    130909,
+    130910,
+    130911,
+    130912,
+    154900,
+    154901,
+    154902,
+    154903,
+    154904,
+    154905,
+    154906,
+    154907,
+    154908,
+    154909,
+    154910,
+    154911,
+    154912,
+    192595,
+    192596,
+    192597,
+    192598,
+    192599,
+    192600,
+    192601,
+    192602,
+    192603,
+    192604,
+    192605,
+    192606,
+    192607,
+    197052,
+    197053,
+    197054,
+    197055,
+    197056,
+    197057,
+    197058,
+    197059,
+    197060,
+    197061,
+    197062,
+    197063,
+    253474,
+    253475,
+    253476,
+    253477,
+    253480,
+    253481,
+    253484,
+    253485,
+    253486,
+    253487,
+    253488,
+    253489,
+    253490,
+    288000,
+    288001,
+    288002,
+    288003,
+    288004,
+    288005,
+    288006,
+    313018,
+    313019,
+    313020,
+    313021,
+    313022,
+    313023,
+    313024,
+    337727,
+    337728,
+    337729,
+    337730,
+    337731,
+    337732,
+    337733,
+    394590,
+    394591,
+    394592,
+    394593,
+    394594,
+    394595,
+    394596,
+    394597,
+    394600,
+    394601,
+    394602,
+    394603,
+    394604,
+    394605,
+    394606,
+    394607,
+    394608,
+    440061,
+    440062,
+    440063,
+    440064,
+    440065,
+    440066,
+    440067,
+    440068,
+    440069,
+    440070,
+    440071,
+    440072,
+    440073,
+    440074,
+    472331,
+    472332,
+    472333,
+    472334,
+    472335,
+    472336,
+    472337,
+    472338,
+    513520,
+    513521,
+    513522,
+    513523,
+    513524,
+    513525,
+    513526,
+    513527,
+    513528,
+    513529,
+    513530,
+    513531,
+    513532,
+    513533,
+    513534,
+    559109,
+    559110,
+    559111,
+    559112,
+    559113,
+    559114,
+    559115,
+    559116,
+    559117,
+    559118,
+    559119,
+    559120,
+    559121,
+    559122,
+    559123,
+    609365,
+    609366,
+    609367,
+    609368,
+    609369,
+    609370,
+    609373,
+    609374,
+    609375,
+    609376,
+    609377,
+    609380,
+    609381,
+    609382,
+    609383,
+    609384,
+    658074,
+    658075,
+    658076,
+    658077,
+    658078,
+    658079,
+    658080,
+    658081,
+    658082,
+    658083,
+    658084,
+    658085,
+    658086,
+    658087,
+    658088,
+    658089,
+    658090,
+    710001,
+    710002,
+    710003,
+    710004,
+    710007,
+    710010,
+    710011,
+    710012,
+    710013,
+    710016,
+    710017,
+    710018,
+    710019,
+    764040,
+    764041,
+    764042,
+    764043,
+    764044,
+    764045,
+    764046,
+    764049,
+    764050,
+    764053,
+    764056,
+    764057,
+    764060,
+    764061,
+    764062,
+    764063,
+    764064,
+    817580,
+    817581,
+    817582,
+    817583,
+    817584,
+    817585,
+    817586,
+    817587,
+    817590,
+    817591,
+    817592,
+    817593,
+    817594,
+    817595,
+    817596,
+    817599,
+    817600,
+    817601,
+    817602,
+    850566,
+    850567,
+    850568,
+    850569,
+    850570,
+    850571,
+    850572,
+    850573,
+    850574,
+    850575,
+    850576
+  ],
+  "failure_reason": null,
+  "formal_head_width": 8,
+  "gpu_sharing_mode": "exclusive_required",
+  "gpu_uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71",
+  "head": 0,
+  "input_bundle_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_all_295_graphs/real_input.bin",
+  "input_bundle_sha256": "fc9c54b7c66a3001080303637b35b726ed21169a9912e1f50cc30f7c4b52dc96",
+  "input_metadata_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_all_295_graphs/metadata.json",
+  "input_metadata_sha256": "79e7a5592a48b3b322dfd842f9d4c8d84405eddde02393489d26c724220e68d5",
+  "input_witness_sha256": "1513ba531e8492dc1e2ebd4f004566f5d6351aa9ac60bf40f546873b394cab28",
+  "layer": 0,
+  "mask_seed_file_removed": true,
+  "mechanism": "shared_neighborhood",
+  "node_ptr": [
+    0,
+    1546,
+    1547,
+    1548,
+    1549,
+    1550,
+    1551,
+    1552,
+    1553,
+    1554,
+    2931,
+    2932,
+    2933,
+    2935,
+    2936,
+    2937,
+    2938,
+    2939,
+    2940,
+    2941,
+    2942,
+    5205,
+    5206,
+    5207,
+    5208,
+    5209,
+    5210,
+    5211,
+    5212,
+    5213,
+    5214,
+    5215,
+    7554,
+    7555,
+    7556,
+    7557,
+    7558,
+    7559,
+    7560,
+    7561,
+    7562,
+    7563,
+    7564,
+    9142,
+    9143,
+    9144,
+    9145,
+    9146,
+    9147,
+    9148,
+    9149,
+    9150,
+    9151,
+    10172,
+    10173,
+    10174,
+    10175,
+    10176,
+    10177,
+    10178,
+    10179,
+    10180,
+    12003,
+    12004,
+    12005,
+    12006,
+    12007,
+    12008,
+    12009,
+    12010,
+    12011,
+    12012,
+    12013,
+    12014,
+    12015,
+    14503,
+    14504,
+    14505,
+    14506,
+    14507,
+    14508,
+    14509,
+    14510,
+    14511,
+    14512,
+    14513,
+    14514,
+    14515,
+    15106,
+    15107,
+    15108,
+    15109,
+    15110,
+    15111,
+    15112,
+    15113,
+    15114,
+    15115,
+    15116,
+    15117,
+    18429,
+    18430,
+    18431,
+    18432,
+    18434,
+    18435,
+    18437,
+    18438,
+    18439,
+    18440,
+    18441,
+    18442,
+    18443,
+    20844,
+    20845,
+    20846,
+    20847,
+    20848,
+    20849,
+    20850,
+    22728,
+    22729,
+    22730,
+    22731,
+    22732,
+    22733,
+    22734,
+    24553,
+    24554,
+    24555,
+    24556,
+    24557,
+    24558,
+    24559,
+    28039,
+    28040,
+    28041,
+    28042,
+    28043,
+    28044,
+    28045,
+    28046,
+    28048,
+    28049,
+    28050,
+    28051,
+    28052,
+    28053,
+    28054,
+    28055,
+    28056,
+    30850,
+    30851,
+    30852,
+    30853,
+    30854,
+    30855,
+    30856,
+    30857,
+    30858,
+    30859,
+    30860,
+    30861,
+    30862,
+    30863,
+    33189,
+    33190,
+    33191,
+    33192,
+    33193,
+    33194,
+    33195,
+    33196,
+    35846,
+    35847,
+    35848,
+    35849,
+    35850,
+    35851,
+    35852,
+    35853,
+    35854,
+    35855,
+    35856,
+    35857,
+    35858,
+    35859,
+    35860,
+    38675,
+    38676,
+    38677,
+    38678,
+    38679,
+    38680,
+    38681,
+    38682,
+    38683,
+    38684,
+    38685,
+    38686,
+    38687,
+    38688,
+    38689,
+    41852,
+    41853,
+    41854,
+    41855,
+    41856,
+    41857,
+    41859,
+    41860,
+    41861,
+    41862,
+    41863,
+    41865,
+    41866,
+    41867,
+    41868,
+    41869,
+    44890,
+    44891,
+    44892,
+    44893,
+    44894,
+    44895,
+    44896,
+    44897,
+    44898,
+    44899,
+    44900,
+    44901,
+    44902,
+    44903,
+    44904,
+    44905,
+    44906,
+    48101,
+    48102,
+    48103,
+    48104,
+    48106,
+    48108,
+    48109,
+    48110,
+    48111,
+    48113,
+    48114,
+    48115,
+    48116,
+    51400,
+    51401,
+    51402,
+    51403,
+    51404,
+    51405,
+    51406,
+    51408,
+    51409,
+    51411,
+    51413,
+    51414,
+    51416,
+    51417,
+    51418,
+    51419,
+    51420,
+    54614,
+    54615,
+    54616,
+    54617,
+    54618,
+    54619,
+    54620,
+    54621,
+    54623,
+    54624,
+    54625,
+    54626,
+    54627,
+    54628,
+    54629,
+    54631,
+    54632,
+    54633,
+    54634,
+    56934,
+    56935,
+    56936,
+    56937,
+    56938,
+    56939,
+    56940,
+    56941,
+    56942,
+    56943,
+    56944
+  ],
+  "nonself_neighbor_stats": [
+    {
+      "eligible_nodes": 1176,
+      "max": 268,
+      "median": 5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1059,
+      "max": 226,
+      "median": 5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1778,
+      "max": 361,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1856,
+      "max": 373,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1217,
+      "max": 272,
+      "median": 5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 736,
+      "max": 151,
+      "median": 4,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1429,
+      "max": 304,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1978,
+      "max": 405,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 383,
+      "max": 74,
+      "median": 3,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2669,
+      "max": 581,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1923,
+      "max": 383,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1479,
+      "max": 309,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1455,
+      "max": 284,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2752,
+      "max": 555,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2252,
+      "max": 449,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1834,
+      "max": 378,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2101,
+      "max": 445,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2264,
+      "max": 449,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2522,
+      "max": 496,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2408,
+      "max": 480,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2535,
+      "max": 515,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2628,
+      "max": 517,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 2566,
+      "max": 501,
+      "median": 7,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 1,
+      "median": 0.5,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 1822,
+      "max": 364,
+      "median": 6,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    },
+    {
+      "eligible_nodes": 0,
+      "max": 0,
+      "median": 0,
+      "min": 0
+    }
+  ],
+  "pair_input_commitment_sha256": "fb09720fc2d6e0d0bac9a4a91df82c80b706b2dffc66143d94b68c9b3339c892",
+  "pair_order_index": 46,
+  "pair_status": "paired",
+  "private_mask_seed_file_mode": "0600",
+  "private_mask_seed_unique_in_session": true,
+  "proof_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/proof.bin",
+  "proof_sha256": "b3b8c7085882aee7113724f9927e39201a26062e46bcba831e73afd29fac8db7",
+  "proof_size_bytes": 6428,
+  "protocol_schema_id": "2b6322e850c7fa7cee3f8b6891615a86bedc78d2e35c601f1e7fa1111138af30",
+  "prove_time_ms": 46675.33813,
+  "prover_exit_code": 0,
+  "prover_log": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/prover.log",
+  "prover_log_sha256": "e8ecf9d0f8c7f82268861e0e9eef1fc3464217b18bfb6c830746af8c36cb2cc0",
+  "prover_process_pid": 3763301,
+  "prover_result_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/prover_result.json",
+  "prover_result_sha256": "5b71202c3e70eae021cae5830aa2e5eaee121b9e56351a5e3832f5faf4aead9b",
+  "prover_wall_time_seconds": 159.71139986999333,
+  "repetition": 1,
+  "security": {
+    "assumptions": {
+      "fiat_shamir_assumption_profile_id": "transcript_sha256_reject_zero_v3",
+      "fiat_shamir_challenge_count": 17,
+      "fiat_shamir_query_budget_max": 1048576,
+      "fiat_shamir_random_oracle_terms_128bit": 1,
+      "fiat_shamir_security_bits": 128,
+      "kzg_assumption_bits": 128,
+      "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+      "kzg_point_group_games": 9,
+      "registry_assumption_id": "mechanism_schema_transcript_binding_v1",
+      "registry_terms_128bit": 1,
+      "total_128bit_terms": 11
+    },
+    "bound_kind": "conservative_exact",
+    "budget_exact": true,
+    "budget_ledger_sha256": "ebff2dd3b704a1464c045e3a6d79aa4aab710cb3021cb1215578c778b4f6f7f4",
+    "computational_assumption_bits": 128,
+    "crs_actual_denominator_decimal": "52435875175126190479447740508185965837690552500527637822603658699938572795904",
+    "crs_error_bound": {
+      "actual_denominator": "52435875175126190479447740508185965837690552500527637822603658699938572795904",
+      "denominator_lower_bound": "2^254",
+      "fiat_shamir_query_budget_max": 1048576,
+      "numerator": "33685552",
+      "query_amplified_numerator": "35321861373952",
+      "terms": 6
+    },
+    "degree_bounds": {
+      "global_srs_malicious_identity_bound": 33554431,
+      "max_field_identity": 75563006,
+      "max_masked_quotient": 16777229,
+      "max_quotient": 16777229,
+      "psq_step": 16777223,
+      "psq_step_identity": 50331647,
+      "psq_terminal": 16777223,
+      "psq_terminal_identity": 41943039,
+      "required_srs_degree": 16777229,
+      "route_accumulator_edge": 16777223,
+      "route_accumulator_edge_identity": 41943039,
+      "route_accumulator_node": 131079,
+      "route_accumulator_node_identity": 33685503,
+      "route_inverse_edge": 16777229,
+      "route_inverse_edge_identity": 75497470,
+      "route_inverse_node": 131085,
+      "route_inverse_node_identity": 67174398,
+      "tuple_compression": 75563006
+    },
+    "fiat_shamir_challenge_inventory": [
+      "sn/width_fold_xi",
+      "sn/shared_lambda",
+      "sn/route/shared/eta",
+      "sn/route/shared/beta",
+      "sn/route/shared/zeta",
+      "mechanism_open_fold:v3:sn/route/shared/zeta",
+      "mechanism_open_fold:v3:sn/route/shared/zeta_next_node",
+      "mechanism_open_fold:v3:sn/route/shared/zeta_next_edge",
+      "sn/route/shared/terminal_y",
+      "mechanism_open_fold:v3:sn/route/shared/terminal_shifted",
+      "mechanism_open_fold:v3:sn/route/shared/terminal_edge",
+      "mechanism_open_fold:v3:sn/route/shared/terminal_fixed",
+      "sn/psq/shared/zeta",
+      "mechanism_open_fold:v3:sn/psq/shared/open/step",
+      "mechanism_open_fold:v3:sn/psq/shared/open/step_next",
+      "sn/psq/shared/terminal_point",
+      "mechanism_open_fold:v3:sn/psq/shared/open/group_terminal"
+    ],
+    "fiat_shamir_query_budget_max": 1048576,
+    "field_actual_denominator_decimal": "52435875175126190479447740508185965837690552500527637822603658699938505621507",
+    "field_bound_bits": 254,
+    "field_denominator_lower_bound": "2^254",
+    "field_error_bound": {
+      "denominator_lower_bound": "2^254",
+      "fiat_shamir_query_budget_max": 1048576,
+      "field_numerator": "441031152631808",
+      "logup_denominator_numerator": 907520,
+      "opening_fold_numerator": 22,
+      "quotient_identity_numerator": 310575096,
+      "shared_lambda_numerator": 1,
+      "terminal_crpc_numerator": 33554431,
+      "tuple_compression_numerator": 75563006,
+      "unamplified_numerator": "420600083",
+      "width_fold_numerator": 7
+    },
+    "field_modulus_decimal": "52435875175126190479447740508185965837690552500527637822603658699938581184513",
+    "identity_count": 6,
+    "identity_counts": {
+      "psq": 2,
+      "route": 4
+    },
+    "identity_inventory": [
+      "sn/route/shared/identity/inverse_node",
+      "sn/route/shared/identity/inverse_edge",
+      "sn/route/shared/identity/accumulator_node",
+      "sn/route/shared/identity/accumulator_edge",
+      "sn/psq/shared/identity/step_recurrence",
+      "sn/psq/shared/identity/group_terminal"
+    ],
+    "kzg_point_group_game_inventory": [
+      "sn/route/shared/zeta",
+      "sn/route/shared/zeta_next_node",
+      "sn/route/shared/zeta_next_edge",
+      "sn/route/shared/terminal_shifted",
+      "sn/route/shared/terminal_edge",
+      "sn/route/shared/terminal_fixed",
+      "sn/psq/shared/open/step",
+      "sn/psq/shared/open/step_next",
+      "sn/psq/shared/open/group_terminal"
+    ],
+    "mask_observation_ledger": {
+      "chosen_rank": 8,
+      "lineage_inventory": [
+        "sn/U_edge->sn/w_edge:explicit-linear-commitment;PSQ-step-and-step-next",
+        "sn/Sum_node->sn/T_node:explicit-linear-commitment;route-zeta",
+        "sn/V_edge/0->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/0->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/1->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/1->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/2->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/2->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/3->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/3->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/4->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/4->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/5->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/5->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/6->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/6->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/V_edge/7->sn/V_star_edge->sn/w_edge:postcommit-xi-and-explicit-linear-commitments;PSQ-step-and-step-next",
+        "sn/Hagg_node/7->sn/Hagg_star_node->sn/T_node:postcommit-xi-and-explicit-linear-commitments;route-zeta",
+        "sn/target_edge/shared->sn/route/shared/Query:eta-tuple-mask;route-zeta",
+        "sn/target_edge/shared->sn/psq/shared/open/group_terminal:terminal-target-opening",
+        "sn/psq/shared/state->sn/psq/shared/open/step,/open/step_next,/open/group_terminal:three-distinct-opening-points",
+        "sn/route/shared/Q_inv_node+sn/route/shared/Q_inv_node/R_Q->aggregate_witness(sn/route/shared/zeta):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/route/shared/Table|source=sn/route/shared/J_node|source_opening_group=sn/route/shared/zeta",
+        "sn/route/shared/Q_inv_edge+sn/route/shared/Q_inv_edge/R_Q->aggregate_witness(sn/route/shared/zeta):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/route/shared/Query|source=sn/route/shared/J_edge|source_opening_group=sn/route/shared/zeta",
+        "sn/route/shared/Q_acc_node+sn/route/shared/Q_acc_node/R_Q->aggregate_witness(sn/route/shared/zeta):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/route/shared/J_node|source=sn/route/shared/R_node|source_opening_group=sn/route/shared/zeta|source_opening_group=sn/route/shared/zeta_next_node",
+        "sn/route/shared/Q_acc_edge+sn/route/shared/Q_acc_edge/R_Q->aggregate_witness(sn/route/shared/zeta):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/route/shared/J_edge|source=sn/route/shared/R_edge|source_opening_group=sn/route/shared/zeta|source_opening_group=sn/route/shared/zeta_next_edge",
+        "sn/psq/shared/Q_step+sn/psq/shared/Q_step/R_Q->aggregate_witness(sn/psq/shared/open/step):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/psq/shared/state|source=sn/w_edge|source_opening_group=sn/psq/shared/open/step|source_opening_group=sn/psq/shared/open/step_next",
+        "sn/psq/shared/Q_group_terminal+sn/psq/shared/Q_group_terminal/R_Q->aggregate_witness(sn/psq/shared/open/group_terminal):Q_raw=Q_zk-Z_D*R_Q;two-claim-values-at-opening-point;no-new-field-point|source=sn/psq/shared/state|source=sn/target_edge/shared|source_opening_group=sn/psq/shared/open/group_terminal"
+      ],
+      "max_field_rows": 3,
+      "max_group_rows": 6,
+      "max_quotient_observations": 5,
+      "profiles": [
+        {
+          "field_rows": 2,
+          "group_rows": 4,
+          "label": "sn/U_edge"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/0"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/1"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/2"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/3"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/4"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/5"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/6"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 5,
+          "label": "sn/V_edge/7"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 3,
+          "label": "sn/Sum_node"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/0"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/1"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/2"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/3"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/4"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/5"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/6"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 4,
+          "label": "sn/Hagg_node/7"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 4,
+          "label": "sn/V_star_edge"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 3,
+          "label": "sn/Hagg_star_node"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/w_edge"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 3,
+          "label": "sn/T_node"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 4,
+          "label": "sn/target_edge/shared"
+        },
+        {
+          "field_rows": 3,
+          "group_rows": 4,
+          "label": "sn/psq/shared/state"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/psq/shared/Q_step"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/psq/shared/Q_step/R_Q"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/psq/shared/Q_group_terminal"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/psq/shared/Q_group_terminal/R_Q"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 2,
+          "label": "sn/route/shared/Table"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 2,
+          "label": "sn/route/shared/Query"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 2,
+          "label": "sn/route/shared/J_node"
+        },
+        {
+          "field_rows": 1,
+          "group_rows": 2,
+          "label": "sn/route/shared/J_edge"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 4,
+          "label": "sn/route/shared/R_node"
+        },
+        {
+          "field_rows": 3,
+          "group_rows": 6,
+          "label": "sn/route/shared/R_edge"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_inv_node"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_inv_node/R_Q"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_inv_edge"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_inv_edge/R_Q"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_acc_node"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_acc_node/R_Q"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_acc_edge"
+        },
+        {
+          "field_rows": 2,
+          "group_rows": 3,
+          "label": "sn/route/shared/Q_acc_edge/R_Q"
+        }
+      ],
+      "quotient_mask_rank": 8
+    },
+    "max_field_excluded_roots": 16777230,
+    "max_field_identity_degree": 75563006,
+    "mechanism": "shared_neighborhood",
+    "parent_srs_degree_bound": 33554431,
+    "psq_channels": 1,
+    "quotient_mask_registry": [
+      "quotient=sn/route/shared/Q_inv_node|mask=sn/route/shared/Q_inv_node/R_Q|domain=N:65536|raw_quotient_degree_bound=131085|Q_zk_degree_bound=131085|required_coefficient_count=131086|mask_rank=8|exclusion_degree=65544|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/route/shared/zeta|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/route/shared/Table|private_source=sn/route/shared/J_node|source_opening_group=sn/route/shared/zeta",
+      "quotient=sn/route/shared/Q_inv_edge|mask=sn/route/shared/Q_inv_edge/R_Q|domain=edge:8388608|raw_quotient_degree_bound=16777229|Q_zk_degree_bound=16777229|required_coefficient_count=16777230|mask_rank=8|exclusion_degree=8388616|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/route/shared/zeta|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/route/shared/Query|private_source=sn/route/shared/J_edge|source_opening_group=sn/route/shared/zeta",
+      "quotient=sn/route/shared/Q_acc_node|mask=sn/route/shared/Q_acc_node/R_Q|domain=N:65536|raw_quotient_degree_bound=131079|Q_zk_degree_bound=131079|required_coefficient_count=131080|mask_rank=8|exclusion_degree=65544|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/route/shared/zeta|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/route/shared/J_node|private_source=sn/route/shared/R_node|source_opening_group=sn/route/shared/zeta|source_opening_group=sn/route/shared/zeta_next_node",
+      "quotient=sn/route/shared/Q_acc_edge|mask=sn/route/shared/Q_acc_edge/R_Q|domain=edge:8388608|raw_quotient_degree_bound=16777223|Q_zk_degree_bound=16777223|required_coefficient_count=16777224|mask_rank=8|exclusion_degree=8388616|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/route/shared/zeta|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/route/shared/J_edge|private_source=sn/route/shared/R_edge|source_opening_group=sn/route/shared/zeta|source_opening_group=sn/route/shared/zeta_next_edge",
+      "quotient=sn/psq/shared/Q_step|mask=sn/psq/shared/Q_step/R_Q|domain=edge:8388608|raw_quotient_degree_bound=16777223|Q_zk_degree_bound=16777223|required_coefficient_count=16777224|mask_rank=8|exclusion_degree=8388616|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/psq/shared/open/step|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/psq/shared/state|private_source=sn/w_edge|source_opening_group=sn/psq/shared/open/step|source_opening_group=sn/psq/shared/open/step_next",
+      "quotient=sn/psq/shared/Q_group_terminal|mask=sn/psq/shared/Q_group_terminal/R_Q|domain=edge:8388608|raw_quotient_degree_bound=16777223|Q_zk_degree_bound=16777223|required_coefficient_count=16777224|mask_rank=8|exclusion_degree=8388616|field_observation_rows=2|group_observation_rows=3|total_rank_rows=5|rank_certificate=independent-csprng-coefficient-mask;observations=Q_zk-value,R_Q-value,Q_zk-commitment,R_Q-commitment,aggregate-point-group-witness;rank<8|opening_group=sn/psq/shared/open/group_terminal|dependency=Q_zk=Q_raw+(X^D-1)*R_Q;Q_raw=identity_residual/Z_D|evaluation_dependency=Q_raw(z)=Q_zk(z)-Z_D(z)*R_Q(z);identity_residual(z) reuses source values from the listed pre-existing opening groups;no additional independent field point|private_source=sn/psq/shared/state|private_source=sn/target_edge/shared|source_opening_group=sn/psq/shared/open/group_terminal"
+    ],
+    "route_rounds": 1,
+    "target_bits": 120,
+    "total_error_bound": {
+      "denominator_lower_bound": "2^254",
+      "meets_target": true,
+      "numerator": "935776509032580774524280646790376587264",
+      "target_numerator_threshold": "21778071482940061661655974875633165533184"
+    },
+    "variant": "original"
+  },
+  "security_bound_kind": "conservative_exact",
+  "security_budget": {
+    "fiat_shamir_challenge_count": 17,
+    "identity_count": 6,
+    "kzg_point_group_games": 9,
+    "ledger_sha256": "ebff2dd3b704a1464c045e3a6d79aa4aab710cb3021cb1215578c778b4f6f7f4",
+    "total_128bit_terms": 11,
+    "total_error_bound": {
+      "denominator_lower_bound": "2^254",
+      "meets_target": true,
+      "numerator": "935776509032580774524280646790376587264",
+      "target_numerator_threshold": "21778071482940061661655974875633165533184"
+    },
+    "valid": true
+  },
+  "security_budget_ledger_sha256": "ebff2dd3b704a1464c045e3a6d79aa4aab710cb3021cb1215578c778b4f6f7f4",
+  "security_budget_valid": true,
+  "security_error_numerator": "935776509032580774524280646790376587264",
+  "security_fiat_shamir_challenge_count": 17,
+  "security_fiat_shamir_query_budget_max": 1048576,
+  "security_identity_count": 6,
+  "security_kzg_point_group_games": 9,
+  "security_policy": {
+    "bound_kind": "conservative_exact",
+    "budget_exact": true,
+    "computational_assumption_bits": 128,
+    "fiat_shamir_assumption_profile_id": "transcript_sha256_reject_zero_v3",
+    "fiat_shamir_query_budget_max": 1048576,
+    "fiat_shamir_random_oracle_terms_128bit": 1,
+    "fiat_shamir_security_bits": 128,
+    "field_denominator_lower_bound": "2^254",
+    "field_modulus_decimal": "52435875175126190479447740508185965837690552500527637822603658699938581184513",
+    "kzg_assumption_bits": 128,
+    "kzg_assumption_profile_id": "shifted_kzg_divisibility",
+    "registry_assumption_id": "mechanism_schema_transcript_binding_v1",
+    "target_bits": 120
+  },
+  "security_target_bits": 120,
+  "security_target_numerator_threshold": "21778071482940061661655974875633165533184",
+  "security_total_128bit_terms": 11,
+  "srs_id": "ppi_formal_srs",
+  "srs_manifest_sha256": "859f59973e1c917303adc7015eac2472250b58cd5508b59dcba62b00b2419e34",
+  "statement_file_sha256": "e182e68222d18bcc831911bfd760ba3f0958da95749e1a23f000a26420ff1070",
+  "statement_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/public_statement.json",
+  "statement_sha256": "e182e68222d18bcc831911bfd760ba3f0958da95749e1a23f000a26420ff1070",
+  "statement_size_bytes": 14759918,
+  "variant": "original",
+  "verification_status": "VERIFY_OK",
+  "verifier_cuda_kernel_invocations_delta": 0,
+  "verifier_exit_code": 0,
+  "verifier_log": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/verifier.log",
+  "verifier_log_sha256": "92ba881fa8ab6b2dad4665abc250c1abc530431bd080f9905bf06fe70a91b324",
+  "verifier_process_pid": 3766309,
+  "verifier_result_path": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/verifier_result.json",
+  "verifier_result_sha256": "14c35ed9a49ac7fffcf5cb39565fd8172cefc4dc73f81d4fcccf2347c6211bf7",
+  "verify_time_ms": 2641.868048,
+  "verify_wall_time_seconds": 102.05462394200731
+}

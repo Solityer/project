@@ -1,4 +1,5 @@
 #include "../gat_adapter/gat_witness_numerics.hpp"
+#include "../gat_adapter/signed_round_bounds.hpp"
 
 #include <openssl/bn.h>
 
@@ -228,6 +229,167 @@ void test_round_div_witness(BN_CTX *context) {
                 "SignedRoundDiv inverse bytes differ at batch boundary index " + std::to_string(index));
 }
 
+IntegerBoundFamily scale_test_family(const std::string &id,
+                                    std::uint64_t layer,
+                                    std::uint64_t head, bool output) {
+    IntegerBoundFamily family;
+    family.family_id = id;
+    family.layer = layer;
+    family.head = head;
+    family.output = output;
+    family.max_dividend_abs = 1000000000000000000LL;
+    family.max_aux_abs = 1000000000000000000LL;
+    family.max_divisor = 32;
+    return family;
+}
+
+void check_signed_numerator_scale_case(
+    const signed_round_bounds::Widths &widths, const std::string &label,
+    const std::vector<std::int64_t> &denominators, BN_CTX *context) {
+    constexpr std::uint64_t rows = 4U;
+    constexpr std::uint64_t cols = 2U;
+    Matrix numerator;
+    numerator.rows = rows;
+    numerator.cols = cols;
+    numerator.values = {3, -5, (std::int64_t(1) << 54U) + 7,
+                        -((std::int64_t(1) << 54U) + 11), -17, 19, 0, 0};
+    Matrix expected;
+    expected.rows = rows;
+    expected.cols = cols;
+    expected.values.resize(numerator.values.size());
+    require(denominators.size() == rows && widths.numerator_scale > 0 &&
+                widths.denominator_scale > 0,
+            label + ": invalid test scales or denominator shape");
+    for (std::uint64_t row = 0U; row < rows; ++row) {
+        const auto divisor = checked_i128(
+            static_cast<__int128>(denominators.at(static_cast<std::size_t>(row))) *
+                widths.denominator_scale,
+            label + ".divisor");
+        for (std::uint64_t column = 0U; column < cols; ++column) {
+            const auto index = static_cast<std::size_t>(row * cols + column);
+            const auto scaled_numerator = checked_i128(
+                static_cast<__int128>(numerator.values.at(index)) *
+                    widths.numerator_scale,
+                label + ".scaled_numerator");
+            expected.values[index] = round_div(scaled_numerator, divisor,
+                                                label + ".expected");
+        }
+    }
+    const auto witness = make_round_div_witness(
+        numerator, denominators,
+        static_cast<std::uint64_t>(widths.numerator_scale),
+        static_cast<std::uint64_t>(widths.denominator_scale), expected,
+        label);
+    const auto legacy = legacy_round_div_witness(
+        numerator, denominators,
+        static_cast<std::uint64_t>(widths.numerator_scale),
+        static_cast<std::uint64_t>(widths.denominator_scale), expected,
+        context);
+    require(serialize_witness(witness) == serialize_witness(legacy),
+            label + ": scaled round witness changed");
+
+    const BigNum scale = field_from_i64(widths.numerator_scale, context);
+    bool old_positive_mismatch = false;
+    bool old_negative_mismatch = false;
+    for (std::size_t index = 0U; index < numerator.values.size(); ++index) {
+        const std::int64_t raw = numerator.values.at(index);
+        const std::int64_t writer_raw = numerator.values.at(index);
+        const auto scaled_raw = checked_i128(
+            static_cast<__int128>(raw) * widths.numerator_scale,
+            label + ".old_writer_scaled_value");
+        const BigNum canonical = field_from_i64(raw, context);
+        const BigNum raw_view = field_from_i64(writer_raw, context);
+        const BigNum old_scaled_view = field_from_i64(scaled_raw, context);
+        BigNum new_identity_residual;
+        BigNum old_identity_residual;
+        require(BN_mod_sub(new_identity_residual.get(), raw_view.get(),
+                           canonical.get(), scalar_modulus(), context) &&
+                    BN_mod_sub(old_identity_residual.get(),
+                               old_scaled_view.get(), canonical.get(),
+                               scalar_modulus(), context),
+                label + ": independent FAC residual arithmetic failed");
+        require(BN_is_zero(new_identity_residual.get()),
+                label + ": raw numerator view failed identity FAC");
+        if (widths.numerator_scale == 1 || raw == 0) {
+            require(BN_is_zero(old_identity_residual.get()),
+                    label + ": old writer unexpectedly changed an S=1/zero value");
+        } else {
+            require(!BN_is_zero(old_identity_residual.get()),
+                    label + ": old scaled writer failed to reproduce identity FAC mismatch");
+            old_positive_mismatch = old_positive_mismatch || raw > 0;
+            old_negative_mismatch = old_negative_mismatch || raw < 0;
+        }
+
+        BigNum scaled_input;
+        BigNum absolute;
+        BigNum signed_absolute;
+        BigNum signed_residual;
+        require(BN_mod_mul(scaled_input.get(), canonical.get(), scale.get(),
+                           scalar_modulus(), context),
+                label + ": signed numerator scale multiplication failed");
+        BigNum witness_absolute = field_from_i64(witness.a.at(index), context);
+        BigNum witness_sign = field_from_i64(witness.sigma.at(index), context);
+        require(BN_mod_mul(absolute.get(), witness_absolute.get(),
+                           witness_sign.get(), scalar_modulus(), context) &&
+                    BN_mod_lshift1(signed_absolute.get(), absolute.get(),
+                                   scalar_modulus(), context) &&
+                    BN_mod_sub(signed_residual.get(), scaled_input.get(),
+                               witness_absolute.get(), scalar_modulus(), context) &&
+                    BN_mod_add(signed_residual.get(), signed_residual.get(),
+                               signed_absolute.get(), scalar_modulus(), context),
+                label + ": signed-numerator constraint arithmetic failed");
+        require(BN_is_zero(signed_residual.get()),
+                label + ": S*numerator - a + 2*sigma*a is nonzero");
+        if (index >= 6U)
+            require(raw == 0 && witness.a.at(index) == 0 &&
+                        witness.sigma.at(index) == 0U,
+                    label + ": padded node did not remain zero");
+    }
+    if (widths.numerator_scale > 1)
+        require(old_positive_mismatch && old_negative_mismatch,
+                label + ": old writer mismatch was not observed for both signs");
+}
+
+void test_signed_numerator_scale_identity(BN_CTX *context) {
+    Config config;
+    config.architecture.hidden_dims = {2U};
+    config.architecture.output_heads = 2U;
+    config.quantization.hidden_aggregate_pre = {16U};
+    config.quantization.hidden_h_prime = {{64U}};
+    config.quantization.output_y_prime = {8U, 16U};
+    config.quantization.output_pre = 16U;
+    config.quantization.output_head = 8U;
+
+    IntegerBoundLedger ledger;
+    ledger.authenticated = true;
+    ledger.families = {
+        scale_test_family("hidden/layer0/head0", 0U, 0U, false),
+        scale_test_family("output/head0", 1U, 0U, true),
+        scale_test_family("output/head1", 1U, 1U, true),
+    };
+
+    const auto hidden = signed_round_bounds::derive(
+        config, ledger, "hidden/layer0/head0/signed_round_div");
+    const auto output = signed_round_bounds::derive(
+        config, ledger, "output/head0/signed_round_div");
+    const auto alignment = signed_round_bounds::derive(
+        config, ledger, "output/head1/output_scale_alignment");
+    const auto average = signed_round_bounds::derive(
+        config, ledger, "final_average");
+    require(hidden.numerator_scale == 16 && output.numerator_scale == 16 &&
+                alignment.numerator_scale == 8 && average.numerator_scale == 1,
+            "signed-round authoritative numerator scales changed");
+
+    check_signed_numerator_scale_case(hidden, "hidden-S16", {2, 3, 5, 1},
+                                      context);
+    check_signed_numerator_scale_case(output, "output-S16", {2, 3, 5, 1},
+                                      context);
+    check_signed_numerator_scale_case(alignment, "alignment-S8",
+                                      {16, 16, 16, 16}, context);
+    check_signed_numerator_scale_case(average, "final-average-S1",
+                                      {2, 2, 2, 2}, context);
+}
+
 template <typename Head>
 void check_attention_alpha(Head &head, const Graph &graph, const std::vector<std::int64_t> &denominators, BN_CTX *context) {
     const FieldInverseCache cache = fill_field_attention(head, graph, 0U, graph.edges, denominators);
@@ -454,6 +616,7 @@ int main() {
             test_scalar_round_div();
             test_batch_inverse(context);
             test_round_div_witness(context);
+            test_signed_numerator_scale_identity(context);
             test_attention_and_aggregate(context);
             test_concat_layout();
         } catch (...) {
@@ -461,7 +624,7 @@ int main() {
             throw;
         }
         BN_CTX_free(context);
-        std::cout << "gat_witness_numerics=PASS field=batch-inverse round-div=byte-equal attention=byte-equal aggregate=byte-equal concat=layout-equal\n";
+        std::cout << "gat_witness_numerics=PASS field=batch-inverse round-div=byte-equal signed-numerator=identity-repaired-S1-S16-positive-negative-padding attention=byte-equal aggregate=byte-equal concat=layout-equal\n";
         return 0;
     } catch (const std::exception &exception) {
         std::cerr << exception.what() << '\n';

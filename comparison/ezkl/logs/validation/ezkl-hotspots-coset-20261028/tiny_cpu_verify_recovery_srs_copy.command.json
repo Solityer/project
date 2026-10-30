@@ -1,0 +1,20 @@
+[
+  "target/gpu/release/ezkl",
+  "verify",
+  "--settings-path",
+  "runs/tiny/cora/gpu/settings.json",
+  "--proof-path",
+  "runs/tiny/cora/gpu/proof.json",
+  "--vk-path",
+  "runs/tiny/cora/gpu/vk.key",
+  "--srs-path",
+  "runs/tiny/cora/gpu/srs.kzg",
+  "--statement",
+  "runs/tiny/cora/gpu/statement.json",
+  "--public-output",
+  "runs/tiny/cora/gpu/public_output.json",
+  "--artifact-manifest",
+  "runs/tiny/cora/gpu/artifact_manifest.json",
+  "--resource-manifest",
+  "resources/resource_manifest.json"
+]

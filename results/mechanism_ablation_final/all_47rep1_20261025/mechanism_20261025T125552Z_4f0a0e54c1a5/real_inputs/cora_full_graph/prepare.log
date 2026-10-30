@@ -1,0 +1,9 @@
+stage=prepare-real
+start_utc=2026-10-25T12:56:20Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism prepare-real --config /home/pzh/project/configs/cora_secure.cfg --components 0 --real-input-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/cora_full_graph/real_input.bin --metadata-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/cora_full_graph/metadata.json
+REAL_MECHANISM_INPUT_WRITTEN nodes=2708 edges=13264 graphs=1 bundle_sha256=dc20bd6e6d1b420dd039af65875f25e3814c088aa5878be0521ca09bc0369c8d metadata_sha256=44025985ce5577e79e87b9e0608e6825eef5435cd8cdc972fded8db558bb7819
+end_utc=2026-10-25T12:56:22Z
+process_pid=3487472
+return_code=0
+timed_out=false
+wall_time_seconds=1.166236

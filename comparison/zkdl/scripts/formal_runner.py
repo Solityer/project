@@ -9,6 +9,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ import formal_phase
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = formal_phase.DATASETS
 DETACHED_LAUNCH_ENV = "ZKDL_DETACHED_LAUNCH_DIR"
+RESUME_SESSION_ENV = "ZKDL_RESUME_SESSION"
+RESUME_FROM_ENV = "ZKDL_RESUME_FROM"
+RESUME_VERIFY_ENV = "ZKDL_RESUME_VERIFY"
 
 
 class RunnerError(RuntimeError):
@@ -65,16 +69,18 @@ def _write_detached_session_link(session: Path, session_id: str) -> None:
     })
 
 
-def _build_and_publish_session(runs: Path, session_id: str) -> Path:
-    """Build the formal binaries once and publish their log with a new session."""
+def _build_and_publish_session(runs: Path, session_id: str, *, resume_session: Path | None = None) -> Path:
+    """Build the formal binaries once and retain the build log with this run."""
     if re.fullmatch(r"[0-9a-f]{32}", session_id) is None:
         raise RunnerError("formal build stage requires a canonical session id")
     if runs.is_symlink() or not runs.is_dir() or runs.resolve(strict=True) != ROOT / "runs":
         raise RunnerError(f"zkDL runs directory is unavailable: {runs}")
     stage = runs / f".build_stage_{session_id}"
     session = runs / f"formal_{session_id}"
-    if stage.exists() or session.exists():
+    if stage.exists() or (resume_session is None and session.exists()):
         raise RunnerError("formal build stage or session path already exists")
+    if resume_session is not None and resume_session != session:
+        raise RunnerError("formal resume build does not match its existing session")
     stage.mkdir(mode=0o700)
     (stage / "logs").mkdir(mode=0o700)
     build_log = stage / "logs" / "build.log"
@@ -91,8 +97,215 @@ def _build_and_publish_session(runs: Path, session_id: str) -> Path:
                 raise RunnerError(f"formal build did not produce {binary}")
     except subprocess.CalledProcessError as exc:
         raise RunnerError(f"baseline-local build failed with exit {exc.returncode}; see {build_log}") from exc
+    if resume_session is not None:
+        build_log_path = resume_session / "logs" / "resume_build.log"
+        with build_log.open("rb") as source, build_log_path.open("ab", buffering=0) as destination:
+            while True:
+                chunk = source.read(1 << 20)
+                if not chunk:
+                    break
+                destination.write(chunk)
+            os.fsync(destination.fileno())
+        build_log.unlink()
+        (stage / "logs").rmdir()
+        stage.rmdir()
+        return resume_session
     os.rename(stage, session)
     return session
+
+
+def _load_resume_session(runs: Path, *, resume_from: str | None = None, resume_verify: str | None = None
+                          ) -> tuple[Path, str, dict[str, Any], tuple[str, ...]] | None:
+    raw_session = os.environ.get(RESUME_SESSION_ENV)
+    if not raw_session:
+        if resume_from or resume_verify:
+            variable = RESUME_FROM_ENV if resume_from else RESUME_VERIFY_ENV
+            raise RunnerError(f"{variable} requires {RESUME_SESSION_ENV}")
+        return None
+    requested = Path(raw_session)
+    if not requested.is_absolute():
+        raise RunnerError(f"{RESUME_SESSION_ENV} must name an absolute failed session directory")
+    try:
+        session = requested.resolve(strict=True)
+        runs_path = runs.resolve(strict=True)
+        session_id = re.fullmatch(r"formal_([0-9a-f]{32})", session.name)
+        state = json.loads((session / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RunnerError("zkDL resume session state is missing or unreadable") from exc
+    if session.parent != runs_path or session_id is None:
+        raise RunnerError("zkDL resume session is outside baseline-local runs or has a noncanonical name")
+    canonical_id = session_id.group(1)
+    accepted_statuses = ("FAILED", "PASS") if resume_from else ("FAILED",)
+    if (not isinstance(state, dict) or state.get("schema") != "zkdl_formal_runner_state_v1" or
+            state.get("baseline") != "zkdl" or state.get("session_id") != canonical_id or
+            state.get("session_dir") != session.relative_to(ROOT).as_posix() or
+            state.get("status") not in accepted_statuses):
+        raise RunnerError("zkDL resume session state identity/status mismatch")
+    statuses = state.get("dataset_status")
+    if not isinstance(statuses, dict) or set(statuses) != set(DATASETS) or any(
+            not isinstance(statuses.get(dataset), dict) for dataset in DATASETS):
+        raise RunnerError("zkDL resume state does not enumerate the five datasets")
+    passed: list[str] = []
+    for dataset in DATASETS:
+        receipt_path = session / "phase" / f"{dataset}.json"
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            continue
+        if (not isinstance(receipt, dict) or receipt.get("schema") != "zkDL_formal_cell_receipt_v2" or
+                receipt.get("baseline") != "zkdl" or receipt.get("session_id") != canonical_id or
+                receipt.get("dataset") != dataset or receipt.get("status") != "PASS" or
+                receipt.get("independent_verification") is not True):
+            continue
+        verification_relative = f"runs/{session.name}/{dataset}/verification.result"
+        if receipt.get("verification_path") != verification_relative:
+            raise RunnerError(f"zkDL resume cell verification path does not match {dataset}")
+        try:
+            verification = (ROOT / verification_relative).read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        if "status=VERIFIED" in verification:
+            if statuses[dataset].get("status") != "PASS":
+                raise RunnerError(f"zkDL resume PASS receipt disagrees with runner state for {dataset}")
+            passed.append(dataset)
+    if tuple(passed) != DATASETS[:len(passed)]:
+        raise RunnerError("zkDL resume verified cells are not a completed dataset prefix")
+    if state["status"] == "PASS" and resume_from is None and tuple(passed) != DATASETS:
+        raise RunnerError("zkDL PASS session does not contain five independently verified cells")
+    if resume_verify:
+        if resume_verify not in DATASETS:
+            raise RunnerError(f"unsupported {RESUME_VERIFY_ENV} dataset: {resume_verify}")
+        verify_index = DATASETS.index(resume_verify)
+        if len(passed) != verify_index:
+            raise RunnerError(f"{RESUME_VERIFY_ENV} requires {resume_verify} to be the first unverified dataset")
+        return session, canonical_id, state, tuple(passed)
+    if resume_from:
+        if resume_from not in DATASETS:
+            raise RunnerError(f"unsupported {RESUME_FROM_ENV} dataset: {resume_from}")
+        resume_index = DATASETS.index(resume_from)
+        required_prefix = DATASETS[:resume_index]
+        if tuple(passed[:resume_index]) != required_prefix:
+            raise RunnerError(f"zkDL explicit resume requires verified cells before {resume_from}")
+        return session, canonical_id, state, required_prefix
+    return session, canonical_id, state, tuple(passed)
+
+
+def _archive_resume_suffix(session: Path, start_dataset: str) -> Path | None:
+    """Move prior suffix artifacts out of the session before rerunning that suffix."""
+    if start_dataset not in DATASETS:
+        raise RunnerError(f"unsupported explicit resume dataset: {start_dataset}")
+    start_index = DATASETS.index(start_dataset)
+    runs = session.parent
+    phase_dir = session / "phase"
+    if phase_dir.is_symlink() or (phase_dir.exists() and not phase_dir.is_dir()):
+        raise RunnerError("zkDL phase path is not a local directory")
+    sources: list[tuple[Path, Path]] = []
+    session_device = session.stat(follow_symlinks=False).st_dev
+
+    for dataset in DATASETS[start_index:]:
+        run_dir = session / dataset
+        if run_dir.is_symlink():
+            raise RunnerError(f"zkDL prior {dataset} run path is a symlink")
+        if run_dir.exists():
+            if not run_dir.is_dir():
+                raise RunnerError(f"zkDL prior {dataset} run path is not a directory")
+            if run_dir.stat(follow_symlinks=False).st_dev != session_device:
+                raise RunnerError(f"zkDL prior {dataset} run path is on another filesystem")
+            sources.append((run_dir, Path(dataset)))
+
+        for filename in (f"{dataset}.json", f"{dataset}_failure.json"):
+            record = phase_dir / filename
+            if record.is_symlink():
+                raise RunnerError(f"zkDL prior {dataset} phase record is a symlink")
+            if record.exists():
+                if not record.is_file():
+                    raise RunnerError(f"zkDL prior {dataset} phase record is not a regular file")
+                if record.stat(follow_symlinks=False).st_dev != session_device:
+                    raise RunnerError(f"zkDL prior {dataset} phase record is on another filesystem")
+                sources.append((record, Path("phase") / filename))
+
+    results_root = ROOT / "results"
+    result_dir = results_root / session.name
+    if results_root.is_symlink() or (results_root.exists() and not results_root.is_dir()):
+        raise RunnerError("zkDL results path is not a local directory")
+    if result_dir.is_symlink():
+        raise RunnerError("zkDL prior result directory is a symlink")
+    if result_dir.exists():
+        if not result_dir.is_dir():
+            raise RunnerError("zkDL prior result path is not a directory")
+        if result_dir.stat(follow_symlinks=False).st_dev != session_device:
+            raise RunnerError("zkDL prior result directory is on another filesystem")
+        sources.append((result_dir, Path("results") / session.name))
+
+    if not sources:
+        return None
+    archive = Path(tempfile.mkdtemp(prefix=f".{session.name}.resume-", dir=runs))
+    for source, relative_destination in sources:
+        destination = archive / relative_destination
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        os.rename(source, destination)
+    return archive
+
+
+def _clear_failed_result_summaries(session: Path, session_id: str) -> None:
+    output_dir = ROOT / "results" / session.name
+    if not output_dir.exists():
+        return
+    if output_dir.is_symlink() or not output_dir.is_dir():
+        raise RunnerError("zkDL resume result path is not a local directory")
+    entries = {path.name for path in output_dir.iterdir()}
+    if not entries:
+        return
+    if entries != {"collected.json", "final_validation.json"}:
+        raise RunnerError("zkDL resume result directory contains data outside the failed session summaries")
+    collection_path = output_dir / "collected.json"
+    validation_path = output_dir / "final_validation.json"
+    if collection_path.is_symlink() or validation_path.is_symlink():
+        raise RunnerError("zkDL resume result summaries must be regular local files")
+    try:
+        collection = json.loads(collection_path.read_text(encoding="utf-8"))
+        validation = json.loads(validation_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RunnerError("zkDL resume result summaries are unreadable") from exc
+    if (not isinstance(collection, dict) or not isinstance(validation, dict) or
+            collection.get("schema") != "zkDL_gat_formal_partial_result_summary_v1" or
+            collection.get("baseline") != "zkdl" or collection.get("session_id") != session_id or
+            collection.get("overall_status") != "FAILED" or
+            validation.get("schema") != "zkDL_formal_final_validation_receipt_v1" or
+            validation.get("baseline") != "zkdl" or validation.get("session_id") != session_id or
+            validation.get("status") != "FAILED" or
+            validation.get("collection_path") != f"results/{session.name}/collected.json"):
+        raise RunnerError("zkDL resume result summaries are not FAILED summaries for this session")
+    collection_path.unlink()
+    validation_path.unlink()
+
+
+def _resume_capacity_profile(session: Path, session_id: str) -> dict[str, Any]:
+    receipt_path = session / "phase" / "prepare.json"
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RunnerError("zkDL resume prepare receipt is missing or unreadable") from exc
+    marker = {"status": receipt.get("status")} if isinstance(receipt, dict) else {}
+    return _prepare_capacity(marker, session, session_id)
+
+
+def _reset_resume_state(state: dict[str, Any], passed: tuple[str, ...], profile: dict[str, Any]) -> None:
+    state["status"] = "RUNNING"
+    state["stage"] = "resume"
+    state["updated_at_utc"] = _now()
+    for field in ("failure", "global_failure", "finished_at_utc", "final_validation_path", "interrupted_stage"):
+        state.pop(field, None)
+    for dataset in DATASETS:
+        if dataset not in passed:
+            state["dataset_status"][dataset].update(
+                {"dataset": dataset, "status": "READY", "stage": "resume_pending", "failure": ""})
+    capacity = state.get("capacity")
+    if not isinstance(capacity, dict):
+        raise RunnerError("zkDL resume state has no admitted capacity record")
+    capacity.update({"profile_schema": profile["schema"], "backend": profile["backend"],
+                     "gpu_offload_stage": profile["gpu_offload_stage"], "gpu_device": profile["device"],
+                     "completed_cells": list(passed)})
 
 def _record_dataset_failure(session: Path, state: dict[str, Any], dataset: str, stage: str,
                             failure: str, *, status: str = "FAILED", replace: bool = False) -> None:
@@ -543,6 +756,14 @@ def _run_phase(session: Path, session_id: str, state: dict[str, Any],
     state["stage"] = stage
     state["updated_at_utc"] = _now()
     _write_json(session / "state.json", state)
+    if phase == "cell" and dataset is not None:
+        failure_path = session / "phase" / f"{dataset}_failure.json"
+        if failure_path.is_symlink():
+            raise RunnerError(f"zkDL prior {dataset} failure record is a symlink")
+        if failure_path.exists():
+            if not failure_path.is_file():
+                raise RunnerError(f"zkDL prior {dataset} failure record is not a regular file")
+            failure_path.unlink()
     command = [sys.executable, str(ROOT / "scripts" / "formal_phase.py"), "--internal-phase", phase,
                "--session-dir", str(session)]
     if dataset is not None:
@@ -652,6 +873,18 @@ def _write_interrupted_summary(session: Path, state: dict[str, Any], failure: st
 
 
 def run() -> int:
+    resume_from = os.environ.get(RESUME_FROM_ENV) or None
+    resume_verify = os.environ.get(RESUME_VERIFY_ENV) or None
+    if resume_from and resume_verify:
+        raise RunnerError(f"{RESUME_FROM_ENV} and {RESUME_VERIFY_ENV} cannot be used together")
+    if resume_from and resume_from != "pubmed":
+        raise RunnerError(f"unsupported {RESUME_FROM_ENV} dataset: {resume_from}")
+    if resume_from and not os.environ.get(RESUME_SESSION_ENV):
+        raise RunnerError(f"{RESUME_FROM_ENV} requires {RESUME_SESSION_ENV}")
+    if resume_verify and resume_verify not in DATASETS:
+        raise RunnerError(f"unsupported {RESUME_VERIFY_ENV} dataset: {resume_verify}")
+    if resume_verify and not os.environ.get(RESUME_SESSION_ENV):
+        raise RunnerError(f"{RESUME_VERIFY_ENV} requires {RESUME_SESSION_ENV}")
     runs = ROOT / "runs"
     if runs.is_symlink():
         raise RunnerError(f"zkDL runs directory is unsafe: {runs}")
@@ -665,75 +898,98 @@ def run() -> int:
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, formal_phase._signal_handler)
     try:
-        session_id = secrets.token_hex(16)
-        session = runs / f"formal_{session_id}"
-        print(f"zkdl_formal_stage=START stage=baseline_local_build session={session_id}", flush=True)
-        session = _build_and_publish_session(runs, session_id)
-        print(f"zkdl_formal_stage=PASS stage=baseline_local_build session={session_id}", flush=True)
-        state = {
-            "schema": "zkdl_formal_runner_state_v1", "baseline": "zkdl", "session_id": session_id,
-            "session_dir": session.relative_to(ROOT).as_posix(), "status": "RUNNING", "stage": "prepare",
-            "started_at_utc": _now(), "updated_at_utc": _now(), "completed_phases": [],
-            "dataset_status": {dataset: {"dataset": dataset, "status": "PENDING", "stage": "pending", "failure": ""}
-                               for dataset in DATASETS},
-        }
-        _write_json(session / "state.json", state)
-        _write_detached_session_link(session, session_id)
+        resume = _load_resume_session(runs, resume_from=resume_from, resume_verify=resume_verify)
+        if resume is not None:
+            session, session_id, resume_state, passed_cells = resume
+            profile = _resume_capacity_profile(session, session_id)
+            print(f"zkdl_formal_stage=START stage=baseline_local_build session={session_id}", flush=True)
+            session = _build_and_publish_session(runs, session_id, resume_session=session)
+            print(f"zkdl_formal_stage=PASS stage=baseline_local_build session={session_id}", flush=True)
+            archive = _archive_resume_suffix(session, resume_from) if resume_from else None
+            if archive is not None:
+                print(f"zkdl_formal_resume_archive={archive.relative_to(ROOT).as_posix()}", flush=True)
+            _reset_resume_state(resume_state, passed_cells, profile)
+            if resume_from is None:
+                _clear_failed_result_summaries(session, session_id)
+            state = resume_state
+            completed: list[str] = list(passed_cells)
+            _write_json(session / "state.json", state)
+            _write_detached_session_link(session, session_id)
+        else:
+            session_id = secrets.token_hex(16)
+            session = runs / f"formal_{session_id}"
+            print(f"zkdl_formal_stage=START stage=baseline_local_build session={session_id}", flush=True)
+            session = _build_and_publish_session(runs, session_id)
+            print(f"zkdl_formal_stage=PASS stage=baseline_local_build session={session_id}", flush=True)
+            state = {
+                "schema": "zkdl_formal_runner_state_v1", "baseline": "zkdl", "session_id": session_id,
+                "session_dir": session.relative_to(ROOT).as_posix(), "status": "RUNNING", "stage": "prepare",
+                "started_at_utc": _now(), "updated_at_utc": _now(), "completed_phases": [],
+                "dataset_status": {dataset: {"dataset": dataset, "status": "PENDING", "stage": "pending", "failure": ""}
+                                   for dataset in DATASETS},
+            }
+            _write_json(session / "state.json", state)
+            _write_detached_session_link(session, session_id)
+            profile = None
+            completed = []
         global_failure = ""
-        profile: dict[str, Any] | None = None
-        prepare_marker: dict[str, Any] | None = None
         try:
-            prepare_marker = _run_phase(session, session_id, state, "prepare")
-            if prepare_marker.get("status") == "FAILED":
-                global_failure = prepare_marker.get("failure") or "shared preparation failed before dataset admission"
-            else:
-                try:
-                    profile = _prepare_capacity(prepare_marker, session, session_id)
-                except Exception as exc:
-                    global_failure = f"shared resource capacity validation failed: {type(exc).__name__}: {exc}"
-                    for dataset in DATASETS:
-                        if state["dataset_status"][dataset].get("status") == "READY":
-                            _record_dataset_failure(session, state, dataset, "prepare_identity", global_failure,
-                                                    status="BLOCKED")
-                if profile is not None:
+            if resume is None:
+                prepare_marker = _run_phase(session, session_id, state, "prepare")
+                if prepare_marker.get("status") == "FAILED":
+                    global_failure = prepare_marker.get("failure") or "shared preparation failed before dataset admission"
+                else:
+                    try:
+                        profile = _prepare_capacity(prepare_marker, session, session_id)
+                    except Exception as exc:
+                        global_failure = f"shared resource capacity validation failed: {type(exc).__name__}: {exc}"
+                        for dataset in DATASETS:
+                            if state["dataset_status"][dataset].get("status") == "READY":
+                                _record_dataset_failure(session, state, dataset, "prepare_identity", global_failure,
+                                                        status="BLOCKED")
+            if profile is not None:
+                if resume is None:
                     state["capacity"] = {
                         "profile_schema": profile["schema"], "backend": profile["backend"],
                         "gpu_offload_stage": profile["gpu_offload_stage"], "gpu_device": profile["device"],
                         "completed_cells": [],
                     }
-                    _write_json(session / "state.json", state)
-                    completed: list[str] = []
-                    for dataset in DATASETS:
-                        if state["dataset_status"][dataset].get("status") != "READY":
-                            continue
-                        if dataset not in profile["datasets"]:
-                            _record_dataset_failure(session, state, dataset, "capacity_profile",
-                                                    "dataset was admitted without its exact capacity profile", status="BLOCKED")
-                            continue
-                        try:
-                            capacity_check = _capacity_gate(profile, tuple(completed), session, pending=(dataset,))
-                        except Exception as exc:
-                            failure = f"{type(exc).__name__}: {exc}"
-                            _record_dataset_failure(session, state, dataset, "capacity_admission", failure)
-                            continue
-                        state["capacity"]["last_live_check"] = capacity_check
-                        _write_json(session / "state.json", state)
-                        try:
-                            _run_phase(session, session_id, state, "cell", dataset)
-                        except Exception as exc:
-                            failure = f"{type(exc).__name__}: {exc}"
-                            _record_dataset_failure(session, state, dataset, "cell", failure)
-                            break
-                        completed.append(dataset)
-                        capacity_state = state["capacity"]
-                        capacity_state["completed_cells"] = list(completed)
-                        _write_json(session / "state.json", state)
+                    completed = []
+                _write_json(session / "state.json", state)
+                for dataset in DATASETS:
+                    if state["dataset_status"][dataset].get("status") != "READY":
+                        continue
+                    if dataset not in profile["datasets"]:
+                        _record_dataset_failure(session, state, dataset, "capacity_profile",
+                                                "dataset was admitted without its exact capacity profile", status="BLOCKED")
+                        continue
                     try:
-                        final_capacity = _capacity_gate(profile, tuple(completed), session, pending=())
-                        state["capacity"]["finalization_live_check"] = final_capacity
+                        capacity_check = _capacity_gate(profile, tuple(completed), session, pending=(dataset,))
                     except Exception as exc:
-                        global_failure = f"finalization capacity admission failed: {type(exc).__name__}: {exc}"
+                        failure = f"{type(exc).__name__}: {exc}"
+                        _record_dataset_failure(session, state, dataset, "capacity_admission", failure)
+                        continue
+                    state["capacity"]["last_live_check"] = capacity_check
                     _write_json(session / "state.json", state)
+                    try:
+                        _run_phase(session, session_id, state, "cell", dataset)
+                    except Exception as exc:
+                        failure = f"{type(exc).__name__}: {exc}"
+                        _record_dataset_failure(session, state, dataset, "cell", failure)
+                        break
+                    failure_path = session / "phase" / f"{dataset}_failure.json"
+                    if failure_path.is_file():
+                        failure_path.unlink()
+                    completed.append(dataset)
+                    capacity_state = state["capacity"]
+                    capacity_state["completed_cells"] = list(completed)
+                    _write_json(session / "state.json", state)
+                try:
+                    final_capacity = _capacity_gate(profile, tuple(completed), session, pending=())
+                    state["capacity"]["finalization_live_check"] = final_capacity
+                except Exception as exc:
+                    global_failure = f"finalization capacity admission failed: {type(exc).__name__}: {exc}"
+                _write_json(session / "state.json", state)
         except Exception as exc:
             global_failure = global_failure or f"shared preparation/orchestration failure: {type(exc).__name__}: {exc}"
             for dataset in DATASETS:

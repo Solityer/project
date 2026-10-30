@@ -9,7 +9,7 @@ use crate::SerdeFormat;
 use crate::{
     arithmetic::{eval_polynomial, CurveAffine},
     poly::{
-        commitment::{Blind, Params},
+        commitment::{validate_sparse_lagrange_indices, Blind, Params},
         Coeff, EvaluationDomain, LagrangeCoeff, Polynomial, ProverQuery, Rotation,
     },
     transcript::{EncodedChallenge, TranscriptWrite},
@@ -212,6 +212,122 @@ impl<C: CurveAffine> LookupPolynomialSource<C> {
                 LookupPolynomialKind::GrandSum => phi_poly.try_clone(),
             },
         }
+    }
+
+    pub(crate) fn evaluate_sparse_m(
+        &self,
+        domain: &EvaluationDomain<C::Scalar>,
+        x: C::Scalar,
+    ) -> io::Result<Option<C::Scalar>>
+    where
+        C::Scalar: WithSmallOrderMulGroup<3>,
+    {
+        let compact = match &self.backing {
+            LookupPolynomialBacking::Compact(compact) => compact,
+            LookupPolynomialBacking::Dense { .. } => return Ok(None),
+        };
+
+        // Preserve the prior materializer's metadata contract before the
+        // sparse path can return early, including winner rows for zero counts.
+        for code in 0..compact.counts_by_code.len() {
+            let row = *compact.table.winner_rows.get(code).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "lookup winner row is missing")
+            })?;
+            if row >= compact.table.active_rows || row >= compact.n {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "lookup winner row is outside active rows",
+                ));
+            }
+        }
+
+        let logical_len = domain.get_n();
+        let logical_len_usize = usize::try_from(logical_len).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "sparse mv-lookup domain length does not fit the host index type",
+            )
+        })?;
+        if u64::try_from(compact.n).ok() != Some(logical_len)
+            || compact.domain.get_n() != logical_len
+            || compact.domain.get_omega() != domain.get_omega()
+            || compact.table.active_rows
+                .checked_add(compact.blinding_factors)
+                .and_then(|rows| rows.checked_add(1))
+                != Some(logical_len_usize)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "compact mv-lookup multiplicity dimensions do not match the evaluation domain",
+            ));
+        }
+
+        let used_winner_rows = &compact.table.winner_rows[..compact.counts_by_code.len()];
+        let entries = sparse_multiset_entries::<C::Scalar>(
+            &compact.counts_by_code,
+            used_winner_rows,
+            compact.table.active_rows,
+            logical_len,
+            logical_len,
+        )?;
+        let entries = match entries {
+            Some(entries) => entries,
+            None => return Ok(None),
+        };
+        validate_sparse_lagrange_indices(logical_len, logical_len, &entries)?;
+        if entries.is_empty() {
+            return Ok(Some(C::Scalar::ZERO));
+        }
+
+        // The old dense materializer assigns zero rows too, so a zero row
+        // overlapping a supported row can overwrite that multiplicity.
+        // Keep that exact behavior through the unchanged dense fallback.
+        let mut entries = entries;
+        entries.sort_unstable_by_key(|(row, _)| *row);
+        for (code, &count) in compact.counts_by_code.iter().enumerate() {
+            if count == 0 {
+                let zero_row = used_winner_rows[code];
+                if entries
+                    .binary_search_by_key(&zero_row, |(row, _)| *row)
+                    .is_ok()
+                {
+                    return Ok(None);
+                }
+            }
+        }
+
+        // l_i_range accepts arbitrary cloned i32 rotations. Validate every
+        // compact row before constructing its lazy iterator; rows outside
+        // that interface fall back to the unchanged dense evaluator.
+        for (row, _) in &entries {
+            if i32::try_from(*row).is_err() {
+                return Ok(None);
+            }
+        }
+
+        let omega = domain.get_omega();
+        for (row, multiplicity) in &entries {
+            let rotation = i32::try_from(*row).expect("sparse row conversion checked above");
+            if x == omega.pow_vartime([rotation as u64]) {
+                return Ok(Some(*multiplicity));
+            }
+        }
+
+        let xn = x.pow_vartime([logical_len]);
+        if xn == C::Scalar::ONE {
+            // Every supported base-domain root was handled above. All other
+            // Lagrange basis values vanish at this domain point.
+            return Ok(Some(C::Scalar::ZERO));
+        }
+        let rotations = entries.iter().map(|(row, _)| {
+            i32::try_from(*row).expect("sparse row conversion checked above")
+        });
+        let lagrange_values = domain.l_i_range(x, xn, rotations);
+        let mut evaluation = C::Scalar::ZERO;
+        for ((_, multiplicity), lagrange_value) in entries.iter().zip(lagrange_values) {
+            evaluation += *multiplicity * lagrange_value;
+        }
+        Ok(Some(evaluation))
     }
 }
 
@@ -558,9 +674,14 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
             counts.into_iter().map(|count| count.load(Ordering::Relaxed)).collect()
         };
         log::trace!("m sparse counts and packed Q tapes {:?}", start.elapsed());
+        #[cfg(feature = "sanity-checks")]
         let mut m_values = Polynomial::<F, LagrangeCoeff>::mapped_filled(n, F::ZERO)
             .map_err(Error::NativeStorage)?;
+        #[cfg(feature = "sanity-checks")]
         for (code, &count) in counts_by_code.iter().enumerate() {
+            if count == 0 {
+                continue;
+            }
             let row = *table.compact.winner_rows.get(code).ok_or_else(|| Error::NativeStorage(
                 io::Error::new(io::ErrorKind::InvalidData, "native mv-lookup winner row is missing"),
             ))?;
@@ -631,12 +752,23 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
             assert_eq!(lhs_sum, rhs_sum);
         }
 
+        #[cfg(feature = "sanity-checks")]
+        drop(m_values);
+
         // commit to m(X)
         let blind = Blind(C::Scalar::ZERO);
         let start = instant::Instant::now();
-        let m_commitment = params.commit_lagrange(&m_values, blind.clone()).to_affine();
+        let m_commitment = commit_multiset_counts(
+            params,
+            &counts_by_code,
+            &table.compact.winner_rows,
+            chunk_size,
+            params.n(),
+            blind,
+        )
+        .map_err(Error::NativeStorage)?
+        .to_affine();
         log::trace!("m_commitment {:?}", start.elapsed());
-        drop(m_values);
 
         // write commitment of m(X) to transcript
         // transcript.write_point(m_commitment)?;
@@ -653,9 +785,149 @@ impl<F: WithSmallOrderMulGroup<3>> Argument<F> {
     }
 }
 
+fn sparse_multiset_entries<F>(
+    counts_by_code: &[u64],
+    winner_rows: &[usize],
+    active_rows: usize,
+    logical_len: u64,
+    params_len: u64,
+) -> io::Result<Option<Vec<(usize, F)>>>
+where
+    F: Field + From<u64>,
+{
+    if counts_by_code.len() != winner_rows.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "native mv-lookup count/row cardinality mismatch: {} counts, {} rows",
+                counts_by_code.len(),
+                winner_rows.len()
+            ),
+        ));
+    }
+    if logical_len > params_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "native mv-lookup logical commitment length {logical_len} exceeds parameter length {params_len}"
+            ),
+        ));
+    }
+    let logical_len_usize = usize::try_from(logical_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native mv-lookup logical commitment length does not fit the host index type",
+        )
+    })?;
+    let mut nonzero_count = 0usize;
+    let mut over_limit = false;
+    for (&count, &row) in counts_by_code.iter().zip(winner_rows) {
+        if count == 0 {
+            continue;
+        }
+        if row >= active_rows || row >= logical_len_usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "native mv-lookup nonzero winner row {row} is outside active/logical rows ({active_rows}/{logical_len_usize})"
+                ),
+            ));
+        }
+        nonzero_count = nonzero_count.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "native mv-lookup nonzero support count overflow",
+            )
+        })?;
+        if nonzero_count > crate::poly::commitment::MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS {
+            over_limit = true;
+        }
+    }
+    if over_limit {
+        return Ok(None);
+    }
+
+    let mut entries = Vec::new();
+    entries.try_reserve_exact(nonzero_count).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::OutOfMemory,
+            format!("cannot allocate bounded sparse mv-lookup entries: {error}"),
+        )
+    })?;
+    for (&count, &row) in counts_by_code.iter().zip(winner_rows) {
+        if count != 0 {
+            entries.push((row, F::from(count)));
+        }
+    }
+    Ok(Some(entries))
+}
+
+fn commit_multiset_counts<'params, C, P>(
+    params: &P,
+    counts_by_code: &[u64],
+    winner_rows: &[usize],
+    active_rows: usize,
+    logical_len: u64,
+    blind: Blind<C::ScalarExt>,
+) -> io::Result<C::CurveExt>
+where
+    C: CurveAffine,
+    P: Params<'params, C>,
+{
+    let entries = sparse_multiset_entries::<C::ScalarExt>(
+        counts_by_code,
+        winner_rows,
+        active_rows,
+        logical_len,
+        params.n(),
+    )?;
+    if let Some(entries) = entries {
+        return params.commit_lagrange_sparse(logical_len, &entries, blind);
+    }
+
+    // Large supports retain the original mapped dense commitment path.
+    let logical_len_usize = usize::try_from(logical_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "native mv-lookup logical commitment length does not fit the host index type",
+        )
+    })?;
+    let mut values = Polynomial::<C::ScalarExt, LagrangeCoeff>::mapped_filled(
+        logical_len_usize,
+        C::ScalarExt::ZERO,
+    )?;
+    for (&count, &row) in counts_by_code.iter().zip(winner_rows) {
+        if count != 0 {
+            if values[row] != C::ScalarExt::ZERO {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("native mv-lookup nonzero winner row {row} occurs more than once"),
+                ));
+            }
+            values[row] = C::ScalarExt::from(count);
+        }
+    }
+    Ok(params.commit_lagrange(&values, blind))
+}
+
 #[cfg(test)]
 mod native_table_map_tests {
-    use super::{insert_table_membership, HashMap, TableMembership};
+    use super::{
+        commit_multiset_counts, insert_table_membership, CompactLookupPolynomials,
+        CompactTable, HashMap, LookupPolynomialKind, LookupPolynomialSource, PackedIdTape,
+        PackedIdWidth, TableMembership,
+    };
+    use crate::arithmetic::{eval_polynomial, CurveAffine};
+    use crate::poly::commitment::{
+        Blind, Params, ParamsProver, MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS,
+    };
+    use crate::poly::{Coeff, EvaluationDomain, LagrangeCoeff, Polynomial};
+    use ff::{Field, WithSmallOrderMulGroup};
+    use halo2curves::{
+        bn256::{Bn256, G1Affine},
+        pasta::EpAffine,
+    };
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn duplicate_table_rows_keep_the_last_native_index() {
@@ -672,6 +944,292 @@ mod native_table_map_tests {
         let mut index = HashMap::default();
         insert_table_membership(&mut index, &[1], 0, 0, 1).unwrap();
         assert!(insert_table_membership(&mut index, &[2], 1, 1, 1).is_err());
+    }
+
+    fn assert_sparse_commit_matches_legacy<'params, C, P>(
+        params: &P,
+        counts: &[u64],
+        winner_rows: &[usize],
+        active_rows: usize,
+        blind: Blind<C::ScalarExt>,
+    ) where
+        C: CurveAffine,
+        P: Params<'params, C>,
+    {
+        let logical_len = params.n();
+        let actual = commit_multiset_counts::<C, P>(
+            params,
+            counts,
+            winner_rows,
+            active_rows,
+            logical_len,
+            blind,
+        )
+        .unwrap();
+
+        // Independent legacy oracle: reproduce the prior dense scatter and
+        // call the unchanged dense commitment implementation.
+        let mut dense_values = vec![C::ScalarExt::ZERO; logical_len as usize];
+        for (&count, &row) in counts.iter().zip(winner_rows) {
+            if count != 0 {
+                dense_values[row] = C::ScalarExt::from(count);
+            }
+        }
+        let dense = Polynomial::<C::ScalarExt, LagrangeCoeff>::from_vec(dense_values);
+        let expected = params.commit_lagrange(&dense, blind);
+        assert_eq!(actual, expected);
+    }
+
+    fn assert_sparse_api_rejects_invalid_indices<'params, C, P>(params: &P)
+    where
+        C: CurveAffine,
+        P: Params<'params, C>,
+    {
+        let one = C::ScalarExt::ONE;
+        let blind = Blind(C::ScalarExt::from(5));
+        let logical_len = params.n();
+        assert!(params
+            .commit_lagrange_sparse(
+                logical_len,
+                &[(logical_len as usize, one)],
+                blind,
+            )
+            .is_err());
+        assert!(params
+            .commit_lagrange_sparse(logical_len, &[(1, one), (1, C::ScalarExt::from(2))], blind)
+            .is_err());
+        assert!(params
+            .commit_lagrange_sparse(logical_len + 1, &[], blind)
+            .is_err());
+        let over_limit: Vec<_> = (0..=MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS)
+            .map(|row| (row, one))
+            .collect();
+        assert!(params
+            .commit_lagrange_sparse(logical_len, &over_limit, blind)
+            .is_err());
+    }
+
+    fn assert_sparse_commit_paths<'params, C, P>(params: &P)
+    where
+        C: CurveAffine,
+        P: Params<'params, C>,
+    {
+        assert_sparse_commit_matches_legacy::<C, P>(
+            params,
+            &[4, 0, 1, 3],
+            &[17, usize::MAX, 2, 9],
+            24,
+            Blind(C::ScalarExt::from(19)),
+        );
+        assert_sparse_commit_matches_legacy::<C, P>(
+            params,
+            &[],
+            &[],
+            24,
+            Blind(C::ScalarExt::from(7)),
+        );
+
+        // The exact support limit remains on the sparse production path.
+        let boundary_counts: Vec<_> = (1..=MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS as u64).collect();
+        let boundary_rows: Vec<_> = (0..boundary_counts.len()).rev().collect();
+        assert_sparse_commit_matches_legacy::<C, P>(
+            params,
+            &boundary_counts,
+            &boundary_rows,
+            40,
+            Blind(C::ScalarExt::from(13)),
+        );
+
+        // This support exceeds the shared threshold and therefore exercises
+        // the production helper's unchanged dense fallback.
+        let dense_counts: Vec<_> = (1..=MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS as u64 + 1).collect();
+        let dense_rows: Vec<_> = (0..dense_counts.len()).rev().collect();
+        assert_sparse_commit_matches_legacy::<C, P>(
+            params,
+            &dense_counts,
+            &dense_rows,
+            40,
+            Blind(C::ScalarExt::from(11)),
+        );
+        assert_sparse_api_rejects_invalid_indices::<C, P>(params);
+    }
+
+    fn compact_m_source<C: CurveAffine>(
+        domain: &EvaluationDomain<C::Scalar>,
+        counts_by_code: Vec<u64>,
+        winner_rows: Vec<usize>,
+        active_rows: usize,
+    ) -> LookupPolynomialSource<C>
+    where
+        C::Scalar: WithSmallOrderMulGroup<3>,
+    {
+        let width = PackedIdWidth::for_cardinality(counts_by_code.len().max(1))
+            .expect("test codebook width");
+        let blinding_factors = usize::try_from(domain.get_n()).unwrap() - active_rows - 1;
+        let codebook = vec![C::Scalar::ONE; counts_by_code.len()];
+        let table = Arc::new(CompactTable {
+            codebook,
+            winner_rows,
+            row_codes: PackedIdTape::zeroed(active_rows, width).expect("test row-code tape"),
+            active_rows,
+            beta_inverses: Mutex::new(None),
+        });
+        let input_codes = Arc::new(
+            PackedIdTape::zeroed(0, width).expect("empty test input-code tape"),
+        );
+        LookupPolynomialSource::compact(CompactLookupPolynomials {
+            domain: domain.clone(),
+            n: usize::try_from(domain.get_n()).unwrap(),
+            blinding_factors,
+            table,
+            input_codes,
+            input_count: 0,
+            inverse_by_code: Arc::new(vec![C::Scalar::ONE; counts_by_code.len()]),
+            counts_by_code,
+            phi_blinds: vec![C::Scalar::ZERO; blinding_factors],
+        })
+    }
+
+    fn assert_sparse_m_eval_matches_legacy(
+        domain: &EvaluationDomain<halo2curves::bn256::Fr>,
+        counts_by_code: Vec<u64>,
+        winner_rows: Vec<usize>,
+        active_rows: usize,
+    ) {
+        use halo2curves::bn256::{Fr, G1Affine};
+
+        let support_rows: Vec<_> = counts_by_code
+            .iter()
+            .zip(&winner_rows)
+            .filter_map(|(&count, &row)| (count != 0).then_some(row))
+            .collect();
+        let source = compact_m_source::<G1Affine>(
+            domain,
+            counts_by_code.clone(),
+            winner_rows.clone(),
+            active_rows,
+        );
+        let legacy_poly = source
+            .materialize_coeff(LookupPolynomialKind::Multiplicity)
+            .expect("legacy compact multiplicity materialization");
+        let mut points = vec![Fr::ZERO];
+        if let Some(&row) = support_rows.first() {
+            points.push(domain.get_omega().pow_vartime([row as u64]));
+        }
+        let unsupported_active_row = (0..active_rows)
+            .find(|row| !support_rows.contains(row))
+            .expect("the fixture leaves an unsupported active row");
+        points.push(domain.get_omega().pow_vartime([unsupported_active_row as u64]));
+        for row in active_rows..domain.get_n() as usize {
+            points.push(domain.get_omega().pow_vartime([row as u64]));
+        }
+        let exterior = (2..=100u64)
+            .map(Fr::from)
+            .find(|x| x.pow_vartime([domain.get_n()]) != Fr::ONE)
+            .expect("a small field element outside the evaluation domain");
+        points.push(exterior);
+
+        for x in points {
+            let expected = eval_polynomial(&legacy_poly, x);
+            let actual = source.evaluate_sparse_m(domain, x).unwrap();
+            if support_rows.len() <= MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS {
+                assert_eq!(actual, Some(expected));
+            } else {
+                assert_eq!(actual, None);
+                let m_poly = source
+                    .materialize_coeff(LookupPolynomialKind::Multiplicity)
+                    .unwrap();
+                assert_eq!(eval_polynomial(&m_poly, x), expected);
+            }
+        }
+    }
+
+    fn assert_sparse_m_eval_preserves_zero_row_contract(
+        domain: &EvaluationDomain<halo2curves::bn256::Fr>,
+        active_rows: usize,
+    ) {
+        use halo2curves::bn256::{Fr, G1Affine};
+
+        for winner_rows in [vec![usize::MAX], vec![]] {
+            let source = compact_m_source::<G1Affine>(domain, vec![0], winner_rows, active_rows);
+            assert!(source.evaluate_sparse_m(domain, Fr::ZERO).is_err());
+            assert!(source
+                .materialize_coeff(LookupPolynomialKind::Multiplicity)
+                .is_err());
+        }
+
+        let overlapping = compact_m_source::<G1Affine>(
+            domain,
+            vec![1, 0],
+            vec![7, 7],
+            active_rows,
+        );
+        let x = Fr::from(5u64);
+        assert_eq!(overlapping.evaluate_sparse_m(domain, x).unwrap(), None);
+        let legacy_poly = overlapping
+            .materialize_coeff(LookupPolynomialKind::Multiplicity)
+            .unwrap();
+        assert_eq!(eval_polynomial(&legacy_poly, x), Fr::ZERO);
+    }
+
+    fn assert_dense_m_eval_uses_legacy_fallback() {
+        use halo2curves::bn256::{Fr, G1Affine};
+
+        let domain = EvaluationDomain::<Fr>::new(3, 6);
+        let coefficients = vec![Fr::from(7u64), Fr::from(11u64)];
+        let m_poly = Polynomial::<Fr, Coeff>::from_vec(coefficients.clone());
+        let source = LookupPolynomialSource::<G1Affine>::dense(
+            Polynomial::<Fr, Coeff>::from_vec(coefficients),
+            Polynomial::<Fr, Coeff>::from_vec(vec![Fr::ZERO]),
+        );
+        let x = Fr::from(5u64);
+        assert_eq!(source.evaluate_sparse_m(&domain, x).unwrap(), None);
+        let fallback = source
+            .materialize_coeff(LookupPolynomialKind::Multiplicity)
+            .unwrap();
+        assert_eq!(eval_polynomial(&fallback, x), eval_polynomial(&m_poly, x));
+    }
+
+    #[test]
+    fn sparse_m_commit_matches_legacy_for_kzg_and_ipa() {
+        let kzg_params = crate::poly::kzg::commitment::ParamsKZG::<Bn256>::new(6);
+        assert_sparse_commit_paths::<G1Affine, _>(&kzg_params);
+
+        let ipa_params = crate::poly::ipa::commitment::ParamsIPA::<EpAffine>::new(6);
+        assert_sparse_commit_paths::<EpAffine, _>(&ipa_params);
+
+        use halo2curves::bn256::Fr;
+        let domain = EvaluationDomain::<Fr>::new(3, 6);
+        let active_rows = 61;
+        assert_sparse_m_eval_matches_legacy(
+            &domain,
+            vec![0, 0],
+            vec![0, 1],
+            active_rows,
+        );
+        for support in [
+            MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS,
+            MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS + 1,
+        ] {
+            let mut counts: Vec<_> = (0..support)
+                .map(|index| u64::MAX - index as u64)
+                .collect();
+            let mut rows: Vec<_> = (0..support).map(|index| (index * 17) % active_rows).collect();
+            counts.push(0);
+            let zero_count_row = if support <= MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS {
+                (0..active_rows)
+                    .find(|row| !rows.contains(row))
+                    .expect("the sparse fixture leaves one active row")
+            } else {
+                (0..active_rows)
+                    .find(|row| !rows.contains(row))
+                    .expect("the fallback fixture leaves one active row")
+            };
+            rows.push(zero_count_row);
+            assert_sparse_m_eval_matches_legacy(&domain, counts, rows, active_rows);
+        }
+        assert_sparse_m_eval_preserves_zero_row_contract(&domain, active_rows);
+        assert_dense_m_eval_uses_legacy_fallback();
     }
 }
 
@@ -882,12 +1440,22 @@ impl<C: CurveAffine> Committed<C> {
         let phi_eval = eval_polynomial(&phi_poly, *x);
         let phi_next_eval = eval_polynomial(&phi_poly, x_next);
         drop(phi_poly);
-        let m_poly = self
+        let m_eval = match self
             .source
-            .materialize_coeff(LookupPolynomialKind::Multiplicity)
-            .map_err(Error::NativeStorage)?;
-        let m_eval = eval_polynomial(&m_poly, *x);
-        drop(m_poly);
+            .evaluate_sparse_m(domain, *x)
+            .map_err(Error::NativeStorage)?
+        {
+            Some(m_eval) => m_eval,
+            None => {
+                let m_poly = self
+                    .source
+                    .materialize_coeff(LookupPolynomialKind::Multiplicity)
+                    .map_err(Error::NativeStorage)?;
+                let m_eval = eval_polynomial(&m_poly, *x);
+                drop(m_poly);
+                m_eval
+            }
+        };
 
         // Hash each advice evaluation
         for eval in iter::empty()

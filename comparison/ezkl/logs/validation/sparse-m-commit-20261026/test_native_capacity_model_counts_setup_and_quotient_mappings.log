@@ -1,0 +1,15 @@
+COMMAND=PYTHONPATH=tests python3 -m unittest test_run_hybrid_session_schema.LocalFormalEntryTest.test_native_capacity_model_counts_setup_and_quotient_mappings
+F
+======================================================================
+FAIL: test_native_capacity_model_counts_setup_and_quotient_mappings (test_run_hybrid_session_schema.LocalFormalEntryTest.test_native_capacity_model_counts_setup_and_quotient_mappings)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/pzh/project/comparison/ezkl/tests/test_run_hybrid_session_schema.py", line 389, in test_native_capacity_model_counts_setup_and_quotient_mappings
+    self.assertEqual(requirements["setup_persisted_mapped_bytes"], (2 * 5 * 16 + 2 * 16 + 3 * 32) * 32)
+AssertionError: 45892 != 9216
+
+----------------------------------------------------------------------
+Ran 1 test in 0.001s
+
+FAILED (failures=1)
+EXIT_CODE=1

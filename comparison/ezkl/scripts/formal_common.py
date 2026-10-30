@@ -34,10 +34,78 @@ BACKENDS = ("cpu", "gpu")
 FORMAL_BACKEND = "hybrid"
 NATIVE_FORMAL_BACKEND = "gpu"
 FORMAL_GPU_CARGO_FEATURE = "formal-gpu"
-FORMAL_GPU_EXECUTION_POLICY = "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5"
+FORMAL_GPU_EXECUTION_POLICY = "halo2_icicle-bn254-gpu-hgraph-fused-coset-ntt-16-25-msm-lagrange-resident-f4-sparse-m-cpu32-v8"
 FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES = 64 * 1024 * 1024
 FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES = 64 * 1024 * 1024
 NATIVE_USIZE_MAX = (sys.maxsize << 1) | 1
+
+
+def normalize_selected_datasets(values: list[str] | tuple[str, ...] | None) -> tuple[str, ...]:
+    """Resolve an optional dataset selector to the canonical dataset order."""
+    if values is None:
+        return DATASETS
+    if not isinstance(values, (list, tuple)) or not values:
+        abort("dataset selection must be a non-empty list of canonical datasets")
+    if any(not isinstance(value, str) or value not in DATASETS for value in values):
+        abort(f"dataset selection contains an unknown dataset; expected values from {list(DATASETS)}")
+    if len(set(values)) != len(values):
+        abort("dataset selection must not contain duplicates")
+    selected = set(values)
+    return tuple(dataset for dataset in DATASETS if dataset in selected)
+
+
+def selected_datasets_for_session(document: dict[str, Any]) -> tuple[str, ...]:
+    """Read the immutable selection; pre-selector session records mean all five."""
+    if not isinstance(document, dict):
+        abort("formal session record must be a JSON object")
+    if "selected_datasets" not in document:
+        return DATASETS
+    values = document["selected_datasets"]
+    if not isinstance(values, list):
+        abort("formal session selected_datasets must be a canonical JSON list")
+    selected = normalize_selected_datasets(values)
+    if values != list(selected):
+        abort("formal session selected_datasets are not in canonical dataset order")
+    return selected
+
+
+def require_formal_session_selection_binding(
+    session_id: str,
+    *,
+    runs_root: Path,
+    matrix_path: Path,
+    selected_datasets: list[str] | tuple[str, ...],
+) -> tuple[str, ...]:
+    """Bind a collector/validator selection and paths to its immutable session record."""
+    if not isinstance(session_id, str) or FORMAL_SESSION_ID.fullmatch(session_id) is None:
+        abort("formal session binding requires one canonical session id")
+    requested = normalize_selected_datasets(selected_datasets)
+    try:
+        expected_output_root = runs_root.resolve().relative_to(ROOT.resolve()).as_posix()
+        expected_matrix = matrix_path.resolve().relative_to(ROOT.resolve()).as_posix()
+    except (OSError, ValueError):
+        abort("formal session binding paths are outside the EZKL baseline")
+    session_dir = runs_root / ".sessions"
+    session_file = session_dir / f"{session_id}.json"
+    if session_dir.is_symlink() or (session_dir.exists() and not session_dir.is_dir()):
+        abort(f"formal session history path is not a regular directory: {session_dir}")
+    if session_file.is_symlink() or not session_file.is_file():
+        abort(f"formal session record is missing or symlinked: {session_file}")
+    document = load_json(session_file, "formal session record")
+    if (
+        document.get("schema_version") != 1
+        or document.get("baseline") != "ezkl"
+        or document.get("session_id") != session_id
+        or document.get("output_root") != expected_output_root
+        or document.get("matrix") != expected_matrix
+    ):
+        abort("formal session id/output-root/matrix does not match its canonical session record")
+    recorded = selected_datasets_for_session(document)
+    if requested != recorded:
+        abort("requested datasets do not match the immutable formal session selection")
+    return recorded
+
+
 FORMAL_GPU_FEATURES = (
     "dep:halo2_solidity_verifier",
     "ezkl",
@@ -64,6 +132,7 @@ CANONICAL_PRIVACY = "model_and_trace_hidden"
 CANONICAL_STATEMENT_MODE = "external"
 CANONICAL_OUTPUT_MODE = "public_logits"
 NATIVE_SECURITY_PROFILE_ID = "halo2-kzg-shplonk"
+NATIVE_LAYOUT_REVISION = "gat_fixed_topology_routing_v2"
 MIN_FORMAL_SRS_BYTES = 4096
 SRS_MANIFEST = ROOT / "resources" / "native_srs" / "srs_manifest.json"
 NATIVE_SRS_SCHEMA_VERSION = 2

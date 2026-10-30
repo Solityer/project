@@ -1981,7 +1981,7 @@ relation::OperationDescriptor signed_round_operation(const Config &config, const
     relation::ConstraintDescriptor signed_n;
     signed_n.id = operation.id + "/signed-numerator";
     signed_n.degree = 2U;
-    signed_n.terms.push_back(monomial(zkdl::fr_from_u32(1U), {local_ref(operation, numerator)}));
+    signed_n.terms.push_back(monomial(relation::fr_from_signed_i64(widths.numerator_scale), {local_ref(operation, numerator)}));
     signed_n.terms.push_back(monomial(relation::fr_from_signed_i64(-1), {local_ref(operation, a)}));
     signed_n.terms.push_back(monomial(relation::fr_from_signed_i64(2), {local_ref(operation, sigma), local_ref(operation, a)}));
     operation.constraints.push_back(std::move(signed_n));
@@ -5014,6 +5014,13 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             if (error) *error = "native sorted-lookup typed profile disagrees with its authenticated segmented descriptor: " + query.operation_id;
             return false;
         }
+        std::uint64_t prefix_cache_peak_bytes = 0U;
+        if (!relation::authenticated_sorted_lookup_prefix_cache_peak_bytes(
+                query.query_domain, query.merge_domain, query.segment_size,
+                prefix_cache_peak_bytes)) {
+            if (error) *error = "native sorted-lookup prefix cache memory bound overflows: " + query.operation_id;
+            return false;
+        }
         const auto tags_for_kind = [&](std::uint32_t kind,
                                        std::vector<std::string> &tags,
                                        std::uint64_t &products,
@@ -5067,17 +5074,21 @@ bool zkdl_gat_native_relation_plan_metrics(const Config &config, const Graph &gr
             std::uint64_t weighted_tensor_count = 0U;
             std::uint32_t relation_bits = 0U;
             std::uint64_t eqmask_table_peak_bytes = 0U;
+            std::uint64_t auxiliary_live_bytes = 0U;
             if (!tags_for_kind(kind, tags, products, montgomery_terms, domain) ||
                 !checked_add_u64(tags.size(), 2U, weighted_tensor_count) ||
                 !log2_domain(domain, relation_bits) ||
                 !relation::pointwise_eqmask_weight_table_peak_bytes(
                     relation_bits, eqmask_table_peak_bytes) ||
+                !checked_add_u64(eqmask_table_peak_bytes,
+                                 prefix_cache_peak_bytes,
+                                 auxiliary_live_bytes) ||
                 !record_segmented_sumcheck_peak(
                     weighted_tensor_count, domain, query.segment_size,
-                    montgomery_terms, eqmask_table_peak_bytes) ||
+                    montgomery_terms, auxiliary_live_bytes) ||
                 !record_sumcheck_shape(
                     weighted_tensor_count, domain, query.segment_size, false,
-                    montgomery_terms, eqmask_table_peak_bytes) ||
+                    montgomery_terms, auxiliary_live_bytes) ||
                 !record_terminal_hyrax_openings(
                     domain, query.segment_size, 1U, tags.size(),
                     false,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate exactly five canonical EZKL/Halo2 formal results."""
+"""Validate selected canonical EZKL/Halo2 formal results."""
 
 from __future__ import annotations
 
@@ -19,6 +19,8 @@ from formal_common import (
     abort,
     local_path,
     print_error,
+    normalize_selected_datasets,
+    require_formal_session_selection_binding,
     resource_manifest_hash,
     require_authenticated_formal_context,
     require_final_authenticated_formal_context,
@@ -29,8 +31,16 @@ from formal_common import (
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("--runs-root", default="runs/formal")
     result.add_argument("--matrix", default="results/formal_matrix.json")
-    result.add_argument("--session-id", help="active formal session; required for five-dataset final validation")
+    result.add_argument("--session-id", help="active formal session; required for formal validation")
+    result.add_argument(
+        "--datasets",
+        nargs="+",
+        choices=DATASETS,
+        default=None,
+        help="canonical dataset subset to validate; omitted means all five datasets",
+    )
     return result
 
 
@@ -43,6 +53,8 @@ def main(
 ) -> int:
     return validate_matrix(
         local_path(args.matrix, "formal matrix"),
+        runs_root=local_path(getattr(args, "runs_root", "runs/formal"), "runs-root"),
+        selected_datasets=normalize_selected_datasets(getattr(args, "datasets", None)),
         session_id=args.session_id,
         authenticated_context=authenticated_context,
         formal_session_id=formal_session_id,
@@ -53,6 +65,7 @@ def main(
 def validate_matrix(
     matrix_path: Path,
     *,
+    runs_root: Path | None = None,
     selected_datasets: tuple[str, ...] = DATASETS,
     selected_backends: tuple[str, ...] | None = None,
     session_id: str | None = None,
@@ -61,12 +74,19 @@ def validate_matrix(
     expected_result_sha256s: dict[str, str] | None = None,
 ) -> int:
     """Validate formal dataset cells; explicit native selections serve only tiny/local checks."""
+    selected_datasets = normalize_selected_datasets(selected_datasets)
     formal = selected_backends is None
-    if formal and selected_datasets != DATASETS:
-        abort("formal validation requires exactly the five canonical datasets")
     if formal:
         if not isinstance(session_id, str) or not FORMAL_SESSION_ID.fullmatch(session_id):
             abort("formal validation requires the active --session-id")
+        if runs_root is None:
+            runs_root = ROOT / "runs/formal"
+        require_formal_session_selection_binding(
+            session_id,
+            runs_root=runs_root,
+            matrix_path=matrix_path,
+            selected_datasets=selected_datasets,
+        )
         if authenticated_context is not None:
             if formal_session_id != session_id:
                 abort("sealed final validation session does not match its command-line session")
@@ -80,10 +100,10 @@ def validate_matrix(
         if expected_result_sha256s is not None and authenticated_context is None:
             abort("session checkpoint result identities are accepted only with the sealed in-process context")
         if expected_result_sha256s is not None and (
-            set(expected_result_sha256s) != set(DATASETS)
+            set(expected_result_sha256s) != set(selected_datasets)
             or any(not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value) for value in expected_result_sha256s.values())
         ):
-            abort("formal validator checkpoint digest map is incomplete or malformed")
+            abort("formal validator checkpoint digest map does not exactly match its selected datasets or is malformed")
     elif session_id is not None:
         abort("--session-id cannot be combined with local-only validation")
     elif not selected_backends or any(backend not in BACKENDS for backend in selected_backends):
@@ -198,7 +218,12 @@ def validate_matrix(
         f"validated {len(refreshed)} ezkl result cells: external statement/Y, native instances, "
         f"circuit artifacts, timing, and {'formal session identity' if formal else 'local execution'} are consistent"
     )
-    print(f"FINAL_VALIDATION_OK cells={len(refreshed)}")
+    if formal and selected_datasets == DATASETS:
+        print(f"FINAL_VALIDATION_OK cells={len(refreshed)}")
+    elif formal:
+        print(f"SUBSET_VALIDATION_OK datasets={','.join(selected_datasets)} cells={len(refreshed)}")
+    else:
+        print(f"LOCAL_VALIDATION_OK cells={len(refreshed)}")
     return 0
 
 

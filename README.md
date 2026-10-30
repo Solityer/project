@@ -87,33 +87,33 @@ The runner preserves a separate `gpu_<dataset>.log` for each execution, a `statu
 
 ## Mechanism Ablation
 
-Two real-data CUDA mechanism experiments study the proving-cost reductions:
+Two real-data CUDA mechanism ablations measure the proving-cost reductions:
 
 - **Feature Folding:** folded feature relations versus coordinate-wise proofs.
 - **Shared Neighborhood:** shared-neighborhood relations versus separate denominator and aggregation proofs.
 
-The complete matrix contains 47 configurations: Feature Folding has five datasets at D=1..8 and G=1 (40 groups); Shared Neighborhood has five datasets at D=8 and G=1 (5 groups); the appendix adds both mechanisms on all 295 PPI graphs at D=8 (2 groups). With three repetitions and Original/Control, the complete matrix has 141 pairs / 282 cells. The commands below split it into three independent runs. Here `main` means the mechanism ablation main-table inputs, not the zkGAT main experiment. Omitting selectors still runs all 47 groups. These are mechanism-level proof comparisons, not end-to-end GAT speedup measurements.
+The matrix remains 47 configurations: Feature Folding uses five datasets at D=1..8, G=1 (40 groups); Shared Neighborhood uses five datasets at D=8, G=1 (5 groups); the appendix tests both mechanisms on all 295 PPI graphs at D=8 (2 groups). Each repetition runs Original and Control for every configuration. One repetition is 94 cells / 47 pairs; three repetitions are 282 cells / 141 pairs. The runner default remains three repetitions, so specify `--repetitions 1` for the 94-cell run. Here `main` means the mechanism-ablation main-table inputs, not the zkGAT main experiment. These are mechanism-level proof comparisons, not end-to-end GAT speedup measurements.
 
-Run the bounded metadata-only preflight for each selected group before launching it. Preflight checks only the selected datasets and SRS; it does not prepare real proof inputs, rehash key contents, or run Prove/Verify. Launch one command at a time; each run writes to its own new directory:
+`launch` performs real-input preparation and the strict checks needed by the formal run. A separate metadata-only preflight is optional; it does not prepare proof inputs or run Prove/Verify, and is not required before launch. Launch the full one-repetition matrix in one session with a fresh timestamped output root:
 
 ```bash
-python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism feature_folding --input-scope main
-python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
-  --mechanism feature_folding --input-scope main \
-  --output-root results/mechanism_ablation_final/ff
-
-python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism shared_neighborhood --input-scope main
-python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
-  --mechanism shared_neighborhood --input-scope main \
-  --output-root results/mechanism_ablation_final/sn
-
-python3 scripts/run_mechanism_ablation.py preflight --device 0 --mechanism all --input-scope ppi_full
-python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 3 \
-  --mechanism all --input-scope ppi_full \
-  --output-root results/mechanism_ablation_final/ppi_full
+RUN_ID="$(date +%Y%m%dT%H%M%S%N)-$$"
+python3 scripts/run_mechanism_ablation.py launch --device 0 --repetitions 1 \
+  --mechanism all --input-scope all \
+  --output-root "results/mechanism_ablation_final/all_47rep1_${RUN_ID}"
 ```
 
-The runner creates a new session directory and runs detached. Take `launcher_dir` from the launch output, wait for `MECHANISM_SESSION_STARTED ... output=...` in its `runner.log`, then use that output path as `<session>` for `cat <session>/status.json` and `tail -f <session>/session.log`. Each new session's two reader outputs are Chinese `summary.md` and UTF-8-BOM `results.csv`; raw logs, proofs, statements, receipts, and audit evidence remain alongside them. See [the mechanism ablation instructions](docs/mechanism_ablation.md). The older 11-configuration session is historical only and is not the current matrix.
+`launch` runs detached and requires an exclusive GPU session; it does not terminate other GPU processes. Copy `launcher_dir` from its output, then find the session path and inspect progress:
+
+```bash
+LAUNCHER_DIR=/absolute/path/printed/as/launcher_dir
+grep 'MECHANISM_SESSION_STARTED' "$LAUNCHER_DIR/runner.log"
+SESSION=/absolute/path/from/the/output/path
+cat "$SESSION/status.json"
+tail -f "$SESSION/session.log"
+```
+
+Pressing Ctrl-C stops `tail -f`; it does not stop the detached runner. The completed one-repetition matrix in this workspace is recorded in [summary.md](results/mechanism_ablation_final/all_47rep1_20261025/summary.md) and [results.csv](results/mechanism_ablation_final/all_47rep1_20261025/results.csv): 94/94 cells and 47/47 pairs passed independent verification. The PPI component-0 Feature Folding D=8 pair remains verified but is excluded from performance comparisons because its Original Prove overlapped external GPU work. See [the mechanism ablation instructions](docs/mechanism_ablation.md) for configuration, result, and continuation details. The older 11-configuration session is historical only.
 
 ## Repository Structure
 

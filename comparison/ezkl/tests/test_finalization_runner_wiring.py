@@ -34,12 +34,12 @@ class FinalizationRunnerWiringTest(unittest.TestCase):
                 stage = call.args[1]
                 if isinstance(stage, ast.Constant) and stage.value == "final_matrix_validation":
                     stage_lines["validator"] = call.lineno
-            elif isinstance(call.func, ast.Name) and call.func.id == "run" and len(call.args) >= 2:
-                label = call.args[1]
+            elif isinstance(call.func, ast.Name) and call.func.id == "invoke_python_entrypoint" and len(call.args) >= 3:
+                label = call.args[2]
                 if isinstance(label, ast.Constant):
-                    if label.value == "collect five-dataset result matrix":
+                    if label.value == "collect pending selected-dataset result matrix":
                         run_lines["collector"] = call.lineno
-                    elif label.value == "validate five-dataset result matrix":
+                    elif label.value == "validate selected-dataset result matrix":
                         run_lines["validator"] = call.lineno
 
         self.assertEqual(set(gate_lines), {"collector", "validator"})

@@ -7,6 +7,7 @@
 #include <limits>
 #include <map>
 #include <memory>
+#include <random>
 #include <stdexcept>
 
 using namespace zkdl_gat::relation;
@@ -97,6 +98,10 @@ SegmentedTensorProvider counted_provider(const std::vector<FrWire>& values,
         });
 }
 
+std::vector<FrWire> oracle(const std::vector<FrWire>& keys,
+                           const std::vector<FrWire>& active,
+                           const FrWire& beta, const FrWire& gamma);
+
 std::vector<FrWire> legacy_prefix(const SegmentedTensorProvider& keys,
                                   const SegmentedTensorProvider& active,
                                   const FrWire& beta, const FrWire& gamma,
@@ -121,6 +126,282 @@ std::vector<FrWire> legacy_prefix(const SegmentedTensorProvider& keys,
         }
     }
     return output;
+}
+
+struct PrefixSweepResult {
+    ReadCounts counts;
+    double elapsed_ms = 0.0;
+};
+
+enum class PrefixSweepVariant {
+    CachedGeneric,
+    CachedMontgomery
+};
+
+PrefixSweepResult run_prefix_next_sweep(
+    const std::vector<FrWire>& keys, const std::vector<FrWire>& active,
+    std::uint32_t segment_size, std::uint32_t active_length,
+    const FrWire& beta, const FrWire& gamma,
+    const std::vector<FrWire>& expected_next, PrefixSweepVariant variant) {
+    auto counts = std::make_shared<ReadCounts>();
+    const auto key_source = counted_provider(keys, segment_size, counts, true);
+    const auto active_source = counted_provider(active, segment_size, counts, false);
+    SegmentedTensorProvider prefix, next;
+    std::string error;
+    const auto start = std::chrono::steady_clock::now();
+    if (variant == PrefixSweepVariant::CachedMontgomery) {
+        const auto digest = zkdl::sha256(std::vector<zkdl::byte>{'c'});
+        require(make_authenticated_sorted_lookup_prefix_product_provider(
+                    key_source, active_source, beta, gamma, prefix, &error,
+                    nullptr, digest, 20U),
+                "could not create Montgomery output-cached prefix provider");
+    } else {
+        const auto digest = zkdl::sha256(std::vector<zkdl::byte>{'c'});
+        require(make_authenticated_sorted_lookup_prefix_product_provider_impl<false>(
+                    key_source, active_source, beta, gamma, prefix, &error,
+                    nullptr, digest, 20U),
+                "could not create generic output-cached prefix provider");
+    }
+    require(make_authenticated_sorted_lookup_prefix_next_provider(
+                prefix, key_source, active_source, active_length,
+                beta, gamma, next, &error),
+            "could not create prefix-next provider");
+
+    FrWire endpoint{};
+    if (!authenticated_sorted_lookup_prefix_product_endpoint(
+            key_source, active_source, active_length, beta, gamma,
+            endpoint, &error, nullptr, {}, &prefix))
+        throw std::runtime_error("prefix endpoint initialization failed: " + error);
+    require(endpoint == expected_next[active_length - 1U],
+            "prefix endpoint differs from the scalar oracle");
+    for (std::uint32_t segment = 0U; segment < next.segment_count(); ++segment) {
+        std::vector<FrWire> block;
+        if (!next.read_segment(segment, block, &error))
+            throw std::runtime_error("sequential prefix-next segment read failed: " + error);
+        const std::size_t offset =
+            static_cast<std::size_t>(segment) * segment_size;
+        require(block.size() == segment_size &&
+                    std::equal(block.begin(), block.end(),
+                               expected_next.begin() +
+                                   static_cast<std::ptrdiff_t>(offset)),
+                "sequential prefix-next output differs from the scalar oracle");
+    }
+    const double elapsed_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    return {*counts, elapsed_ms};
+}
+
+FrWire deterministic_random_field(std::uint32_t seed) {
+    std::mt19937 generator(seed);
+    std::array<std::uint32_t,
+               2U * blstrs__scalar__Scalar_LIMBS> wide{};
+    for (auto& limb : wide) limb = generator();
+    FrWire value = zkdl::fr_reduce(wide);
+    if (value == FrWire{}) value = zkdl::fr_from_u32(1U);
+    return value;
+}
+
+void check_prefix_cache_parameter_boundaries() {
+    constexpr std::uint32_t domain = 4U;
+    constexpr std::uint32_t segment_size = 2U;
+    const std::vector<FrWire> keys = {
+        zkdl::fr_from_u32(1U), zkdl::fr_from_u32(2U), FrWire{}, FrWire{}};
+    const std::vector<FrWire> active = {
+        zkdl::fr_from_u32(1U), zkdl::fr_from_u32(1U), FrWire{}, FrWire{}};
+    SegmentedTensorProvider key_provider, active_provider, prefix;
+    std::string error;
+    require(SegmentedTensorProvider::from_values(
+                keys, segment_size, key_provider, &error) &&
+                SegmentedTensorProvider::from_values(
+                    active, segment_size, active_provider, &error),
+            "prefix parameter-boundary providers could not be created");
+    require(!make_authenticated_sorted_lookup_prefix_product_provider(
+                key_provider, active_provider, FrWire{}, zkdl::fr_from_u32(1U),
+                prefix, &error),
+            "prefix provider accepted zero beta");
+    error.clear();
+    require(!make_authenticated_sorted_lookup_prefix_product_provider(
+                key_provider, active_provider, zkdl::fr_from_u32(1U), FrWire{},
+                prefix, &error),
+            "prefix provider accepted zero gamma");
+    error.clear();
+    require(!make_authenticated_sorted_lookup_prefix_product_provider_impl<false>(
+                key_provider, active_provider, FrWire{}, zkdl::fr_from_u32(1U),
+                prefix, &error),
+            "generic LRU prefix provider accepted zero beta");
+}
+
+void check_prefix_cache_sweep_case(std::uint32_t query_domain,
+                                   std::uint32_t segment_size,
+                                   const FrWire& beta, const FrWire& gamma,
+                                   const char* parameter_case) {
+    require((query_domain & (query_domain - 1U)) == 0U &&
+                query_domain % segment_size == 0U,
+            "prefix sweep fixture has invalid query shape");
+    const std::uint32_t merge_domain = query_domain / 2U;
+    require(merge_domain >= segment_size && merge_domain % segment_size == 0U,
+            "prefix sweep fixture has invalid merge shape");
+    const auto make_case = [&](std::uint32_t domain, std::uint32_t active_length,
+                               std::uint32_t key_seed) {
+        std::vector<FrWire> keys(domain, FrWire{}), active(domain, FrWire{});
+        for (std::uint32_t index = 0U; index < active_length; ++index) {
+            keys[index] = zkdl::fr_from_u32(
+                key_seed + (index * 37U) % 1009U);
+            active[index] = zkdl::fr_from_u32(1U);
+        }
+        const std::vector<FrWire> before = oracle(keys, active, beta, gamma);
+        std::vector<FrWire> next(domain, FrWire{});
+        for (std::uint32_t index = 0U; index < active_length; ++index) {
+            next[index] = index + 1U < active_length
+                ? before[index + 1U]
+                : zkdl::fr_mul(before[index], zkdl::fr_add(
+                      zkdl::fr_mul(beta, keys[index]), gamma));
+        }
+        const PrefixSweepResult generic_result = run_prefix_next_sweep(
+            keys, active, segment_size, active_length, beta, gamma,
+            next, PrefixSweepVariant::CachedGeneric);
+        const PrefixSweepResult mont_result = run_prefix_next_sweep(
+            keys, active, segment_size, active_length, beta, gamma,
+            next, PrefixSweepVariant::CachedMontgomery);
+        require(generic_result.counts.key_segments == generic_result.counts.active_segments &&
+                    mont_result.counts.key_segments == mont_result.counts.active_segments &&
+                    generic_result.counts.key_segments == mont_result.counts.key_segments &&
+                    generic_result.counts.active_segments == mont_result.counts.active_segments,
+                "Montgomery prefix path changed the generic LRU source-read count");
+        std::cout << "prefix_mont_sweep params=" << parameter_case
+                  << " domain=" << domain
+                  << " segment_size=" << segment_size
+                  << " segments=" << (domain / segment_size)
+                  << " active=" << active_length
+                  << " generic_key_reads=" << generic_result.counts.key_segments
+                  << " generic_active_reads=" << generic_result.counts.active_segments
+                  << " mont_key_reads=" << mont_result.counts.key_segments
+                  << " mont_active_reads=" << mont_result.counts.active_segments
+                  << " generic_ms=" << generic_result.elapsed_ms
+                  << " mont_ms=" << mont_result.elapsed_ms
+                  << " mont_speedup=" << (generic_result.elapsed_ms / mont_result.elapsed_ms)
+                  << "x differential_values=" << domain << '\n';
+    };
+    make_case(query_domain, query_domain - 3U, 11U);
+    make_case(merge_domain, merge_domain - 5U, 23U);
+}
+
+void check_prefix_cache_source_failure() {
+    constexpr std::uint32_t domain = 16U;
+    constexpr std::uint32_t segment_size = 4U;
+    std::vector<FrWire> keys(domain, zkdl::fr_from_u32(1U));
+    std::vector<FrWire> active(domain, zkdl::fr_from_u32(1U));
+    auto key_reads = std::make_shared<std::map<std::uint32_t, std::uint32_t>>();
+    const auto failing_keys = SegmentedTensorProvider(
+        domain, segment_size,
+        [&keys, key_reads](std::uint64_t offset, std::uint32_t count,
+                           std::vector<FrWire>& output, std::string* error) {
+            const std::uint32_t segment = static_cast<std::uint32_t>(offset / segment_size);
+            const std::uint32_t seen = ++(*key_reads)[segment];
+            if (segment == 0U && seen == 2U) {
+                if (error) *error = "fixture injected second-read failure";
+                return false;
+            }
+            if (offset > keys.size() || count > keys.size() - offset) {
+                if (error) *error = "fixture key range is out of bounds";
+                return false;
+            }
+            output.assign(keys.begin() + static_cast<std::ptrdiff_t>(offset),
+                          keys.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            return true;
+        });
+    const auto active_counts = std::make_shared<ReadCounts>();
+    const auto active_source = counted_provider(active, segment_size, active_counts, false);
+    SegmentedTensorProvider prefix;
+    std::string error;
+    const auto digest = zkdl::sha256(std::vector<zkdl::byte>{'f'});
+    require(make_authenticated_sorted_lookup_prefix_product_provider(
+                failing_keys, active_source, zkdl::fr_from_u32(2U),
+                zkdl::fr_from_u32(3U), prefix, &error, nullptr, digest, 8U),
+            "could not create source-failure prefix provider");
+    FrWire endpoint{};
+    require(authenticated_sorted_lookup_prefix_product_endpoint(
+                failing_keys, active_source, domain - 1U,
+                zkdl::fr_from_u32(2U), zkdl::fr_from_u32(3U), endpoint,
+                &error, nullptr, digest, &prefix),
+            "source-failure endpoint setup failed");
+    std::vector<FrWire> output;
+    error.clear();
+    require(!prefix.read_segment(0U, output, &error) &&
+                error.find("fixture injected second-read failure") != std::string::npos,
+            "prefix cache accepted an injected source failure");
+    const std::uint32_t key_reads_after_failure = key_reads->at(0U);
+    error.clear();
+    require(!prefix.read_segment(1U, output, &error) &&
+                error.find("fixture injected second-read failure") != std::string::npos &&
+                key_reads->at(0U) == key_reads_after_failure,
+            "prefix cache retried after a sticky source failure");
+}
+
+void check_prefix_cache_miss_rejects_noncanonical_key() {
+    constexpr std::uint32_t domain = 8U;
+    constexpr std::uint32_t segment_size = 4U;
+    std::vector<FrWire> keys(domain, zkdl::fr_from_u32(1U));
+    std::vector<FrWire> active(domain, zkdl::fr_from_u32(1U));
+    auto key_reads = std::make_shared<std::map<std::uint32_t, std::uint32_t>>();
+    const auto changing_keys = SegmentedTensorProvider(
+        domain, segment_size,
+        [&keys, key_reads](std::uint64_t offset, std::uint32_t count,
+                           std::vector<FrWire>& output, std::string* error) {
+            const std::uint32_t segment = static_cast<std::uint32_t>(offset / segment_size);
+            const std::uint32_t seen = ++(*key_reads)[segment];
+            if (offset > keys.size() || count > keys.size() - offset) {
+                if (error) *error = "fixture key range is out of bounds";
+                return false;
+            }
+            output.assign(keys.begin() + static_cast<std::ptrdiff_t>(offset),
+                          keys.begin() + static_cast<std::ptrdiff_t>(offset + count));
+            if (segment == 0U && seen == 2U)
+                output[1U].fill(0xffffffffU);
+            return true;
+        });
+    const auto active_counts = std::make_shared<ReadCounts>();
+    const auto active_source = counted_provider(active, segment_size, active_counts, false);
+    SegmentedTensorProvider prefix;
+    std::string error;
+    const auto digest = zkdl::sha256(std::vector<zkdl::byte>{'m'});
+    require(make_authenticated_sorted_lookup_prefix_product_provider(
+                changing_keys, active_source, zkdl::fr_from_u32(2U),
+                zkdl::fr_from_u32(3U), prefix, &error, nullptr, digest, 8U),
+            "could not create cache-miss canonicality prefix provider");
+    std::vector<FrWire> output;
+    require(!prefix.read_segment(0U, output, &error) &&
+                error.find("segmented tensor reader returned a non-canonical field value") !=
+                    std::string::npos,
+            "Montgomery cache miss converted a non-canonical key");
+    const std::uint32_t reads_after_failure = key_reads->at(0U);
+    error.clear();
+    require(!prefix.read_segment(1U, output, &error) &&
+                error.find("segmented tensor reader returned a non-canonical field value") !=
+                    std::string::npos &&
+                key_reads->at(0U) == reads_after_failure,
+            "cache-miss canonicality failure was not sticky");
+}
+
+void check_prefix_cache_peak_bound() {
+    std::uint64_t peak_bytes = 0U;
+    constexpr std::uint64_t max_domain = std::uint64_t{1U} << 30U;
+    constexpr std::uint64_t max_cached_segment = std::uint64_t{1U} << 18U;
+    const std::uint64_t expected_peak =
+        ((max_domain / max_cached_segment) * 2U + 4U * max_cached_segment) *
+        sizeof(FrWire);
+    require(authenticated_sorted_lookup_prefix_cache_peak_bytes(
+                max_domain, max_domain, max_cached_segment, peak_bytes) &&
+                peak_bytes == expected_peak,
+            "maximum query/merge prefix cache peak bound differs from its storage");
+    require(authenticated_sorted_lookup_prefix_cache_peak_bytes(
+                1U << 20U, 1U << 20U, 1U << 19U, peak_bytes) &&
+                peak_bytes == 4U * sizeof(FrWire),
+            "large-segment uncached prefix bound includes output-slot storage");
+    require(!authenticated_sorted_lookup_prefix_cache_peak_bytes(
+                std::uint64_t{1U} << 63U, std::uint64_t{1U} << 63U,
+                1U, peak_bytes),
+            "overflowing query/merge prefix cache bound was accepted");
 }
 
 std::vector<FrWire> oracle(const std::vector<FrWire>& keys,
@@ -969,6 +1250,17 @@ bool zkdl_run_tiny_sorted_lookup_receipt_fixture(
 #ifndef ZKDL_SORTED_LOOKUP_FIXTURE_INCLUDE
 int main() {
     try {
+        check_prefix_cache_parameter_boundaries();
+        check_prefix_cache_sweep_case(
+            1U << 16U, 1U << 10U,
+            zkdl::fr_from_u32(1U), zkdl::fr_from_u32(1U), "beta_gamma_one");
+        check_prefix_cache_sweep_case(
+            1U << 18U, 1U << 12U,
+            deterministic_random_field(0x7a31U),
+            deterministic_random_field(0x19c4U), "random_full_field");
+        check_prefix_cache_source_failure();
+        check_prefix_cache_miss_rejects_noncanonical_key();
+        check_prefix_cache_peak_bound();
         const std::vector<zkdl::CpuG1Point> proof_generators{
             zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(2U)),
             zkdl::cpu_g1_mul(zkdl::cpu_g1_generator(), zkdl::fr_from_u32(3U)),

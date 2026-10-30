@@ -27,6 +27,86 @@ import validate_final  # noqa: E402
 
 
 class EzklFormalResultInterfacesTest(unittest.TestCase):
+    def test_dataset_selection_is_canonical_and_legacy_sessions_mean_all_five(self) -> None:
+        self.assertEqual(formal_common.normalize_selected_datasets(None), formal_common.DATASETS)
+        self.assertEqual(
+            formal_common.normalize_selected_datasets(["ogbn_arxiv", "ppi"]),
+            ("ppi", "ogbn_arxiv"),
+        )
+        for invalid in ([], ["ppi", "ppi"], ["ppi", "unknown"], "ppi"):
+            with self.subTest(invalid=invalid), self.assertRaises(formal_common.ContractError):
+                formal_common.normalize_selected_datasets(invalid)  # type: ignore[arg-type]
+
+        self.assertEqual(formal_common.selected_datasets_for_session({}), formal_common.DATASETS)
+        self.assertEqual(
+            formal_common.selected_datasets_for_session({"selected_datasets": ["ppi", "ogbn_arxiv"]}),
+            ("ppi", "ogbn_arxiv"),
+        )
+        for invalid_session in (
+            None,
+            {"selected_datasets": "ppi"},
+            {"selected_datasets": []},
+            {"selected_datasets": ["ogbn_arxiv", "ppi"]},
+        ):
+            with self.subTest(invalid_session=invalid_session), self.assertRaises(formal_common.ContractError):
+                formal_common.selected_datasets_for_session(invalid_session)  # type: ignore[arg-type]
+
+    def test_collector_subset_is_bound_to_session_selection(self) -> None:
+        session_id = "a" * 32
+        selected = ("ppi", "ogbn_arxiv")
+        source_digest, resource_digest = "b" * 64, "c" * 64
+        with tempfile.TemporaryDirectory(prefix="ezkl-subset-collector-") as directory:
+            root = Path(directory)
+            runs = root / "runs/formal"
+            session_dir = runs / ".sessions"
+            session_dir.mkdir(parents=True)
+            session_path = session_dir / f"{session_id}.json"
+            session_document = {
+                "schema_version": 1,
+                "baseline": "ezkl",
+                "session_id": session_id,
+                "output_root": "runs/formal",
+                "matrix": "results/ppi_ogbn_matrix.json",
+                "selected_datasets": list(selected),
+            }
+            session_path.write_text(json.dumps(session_document), encoding="utf-8")
+            args = collect_results.parser().parse_args([
+                "--runs-root", "runs/formal",
+                "--output", "results/ppi_ogbn_matrix.json",
+                "--session-id", session_id,
+                "--datasets", "ogbn_arxiv", "ppi",
+            ])
+            visited: list[str] = []
+
+            def pending_cell(path: Path, *, dataset: str, **_: object) -> dict[str, object]:
+                visited.append(dataset)
+                return {
+                    "dataset": dataset,
+                    "status": "VERIFY_OK",
+                    "_result_path": path.relative_to(root).as_posix(),
+                }
+
+            with (
+                patch.object(formal_common, "ROOT", root),
+                patch.object(collect_results, "ROOT", root),
+                patch.object(collect_results, "source_tree_hash", return_value=source_digest),
+                patch.object(collect_results, "resource_manifest_hash", return_value=resource_digest),
+                patch.object(collect_results, "_pending_formal_cell", side_effect=pending_cell),
+            ):
+                self.assertEqual(collect_results.main(args), 0)
+                matrix_path = root / "results/ppi_ogbn_matrix.json"
+                matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+                self.assertEqual(matrix["datasets"], list(selected))
+                self.assertEqual([cell["dataset"] for cell in matrix["cells"]], list(selected))
+                self.assertEqual(visited, list(selected))
+
+                session_document["selected_datasets"] = ["ppi"]
+                session_path.write_text(json.dumps(session_document), encoding="utf-8")
+                visited.clear()
+                with self.assertRaisesRegex(formal_common.ContractError, "immutable formal session selection"):
+                    collect_results.main(args)
+                self.assertEqual(visited, [])
+
     def test_real_metadata_normalizes_five_graph_counts_without_file_changes(self) -> None:
         expected = dict(zip(formal_common.DATASETS, ("1", "1", "1", "295", "1")))
         resource_paths = [
@@ -299,6 +379,19 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
             matrix_path = root / "results/formal_matrix.json"
             matrix_path.parent.mkdir(parents=True, exist_ok=True)
             matrix_path.write_text(json.dumps(matrix, sort_keys=True), encoding="utf-8")
+            runs_root = root / "runs/formal"
+            session_dir = runs_root / ".sessions"
+            session_dir.mkdir(parents=True)
+            session_path = session_dir / f"{session_id}.json"
+            session_document = {
+                "schema_version": 1,
+                "baseline": "ezkl",
+                "session_id": session_id,
+                "output_root": "runs/formal",
+                "matrix": "results/formal_matrix.json",
+                "selected_datasets": list(formal_common.DATASETS),
+            }
+            session_path.write_text(json.dumps(session_document), encoding="utf-8")
             by_path = {cell["_result_path"]: cell for cell in cells}
 
             def revalidate_cell(
@@ -318,6 +411,7 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
                 return by_path[path.relative_to(root).as_posix()]
 
             with (
+                patch.object(formal_common, "ROOT", root),
                 patch.object(validate_final, "ROOT", root),
                 patch.object(validate_final, "source_tree_hash", return_value=source_digest),
                 patch.object(validate_final, "resource_manifest_hash", return_value=resource_digest),
@@ -325,8 +419,19 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
             ):
                 output = StringIO()
                 with redirect_stdout(output):
-                    self.assertEqual(validate_final.validate_matrix(matrix_path, session_id=session_id), 0)
+                    self.assertEqual(validate_final.validate_matrix(matrix_path, runs_root=runs_root, session_id=session_id), 0)
                 self.assertIn("FINAL_VALIDATION_OK cells=5", output.getvalue())
+                for field, value in (
+                    ("session_id", "e" * 32),
+                    ("output_root", "runs/other"),
+                    ("matrix", "results/other.json"),
+                ):
+                    changed_session = dict(session_document)
+                    changed_session[field] = value
+                    session_path.write_text(json.dumps(changed_session), encoding="utf-8")
+                    with self.assertRaisesRegex(formal_common.ContractError, "does not match its canonical session record"):
+                        validate_final.validate_matrix(matrix_path, runs_root=runs_root, session_id=session_id)
+                session_path.write_text(json.dumps(session_document), encoding="utf-8")
                 for mutation, expected_error in (
                     (lambda value: value["cells"][0].update(proof_sha256="f" * 64), "stale for"),
                     (lambda value: value["cells"][0].update(_result_path="../../outside/result.json"), "escapes baseline"),
@@ -336,7 +441,64 @@ class EzklFormalResultInterfacesTest(unittest.TestCase):
                     mutation(changed)
                     matrix_path.write_text(json.dumps(changed, sort_keys=True), encoding="utf-8")
                     with self.assertRaisesRegex(formal_common.ContractError, expected_error):
-                        validate_final.validate_matrix(matrix_path, session_id=session_id)
+                        validate_final.validate_matrix(matrix_path, runs_root=runs_root, session_id=session_id)
+
+                subset_datasets = ("ppi", "ogbn_arxiv")
+                subset_cells = [cell for cell in cells if cell["dataset"] in subset_datasets]
+                subset_matrix = collect_results.build_matrix_document(
+                    subset_cells,
+                    datasets=subset_datasets,
+                    source_sha256=source_digest,
+                    resource_sha256=resource_digest,
+                    collected_at_utc="2026-10-11T00:00:00+00:00",
+                    formal_session_id=session_id,
+                    backends=None,
+                )
+                matrix_path.write_text(json.dumps(subset_matrix, sort_keys=True), encoding="utf-8")
+                legacy_session = dict(session_document)
+                legacy_session.pop("selected_datasets")
+                session_path.write_text(json.dumps(legacy_session), encoding="utf-8")
+                with self.assertRaisesRegex(formal_common.ContractError, "immutable formal session selection"):
+                    validate_final.validate_matrix(
+                        matrix_path,
+                        runs_root=runs_root,
+                        selected_datasets=subset_datasets,
+                        session_id=session_id,
+                    )
+                subset_session = dict(session_document)
+                subset_session["selected_datasets"] = list(subset_datasets)
+                session_path.write_text(json.dumps(subset_session), encoding="utf-8")
+                output = StringIO()
+                with redirect_stdout(output):
+                    self.assertEqual(
+                        validate_final.validate_matrix(
+                            matrix_path,
+                            runs_root=runs_root,
+                            selected_datasets=subset_datasets,
+                            session_id=session_id,
+                        ),
+                        0,
+                    )
+                self.assertIn("SUBSET_VALIDATION_OK datasets=ppi,ogbn_arxiv cells=2", output.getvalue())
+                self.assertNotIn("FINAL_VALIDATION_OK", output.getvalue())
+                with self.assertRaisesRegex(formal_common.ContractError, "immutable formal session selection"):
+                    validate_final.validate_matrix(
+                        matrix_path,
+                        runs_root=runs_root,
+                        selected_datasets=("ppi",),
+                        session_id=session_id,
+                    )
+                extra_cell_matrix = copy.deepcopy(subset_matrix)
+                extra_cell_matrix["cells"].append(cells[0])
+                extra_cell_matrix["cell_count"] = len(extra_cell_matrix["cells"])
+                matrix_path.write_text(json.dumps(extra_cell_matrix, sort_keys=True), encoding="utf-8")
+                with self.assertRaisesRegex(formal_common.ContractError, "required cells"):
+                    validate_final.validate_matrix(
+                        matrix_path,
+                        runs_root=runs_root,
+                        selected_datasets=subset_datasets,
+                        session_id=session_id,
+                    )
             required = {key: None for key in collect_results.REQUIRED_RESULT_KEYS}
             required.update({"schema_version": 1, "status": "NOT_READY", "dataset": "cora"})
             invalid_result = root / "invalid" / "cora" / "result.json"

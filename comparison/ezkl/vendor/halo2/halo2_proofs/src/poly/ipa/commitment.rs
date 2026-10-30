@@ -5,7 +5,10 @@
 
 use crate::arithmetic::{best_multiexp, g_to_lagrange, parallelize, CurveAffine, CurveExt};
 use crate::helpers::CurveRead;
-use crate::poly::commitment::{Blind, CommitmentScheme, Params, ParamsProver, ParamsVerifier};
+use crate::poly::commitment::{
+    validate_sparse_lagrange_indices, Blind, CommitmentScheme, Params, ParamsProver,
+    ParamsVerifier,
+};
 use crate::poly::ipa::msm::MSMIPA;
 use crate::poly::{Coeff, LagrangeCoeff, Polynomial};
 
@@ -100,6 +103,30 @@ impl<'params, C: CurveAffine> Params<'params, C> for ParamsIPA<C> {
         tmp_bases.push(self.w);
 
         best_multiexp::<C>(&tmp_scalars, &tmp_bases)
+    }
+
+    fn commit_lagrange_sparse(
+        &self,
+        logical_len: u64,
+        entries: &[(usize, C::Scalar)],
+        r: Blind<C::Scalar>,
+    ) -> io::Result<C::Curve> {
+        let logical_len = validate_sparse_lagrange_indices(self.n, logical_len, entries)?;
+        if self.g_lagrange.len() < logical_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "IPA Lagrange basis is shorter than the sparse commitment domain",
+            ));
+        }
+
+        // This indexed path remains on CPU and retains IPA's independent
+        // blinding-generator contribution, including for empty support.
+        let mut commitment = C::CurveExt::identity();
+        for (row, value) in entries {
+            commitment += self.g_lagrange[*row].to_curve() * *value;
+        }
+        commitment += self.w.to_curve() * r.0;
+        Ok(commitment)
     }
 
     /// Writes params to a buffer.

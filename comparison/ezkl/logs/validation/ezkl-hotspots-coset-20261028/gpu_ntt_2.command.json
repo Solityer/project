@@ -1,0 +1,35 @@
+{
+  "build_environment_sha256": null,
+  "command": [
+    "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--release",
+    "--no-default-features",
+    "--features",
+    "formal-gpu",
+    "--target-dir",
+    "/home/pzh/project/comparison/ezkl/target/gpu",
+    "--test",
+    "formal_gpu_ntt",
+    "--",
+    "formal_gpu_ntt_matches_cpu_and_domain_ifft",
+    "--exact",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "device": {
+    "compute_capability": "12.1",
+    "driver_version": "580.142",
+    "index": 0,
+    "logical_device_id": 0,
+    "name": "NVIDIA GB10",
+    "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+  },
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-28T06:05:39.260963+00:00",
+  "index": 2,
+  "native_manifest_sha256": "a04adc458502e830f5102433948ec7ca2995792bfc3edb3b425a214639813260",
+  "started_at_utc": "2026-10-28T06:05:38.179219+00:00"
+}

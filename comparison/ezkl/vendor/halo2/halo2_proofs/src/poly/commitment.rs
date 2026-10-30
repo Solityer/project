@@ -15,6 +15,10 @@ use std::{
     ops::{Add, AddAssign, Mul, MulAssign},
 };
 
+/// Maximum number of nonzero Lagrange evaluations committed through the
+/// indexed sparse path. Callers above this limit must use the dense path.
+pub const MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS: usize = 32;
+
 /// Defines components of a commitment scheme.
 pub trait CommitmentScheme {
     /// Application field of this commitment scheme
@@ -67,11 +71,92 @@ pub trait Params<'params, C: CurveAffine>: Sized + Clone {
         r: Blind<C::ScalarExt>,
     ) -> C::CurveExt;
 
+    /// Commits to a sparse polynomial described by indexed evaluations over a
+    /// logical Lagrange domain. Implementations may override this with an
+    /// indexed CPU multiexponentiation. The sparse interface is intentionally
+    /// bounded by `MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS`; larger supports must
+    /// use `commit_lagrange` directly.
+    ///
+    /// The default implementation materializes the logical dense polynomial
+    /// and delegates to `commit_lagrange` for compatibility with other
+    /// commitment schemes.
+    fn commit_lagrange_sparse(
+        &self,
+        logical_len: u64,
+        entries: &[(usize, C::ScalarExt)],
+        r: Blind<C::ScalarExt>,
+    ) -> io::Result<C::CurveExt> {
+        let logical_len = validate_sparse_lagrange_indices(self.n(), logical_len, entries)?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(logical_len).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                format!("cannot allocate dense fallback for sparse Lagrange commitment: {error}"),
+            )
+        })?;
+        values.resize(logical_len, C::ScalarExt::ZERO);
+        for (row, value) in entries {
+            values[*row] = *value;
+        }
+        let polynomial = Polynomial::<C::ScalarExt, LagrangeCoeff>::from_vec(values);
+        Ok(self.commit_lagrange(&polynomial, r))
+    }
+
     /// Writes params to a buffer.
     fn write<W: io::Write>(&self, writer: &mut W) -> io::Result<()>;
 
     /// Reads params from a buffer.
     fn read<R: io::Read>(reader: &mut R) -> io::Result<Self>;
+}
+
+/// Validates the shared contract for a bounded sparse Lagrange commitment and
+/// returns the logical length converted to the host index type.
+pub(crate) fn validate_sparse_lagrange_indices<T>(
+    params_len: u64,
+    logical_len: u64,
+    entries: &[(usize, T)],
+) -> io::Result<usize> {
+    if logical_len > params_len {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "sparse Lagrange logical length {logical_len} exceeds parameter length {params_len}"
+            ),
+        ));
+    }
+    if entries.len() > MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "sparse Lagrange support {} exceeds limit {}",
+                entries.len(), MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS
+            ),
+        ));
+    }
+    let logical_len = usize::try_from(logical_len).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "sparse Lagrange logical length does not fit the host index type",
+        )
+    })?;
+    for (entry_index, (row, _)) in entries.iter().enumerate() {
+        if *row >= logical_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("sparse Lagrange row {row} is outside logical length {logical_len}"),
+            ));
+        }
+        if entries[..entry_index]
+            .iter()
+            .any(|(previous_row, _)| previous_row == row)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("sparse Lagrange row {row} occurs more than once"),
+            ));
+        }
+    }
+    Ok(logical_len)
 }
 
 /// Parameters for circuit sysnthesis and prover parameters.

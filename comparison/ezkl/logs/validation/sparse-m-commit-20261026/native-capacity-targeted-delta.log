@@ -1,0 +1,3 @@
+COMMAND=PYTHONPATH=tests python3 logs/validation/sparse-m-commit-20261026/native-capacity-targeted-delta.py
+{"actual": {"lookup_commit_task_host_bytes": 512, "lookup_prepare_task_host_bytes": 3248}, "cpu_projective_scratch_bytes": 1152, "expected": {"lookup_commit_task_host_bytes": 512, "lookup_prepare_task_host_bytes": 3248}, "prepare_base_bytes": 792, "result": "PASS", "sparse_pair_scratch_bytes": 1304}
+EXIT_CODE=0

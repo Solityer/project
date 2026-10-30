@@ -126,6 +126,7 @@ class GatInputPreprocessingTest(unittest.TestCase):
                 [1],
                 domain_size=sys.maxsize + 1,
                 expected_lookup_groups=1,
+                expected_h_resident_device_upper_bytes=1,
             )
 
     def test_admission_rejects_untrusted_or_unbounded_srs_logrows_before_shift(self) -> None:
@@ -169,9 +170,9 @@ class GatInputPreprocessingTest(unittest.TestCase):
         invalid_budgets.append(nonpositive_budget)
         for candidate in invalid_budgets:
             with self.subTest(budget=candidate), self.assertRaises(formal_runner.ContractError):
-                formal_runner._validated_native_prepare_exports(candidate, [1], domain_size=8, expected_lookup_groups=1)
+                formal_runner._validated_native_prepare_exports(candidate, [1], domain_size=8, expected_lookup_groups=1, expected_h_resident_device_upper_bytes=256)
         with self.assertRaises(formal_runner.ContractError):
-            formal_runner._validated_native_prepare_exports(budget, [9], domain_size=8, expected_lookup_groups=1)
+            formal_runner._validated_native_prepare_exports(budget, [9], domain_size=8, expected_lookup_groups=1, expected_h_resident_device_upper_bytes=256)
 
     def test_setup_reuse_receipt_requires_session_anchored_digest(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -181,7 +182,7 @@ class GatInputPreprocessingTest(unittest.TestCase):
             session_file = root / "session.json"
             session_file.write_text('{"session_id":"session"}\n', encoding="utf-8")
             admission_source = root / "session-admission.json"
-            admission_payload = b'{"dataset":"cora","schema_version":8}\n'
+            admission_payload = b'{"dataset":"cora","schema_version":10}\n'
             admission_source.write_bytes(admission_payload)
             admission_sha256 = formal_runner.sha256(admission_source)
             for name in formal_runner._SETUP_REUSE_FILES:

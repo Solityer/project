@@ -1,7 +1,10 @@
 use crate::arithmetic::{best_multiexp, g_to_lagrange, parallelize};
 
 use crate::helpers::SerdeCurveAffine;
-use crate::poly::commitment::{Blind, CommitmentScheme, Params, ParamsProver, ParamsVerifier};
+use crate::poly::commitment::{
+    validate_sparse_lagrange_indices, Blind, CommitmentScheme, Params, ParamsProver,
+    ParamsVerifier,
+};
 use crate::poly::{Coeff, LagrangeCoeff, Polynomial};
 use crate::SerdeFormat;
 
@@ -496,6 +499,29 @@ where
         }
 
         best_multiexp(&poly[..], &bases[0..size])
+    }
+
+    fn commit_lagrange_sparse(
+        &self,
+        logical_len: u64,
+        entries: &[(usize, E::Fr)],
+        _: Blind<E::Fr>,
+    ) -> io::Result<E::G1> {
+        let logical_len = validate_sparse_lagrange_indices(self.n, logical_len, entries)?;
+        if self.g_lagrange.len() < logical_len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "KZG Lagrange basis is shorter than the sparse commitment domain",
+            ));
+        }
+
+        // Keep the bounded sparse path on CPU. In particular, do not route
+        // these indexed terms through the dense/GPU-resident MSM cache.
+        let mut commitment = E::G1::identity();
+        for (row, value) in entries {
+            commitment += self.g_lagrange[*row].to_curve() * *value;
+        }
+        Ok(commitment)
     }
 
     /// Writes params to a buffer.

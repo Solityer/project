@@ -18,3 +18,8 @@ tests/.core_execution/
 comparison/ezkl/resources/canonical/tables/**/*.bin
 
 comparison/ezkl/resources
+
+# Large experiment artifacts
+/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ogbn_arxiv_full_graph/real_input.bin
+/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_all_295_graphs/real_input.bin
+/comparison/ezkl/logs/validation/ezkl-hotspots-coset-20261028/vendor_resident_oracle.log

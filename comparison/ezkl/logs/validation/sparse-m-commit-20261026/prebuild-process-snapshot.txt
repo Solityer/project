@@ -1,0 +1,3 @@
+UTC 2026-10-26 05:54:07
+3774319 3774315    08:25:10  0.0  0.0 Ssl  python3 /home/pzh/project/comparison/zkdl/scripts/formal_runner.py
+3848354 3809017       35:55  174  1.6 Rsl  /home/pzh/project/comparison/zkdl/gat_runner verify --config /home/pzh/project/comparison/zkdl/configs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0_pubmed.cfg --run-dir /home/pzh/project/comparison/zkdl/runs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0/pubmed

@@ -49,6 +49,19 @@ pub struct GatRangeChecks {
 }
 
 impl GatRangeChecks {
+    /// Construct the compact GAT storage marker for focused dummy-layout
+    /// regressions. Production configuration still comes from `configure`.
+    #[cfg(test)]
+    pub(crate) fn dummy_for_test(col_size: usize, num_inner_cols: usize) -> Self {
+        Self {
+            version: Some(GAT_RANGE_GADGET_VERSION),
+            byte_selectors: BTreeMap::new(),
+            end_selectors: BTreeMap::new(),
+            col_size,
+            num_inner_cols,
+        }
+    }
+
     pub(crate) fn version(&self) -> Option<u32> {
         self.version
     }

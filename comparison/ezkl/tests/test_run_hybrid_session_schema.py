@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -24,6 +25,7 @@ from run_hybrid_formal import (  # noqa: E402
     _CUB_QUERY_PATHS,
     _admit_local_capacity,
     _authenticated_srs_copy_size_bytes,
+    begin_formal_session,
     _check_dataset_capacity,
     _disk_budget_components,
     _formal_dataset_command_plan,
@@ -234,10 +236,11 @@ class LocalFormalEntryTest(unittest.TestCase):
                 "icicle_ntt_min_log_size": 16,
                 "icicle_ntt_max_log_size": 25,
                 "icicle_ntt_capacity_elements": 32,
-                "icicle_ntt_device_workspace_upper_bytes": 64 * 32,
+                "icicle_h_resident_device_upper_bytes": 128 * 32,
+                "icicle_ntt_device_workspace_upper_bytes": 96 * 32,
                 "icicle_ntt_domain_cache_upper_bytes": 32 * (32 + 1 + 64 + 6),
                 "icicle_ntt_init_scratch_upper_bytes": 4 * 64 * 32,
-                "icicle_ntt_device_peak_upper_bytes": 96 * 32 + 10464,
+                "icicle_ntt_device_peak_upper_bytes": 128 * 32 + 10464,
                 "icicle_ntt_host_staging_upper_bytes": 32 * 32,
                 "icicle_msm_max_concurrency": 1,
                 "icicle_msm_precompute_factor": 4,
@@ -412,9 +415,16 @@ class LocalFormalEntryTest(unittest.TestCase):
             4 * 32 * 32 + 5 * 32 * 32 + 4 * 16 * 32,
         )
         self.assertEqual(requirements["batch_invert_heap_scratch_bytes_upper"], 16 * 40)
+        # Prepare task: one N-row field window, codebook count vectors and
+        # headers, plus the bounded m-entry Vec and fixed CPU projective margin.
+        self.assertEqual(
+            requirements["lookup_prepare_task_host_bytes"],
+            16 * 32 + 4 * (8 + 8) + 48 + 120 + 2 * 24 + 32 * (8 + 32) + 24 + 8 * 144,
+        )
+        # The later grand-sum commit task is a separate R-heap / mmap window.
         self.assertEqual(
             requirements["lookup_commit_task_host_bytes"],
-            16 * (max(2 * 32 + 40, 3 * 32) + 3 * 32) + 5 * 24,
+            13 * 32 + 4 * 24,
         )
         self.assertEqual(requirements["icicle_msm_host_staging_bytes"], (32 + 64) * (1 << 20))
         self.assertEqual(requirements["shplonk_batch_width_upper"], 2)
@@ -495,6 +505,16 @@ class LocalFormalEntryTest(unittest.TestCase):
             self.assertEqual(partially_completed["pending_output_srs_copy_count"], 3)
             self.assertEqual(partially_completed["pending_output_srs_copy_bytes"], 21)
             self.assertEqual(partially_completed["pending_output_srs_copy_datasets"], list(DATASETS[2:]))
+            selected_datasets = ("ppi", "ogbn_arxiv")
+            selected_tail = _pending_srs_copy_disk_budget(
+                source_bytes,
+                set(selected_datasets),
+                dataset_index=1,
+                datasets=selected_datasets,
+            )
+            self.assertEqual(selected_tail["pending_output_srs_copy_count"], 1)
+            self.assertEqual(selected_tail["pending_output_srs_copy_bytes"], source_bytes)
+            self.assertEqual(selected_tail["pending_output_srs_copy_datasets"], ["ogbn_arxiv"])
 
             components = _disk_budget_components(
                 pending_srs=partially_completed,
@@ -502,17 +522,20 @@ class LocalFormalEntryTest(unittest.TestCase):
                 setup_mapped_peak_bytes=4,
             )
             self.assertEqual(components["total_required_bytes"], 35)
-            requirements = {"host_known_bytes": 1}
+            output_root = Path(temporary) / "capacity" / "formal"
+            output_root.parent.mkdir(parents=True)
+            requirements = {"host_known_bytes": 1, "icicle_h_resident_device_upper_bytes": 0}
             sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
             query = {"device_workspace_peak_bytes": 1, "integrated_device": False}
             for available in (35, 34):
                 with self.subTest(disk_available=available), \
                      mock.patch("run_hybrid_formal._effective_host_memory_available_bytes", return_value=(100, {})), \
                      mock.patch("run_hybrid_formal._host_os_diagnostic_reserve_bytes", return_value=(0, {})), \
-                     mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(available, {})):
+                     mock.patch("run_hybrid_formal._filesystem_available_bytes", return_value=(available, {"available_bytes": available, "device_id": "test-device"})), \
+                     mock.patch("run_hybrid_formal._filesystem_type", return_value="ext4"):
                     if available == 35:
                         check = _check_dataset_capacity(
-                            "cora", requirements, output_root=Path("/capacity/formal"),
+                            "cora", requirements, output_root=output_root,
                             remaining_known_disk_bytes=int(components["total_required_bytes"]),
                             phase="setup", device_sample=sample, workspace_query=query,
                             disk_budget_components=components,
@@ -522,7 +545,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                     else:
                         with self.assertRaisesRegex(formal_common.ContractError, "mapped/key artifact gate"):
                             _check_dataset_capacity(
-                                "cora", requirements, output_root=Path("/capacity/formal"),
+                                "cora", requirements, output_root=output_root,
                                 remaining_known_disk_bytes=int(components["total_required_bytes"]),
                                 phase="setup", device_sample=sample, workspace_query=query,
                                 disk_budget_components=components,
@@ -612,7 +635,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             self.assertEqual(proof_components["scratch_volume_required_bytes"], 23)
             self.assertEqual(proof_components["total_required_bytes"], expected_required)
 
-            requirements = {"host_known_bytes": 1}
+            requirements = {"host_known_bytes": 1, "icicle_h_resident_device_upper_bytes": 0}
             sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
             query = {"device_workspace_peak_bytes": 1, "integrated_device": False}
 
@@ -698,7 +721,6 @@ class LocalFormalEntryTest(unittest.TestCase):
     def test_five_dataset_capacity_preflight_precedes_cells_and_preserves_resume_scope(self) -> None:
         session_id = "a" * 32
         native_sizes = {"scalar_bytes": 32, "affine_bytes": 64}
-        admissions = {dataset: {"dataset": dataset} for dataset in DATASETS}
         workspace_receipt = {
             "session_id": session_id,
             "query": {"native_type_sizes": native_sizes},
@@ -711,6 +733,43 @@ class LocalFormalEntryTest(unittest.TestCase):
             "gat_transient_witness_bytes_upper": 9,
         }
 
+        def make_admissions(root: Path) -> dict[str, dict[str, object]]:
+            settings = {
+                "run_args": {
+                    "input_visibility": "Public",
+                    "output_visibility": "Public",
+                    "param_visibility": {"Hashed": {"hash_is_public": True, "outlets": []}},
+                },
+                "model_instance_shapes": [[2], [1]],
+                "model_input_scales": [1000],
+                "model_output_scales": [-1000],
+                "module_sizes": {"poseidon": [0, [1]], "polycommit": []},
+            }
+            memory = {
+                "graph_witness_scalar_element_count": 4,
+                "advice_column_phase_ids": [0],
+                "shplonk_query_polynomial_count": 2,
+                "shplonk_max_rotation_count": 3,
+                "shplonk_lookup_argument_count": 1,
+                "shplonk_shuffle_argument_count": 1,
+                "shplonk_permutation_product_set_count": 2,
+                "shplonk_proof_instance_count": 4,
+                "shplonk_quotient_piece_count": 5,
+            }
+            result: dict[str, dict[str, object]] = {}
+            for dataset in DATASETS:
+                prepared = root / "prepared" / dataset
+                prepared.mkdir(parents=True)
+                settings_path = prepared / "settings.json"
+                settings_path.write_text(json.dumps(settings, separators=(",", ":")), encoding="utf-8")
+                result[dataset] = {
+                    "dataset": dataset,
+                    "prepared_dir": prepared.relative_to(ROOT).as_posix(),
+                    "settings_sha256": formal_common.sha256(settings_path),
+                    "native_memory_model": dict(memory),
+                }
+            return result
+
         def run_preflight(
             root: Path,
             *,
@@ -722,6 +781,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             completed = set() if completed is None else completed
             reused = set() if reused is None else reused
             final_reused = set() if final_reused is None else final_reused
+            admissions = make_admissions(root)
             output_root = root / "runs/formal"
             session_dir = output_root / ".sessions" / session_id
             session_dir.mkdir(parents=True)
@@ -792,7 +852,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             events.append(("cell", DATASETS[0]))
             return events, {"admissions": result[0], "workspace_receipt": result[1]}, result[2], result[3], result[4]
 
-        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-preflight-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-preflight-", dir=ROOT) as temporary:
             events, state, _requirements, _reused, _pending_finalize = run_preflight(Path(temporary))
             self.assertEqual(events[0], ("admissions", False, tuple(DATASETS)))
             self.assertEqual(events[1], ("requirements", tuple(DATASETS)))
@@ -805,8 +865,9 @@ class LocalFormalEntryTest(unittest.TestCase):
                 self.assertEqual(components["future_setup_key_artifact_upper_bytes"], 50)
                 self.assertEqual(components["pending_output_srs_copy_count"], 5)
 
-        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-ppi-failure-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-ppi-failure-", dir=ROOT) as temporary:
             root = Path(temporary)
+            admissions = make_admissions(root)
             output_root = root / "runs/formal"
             session_dir = output_root / ".sessions" / session_id
             session_dir.mkdir(parents=True)
@@ -841,7 +902,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             self.assertIn(("gate", "ppi", "setup"), events)
             self.assertNotIn(("cell", DATASETS[0]), events)
 
-        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-resume-") as temporary:
+        with tempfile.TemporaryDirectory(prefix="ezkl-all-five-resume-", dir=ROOT) as temporary:
             completed = {DATASETS[0]}
             reused = {DATASETS[1]}
             events, _state, _requirements, reused_result, pending_finalize = run_preflight(
@@ -892,7 +953,7 @@ class LocalFormalEntryTest(unittest.TestCase):
                             selected_device={"uuid": "GPU-test"}, saved_admissions={}, capacity_only=capacity_only,
                         )
                 self.assertNotIsInstance(failure.exception, NameError)
-                self.assertIn("five-dataset admission/capacity preflight", str(failure.exception))
+                self.assertIn("selected-dataset admission/capacity preflight", str(failure.exception))
 
     def test_native_prepare_budget_charges_baseline_and_table_cache_once(self) -> None:
         requirements = _native_capacity_requirements(
@@ -910,6 +971,7 @@ class LocalFormalEntryTest(unittest.TestCase):
             msm_workspace
             + requirements["icicle_ntt_device_peak_upper_bytes"]
             + requirements["icicle_msm_precomputed_basis_device_upper_bytes"]
+            + requirements["icicle_h_resident_device_upper_bytes"]
             + formal_common.FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
         )
         expected_taskcap = 7 * minimum_task
@@ -952,6 +1014,7 @@ class LocalFormalEntryTest(unittest.TestCase):
         requirements = {
             "host_known_bytes": 100,
             "icicle_ntt_device_peak_upper_bytes": 0,
+            "icicle_h_resident_device_upper_bytes": 0,
             "icicle_msm_precomputed_basis_device_upper_bytes": 0,
         }
         sample = {"free_memory_bytes": 100, "total_memory_bytes": 200, "device_uuid": "GPU-test"}
@@ -1039,6 +1102,18 @@ class LocalFormalEntryTest(unittest.TestCase):
                 setup_required_datasets={"citeseer", "ppi"},
             ),
             4,
+        )
+        selected_datasets = ("ppi", "ogbn_arxiv")
+        selected_requirements = {name: filtered_requirements[name] for name in selected_datasets}
+        self.assertEqual(
+            _remaining_setup_disk_bytes(
+                selected_requirements,
+                1,
+                include_current_transient=False,
+                setup_required_datasets={"ogbn_arxiv"},
+                datasets=selected_datasets,
+            ),
+            filtered_requirements["ogbn_arxiv"]["setup_key_artifact_upper_bytes"],
         )
         sample = {
             "session_id": "a" * 32,
@@ -1252,8 +1327,66 @@ class LocalFormalEntryTest(unittest.TestCase):
         self.assertIn("--binary", command)
         self.assertIn("target/gpu/release/ezkl", command)
         self.assertIn("--_from-ezkl-entry", command)
+        self.assertNotIn("--datasets", command)
         self.assertNotIn("--internal-phase", command)
         self.assertFalse(any("comparison/run_formal.sh" in arg for arg in command))
+
+    def test_public_formal_entry_forwards_explicit_all_five_datasets_on_resume(self) -> None:
+        session_id = "d" * 32
+        args = run_formal_matrix.parser().parse_args(
+            ["--execute-formal", "--resume-session", session_id, "--datasets", *DATASETS]
+        )
+        with mock.patch("run_formal_matrix.os.chdir"), mock.patch("run_formal_matrix.os.execv") as execv:
+            self.assertEqual(run_formal_matrix.main(args), 0)
+        command = execv.call_args.args[1]
+        selection_index = command.index("--datasets")
+        self.assertEqual(command[selection_index + 1:selection_index + 1 + len(DATASETS)], list(DATASETS))
+        self.assertEqual(command[selection_index + 1 + len(DATASETS):], ["--resume-session", session_id])
+
+    def test_resume_selection_mismatch_is_rejected_before_mutation_and_omitted_selection_inherits(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="ezkl-resume-selection-") as temporary:
+            root = Path(temporary)
+            output_root = root / "runs" / "formal_ppi_ogbn"
+            matrix = root / "results" / "formal_ppi_ogbn_matrix.json"
+            session_id = "e" * 32
+            session_file = output_root / ".sessions" / f"{session_id}.json"
+            session_file.parent.mkdir(parents=True)
+            session_file.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "baseline": "ezkl",
+                    "session_id": session_id,
+                    "status": "FAILED",
+                    "output_root": output_root.relative_to(root).as_posix(),
+                    "matrix": matrix.relative_to(root).as_posix(),
+                    "selected_datasets": ["ppi", "ogbn_arxiv"],
+                    "resume_identity": {"schema": "ezkl-formal-resume-identity-v1"},
+                    "resume_count": 0,
+                }),
+                encoding="utf-8",
+            )
+            original = session_file.read_bytes()
+            with mock.patch("run_hybrid_formal.ROOT", root):
+                with self.assertRaisesRegex(formal_common.ContractError, "explicit resume --datasets"):
+                    begin_formal_session(
+                        output_root,
+                        matrix,
+                        resume_session_id=session_id,
+                        selected_datasets=DATASETS,
+                    )
+                self.assertEqual(session_file.read_bytes(), original)
+                resumed_id, resumed_file, lock_fd = begin_formal_session(
+                    output_root,
+                    matrix,
+                    resume_session_id=session_id,
+                    selected_datasets=None,
+                )
+                try:
+                    self.assertEqual(resumed_id, session_id)
+                    self.assertEqual(json.loads(resumed_file.read_text())["selected_datasets"], ["ppi", "ogbn_arxiv"])
+                finally:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
 
 
 if __name__ == "__main__":

@@ -144,6 +144,136 @@ FrWire deterministic_full_field_scalar(const std::string& label,
     return value;
 }
 
+FrWire legacy_terminal_mle_weight(const std::vector<FrWire>& point, const std::vector<FrWire>& challenges, const std::vector<FrWire>& inverses) {
+    const std::vector<FrWire> weights = cpu_ipa_mle_weights(point);
+    const std::uint32_t padded_size = cpu_ipa_padded_size(std::uint32_t(1U) << point.size());
+    std::vector<FrWire> current(padded_size);
+    std::copy(weights.begin(), weights.end(), current.begin());
+    for (std::size_t round = 0U; round < challenges.size(); ++round) {
+        const std::size_t half = current.size() / 2U;
+        std::vector<FrWire> next(half);
+        for (std::size_t index = 0U; index < half; ++index)
+            next[index] = fr_add(fr_mul(current[index], inverses[round]), fr_mul(current[half + index], challenges[round]));
+        current.swap(next);
+    }
+    return current[0U];
+}
+
+bool check_terminal_mle_weight_case(const char* label, const std::vector<FrWire>& point, bool report_timing) {
+    std::vector<FrWire> challenges(point.size() + 1U), inverses(point.size() + 1U);
+    for (std::size_t round = 0U; round < challenges.size(); ++round) {
+        challenges[round] = deterministic_full_field_scalar(std::string(label) + ".challenge", static_cast<std::uint32_t>(round));
+        if (fr_compare(challenges[round], FrWire{}) == 0)
+            challenges[round] = fr_from_u32(static_cast<std::uint32_t>(round + 1U));
+        inverses[round] = cpu_fr_inv(challenges[round]);
+    }
+    const auto old_start = std::chrono::steady_clock::now();
+    const FrWire old_weight = legacy_terminal_mle_weight(point, challenges, inverses);
+    const double old_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - old_start).count();
+    const auto direct_start = std::chrono::steady_clock::now();
+    const FrWire direct_weight = cpu_ipa_terminal_mle_weight(point, challenges, inverses);
+    const double direct_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - direct_start).count();
+    if (fr_compare(old_weight, direct_weight) != 0) {
+        std::cerr << "cpu_ipa_optimized_check status=FAIL terminal-mle case=" << label << '\n';
+        return false;
+    }
+    if (report_timing)
+        std::cout << "terminal_mle_timing=PASS case=" << label << " dimension=" << point.size() << " old_ms=" << old_ms << " direct_ms=" << direct_ms << " speedup=" << old_ms / direct_ms << '\n';
+    return true;
+}
+
+bool check_hyrax_verifier_generator_weights_case(
+    const char* label, std::uint32_t generator_count,
+    const std::vector<FrWire>& challenges,
+    const std::vector<FrWire>& inverses, bool report_timing) {
+    const std::uint32_t padded_size = cpu_ipa_padded_size(generator_count);
+    if (padded_size != 2U * generator_count ||
+        challenges.size() != inverses.size()) return false;
+    std::size_t expected_rounds = 0U;
+    for (std::uint32_t remaining = padded_size; remaining > 1U; remaining >>= 1U)
+        ++expected_rounds;
+    if (challenges.size() != expected_rounds) return false;
+
+    const auto legacy_start = std::chrono::steady_clock::now();
+    std::vector<FrWire> legacy(1U, fr_from_u32(1U));
+    for (std::size_t round = challenges.size(); round-- > 0U;) {
+        const std::size_t half = legacy.size();
+        std::vector<FrWire> expanded(2U * half);
+        for (std::size_t index = 0U; index < half; ++index) {
+            expanded[index] = fr_mul(inverses[round], legacy[index]);
+            expanded[half + index] = fr_mul(challenges[round], legacy[index]);
+        }
+        legacy.swap(expanded);
+    }
+    const double legacy_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - legacy_start).count();
+
+    const auto optimized_start = std::chrono::steady_clock::now();
+    const std::vector<FrWire> optimized =
+        cpu_ipa_hyrax_verifier_generator_weights(
+            challenges, inverses, generator_count, padded_size);
+    const double optimized_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - optimized_start).count();
+    if (!require(legacy.size() == padded_size &&
+                     optimized.size() == generator_count &&
+                     std::equal(optimized.begin(), optimized.end(), legacy.begin()),
+                 label)) return false;
+    if (report_timing)
+        std::cout << "hyrax_verifier_generator_weights=PASS case=" << label
+                  << " generators=" << generator_count
+                  << " legacy_full_coefficients=" << legacy.size()
+                  << " optimized_coefficients=" << optimized.size()
+                  << " legacy_ms=" << legacy_ms
+                  << " optimized_ms=" << optimized_ms
+                  << " speedup=" << legacy_ms / optimized_ms << '\n';
+    return true;
+}
+
+bool run_hyrax_verifier_generator_weights_check() {
+    const auto make_case = [](const char* label, std::uint32_t generator_count,
+                              std::uint32_t mode, bool report_timing) {
+        const std::uint32_t padded = cpu_ipa_padded_size(generator_count);
+        std::size_t rounds = 0U;
+        for (std::uint32_t remaining = padded; remaining > 1U; remaining >>= 1U)
+            ++rounds;
+        std::vector<FrWire> challenges(rounds), inverses(rounds);
+        for (std::size_t round = 0U; round < rounds; ++round) {
+            if (mode == 0U) {
+                challenges[round] = fr_from_u32(1U);
+            } else if (mode == 1U) {
+                challenges[round] = fr_from_u32(
+                    static_cast<std::uint32_t>(round + 2U));
+            } else {
+                challenges[round] = deterministic_full_field_scalar(
+                    "hyrax-verifier-generator-weight.challenge",
+                    static_cast<std::uint32_t>(round));
+                if (fr_compare(challenges[round], FrWire{}) == 0)
+                    challenges[round] = fr_from_u32(3U);
+            }
+            inverses[round] = cpu_fr_inv(challenges[round]);
+        }
+        return check_hyrax_verifier_generator_weights_case(
+            label, generator_count, challenges, inverses, report_timing);
+    };
+    return make_case("n1", 1U, 1U, false) &&
+           make_case("all-one-challenges-n16", 16U, 0U, false) &&
+           make_case("nonbinary-n256", 256U, 1U, false) &&
+           make_case("full-field-random-n2^18", 1U << 18U, 2U, true);
+}
+
+bool run_terminal_mle_weight_check() {
+    if (!check_terminal_mle_weight_case("singleton", {}, false) || !check_terminal_mle_weight_case("binary", {FrWire{}, fr_from_u32(1U), fr_from_u32(1U), FrWire{}}, false) || !check_terminal_mle_weight_case("nonbinary", {fr_from_u32(2U), fr_from_u32(19U), fr_from_u32(5U)}, false)) return false;
+    for (const std::uint32_t dimension : {15U, 18U}) {
+        std::vector<FrWire> point(dimension);
+        for (std::uint32_t index = 0U; index < dimension; ++index)
+            point[index] = deterministic_full_field_scalar("terminal.point", index);
+        if (!check_terminal_mle_weight_case(dimension == 15U ? "random-d15" : "random-d18", point, true)) return false;
+    }
+    return true;
+}
+
 FullProjectiveFoldTrace legacy_full_projective_fold(
     const std::vector<CpuG1Point>& generators, std::uint32_t generator_count,
     const std::vector<FrWire>& values_a, const std::vector<FrWire>& values_b,
@@ -523,6 +653,137 @@ bool repeated_basis_large_fold_case(
     return cpu_g1_equal(legacy_final, indexed_final);
 }
 
+bool initial_zero_padding_differential_case() {
+    const CpuG1Point seed = cpu_g1_generator();
+    const CpuG1Point h = cpu_g1_mul(seed, fr_from_u32(710101U));
+    const CpuG1Point u = cpu_g1_mul(seed, fr_from_u32(710107U));
+    for (const std::uint32_t generator_count : {1U, 8U}) {
+        const std::uint32_t padded_size = cpu_ipa_padded_size(generator_count);
+        const std::size_t half = padded_size / 2U;
+        std::vector<CpuG1Point> generators(padded_size, CpuG1Point::zero());
+        for (std::size_t index = 0U; index < generator_count; ++index)
+            generators[index] = cpu_g1_mul(seed, fr_from_u32(index + 17U));
+        std::vector<FrWire> current_a(padded_size);
+        for (std::size_t index = 0U; index < generator_count; ++index)
+            current_a[index] = fr_from_u32(index + 23U);
+        std::vector<FrWire> point;
+        if (generator_count == 8U)
+            point = {fr_from_u32(2U), fr_from_u32(5U), fr_from_u32(7U)};
+        const std::vector<FrWire> mle = cpu_ipa_mle_weights(point);
+        std::vector<FrWire> current_b(padded_size);
+        std::copy(mle.begin(), mle.end(), current_b.begin());
+
+        const FrWire old_cross_left = cpu_ipa_inner_product(
+            current_a, 0U, current_b, half, half);
+        const FrWire old_cross_right = cpu_ipa_inner_product(
+            current_a, half, current_b, 0U, half);
+        const CpuG1Point old_left = cpu_g1_add(
+            cpu_g1_sum(generators.data() + half, current_a.data(), half),
+            cpu_g1_mul(u, old_cross_left));
+        const CpuG1Point old_right = cpu_g1_add(
+            cpu_g1_sum(generators.data(), current_a.data() + half, half),
+            cpu_g1_mul(u, old_cross_right));
+        if (fr_compare(old_cross_left, FrWire{}) != 0 ||
+            fr_compare(old_cross_right, FrWire{}) != 0 ||
+            !cpu_g1_equal(old_left, CpuG1Point::zero()) ||
+            !cpu_g1_equal(old_right, CpuG1Point::zero())) {
+            std::cerr << "cpu_ipa_optimized_check status=FAIL initial-zero-round oracle"
+                      << " generators=" << generator_count << '\n';
+            return false;
+        }
+
+        const FrWire r_left = fr_from_u32(31U);
+        const FrWire r_right = fr_from_u32(37U);
+        const CpuG1Point old_blinded_left = cpu_g1_add(
+            old_left, cpu_g1_mul(h, r_left));
+        const CpuG1Point old_blinded_right = cpu_g1_add(
+            old_right, cpu_g1_mul(h, r_right));
+        const CpuG1Point fast_blinded_left = cpu_g1_add(
+            CpuG1Point::zero(), cpu_g1_mul(h, r_left));
+        const CpuG1Point fast_blinded_right = cpu_g1_add(
+            CpuG1Point::zero(), cpu_g1_mul(h, r_right));
+        std::vector<zkdl::byte> old_left_wire, fast_left_wire;
+        std::vector<zkdl::byte> old_right_wire, fast_right_wire;
+        append_g1(old_left_wire, cpu_g1_to_native(old_blinded_left));
+        append_g1(fast_left_wire, cpu_g1_to_native(fast_blinded_left));
+        append_g1(old_right_wire, cpu_g1_to_native(old_blinded_right));
+        append_g1(fast_right_wire, cpu_g1_to_native(fast_blinded_right));
+        if (old_left_wire != fast_left_wire || old_right_wire != fast_right_wire) {
+            std::cerr << "cpu_ipa_optimized_check status=FAIL initial-round-wire"
+                      << " generators=" << generator_count << '\n';
+            return false;
+        }
+
+        const FrWire challenge = fr_from_u32(41U);
+        const FrWire inverse = cpu_fr_inv(challenge);
+        std::vector<CpuG1Point> generic_generators, specialized_generators;
+        std::vector<FrWire> generic_a, generic_b, specialized_a, specialized_b;
+        cpu_ipa_fold_projective_vectors_parallel(
+            generators, current_a, current_b, challenge, inverse,
+            generic_generators, generic_a, generic_b);
+        cpu_ipa_fold_projective_vectors_parallel(
+            generators, current_a, current_b, challenge, inverse,
+            specialized_generators, specialized_a, specialized_b, true);
+        if (generic_a != specialized_a || generic_b != specialized_b ||
+            generic_generators.size() != specialized_generators.size()) {
+            std::cerr << "cpu_ipa_optimized_check status=FAIL initial-fold-scalars"
+                      << " generators=" << generator_count << '\n';
+            return false;
+        }
+        for (std::size_t index = 0U; index < generic_generators.size(); ++index)
+            if (!cpu_g1_equal(generic_generators[index],
+                              specialized_generators[index])) {
+                std::cerr << "cpu_ipa_optimized_check status=FAIL initial-fold-generator"
+                          << " generators=" << generator_count
+                          << " index=" << index << '\n';
+                return false;
+            }
+    }
+    std::cout << "initial_zero_padding=PASS generators=1,8"
+              << " generic_cross=ZERO lr_wire=IDENTICAL"
+              << " generic_fold=EQUAL protocol_rounds=UNCHANGED\n";
+    return true;
+}
+
+bool initial_lr_substep_benchmark(const CpuIpaBasisContext& basis) {
+    constexpr std::uint32_t kGeneratorCount = 1U << 15U;
+    const std::size_t padded_size = cpu_ipa_padded_size(kGeneratorCount);
+    const std::size_t half = padded_size / 2U;
+    if (basis.size() < kGeneratorCount) return false;
+    std::vector<CpuG1Point> generators(padded_size, CpuG1Point::zero());
+    std::copy_n(basis.generators().begin(), kGeneratorCount, generators.begin());
+    std::vector<FrWire> current_a(padded_size), current_b(padded_size);
+    for (std::size_t index = 0U; index < kGeneratorCount; ++index) {
+        current_a[index] = fr_from_u32(index % 127U + 1U);
+        current_b[index] = fr_from_u32(index % 53U + 1U);
+    }
+    const CpuG1Point u = cpu_g1_mul(cpu_g1_generator(), fr_from_u32(710113U));
+    const auto old_start = std::chrono::steady_clock::now();
+    const FrWire cross_left = cpu_ipa_inner_product(
+        current_a, 0U, current_b, half, half);
+    const FrWire cross_right = cpu_ipa_inner_product(
+        current_a, half, current_b, 0U, half);
+    const CpuG1Point old_left = cpu_g1_add(
+        cpu_g1_sum(generators.data() + half, current_a.data(), half),
+        cpu_g1_mul(u, cross_left));
+    const CpuG1Point old_right = cpu_g1_add(
+        cpu_g1_sum(generators.data(), current_a.data() + half, half),
+        cpu_g1_mul(u, cross_right));
+    const double old_generic_milliseconds = std::chrono::duration<double,
+        std::milli>(std::chrono::steady_clock::now() - old_start).count();
+    if (fr_compare(cross_left, FrWire{}) != 0 ||
+        fr_compare(cross_right, FrWire{}) != 0 ||
+        !cpu_g1_equal(old_left, CpuG1Point::zero()) ||
+        !cpu_g1_equal(old_right, CpuG1Point::zero())) return false;
+
+    std::cout << "initial_lr_substep_benchmark=PASS generator_count="
+              << kGeneratorCount << " padded=" << padded_size
+              << " old_generic_ms=" << old_generic_milliseconds
+              << " optimized_path=ELIDED"
+              << " end_to_end_proof_speedup=NOT_MEASURED\n";
+    return true;
+}
+
 bool tiny_independent_opening_case() {
     const CpuG1Point seed = cpu_g1_generator();
     const CpuG1Point h = cpu_g1_mul(seed, fr_from_u32(710003U));
@@ -576,6 +837,17 @@ bool tiny_independent_opening_case() {
         wrong_tau_rejected = true;
     }
     if (!wrong_tau_rejected) return false;
+    std::vector<FrWire> noncanonical_values = values;
+    noncanonical_values[0U] = kScalarModulus;
+    bool noncanonical_value_rejected = false;
+    try {
+        (void)cpu_open_hyrax_v3_authenticated(
+            prover_basis, noncanonical_values, point, randomness, tau_blinder,
+            tau, metadata, xi, &prover_session);
+    } catch (const std::invalid_argument&) {
+        noncanonical_value_rejected = true;
+    }
+    if (!noncanonical_value_rejected) return false;
     bool value_shape_rejected = false;
     try {
         std::vector<FrWire> short_values(values.begin(), values.end() - 1);
@@ -604,6 +876,12 @@ bool tiny_independent_opening_case() {
     if (!cpu_verify_hyrax_v3_authenticated(
             opened.proof, xi, tau, verifier_basis, point, metadata, &error,
             &verifier_session)) return false;
+    const HyraxOpeningProverResult raw_opened = cpu_open_hyrax_v3(
+        prover_basis.generators(), values, point, h, u, randomness,
+        tau_blinder, tau, metadata);
+    if (!cpu_verify_hyrax_v3(
+            raw_opened.proof, xi, tau, prover_basis.generators(), point,
+            h, u, metadata, &error)) return false;
     std::vector<zkdl::byte> encoded;
     serialize_hyrax_opening_v3(opened.proof, encoded);
     const std::size_t z1_offset = encoded.size() - 2U * sizeof(FrWire);
@@ -616,7 +894,8 @@ bool tiny_independent_opening_case() {
             tampered, xi, tau, verifier_basis, point, metadata, &error,
             &verifier_session)) return false;
     std::cout << "tiny_opening=PASS independent_verify=PASS tamper=REJECTED"
-              << " wrong_tau=REJECTED value_shape=REJECTED point_shape=REJECTED"
+              << " wrong_tau=REJECTED noncanonical_value=REJECTED"
+              << " value_shape=REJECTED point_shape=REJECTED"
               << " rounds_size=" << opened.proof.rounds.size()
               << " rounds_capacity=" << opened.proof.rounds.capacity()
               << " inner_size=" << opened.proof.inner_point.size()
@@ -793,6 +1072,7 @@ bool run_fast_fold_only_check() {
             return false;
         }
     }
+    if (!initial_zero_padding_differential_case()) return false;
 
     constexpr std::uint32_t kLargeCount = 65553U;
     const std::uint32_t padded_size = cpu_ipa_padded_size(kLargeCount);
@@ -810,6 +1090,10 @@ bool run_fast_fold_only_check() {
     }
     if (!prefix_digest_matches_legacy(basis, kLargeCount, h, u)) {
         std::cerr << "cpu_ipa_optimized_check status=FAIL prefix-digest\n";
+        return false;
+    }
+    if (!initial_lr_substep_benchmark(basis)) {
+        std::cerr << "cpu_ipa_optimized_check status=FAIL initial-LR-substep\n";
         return false;
     }
     CpuG1MsmSession session(basis);
@@ -1210,6 +1494,8 @@ bool run_check() {
     static_assert(!std::is_assignable<CpuIpaBasisContext&,
                                       std::vector<CpuG1Point>>::value,
                   "an authenticated basis must not accept a raw vector assignment");
+    if (!run_terminal_mle_weight_check()) return false;
+    if (!run_hyrax_verifier_generator_weights_check()) return false;
 
     constexpr std::uint32_t kGeneratorCount = 8192U;
     const std::uint32_t padded_size = cpu_ipa_padded_size(kGeneratorCount);
@@ -1395,6 +1681,12 @@ bool run_check() {
         std::cerr << " reason=" << error << '\n';
         return false;
     }
+    std::vector<FrWire> wrong_dimension = point;
+    wrong_dimension.pop_back();
+    if (!require(!cpu_verify_hyrax_v3_authenticated(opened.proof, expected_xi, expected_tau, verifier_basis, wrong_dimension, metadata, &error), "malformed-query-dimension-rejected")) return false;
+    std::vector<FrWire> noncanonical_query = point;
+    noncanonical_query[0U] = kScalarModulus;
+    if (!require(!cpu_verify_hyrax_v3_authenticated(opened.proof, expected_xi, expected_tau, verifier_basis, noncanonical_query, metadata, &error), "noncanonical-query-rejected")) return false;
     if (!require(!cpu_verify_hyrax_v3_authenticated(
                      opened.proof, cpu_g1_add(expected_xi, h), expected_tau,
                      verifier_basis, point, metadata, &error),

@@ -1165,6 +1165,7 @@ def run_tiny_setup_capacity_gate(
     session_dir: Path,
     session_id: str,
     admission: dict[str, Any],
+    admission_dir: Path,
     runtime_identity: dict[str, Any],
     selected_device: dict[str, Any],
     build_environment: dict[str, Any],
@@ -1178,7 +1179,9 @@ def run_tiny_setup_capacity_gate(
         _authenticated_srs_copy_size_bytes,
         _check_dataset_capacity,
         _disk_budget_components,
+        _native_json_output_bounds,
         _native_capacity_requirements,
+        _pending_json_output_disk_budget,
         _pending_srs_copy_disk_budget,
         _sample_native_cuda_memory,
     )
@@ -1210,14 +1213,22 @@ def run_tiny_setup_capacity_gate(
         expected_size_bytes=source_srs_size_bytes,
     )
     srs_budget = _pending_srs_copy_disk_budget(srs_copy_size, {TINY_DATASET})
+    output_bounds = _native_json_output_bounds(
+        admission, TINY_DATASET, prepared_dir_override=admission_dir
+    )
+    pending_json_budget = _pending_json_output_disk_budget(
+        {TINY_DATASET: output_bounds}, (TINY_DATASET,)
+    )
     disk_components = _disk_budget_components(
         pending_srs=srs_budget,
         setup_key_artifact_upper_bytes=requirements["setup_key_artifact_upper_bytes"],
         setup_mapped_peak_bytes=requirements["setup_mapped_peak_bytes"],
+        pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+        pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+        pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
     )
     live_sample = _sample_native_cuda_memory(
         query_receipt,
-        session_dir=session_dir,
         session_id=session_id,
         selected_device=selected_device,
         gpu_identity=gpu_identity,
@@ -1238,6 +1249,9 @@ def run_tiny_setup_capacity_gate(
         "workspace_query": query,
         "requirements": requirements,
         "setup_check": setup_check,
+        "pending_json_output_bounds": output_bounds,
+        "pending_json_budget": pending_json_budget,
+        "disk_budget_components": disk_components,
         "source_srs_copy_path": str(source_srs_path),
         "source_srs_copy_size_bytes": srs_copy_size,
         "pending_output_srs_copy_count": srs_budget["pending_output_srs_copy_count"],
@@ -1251,6 +1265,7 @@ def run_tiny_prove_capacity_gate(
     session_dir: Path,
     session_id: str,
     admission: dict[str, Any],
+    admission_dir: Path,
     capacity: dict[str, Any],
     selected_device: dict[str, Any],
     build_environment: dict[str, Any],
@@ -1263,7 +1278,9 @@ def run_tiny_prove_capacity_gate(
         _check_dataset_capacity,
         _authenticated_srs_copy_size_bytes,
         _disk_budget_components,
+        _native_json_output_bounds,
         _native_prepare_budget,
+        _pending_json_output_disk_budget,
         _pending_srs_copy_disk_budget,
         _sample_native_cuda_memory,
         _validated_native_prepare_exports,
@@ -1271,7 +1288,6 @@ def run_tiny_prove_capacity_gate(
 
     live_sample = _sample_native_cuda_memory(
         capacity["query_receipt"],
-        session_dir=session_dir,
         session_id=session_id,
         selected_device=selected_device,
         gpu_identity=gpu_identity,
@@ -1284,9 +1300,23 @@ def run_tiny_prove_capacity_gate(
         expected_size_bytes=source_srs_size_bytes,
     )
     srs_budget = _pending_srs_copy_disk_budget(srs_copy_size, {TINY_DATASET})
+    output_bounds = _native_json_output_bounds(
+        admission, TINY_DATASET, prepared_dir_override=admission_dir
+    )
+    pending_json_budget = _pending_json_output_disk_budget(
+        {TINY_DATASET: output_bounds}, (TINY_DATASET,)
+    )
     disk_components = _disk_budget_components(
         pending_srs=srs_budget,
         proof_spill_known_bytes=requirements["proof_spill_known_bytes"],
+        proof_spill_extra_bytes=max(
+            0,
+            int(requirements["proof_spill_known_bytes"])
+            - int(output_bounds["proof_json_upper_bytes"]),
+        ),
+        pending_witness_json_upper_bytes=int(pending_json_budget["pending_witness_json_upper_bytes"]),
+        pending_proof_json_upper_bytes=int(pending_json_budget["pending_proof_json_upper_bytes"]),
+        pending_json_datasets=list(pending_json_budget["pending_json_datasets"]),
     )
     prove_check = _check_dataset_capacity(
         TINY_DATASET,
@@ -1309,6 +1339,7 @@ def run_tiny_prove_capacity_gate(
         memory["lookup_table_cardinality_upper_bounds"],
         domain_size=int(admission["domain_size"]),
         expected_lookup_groups=int(admission["constraint_system"]["num_unique_lookup_table_expression_groups"]),
+        expected_h_resident_device_upper_bytes=int(requirements["icicle_h_resident_device_upper_bytes"]),
     )
     prove_check["native_prepare_budget"] = budget
     exports = {
@@ -1327,6 +1358,9 @@ def run_tiny_prove_capacity_gate(
         "scalar_domain_vector_bytes": admission.get("scalar_domain_vector_bytes"),
         "device_uuid": selected_device["uuid"],
         "setup_check": capacity["setup_check"],
+        "pending_json_output_bounds": output_bounds,
+        "pending_json_budget": pending_json_budget,
+        "disk_budget_components": disk_components,
         "prove_check": prove_check,
         "source_srs_copy_path": str(source_srs_path),
         "source_srs_copy_size_bytes": srs_copy_size,
@@ -1492,7 +1526,7 @@ def build_chain_commands(
             "--vk-path",
             vk,
             "--srs-path",
-            srs_rel,
+            relative(root, output / "srs.kzg"),
             "--statement",
             statement,
             "--public-output",
@@ -1824,7 +1858,7 @@ def main(args: argparse.Namespace) -> int:
         for name in (
             "ENABLE_ICICLE_GPU", "EZKL_GAT_BACKEND", "ICICLE_SMALL_K", "ICICLE_SMALL_K_FFT",
             "ICICLE_BACKEND_INSTALL_DIR", "ICICLE_NATIVE_LIB_DIR", "ICICLE_NATIVE_MANIFEST_SHA256",
-            "CUDA_ARCH", "EZKL_FORMAL_SESSION_ID", "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
+            "CUDA_ARCH", "EZKL_FORMAL_SESSION_ID", "EZKL_GAT_DATASET", "EZKL_FORMAL_BUILD_RECEIPT_SHA256",
             "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256", "EZKL_FORMAL_RESOURCE_AUTH_SESSION_ID",
             "EZKL_FORMAL_SELECTED_CUDA_DEVICE", "EZKL_NATIVE_PREPARE_BUDGET_BYTES",
             "EZKL_NATIVE_PREPARE_DEVICE_HEADROOM_BYTES", "EZKL_NATIVE_LOOKUP_CARDINALITY_BOUNDS",
@@ -1835,6 +1869,7 @@ def main(args: argparse.Namespace) -> int:
             "EZKL_GAT_BACKEND": "gpu",
             "EZKL_ALLOW_TINY_FIXTURE": "1",
             "EZKL_FORMAL_SESSION_ID": session_id,
+            "EZKL_GAT_DATASET": TINY_DATASET,
             "EZKL_FORMAL_BUILD_RECEIPT_SHA256": sha256(source_root / "artifacts/build/gpu/build_receipt.json"),
             "EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256": str(build_environment["build_environment_sha256"]),
             "EZKL_FORMAL_SELECTED_CUDA_DEVICE": json.dumps(selected_device, sort_keys=True, separators=(",", ":")),
@@ -1898,7 +1933,15 @@ def main(args: argparse.Namespace) -> int:
             admission_elapsed += elapsed
             print(f"[tiny-e2e] {label}: actual production admission command completed", flush=True)
 
-        from run_hybrid_formal import _write_native_keygen_budget_receipt, native_admit_all_datasets
+        from run_hybrid_formal import (
+            _install_authenticated_admission_snapshot,
+            _load_native_keygen_receipt,
+            _native_capacity_requirements,
+            _write_native_keygen_budget_receipt,
+            _write_native_prove_budget_receipt,
+            native_admit_all_datasets,
+            write_setup_reuse_receipt,
+        )
 
         admissions = native_admit_all_datasets(
             binary,
@@ -1917,6 +1960,7 @@ def main(args: argparse.Namespace) -> int:
         setup_output.parent.mkdir(parents=True, exist_ok=True)
         capacity = run_tiny_setup_capacity_gate(
             temp_root, output_root, session_dir, session_id, admission,
+            admission_dir,
             runtime, selected_device, build_environment, gpu_identity,
             chosen_srs, source_srs_size_bytes,
         )
@@ -1941,16 +1985,17 @@ def main(args: argparse.Namespace) -> int:
             env,
         )
         setup_output.mkdir(parents=True, exist_ok=False)
+        resume_identity = {
+            "binary_sha256": sha256(binary),
+            "build_receipt_sha256": env["EZKL_FORMAL_BUILD_RECEIPT_SHA256"],
+            "build_environment_sha256": env["EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256"],
+        }
         native_keygen_budget_sha256 = _write_native_keygen_budget_receipt(
             setup_output,
             dataset=TINY_DATASET,
             session_id=session_id,
             admission=admission,
-            resume_identity={
-                "binary_sha256": sha256(binary),
-                "build_receipt_sha256": env["EZKL_FORMAL_BUILD_RECEIPT_SHA256"],
-                "build_environment_sha256": env["EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256"],
-            },
+            resume_identity=resume_identity,
             capacity=capacity["requirements"],
             setup_check=capacity["setup_check"],
             workspace_query=capacity["workspace_query"],
@@ -1963,6 +2008,43 @@ def main(args: argparse.Namespace) -> int:
             "initial-prepare", commands["initial_prepare"], root=temp_root, log_dir=setup_output / "logs",
             env={**env, "EZKL_GAT_RUN_DIR": str(setup_output)}, timeout=args.stage_timeout, overall_deadline=deadline,
         )
+        write_json(setup_output / "setup_timing.json", {"duration_ms": initial_setup_elapsed * 1000.0})
+        _install_authenticated_admission_snapshot(
+            setup_output,
+            admission_dir / "admission.json",
+            admission["sha256"],
+            TINY_DATASET,
+        )
+        setup_receipt_sha256 = write_setup_reuse_receipt(
+            setup_output,
+            TINY_DATASET,
+            session_id,
+            resume_identity,
+            admission,
+        )
+        print(f"[tiny-e2e] native setup receipt PASS: {setup_receipt_sha256}", flush=True)
+        native_keygen_budget, native_keygen_receipt, native_keygen_receipt_sha256 = _load_native_keygen_receipt(
+            setup_output,
+            TINY_DATASET,
+            session_id,
+            resume_identity,
+            admission,
+        )
+        native_census = native_keygen_receipt.get("native_census")
+        if not isinstance(native_census, dict):
+            raise TinyE2EError("tiny setup lacks the mandatory authenticated native keygen census")
+        post_setup_requirements = _native_capacity_requirements(
+            admission,
+            capacity["workspace_query"]["native_type_sizes"],
+            native_census=native_census,
+        )
+        if post_setup_requirements.get("gat_transient_witness_bytes_upper") != native_keygen_budget.get(
+            "gat_transient_witness_bytes_upper"
+        ):
+            raise TinyE2EError("tiny authenticated keygen budget and recomputed capacity disagree on GAT live-tensor reserve")
+        post_setup_requirements["host_known_bytes"] = post_setup_requirements["proof_host_peak_bytes"]
+        post_setup_capacity = dict(capacity)
+        post_setup_capacity["requirements"] = post_setup_requirements
         settings_doc = json.loads((setup_output / "settings.json").read_text())
         run_args = settings_doc.get("run_args")
         if not isinstance(run_args, dict) or isinstance(run_args.get("logrows"), bool) or not isinstance(run_args.get("logrows"), int):
@@ -1986,10 +2068,26 @@ def main(args: argparse.Namespace) -> int:
         timings["producer"] = elapsed * 1000.0
 
         native_exports, prove_capacity_report = run_tiny_prove_capacity_gate(
-            temp_root, output_root, session_dir, session_id, admission, capacity,
+            temp_root, output_root, session_dir, session_id, admission, admission_dir, post_setup_capacity,
             selected_device, build_environment, gpu_identity,
             chosen_srs, source_srs_size_bytes,
         )
+        native_prove_budget_sha256 = _write_native_prove_budget_receipt(
+            setup_output,
+            dataset=TINY_DATASET,
+            session_id=session_id,
+            admission=admission,
+            resume_identity=resume_identity,
+            setup_receipt_sha256=setup_receipt_sha256,
+            native_keygen_budget_sha256=native_keygen_budget_sha256,
+            native_keygen_receipt_sha256=native_keygen_receipt_sha256,
+            capacity=post_setup_requirements,
+            prove_check=prove_capacity_report["prove_check"],
+            workspace_query=capacity["workspace_query"],
+        )
+        prove_capacity_report["post_setup_native_requirements"] = post_setup_requirements
+        prove_capacity_report["native_keygen_receipt_sha256"] = native_keygen_receipt_sha256
+        print(f"[tiny-e2e] native prove budget receipt PASS: {native_prove_budget_sha256}", flush=True)
         write_json(temp_root / "logs/tiny-prove-capacity.json", prove_capacity_report)
         phase_env = {**env, **native_exports, "EZKL_GAT_RUN_DIR": str(setup_output)}
         for phase in ("final_prepare", "witness", "prove"):

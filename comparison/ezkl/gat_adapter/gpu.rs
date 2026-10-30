@@ -88,8 +88,10 @@ struct ProofRecord {
     gpu_h_eval_fallbacks: u64,
     gpu_h_eval_chunks: u64,
     gpu_h_eval_syncs: u64,
+    gpu_h_transfer_syncs: u64,
     gpu_h_workspace_high_water_bytes: usize,
     gpu_h_local_memory_peak_upper_bytes: usize,
+    gpu_h_resident_high_water_bytes: usize,
     evidence: GpuEvidence,
 }
 
@@ -102,6 +104,7 @@ struct NttProfile {
     device_peak_upper_bytes: u64,
     host_staging_upper_bytes: u64,
     precomputed_basis_device_upper_bytes: u64,
+    h_resident_device_upper_bytes: u64,
     h_kernel_local_memory_upper_bytes: u64,
 }
 
@@ -118,13 +121,19 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
     let read_u64 = |document: &Value, key: &str| -> Result<u64, EZKLError> {
         document.get(key).and_then(Value::as_u64).ok_or_else(|| format!("native GPU NTT profile lacks valid {key}").into())
     };
-    if memory.get("schema").and_then(Value::as_str) != Some("ezkl-halo2-static-envelope-v20") {
+    if memory.get("schema").and_then(Value::as_str) != Some("ezkl-halo2-static-envelope-v22") {
         return Err("native GPU NTT profile requires the current Admission memory model".into());
     }
     let base_domain_size = read_u64(&admission, "domain_size")?;
     let proof_domain_size = read_u64(memory, "proof_domain_size")?;
     let capacity_elements = proof_domain_size.max(base_domain_size).min(1u64 << 25);
-    let device_workspace_upper_bytes = capacity_elements.checked_mul(64).ok_or("native GPU NTT workspace bound overflow")?;
+    let constraint_system = admission.get("constraint_system").ok_or("native GPU H profile has no constraint-system geometry")?;
+    let permutation_columns = read_u64(constraint_system, "num_permutation_columns")?;
+    let h_resident_device_upper_bytes = capacity_elements
+        .checked_mul(32)
+        .and_then(|bytes| bytes.checked_mul(if permutation_columns > 0 { 4 } else { 1 }))
+        .ok_or("native resident H/permutation device bound overflow")?;
+    let device_workspace_upper_bytes = capacity_elements.checked_mul(96).ok_or("native GPU NTT workspace bound overflow")?;
     let domain_cache_upper_bytes = capacity_elements
         .checked_add(1 + 64 + 6)
         .and_then(|elements| elements.checked_mul(32))
@@ -144,6 +153,7 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
     if read_u64(memory, "icicle_ntt_min_log_size")? != 16
         || read_u64(memory, "icicle_ntt_max_log_size")? != 25
         || read_u64(memory, "icicle_ntt_capacity_elements")? != capacity_elements
+        || read_u64(memory, "icicle_h_resident_device_upper_bytes")? != h_resident_device_upper_bytes
         || read_u64(memory, "icicle_ntt_device_workspace_upper_bytes")? != device_workspace_upper_bytes
         || read_u64(memory, "icicle_ntt_domain_cache_upper_bytes")? != domain_cache_upper_bytes
         || read_u64(memory, "icicle_ntt_init_scratch_upper_bytes")? != init_scratch_upper_bytes
@@ -159,7 +169,7 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
     }
     let budget_bytes = std::fs::read(&budget_path)?;
     let budget: Value = serde_json::from_slice(&budget_bytes)?;
-    if budget.get("schema").and_then(Value::as_str) != Some("ezkl.native-prove-budget.v6")
+    if budget.get("schema").and_then(Value::as_str) != Some("ezkl.native-prove-budget.v8")
         || budget.get("admission_sha256").and_then(Value::as_str) != Some(admission_sha256.as_str())
         || budget.get("native_execution_policy").and_then(Value::as_str) != Some(halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY)
         || budget.get("h_workspace_borrows_ntt").and_then(Value::as_bool) != Some(true)
@@ -167,6 +177,7 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
         || read_u64(&budget, "icicle_ntt_min_log_size")? != 16
         || read_u64(&budget, "icicle_ntt_max_log_size")? != 25
         || read_u64(&budget, "icicle_ntt_capacity_elements")? != capacity_elements
+        || read_u64(&budget, "icicle_h_resident_device_upper_bytes")? != h_resident_device_upper_bytes
         || read_u64(&budget, "icicle_ntt_device_workspace_upper_bytes")? != device_workspace_upper_bytes
         || read_u64(&budget, "icicle_ntt_domain_cache_upper_bytes")? != domain_cache_upper_bytes
         || read_u64(&budget, "icicle_ntt_init_scratch_upper_bytes")? != init_scratch_upper_bytes
@@ -190,6 +201,7 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
         .max(prepared_workspace_peak)
         .checked_add(device_peak_upper_bytes)
         .and_then(|bytes| bytes.checked_add(precomputed_basis_device_upper_bytes))
+        .and_then(|bytes| bytes.checked_add(h_resident_device_upper_bytes))
         .and_then(|bytes| bytes.checked_add(halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64))
         .ok_or("native fused H CUDA requirement overflow")?;
     let integrated_device = budget.get("integrated_device").and_then(Value::as_bool)
@@ -216,6 +228,7 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
         device_peak_upper_bytes,
         host_staging_upper_bytes,
         precomputed_basis_device_upper_bytes,
+        h_resident_device_upper_bytes,
         h_kernel_local_memory_upper_bytes,
     })
 }
@@ -224,7 +237,7 @@ fn invocation_digest(record: &ProofRecord) -> Result<String, EZKLError> {
     let mut encoded = Vec::new();
     {
         let mut serializer = serde_json::Serializer::new(&mut encoded);
-        let mut sequence = serializer.serialize_seq(Some(33))?;
+        let mut sequence = serializer.serialize_seq(Some(35))?;
         sequence.serialize_element(&record.schema_version)?;
         sequence.serialize_element(&record.proof_sha256.as_str())?;
         sequence.serialize_element(&record.admission_sha256.as_str())?;
@@ -255,8 +268,10 @@ fn invocation_digest(record: &ProofRecord) -> Result<String, EZKLError> {
         sequence.serialize_element(&record.gpu_h_eval_fallbacks)?;
         sequence.serialize_element(&record.gpu_h_eval_chunks)?;
         sequence.serialize_element(&record.gpu_h_eval_syncs)?;
+        sequence.serialize_element(&record.gpu_h_transfer_syncs)?;
         sequence.serialize_element(&record.gpu_h_workspace_high_water_bytes)?;
         sequence.serialize_element(&record.gpu_h_local_memory_peak_upper_bytes)?;
+        sequence.serialize_element(&record.gpu_h_resident_high_water_bytes)?;
         sequence.serialize_element(&record.evidence.provenance)?;
         sequence.end()?;
     }
@@ -274,12 +289,13 @@ fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64
         .checked_add(record.gpu_msm_precompute_calls)
         .and_then(|value| value.checked_add(record.ntt_calls))
         .and_then(|value| value.checked_add(record.gpu_h_eval_syncs))
+        .and_then(|value| value.checked_add(record.gpu_h_transfer_syncs))
         .ok_or("native GPU synchronization counter overflow")?;
     let h_group_outcomes = record.gpu_h_eval_calls
         .checked_add(record.gpu_h_eval_fallbacks)
         .ok_or("native fused-H group counter overflow")?;
     let max_size = u64::try_from(record.ntt_max_size).map_err(|_| "native NTT maximum size exceeds u64")?;
-    let expected_workspace = max_size.checked_mul(64).ok_or("native NTT workspace capacity overflow")?;
+    let expected_workspace = max_size.checked_mul(96).ok_or("native NTT workspace capacity overflow")?;
     let expected_domain = if max_size == 0 {
         0
     } else {
@@ -292,7 +308,7 @@ fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64
     let expected_device_peak = if max_size == 0 {
         0
     } else {
-        max_size.checked_mul(96).and_then(|bytes| bytes.checked_add(10464)).ok_or("native NTT device peak overflow")?
+        max_size.checked_mul(128).and_then(|bytes| bytes.checked_add(10464)).ok_or("native NTT device peak overflow")?
     };
     let minimum_ntt_elements = 1u64
         .checked_shl(16)
@@ -303,7 +319,7 @@ fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64
         .unwrap_or(u64::MAX);
     let planned_ntt_below_minimum = ntt_profile.capacity_elements < (1u64 << 16);
     if record.native_execution_policy != expected_policy
-        || record.schema_version != 4
+        || record.schema_version != 5
         || record.admission_sha256 != ntt_profile.admission_sha256
         || record.icicle_msm_max_concurrency != 1
         || record.icicle_msm_max_concurrency != halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY
@@ -331,8 +347,9 @@ fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64
         || record.gpu_h_eval_rows == 0
         || record.gpu_h_eval_chunks == 0
         || record.gpu_h_eval_syncs != record.gpu_h_eval_chunks
-        || record.gpu_h_workspace_high_water_bytes as u64 > ntt_profile.device_workspace_upper_bytes
+        || record.gpu_h_workspace_high_water_bytes as u64 > ntt_profile.capacity_elements.checked_mul(64).ok_or("native H staging workspace bound overflow")?
         || record.gpu_h_local_memory_peak_upper_bytes as u64 > ntt_profile.h_kernel_local_memory_upper_bytes
+        || record.gpu_h_resident_high_water_bytes as u64 > ntt_profile.h_resident_device_upper_bytes
         || max_size > ntt_profile.capacity_elements
         || record.ntt_workspace_capacity_bytes as u64 != expected_workspace
         || record.ntt_domain_capacity_bytes as u64 != expected_domain
@@ -366,14 +383,14 @@ pub fn write_proof_record(directory: &Path, proof_path: &Path) -> Result<(), EZK
 fn write_proof_record_with_stats(
     directory: &Path,
     proof_path: &Path,
-    (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, gpu_h_eval_groups): (u64, u64, u64, u64, u64, usize, u64, usize, usize, usize, usize, usize, u64, u64, u64, usize, usize, u64, u64, u64, u64, u64, usize, usize, u64),
+    (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, gpu_h_eval_groups, gpu_h_transfer_syncs, gpu_h_resident_high_water_bytes): (u64, u64, u64, u64, u64, usize, u64, usize, usize, usize, usize, usize, u64, u64, u64, usize, usize, u64, u64, u64, u64, u64, usize, usize, u64, u64, usize),
     ntt_profile: &NttProfile,
 ) -> Result<(), EZKLError> {
     let (provenance, _) = manifest()?;
     let policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY.to_owned();
     let invocations = gpu_msm_chunk_calls.checked_add(gpu_msm_precompute_calls).and_then(|value| value.checked_add(ntt_calls)).and_then(|value| value.checked_add(gpu_h_eval_chunks)).ok_or("native GPU invocation counter overflow")?;
     let evidence = GpuEvidence { backend: "CUDA".into(), gpu_backend: "icicle-cuda".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: invocations, provenance: Some(provenance), invocation_trace_sha256: String::new() };
-    let mut record = ProofRecord { schema_version: 4, proof_sha256: crate::execute::get_file_hash(proof_path)?, admission_sha256: ntt_profile.admission_sha256.clone(), native_execution_policy: policy, icicle_msm_max_concurrency: halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY, icicle_msm_precompute_factor: halo2_proofs::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_upper_bytes: usize::try_from(ntt_profile.precomputed_basis_device_upper_bytes).map_err(|_| "native resident MSM upper bound exceeds usize")?, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_h_eval_groups, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, evidence };
+    let mut record = ProofRecord { schema_version: 5, proof_sha256: crate::execute::get_file_hash(proof_path)?, admission_sha256: ntt_profile.admission_sha256.clone(), native_execution_policy: policy, icicle_msm_max_concurrency: halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY, icicle_msm_precompute_factor: halo2_proofs::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_upper_bytes: usize::try_from(ntt_profile.precomputed_basis_device_upper_bytes).map_err(|_| "native resident MSM upper bound exceeds usize")?, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_h_eval_groups, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_transfer_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, gpu_h_resident_high_water_bytes, evidence };
     validate_record(&record, ntt_profile)?;
     record.evidence.invocation_trace_sha256 = invocation_digest(&record)?;
     std::fs::write(directory.join("gpu_prover_record.json"), serde_json::to_vec_pretty(&record)?)?;
@@ -423,7 +440,7 @@ mod proof_evidence_tests {
         std::fs::write(&proof_path, b"synthetic proof bytes for evidence binding").unwrap();
 
         let capacity_elements = 1u64 << 16;
-        let device_workspace_upper_bytes = 64 * capacity_elements;
+        let device_workspace_upper_bytes = 96 * capacity_elements;
         let domain_cache_upper_bytes = 32 * (capacity_elements + 1 + 64 + 6);
         let init_scratch_upper_bytes = 4 * 64 * 32;
         let device_peak_upper_bytes = device_workspace_upper_bytes + domain_cache_upper_bytes + init_scratch_upper_bytes;
@@ -431,19 +448,23 @@ mod proof_evidence_tests {
         let precomputed_basis_device_upper_bytes = capacity_elements * 64 * 4;
         let point_staging_host_upper_bytes = capacity_elements.min(1 << 20) * 64;
         let resident_basis_bytes = capacity_elements * 64 * 4;
+        let h_resident_device_upper_bytes = capacity_elements * 32;
         let cuda_required_workspace_bytes = 2000
             + device_peak_upper_bytes
             + precomputed_basis_device_upper_bytes
+            + h_resident_device_upper_bytes
             + halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64;
         let admission = serde_json::json!({
             "domain_size": capacity_elements,
+            "constraint_system": {"num_permutation_columns": 0},
             "native_memory_model": {
-                "schema": "ezkl-halo2-static-envelope-v20",
+                "schema": "ezkl-halo2-static-envelope-v22",
                 "domain_size": capacity_elements,
                 "proof_domain_size": capacity_elements,
                 "icicle_ntt_min_log_size": 16,
                 "icicle_ntt_max_log_size": 25,
                 "icicle_ntt_capacity_elements": capacity_elements,
+                "icicle_h_resident_device_upper_bytes": h_resident_device_upper_bytes,
                 "icicle_ntt_device_workspace_upper_bytes": device_workspace_upper_bytes,
                 "icicle_ntt_domain_cache_upper_bytes": domain_cache_upper_bytes,
                 "icicle_ntt_init_scratch_upper_bytes": init_scratch_upper_bytes,
@@ -460,7 +481,7 @@ mod proof_evidence_tests {
         std::fs::write(&admission_path, serde_json::to_vec(&admission).unwrap()).unwrap();
         let admission_sha256 = crate::execute::get_file_hash(&admission_path).unwrap();
         let budget = serde_json::json!({
-            "schema": "ezkl.native-prove-budget.v6",
+            "schema": "ezkl.native-prove-budget.v8",
             "admission_sha256": admission_sha256,
             "native_execution_policy": halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY,
             "h_workspace_borrows_ntt": true,
@@ -482,6 +503,7 @@ mod proof_evidence_tests {
             "icicle_ntt_min_log_size": 16,
             "icicle_ntt_max_log_size": 25,
             "icicle_ntt_capacity_elements": capacity_elements,
+            "icicle_h_resident_device_upper_bytes": h_resident_device_upper_bytes,
             "icicle_ntt_device_workspace_upper_bytes": device_workspace_upper_bytes,
             "icicle_ntt_domain_cache_upper_bytes": domain_cache_upper_bytes,
             "icicle_ntt_init_scratch_upper_bytes": init_scratch_upper_bytes,
@@ -497,6 +519,7 @@ mod proof_evidence_tests {
             device_peak_upper_bytes,
             host_staging_upper_bytes,
             precomputed_basis_device_upper_bytes,
+            h_resident_device_upper_bytes,
             h_kernel_local_memory_upper_bytes: halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64,
         };
 
@@ -511,14 +534,14 @@ mod proof_evidence_tests {
                 1,
                 1,
                 1,
-                4,
+                6,
                 0,
                 capacity_elements,
                 ntt_max_size,
-                64 * ntt_max_size,
+                96 * ntt_max_size,
                 32 * (ntt_max_size + 1 + 64 + 6),
                 32 * ntt_max_size,
-                96 * ntt_max_size + 10464,
+                128 * ntt_max_size + 10464,
                 1,
                 1,
                 0,
@@ -529,9 +552,11 @@ mod proof_evidence_tests {
                 1,
                 1,
                 1,
-                device_workspace_upper_bytes as usize,
+                64 * ntt_max_size,
                 1 << 20,
                 2,
+                2,
+                h_resident_device_upper_bytes as usize,
             ),
             &ntt_profile,
         )

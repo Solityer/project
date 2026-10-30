@@ -1,7 +1,14 @@
 #![cfg(feature = "gpu-accelerated")]
 
 use halo2_proofs::{
-    arithmetic::{best_fft, best_fft_cpu, try_gpu_fft_if_eligible, Field},
+    arithmetic::{
+        best_fft,
+        best_fft_cpu,
+        try_gpu_coset_fft_if_eligible,
+        try_gpu_coset_fft_if_eligible_with_factors,
+        try_gpu_fft_if_eligible,
+        Field,
+    },
     fft::recursive::FFTData,
     icicle,
     poly::EvaluationDomain,
@@ -50,6 +57,20 @@ fn high_water_deterministic_values(size: usize) -> Vec<Fr> {
             value
         })
         .collect()
+}
+
+fn cpu_coset_fft(input: &[Fr], omega: Fr, log_n: u32, coset: Fr) -> Vec<Fr> {
+    let size = input.len();
+    let mut expected = input.to_vec();
+    let mut power = Fr::ONE;
+    for value in &mut expected {
+        *value *= power;
+        power *= coset;
+    }
+    let omega_inv = omega.invert().expect("nonzero domain root");
+    let data = FFTData::new(size, omega, omega_inv);
+    best_fft_cpu(&mut expected, omega, log_n, &data, false);
+    expected
 }
 
 #[test]
@@ -116,13 +137,13 @@ fn formal_gpu_ntt_matches_cpu_and_domain_ifft() {
     assert!(stats.3 >= 2, "CPU oracle did not run");
     assert_eq!(stats.6, stats.2 * size as u64);
     assert_eq!(stats.7, size, "NTT high-water size must include resident capacity");
-    assert_eq!(stats.8, 2 * size * scalar_bytes);
+    assert_eq!(stats.8, 3 * size * scalar_bytes);
     assert_eq!(stats.9, (size + 1 + 64 + 6) * scalar_bytes);
     assert!(stats.10 <= size * scalar_bytes);
-    assert_eq!(stats.11, 96 * size + 10_464);
+    assert_eq!(stats.11, 128 * size + 10_464);
     assert_eq!(
         icicle::FORMAL_GPU_EXECUTION_POLICY,
-        "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5"
+        "halo2_icicle-bn254-gpu-hgraph-fused-coset-ntt-16-25-msm-lagrange-resident-f4-sparse-m-cpu32-v8"
     );
     assert_eq!(icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY, 1);
     eprintln!(
@@ -153,6 +174,79 @@ fn formal_gpu_ntt_matches_cpu_and_domain_ifft() {
     assert_eq!(reset_stats.9, stats.9);
     assert_eq!(reset_stats.10, stats.10);
     assert_eq!(reset_stats.11, stats.11);
+}
+
+#[test]
+fn formal_gpu_coset_ntt_cache_matches_cpu_for_reuse_factor_upload_and_size_change() {
+    let _guard = GPU_NTT_TEST_LOCK.lock().expect("formal GPU NTT test lock poisoned");
+    let device_id = std::env::var("ICICLE_DEVICE_ID")
+        .unwrap_or_else(|_| "0".to_owned())
+        .parse::<usize>()
+        .expect("ICICLE_DEVICE_ID must be a local device index");
+    icicle::reset_execution_operation_stats();
+    icicle::initialize_device(device_id).expect("initialize formal ICICLE device");
+    let scope = icicle::native_prove_ntt_scope();
+
+    let log_n = 16;
+    let size = 1usize << log_n;
+    let domain = EvaluationDomain::<Fr>::new(2, log_n);
+    let omega = domain.get_omega();
+    let input = deterministic_values(size);
+    let coset_a = Fr::from(7);
+    let coset_b = Fr::from(11);
+    let coset_c = Fr::from(13);
+
+    for coset in [coset_a, coset_a, coset_b] {
+        let mut actual = input.clone();
+        assert!(try_gpu_coset_fft_if_eligible(
+            &mut actual,
+            omega,
+            log_n,
+            coset,
+        ), "eligible BN254 coset NTT must take the GPU path");
+        assert_eq!(actual, cpu_coset_fft(&input, omega, log_n, coset));
+    }
+
+    let mut host_factors = Vec::with_capacity(size);
+    let mut power = Fr::ONE;
+    for _ in 0..size {
+        host_factors.push(power);
+        power *= coset_c;
+    }
+    for _ in 0..2 {
+        let mut actual = input.clone();
+        assert!(try_gpu_coset_fft_if_eligible_with_factors(
+            &mut actual,
+            omega,
+            log_n,
+            coset_c,
+            &host_factors,
+        ), "eligible shared-factor BN254 coset NTT must take the GPU path");
+        assert_eq!(actual, cpu_coset_fft(&input, omega, log_n, coset_c));
+    }
+
+    let changed_log_n = 17;
+    let changed_size = 1usize << changed_log_n;
+    let changed_domain = EvaluationDomain::<Fr>::new(2, changed_log_n);
+    let changed_omega = changed_domain.get_omega();
+    let changed_input = deterministic_values(changed_size);
+    let mut changed_actual = changed_input.clone();
+    assert!(try_gpu_coset_fft_if_eligible(
+        &mut changed_actual,
+        changed_omega,
+        changed_log_n,
+        coset_a,
+    ), "eligible changed-size BN254 coset NTT must take the GPU path");
+    assert_eq!(
+        changed_actual,
+        cpu_coset_fft(&changed_input, changed_omega, changed_log_n, coset_a),
+    );
+
+    let stats = icicle::execution_stats();
+    assert_eq!(stats.2, 6, "each fused coset transform is one NTT dispatch");
+    assert_eq!(stats.6, (5 * size + changed_size) as u64);
+    assert_eq!(stats.7, changed_size, "workspace high-water must follow the larger coset transform");
+    drop(scope);
 }
 
 #[test]
@@ -195,10 +289,10 @@ fn formal_gpu_ntt_workspace_reuses_high_water() {
         assert!(icicle::native_prove_ntt_scope_active());
         let stats = icicle::execution_stats();
         assert_eq!(stats.7, high_size, "NTT high-water size changed at log_n={log_n}");
-        assert_eq!(stats.8, 2 * high_size * scalar_bytes, "NTT device buffers lost high-water capacity at log_n={log_n}");
+        assert_eq!(stats.8, 3 * high_size * scalar_bytes, "NTT device buffers lost high-water capacity at log_n={log_n}");
         assert_eq!(stats.9, (high_size + 1 + 64 + 6) * scalar_bytes, "NTT domain lost high-water capacity at log_n={log_n}");
         assert!(stats.10 <= high_size * scalar_bytes, "NTT host staging exceeds high-water capacity at log_n={log_n}");
-        assert_eq!(stats.11, 96 * high_size + 10_464, "NTT device upper bound changed at log_n={log_n}");
+        assert_eq!(stats.11, 128 * high_size + 10_464, "NTT device upper bound changed at log_n={log_n}");
     }
     drop(scope);
     assert!(!icicle::native_prove_ntt_scope_active());

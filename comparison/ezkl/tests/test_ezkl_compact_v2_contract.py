@@ -36,10 +36,11 @@ def _ntt_plan(capacity: int, *, base_domain: int | None = None) -> dict[str, int
         "icicle_ntt_min_log_size": 16,
         "icicle_ntt_max_log_size": 25,
         "icicle_ntt_capacity_elements": capacity,
-        "icicle_ntt_device_workspace_upper_bytes": 64 * capacity,
+        "icicle_h_resident_device_upper_bytes": 128 * capacity,
+        "icicle_ntt_device_workspace_upper_bytes": 96 * capacity,
         "icicle_ntt_domain_cache_upper_bytes": 32 * (capacity + 1 + 64 + 6),
         "icicle_ntt_init_scratch_upper_bytes": 4 * 64 * 32,
-        "icicle_ntt_device_peak_upper_bytes": 96 * capacity + 10464,
+        "icicle_ntt_device_peak_upper_bytes": 128 * capacity + 10464,
         "icicle_ntt_host_staging_upper_bytes": 32 * capacity,
         "icicle_msm_max_concurrency": 1,
         "icicle_msm_precompute_factor": 4,
@@ -129,12 +130,17 @@ class CompactNativeProofContractTest(unittest.TestCase):
                     capacity = min(max(base_domain, proof_domain), 1 << 25)
                     plan = _ntt_plan(capacity, base_domain=base_domain)
                     memory = {
-                        "schema": "ezkl-halo2-static-envelope-v20",
+                        "schema": "ezkl-halo2-static-envelope-v22",
                         "proof_domain_size": proof_domain,
                         "size_of_fr_bytes": 32,
                         **plan,
                     }
-                    admission = {"dataset": dataset, "domain_size": base_domain, "native_memory_model": memory}
+                    admission = {
+                        "dataset": dataset,
+                        "domain_size": base_domain,
+                        "constraint_system": {"num_permutation_columns": 1},
+                        "native_memory_model": memory,
+                    }
                     admission_path = root / f"{dataset}-admission.json"
                     admission_path.write_text(json.dumps(admission, separators=(",", ":")), encoding="utf-8")
                     query_peak = 3072
@@ -144,10 +150,11 @@ class CompactNativeProofContractTest(unittest.TestCase):
                         query_peak
                         + plan["icicle_ntt_device_peak_upper_bytes"]
                         + plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+                        + plan["icicle_h_resident_device_upper_bytes"]
                         + h_kernel_local_memory_upper_bytes
                     )
                     budget = {
-                        "schema": "ezkl.native-prove-budget.v6",
+                        "schema": "ezkl.native-prove-budget.v8",
                         "native_execution_policy": formal_common.FORMAL_GPU_EXECUTION_POLICY,
                         "h_workspace_borrows_ntt": True,
                         "h_kernel_local_memory_upper_bytes": h_kernel_local_memory_upper_bytes,
@@ -215,6 +222,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                     msm_device
                     + plan["icicle_ntt_device_peak_upper_bytes"]
                     + plan["icicle_msm_precomputed_basis_device_upper_bytes"]
+                    + plan["icicle_h_resident_device_upper_bytes"]
                     + formal_common.FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES
                     if integrated else 0
                 )
@@ -248,6 +256,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                         [1],
                         domain_size=FORMAL_GEOMETRY["cora"][0],
                         expected_lookup_groups=1,
+                        expected_h_resident_device_upper_bytes=plan["icicle_h_resident_device_upper_bytes"],
                     )
                     self.assertEqual(exports, (str(3 * minimum_task), str(device_headroom), "1"))
                     invalid_budget = dict(budget)
@@ -258,6 +267,7 @@ class CompactNativeProofContractTest(unittest.TestCase):
                             [1],
                             domain_size=FORMAL_GEOMETRY["cora"][0],
                             expected_lookup_groups=1,
+                            expected_h_resident_device_upper_bytes=plan["icicle_h_resident_device_upper_bytes"],
                         )
 
     def test_compact_v2_reference_metadata_and_bad_hashes_fail_closed(self) -> None:

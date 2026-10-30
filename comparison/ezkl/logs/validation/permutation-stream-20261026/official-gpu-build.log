@@ -1,0 +1,1 @@
+usage: scripts/build_ezkl.sh --cpu|--gpu --python ABS [GPU identity/tool arguments for --gpu]

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     f64::consts::E,
     ops::Range,
@@ -2974,12 +2975,10 @@ pub(crate) fn pairwise<F: PrimeField + TensorType + PartialOrd + std::hash::Hash
     // time to calculate the value of the output
     let global_start = instant::Instant::now();
 
-    let (mut lhs, mut rhs) = (values[0].clone(), values[1].clone());
+    let broadcasted_shape = get_broadcasted_shape(values[0].dims(), values[1].dims())?;
 
-    let broadcasted_shape = get_broadcasted_shape(lhs.dims(), rhs.dims())?;
-
-    lhs.expand(&broadcasted_shape)?;
-    rhs.expand(&broadcasted_shape)?;
+    let lhs = pairwise_broadcast_input(values[0], &broadcasted_shape)?;
+    let rhs = pairwise_broadcast_input(values[1], &broadcasted_shape)?;
 
     if lhs.len() != rhs.len() {
         return Err(CircuitError::DimMismatch(format!(
@@ -2992,7 +2991,7 @@ pub(crate) fn pairwise<F: PrimeField + TensorType + PartialOrd + std::hash::Hash
         .iter()
         .enumerate()
         .map(|(i, input)| {
-            let res = region.assign(&config.custom_gates.inputs[i], input)?;
+            let res = region.assign(&config.custom_gates.inputs[i], input.as_ref())?;
 
             Ok(res.get_inner()?)
         })
@@ -3042,6 +3041,51 @@ pub(crate) fn pairwise<F: PrimeField + TensorType + PartialOrd + std::hash::Hash
     trace!("----------------------------");
 
     Ok(output)
+}
+
+fn pairwise_broadcast_input<'a, F: PrimeField + TensorType + PartialOrd + std::hash::Hash>(
+    input: &'a ValTensor<F>,
+    broadcasted_shape: &[usize],
+) -> Result<Cow<'a, ValTensor<F>>, CircuitError> {
+    if !input.is_instance() && input.dims() == broadcasted_shape {
+        return Ok(Cow::Borrowed(input));
+    }
+
+    let mut expanded = input.clone();
+    expanded.expand(broadcasted_shape)?;
+    Ok(Cow::Owned(expanded))
+}
+
+#[cfg(test)]
+mod pairwise_layout_tests {
+    use super::*;
+    use crate::circuit::{region::RegionSettings, BaseConfig};
+    use crate::fieldutils::IntegerRep;
+    use halo2curves::bn256::Fr;
+
+    fn values(data: &[IntegerRep], dims: &[usize]) -> ValTensor<Fr> {
+        ValTensor::from_integer_rep_tensor(Tensor::<IntegerRep>::new(Some(data), dims).unwrap())
+    }
+
+    #[test]
+    fn pairwise_same_shape_and_broadcast_keep_expected_values() {
+        let config = BaseConfig::dummy(12, 2);
+        let mut region = RegionCtx::new_dummy(
+            0,
+            2,
+            RegionSettings::all_true(65_536, 4),
+        );
+
+        let lhs = values(&[1, 2, 3, 4], &[2, 2]);
+        let rhs = values(&[10, 20, 30, 40], &[2, 2]);
+        let same_shape = pairwise(&config, &mut region, &[&lhs, &rhs], BaseOp::Add).unwrap();
+        assert_eq!(same_shape.int_evals().unwrap(), Tensor::new(Some(&[11, 22, 33, 44]), &[2, 2]).unwrap());
+
+        let lhs = values(&[1, 2, 3, 4, 5, 6], &[2, 3]);
+        let rhs = values(&[10, 20, 30], &[1, 3]);
+        let broadcast = pairwise(&config, &mut region, &[&lhs, &rhs], BaseOp::Add).unwrap();
+        assert_eq!(broadcast.int_evals().unwrap(), Tensor::new(Some(&[11, 22, 33, 14, 25, 36]), &[2, 3]).unwrap());
+    }
 }
 
 /// Mean of squares axes

@@ -423,10 +423,7 @@ namespace gatzk::protocol
         util::write_lines(export_root + "/commitment_order.txt", trace.commitment_order);
         const std::map<std::string, std::string> benchmark_summary = {
             {"dataset", metrics.dataset},
-            {"config_id", config_id},
-            {"backend", benchmark_backend_label()},
             {"status", final_accepted ? "VERIFY_OK" : "VERIFY_FAIL"},
-            {"timing_schema", kFormalTimingSchema},
             {"commitment_time_ms", format_double(metrics.commitment_time_ms)},
             {"prove_time_ms", format_double(metrics.prove_time_ms)},
             {"verify_time_ms", format_double(metrics.verify_time_ms)},

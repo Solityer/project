@@ -7,8 +7,49 @@
 //! a host-only replacement for the circuit.
 
 use num::{BigUint, Zero};
+use halo2curves::bn256::Fr;
+use halo2curves::ff::Field;
+use maybe_rayon::prelude::{IntoParallelIterator, ParallelIterator};
+
+use crate::fieldutils::integer_rep_to_felt;
 
 use super::schema::{parse_authenticated_bn254_modulus, scale_exponent_to_multiplier, CanonicalGat, ExactTable,};
+
+const PARALLEL_CHUNK_BATCH: usize = 16;
+
+/// Run bounded chunks in parallel and consume their results in canonical
+/// chunk order. This preserves the serial evaluator's first-error ordering
+/// while limiting temporary output to one batch of chunks.
+fn for_each_bounded_parallel_chunk<T, F, C>(
+    len: usize,
+    chunk_size: usize,
+    compute: F,
+    mut consume: C,
+) -> Result<(), String>
+where
+    T: Send,
+    F: Fn(usize, usize) -> Result<T, String> + Send + Sync,
+    C: FnMut(usize, usize, T) -> Result<(), String>,
+{
+    if chunk_size == 0 {
+        return Err("parallel evaluator chunk size must be positive".into());
+    }
+    let ranges = (0..len)
+        .step_by(chunk_size)
+        .map(|start| (start, start.saturating_add(chunk_size).min(len)))
+        .collect::<Vec<_>>();
+    for batch in ranges.chunks(PARALLEL_CHUNK_BATCH) {
+        let results = batch
+            .to_vec()
+            .into_par_iter()
+            .map(|(start, end)| compute(start, end))
+            .collect::<Vec<_>>();
+        for ((start, end), result) in batch.iter().copied().zip(results) {
+            consume(start, end, result?)?;
+        }
+    }
+    Ok(())
+}
 
 /// Rounding rule used by signed fixed-point divisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -243,10 +284,6 @@ fn modulus_from_spec(model: &CanonicalGat) -> Result<BigUint, String> {
     parse_authenticated_bn254_modulus(&model.ledger.field_modulus)
 }
 
-fn mod_mul(a: i128, b: i128, modulus: &BigUint) -> BigUint {
-    (mod_from_signed(a, modulus) * mod_from_signed(b, modulus)) % modulus
-}
-
 fn inverse_mod(a: i128, modulus: &BigUint) -> Result<BigUint, String> {
     let residue = mod_from_signed(a, modulus);
     if residue.is_zero() {
@@ -269,10 +306,110 @@ fn project(features: &[i128], row: usize, d_in: usize, projection: &[i128], d_ou
     let input = features.get(start..end).ok_or_else(|| "feature row is outside feature table".to_string())?;
     (0..d_out)
         .map(|j| {
-            let weights = (0..d_in).map(|i| projection[i * d_out + j]).collect::<Vec<_>>();
-            dot(input, &weights)
+            let mut acc = 0_i128;
+            for (i, value) in input.iter().copied().enumerate() {
+                let weight_index = i
+                    .checked_mul(d_out)
+                    .and_then(|offset| offset.checked_add(j))
+                    .ok_or_else(|| "projection weight offset overflow".to_string())?;
+                let weight = *projection
+                    .get(weight_index)
+                    .ok_or_else(|| "projection weight is outside its tensor".to_string())?;
+                acc = checked_add(acc, checked_mul(value, weight)?)?;
+            }
+            Ok(acc)
         })
         .collect()
+}
+
+fn project_rows_output_only(
+    features: &[i128],
+    rows: usize,
+    d_in: usize,
+    projection: &[i128],
+    d_out: usize,
+) -> Result<Vec<i128>, String> {
+    const ROWS_PER_CHUNK: usize = 256;
+    let mut output = vec![0_i128; rows * d_out];
+    for_each_bounded_parallel_chunk(
+        rows,
+        ROWS_PER_CHUNK,
+        |start, end| {
+            let mut chunk = Vec::with_capacity((end - start) * d_out);
+            for row in start..end {
+                chunk.extend(project(features, row, d_in, projection, d_out)?);
+            }
+            Ok(chunk)
+        },
+        |start, end, chunk| {
+            if chunk.len() != (end - start) * d_out {
+                return Err("parallel projection chunk has an unexpected output shape".into());
+            }
+            output[start * d_out..end * d_out].copy_from_slice(&chunk);
+            Ok(())
+        },
+    )?;
+    Ok(output)
+}
+
+fn field_values_output_only(values: &[i128]) -> Result<Vec<Fr>, String> {
+    const VALUES_PER_CHUNK: usize = 16 * 1024;
+    let mut field_values = vec![Fr::ZERO; values.len()];
+    for_each_bounded_parallel_chunk(
+        values.len(),
+        VALUES_PER_CHUNK,
+        |start, end| {
+            Ok(values[start..end]
+                .iter()
+                .map(|value| integer_rep_to_felt::<Fr>(*value))
+                .collect::<Vec<_>>())
+        },
+        |start, end, chunk| {
+            if chunk.len() != end - start {
+                return Err("parallel field conversion chunk has an unexpected output shape".into());
+            }
+            field_values[start..end].copy_from_slice(&chunk);
+            Ok(())
+        },
+    )?;
+    Ok(field_values)
+}
+
+fn edge_scores_output_only(
+    graph: &super::schema::CanonicalGraph,
+    src_values: &[i128],
+    dst_values: &[i128],
+    d_out: usize,
+    a_src: &[i128],
+    a_dst: &[i128],
+    lrelu: &ExactTable,
+) -> Result<Vec<i128>, String> {
+    const EDGES_PER_CHUNK: usize = 4096;
+    let mut scores = vec![0_i128; graph.e];
+    for_each_bounded_parallel_chunk(
+        graph.e,
+        EDGES_PER_CHUNK,
+        |start, end| {
+            let mut chunk = Vec::with_capacity(end - start);
+            for edge in start..end {
+                let src_start = graph.src[edge] * d_out;
+                let dst_start = graph.dst[edge] * d_out;
+                let source_score = dot(&src_values[src_start..src_start + d_out], a_src)?;
+                let destination_score = dot(&dst_values[dst_start..dst_start + d_out], a_dst)?;
+                let score = checked_add(source_score, destination_score)?;
+                chunk.push(lookup(lrelu, score)?);
+            }
+            Ok(chunk)
+        },
+        |start, end, chunk| {
+            if chunk.len() != end - start {
+                return Err("parallel edge-score chunk has an unexpected output shape".into());
+            }
+            scores[start..end].copy_from_slice(&chunk);
+            Ok(())
+        },
+    )?;
+    Ok(scores)
 }
 
 fn aggregate(
@@ -285,83 +422,206 @@ fn aggregate(
     lrelu: &ExactTable,
     exp: &ExactTable,
     mode: RoundingMode,
-    modulus: &BigUint,
+    modulus: Option<&BigUint>,
     numerator_scale: i128,
     denominator_scale: i128,
     elu: Option<&ExactTable>,
-) -> Result<(Vec<i128>, Vec<AggregationTrace>), String> {
+    collect_trace: bool,
+) -> Result<(Vec<i128>, Option<Vec<AggregationTrace>>), String> {
     if src_values.len() != graph.n * d_out || dst_values.len() != graph.n * d_out {
         return Err("attention tensor shape does not match graph".into());
     }
     if a_src.len() != d_out || a_dst.len() != d_out {
         return Err("attention vector shape does not match head width".into());
     }
-    let mut scores = Vec::with_capacity(graph.e);
-    for edge in 0..graph.e {
-        let s = dot(&src_values[graph.src[edge] * d_out..(graph.src[edge] + 1) * d_out], a_src,)?;
-        let d = dot(&dst_values[graph.dst[edge] * d_out..(graph.dst[edge] + 1) * d_out], a_dst,)?;
-        scores.push(lookup(lrelu, checked_add(s, d)?)?);
-    }
+    let src_field_values = if collect_trace {
+        src_values
+            .iter()
+            .map(|value| integer_rep_to_felt::<Fr>(*value))
+            .collect::<Vec<_>>()
+    } else {
+        field_values_output_only(src_values)?
+    };
+    let scores = if collect_trace {
+        let mut scores = Vec::with_capacity(graph.e);
+        for edge in 0..graph.e {
+            let s = dot(&src_values[graph.src[edge] * d_out..(graph.src[edge] + 1) * d_out], a_src,)?;
+            let d = dot(&dst_values[graph.dst[edge] * d_out..(graph.dst[edge] + 1) * d_out], a_dst,)?;
+            scores.push(lookup(lrelu, checked_add(s, d)?)?);
+        }
+        scores
+    } else {
+        edge_scores_output_only(graph, src_values, dst_values, d_out, a_src, a_dst, lrelu)?
+    };
     let mut out = vec![0_i128; graph.n * d_out];
-    let mut traces = Vec::new();
-    for (dst, start, end) in graph.destination_groups()? {
-        let max_score = scores[start..end].iter().copied().max().ok_or_else(|| "empty destination group".to_string())?;
-        let mut exps = Vec::with_capacity(end - start);
-        for score in &scores[start..end] {
-            exps.push(lookup(exp, max_score.checked_sub(*score).ok_or_else(|| "score difference overflow".to_string())?,)?);
+    let mut traces = collect_trace.then(Vec::new);
+    let groups = graph.destination_groups()?;
+    if collect_trace {
+        for group in groups {
+            let result = aggregate_destination(
+                graph, src_values, &src_field_values, &scores, group, d_out, exp, mode,
+                modulus, numerator_scale, denominator_scale, elu, true,
+            )?;
+            out[result.dst * d_out..(result.dst + 1) * d_out].copy_from_slice(&result.values);
+            traces
+                .as_mut()
+                .ok_or_else(|| "trace evaluator is missing aggregation-trace storage".to_string())?
+                .push(result.trace.ok_or_else(|| "trace evaluator is missing a destination trace".to_string())?);
         }
-        let denominator = exps.iter().try_fold(0_i128, |acc, x| checked_add(acc, *x))?;
-        if denominator <= 0 {
-            return Err("softmax denominator must be positive".into());
+    } else {
+        const DESTINATION_GROUPS_PER_CHUNK: usize = 64;
+        for_each_bounded_parallel_chunk(
+            groups.len(),
+            DESTINATION_GROUPS_PER_CHUNK,
+            |start, end| {
+                groups[start..end]
+                    .iter()
+                    .copied()
+                    .map(|group| {
+                        aggregate_destination(
+                            graph, src_values, &src_field_values, &scores, group, d_out, exp, mode,
+                            modulus, numerator_scale, denominator_scale, elu, false,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            },
+            |_, _, results| {
+                for result in results {
+                    out[result.dst * d_out..(result.dst + 1) * d_out].copy_from_slice(&result.values);
+                }
+                Ok(())
+            },
+        )?;
+    }
+    Ok((out, traces))
+}
+
+struct DestinationAggregation {
+    dst: usize,
+    values: Vec<i128>,
+    trace: Option<AggregationTrace>,
+}
+
+fn aggregate_destination(
+    graph: &super::schema::CanonicalGraph,
+    src_values: &[i128],
+    src_field_values: &[Fr],
+    scores: &[i128],
+    (dst, start, end): (usize, usize, usize),
+    d_out: usize,
+    exp: &ExactTable,
+    mode: RoundingMode,
+    modulus: Option<&BigUint>,
+    numerator_scale: i128,
+    denominator_scale: i128,
+    elu: Option<&ExactTable>,
+    collect_trace: bool,
+) -> Result<DestinationAggregation, String> {
+    let max_score = scores[start..end].iter().copied().max().ok_or_else(|| "empty destination group".to_string())?;
+    let mut exps = Vec::with_capacity(end - start);
+    for score in &scores[start..end] {
+        exps.push(lookup(exp, max_score.checked_sub(*score).ok_or_else(|| "score difference overflow".to_string())?,)?);
+    }
+    let denominator = exps.iter().try_fold(0_i128, |acc, x| checked_add(acc, *x))?;
+    if denominator <= 0 {
+        return Err("softmax denominator must be positive".into());
+    }
+    let inv = if collect_trace {
+        Some(inverse_mod(
+            denominator,
+            modulus.ok_or_else(|| "trace evaluator is missing its authenticated field modulus".to_string())?,
+        )?)
+    } else {
+        if integer_rep_to_felt::<Fr>(denominator) == Fr::ZERO {
+            return Err("group denominator is zero in the field".into());
         }
-        let inv = inverse_mod(denominator, modulus)?;
-        let mut numerators = vec![0_i128; d_out];
-        let mut raw_field_values = vec![BigUint::zero(); d_out];
-        for (local, edge) in (start..end).enumerate() {
-            let src = graph.src[edge];
-            for channel in 0..d_out {
-                numerators[channel] = checked_add(numerators[channel], checked_mul(exps[local], src_values[src * d_out + channel])?,)?;
-                raw_field_values[channel] = (raw_field_values[channel].clone() + mod_mul(exps[local], src_values[src * d_out + channel], modulus)) % modulus;
-            }
-        }
-        let values = numerators
-            .iter()
-            .map(|num| {
-                let dividend = checked_mul(*num, numerator_scale)?;
-                let divisor = checked_mul(denominator, denominator_scale)?;
-                signed_round_div(dividend, divisor, mode).map(|d| d.quotient)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        None
+    };
+    let mut numerators = vec![0_i128; d_out];
+    let mut raw_field_values = vec![Fr::ZERO; d_out];
+    let exp_field = exps.iter().map(|value| integer_rep_to_felt::<Fr>(*value)).collect::<Vec<_>>();
+    for (local, edge) in (start..end).enumerate() {
+        let src = graph.src[edge];
         for channel in 0..d_out {
-            let raw_numerator = mod_from_signed(numerators[channel], modulus);
-            if raw_field_values[channel] != raw_numerator {
-                return Err("field alpha numerator disagrees with integer numerator path".into());
-            }
+            numerators[channel] = checked_add(numerators[channel], checked_mul(exps[local], src_values[src * d_out + channel])?,)?;
+            raw_field_values[channel] += exp_field[local] * src_field_values[src * d_out + channel];
         }
-        let field_values = numerators.iter().map(|numerator| (mod_from_signed(*numerator, modulus) * &inv) % modulus).collect::<Vec<_>>();
-        let divisions = numerators
-            .iter()
-            .map(|num| { signed_round_div(checked_mul(*num, numerator_scale)?, checked_mul(denominator, denominator_scale)?, mode,) })
-            .collect::<Result<Vec<_>, _>>()?;
-        let values = if let Some(elu_table) = elu { values.iter().map(|x| lookup(elu_table, *x)).collect::<Result<Vec<_>, _>>()? } else { values };
-        out[dst * d_out..(dst + 1) * d_out].copy_from_slice(&values);
-        traces.push(AggregationTrace {
+    }
+    let values = numerators
+        .iter()
+        .map(|num| {
+            let dividend = checked_mul(*num, numerator_scale)?;
+            let divisor = checked_mul(denominator, denominator_scale)?;
+            signed_round_div(dividend, divisor, mode).map(|d| d.quotient)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    for channel in 0..d_out {
+        let raw_numerator = integer_rep_to_felt::<Fr>(numerators[channel]);
+        if raw_field_values[channel] != raw_numerator {
+            return Err("field alpha numerator disagrees with integer numerator path".into());
+        }
+    }
+    let field_values = if let Some(inv) = inv.as_ref() {
+        let modulus = modulus.ok_or_else(|| "trace evaluator is missing its authenticated field modulus".to_string())?;
+        Some(
+            numerators
+                .iter()
+                .map(|numerator| (mod_from_signed(*numerator, modulus) * inv) % modulus)
+                .collect::<Vec<_>>(),
+        )
+    } else {
+        None
+    };
+    let divisions = if collect_trace {
+        Some(
+            numerators
+                .iter()
+                .map(|num| { signed_round_div(checked_mul(*num, numerator_scale)?, checked_mul(denominator, denominator_scale)?, mode,) })
+                .collect::<Result<Vec<_>, _>>()?,
+        )
+    } else {
+        None
+    };
+    let values = if let Some(elu_table) = elu { values.iter().map(|x| lookup(elu_table, *x)).collect::<Result<Vec<_>, _>>()? } else { values };
+    let trace = if collect_trace {
+        Some(AggregationTrace {
             dst,
             numerators,
             denominator,
-            values,
-            field_values: field_values.into_iter().map(|value| value.to_string()).collect(),
-            divisions,
+            values: values.clone(),
+            field_values: field_values
+                .ok_or_else(|| "trace evaluator is missing field alpha values".to_string())?
+                .into_iter()
+                .map(|value| value.to_string())
+                .collect(),
+            divisions: divisions.ok_or_else(|| "trace evaluator is missing division witnesses".to_string())?,
             alignment_divisions: Vec::new(),
-        });
-    }
-    Ok((out, traces))
+        })
+    } else {
+        None
+    };
+    Ok(DestinationAggregation { dst, values, trace })
 }
 
 /// Evaluate and validate the complete canonical integer GAT relation.
 pub fn evaluate(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, String> {
     model.validate()?;
-    evaluate_validated(model, mode)
+    match evaluate_validated(model, mode, true)? {
+        ValidatedEvaluation::Trace(trace) => Ok(trace),
+        ValidatedEvaluation::Output(_) => Err("trace evaluator did not produce a complete trace".into()),
+    }
+}
+
+/// Evaluate only the canonical integer output needed by the formal GAT
+/// witness. This uses the same validated projection, lookup, aggregation, and
+/// signed-rounding path as [`evaluate`] while avoiding diagnostic traces and
+/// their per-edge field-value strings.
+pub fn evaluate_output(model: &CanonicalGat, mode: RoundingMode) -> Result<Vec<i128>, String> {
+    model.validate()?;
+    match evaluate_validated(model, mode, false)? {
+        ValidatedEvaluation::Output(output) => Ok(output),
+        ValidatedEvaluation::Trace(_) => Err("output-only evaluator unexpectedly produced a trace".into()),
+    }
 }
 
 /// Evaluate the complete integer relation for a compile-stage test fixture.
@@ -377,11 +637,35 @@ pub(crate) fn evaluate_for_compile_for_tests(
     mode: RoundingMode,
 ) -> Result<GatTrace, String> {
     model.validate_for_compile()?;
-    evaluate_validated(model, mode)
+    match evaluate_validated(model, mode, true)? {
+        ValidatedEvaluation::Trace(trace) => Ok(trace),
+        ValidatedEvaluation::Output(_) => Err("trace evaluator did not produce a complete trace".into()),
+    }
 }
 
-fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTrace, String> {
-    let modulus = modulus_from_spec(model)?;
+/// Evaluate only the canonical integer output in a compile-stage test fixture.
+/// This keeps the bounded relation-equivalence tests able to compare the
+/// output-only formal witness path with the diagnostic trace evaluator before
+/// a native CircuitRef exists.
+#[cfg(test)]
+pub(crate) fn evaluate_output_for_compile_for_tests(
+    model: &CanonicalGat,
+    mode: RoundingMode,
+) -> Result<Vec<i128>, String> {
+    model.validate_for_compile()?;
+    match evaluate_validated(model, mode, false)? {
+        ValidatedEvaluation::Output(output) => Ok(output),
+        ValidatedEvaluation::Trace(_) => Err("output-only evaluator unexpectedly produced a trace".into()),
+    }
+}
+
+enum ValidatedEvaluation {
+    Output(Vec<i128>),
+    Trace(GatTrace),
+}
+
+fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode, collect_trace: bool) -> Result<ValidatedEvaluation, String> {
+    let modulus = if collect_trace { Some(modulus_from_spec(model)?) } else { None };
     let output_recovery_scale = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
     let output_head_scale = scale_multiplier_i128(model.scales.s_out_head, "s_out_head")?;
     let output_head_count = i128::try_from(model.model.output_heads.len()).map_err(|_| "output head count does not fit host integer".to_string())?;
@@ -391,17 +675,22 @@ fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTra
         let source = table_row * model.feature_dim;
         current[node * model.feature_dim..(node + 1) * model.feature_dim].copy_from_slice(&model.features[source..source + model.feature_dim]);
     }
-    let mut hidden = Vec::new();
+    let mut hidden = collect_trace.then(Vec::new);
     let mut current_dim = model.feature_dim;
     for (layer_idx, layer) in model.model.hidden_layers.iter().enumerate() {
         let mut layer_values = vec![0_i128; graph.n * layer.heads.len() * layer.d_head];
-        let mut layer_heads = Vec::new();
+        let mut layer_heads = collect_trace.then(Vec::new);
         for (head_idx, head) in layer.heads.iter().enumerate() {
-            let mut projected = vec![0_i128; graph.n * layer.d_head];
-            for node in 0..graph.n {
-                let row = project(&current, node, current_dim, &head.projection, layer.d_head)?;
-                projected[node * layer.d_head..(node + 1) * layer.d_head].copy_from_slice(&row);
-            }
+            let projected = if collect_trace {
+                let mut projected = vec![0_i128; graph.n * layer.d_head];
+                for node in 0..graph.n {
+                    let row = project(&current, node, current_dim, &head.projection, layer.d_head)?;
+                    projected[node * layer.d_head..(node + 1) * layer.d_head].copy_from_slice(&row);
+                }
+                projected
+            } else {
+                project_rows_output_only(&current, graph.n, current_dim, &head.projection, layer.d_head)?
+            };
             let (aggregated, traces) = aggregate(
                 graph,
                 &projected,
@@ -412,29 +701,39 @@ fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTra
                 &model.tables.lrelu,
                 &model.tables.exp,
                 mode,
-                &modulus,
+                modulus.as_ref(),
                 scale_multiplier_i128(model.scales.s_agg_pre[layer_idx], "s_agg_pre hidden layer")?,
                 scale_multiplier_i128(model.scales.s_h_prime[layer_idx][head_idx], "hidden projection scale",)?,
                 Some(&model.tables.elu),
+                collect_trace,
             )?;
             for node in 0..graph.n {
                 let base = (node * layer.heads.len() + head_idx) * layer.d_head;
                 layer_values[base..base + layer.d_head].copy_from_slice(&aggregated[node * layer.d_head..(node + 1) * layer.d_head]);
             }
-            layer_heads.push(traces);
+            if let Some(layer_heads) = layer_heads.as_mut() {
+                layer_heads.push(traces.ok_or_else(|| "trace evaluator is missing a hidden-head trace".to_string())?);
+            }
         }
-        current = layer_values.clone();
+        current = layer_values;
         current_dim = layer.heads.len() * layer.d_head;
-        hidden.push(HiddenTrace { node_values: layer_values, heads: layer_heads,});
-    }
-    let mut output_heads = Vec::new();
-    let mut head_outputs = Vec::new();
-    for (head_idx, head) in model.model.output_heads.iter().enumerate() {
-        let mut projected = vec![0_i128; graph.n * model.model.classes];
-        for node in 0..graph.n {
-            let row = project(&current, node, current_dim, &head.projection, model.model.classes,)?;
-            projected[node * model.model.classes..(node + 1) * model.model.classes].copy_from_slice(&row);
+        if let (Some(hidden), Some(layer_heads)) = (hidden.as_mut(), layer_heads) {
+            hidden.push(HiddenTrace { node_values: current.clone(), heads: layer_heads });
         }
+    }
+    let mut output_heads = collect_trace.then(Vec::new);
+    let mut output_sums = vec![0_i128; graph.n * model.model.classes];
+    for (head_idx, head) in model.model.output_heads.iter().enumerate() {
+        let projected = if collect_trace {
+            let mut projected = vec![0_i128; graph.n * model.model.classes];
+            for node in 0..graph.n {
+                let row = project(&current, node, current_dim, &head.projection, model.model.classes,)?;
+                projected[node * model.model.classes..(node + 1) * model.model.classes].copy_from_slice(&row);
+            }
+            projected
+        } else {
+            project_rows_output_only(&current, graph.n, current_dim, &head.projection, model.model.classes)?
+        };
         let (aggregated, mut traces) = aggregate(
             graph,
             &projected,
@@ -445,10 +744,11 @@ fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTra
             &model.tables.lrelu,
             &model.tables.exp,
             mode,
-            &modulus,
+            modulus.as_ref(),
             output_recovery_scale,
             scale_multiplier_i128(model.scales.s_y_prime[head_idx], "output projection scale")?,
             None,
+            collect_trace,
         )?;
         let with_bias = aggregated
             .chunks_exact(model.model.classes)
@@ -462,16 +762,25 @@ fn evaluate_validated(model: &CanonicalGat, mode: RoundingMode) -> Result<GatTra
             })
             .collect::<Result<Vec<_>, _>>()?;
         let out_pre = scale_multiplier_i128(model.scales.s_out_pre, "s_out_pre")?;
-        for trace in &mut traces {
-            trace.alignment_divisions =
-                trace.values.iter().map(|value| { signed_round_div(checked_mul(*value, output_head_scale)?, out_pre, mode) }).collect::<Result<Vec<_>, _>>()?;
+        if let Some(traces) = traces.as_mut() {
+            for trace in traces.iter_mut() {
+                trace.alignment_divisions =
+                    trace.values.iter().map(|value| { signed_round_div(checked_mul(*value, output_head_scale)?, out_pre, mode) }).collect::<Result<Vec<_>, _>>()?;
+            }
+            output_heads.as_mut().ok_or_else(|| "trace evaluator is missing output-head storage".to_string())?.push(std::mem::take(traces));
         }
-        head_outputs.push(with_bias);
-        output_heads.push(traces);
+        for (output_sum, value) in output_sums.iter_mut().zip(with_bias) {
+            *output_sum = checked_add(*output_sum, value)?;
+        }
     }
-    let mut output = vec![0_i128; graph.n * model.model.classes];
+    let mut output = vec![0_i128; output_sums.len()];
     for i in 0..output.len() {
-        output[i] = signed_round_div(head_outputs.iter().try_fold(0_i128, |acc, h| checked_add(acc, h[i]))?, output_head_count, RoundingMode::NearestTiesAway,)?
+        output[i] = signed_round_div(output_sums[i], output_head_count, RoundingMode::NearestTiesAway,)?
             .quotient;
     }
-    Ok(GatTrace { hidden, output, output_heads,}) }
+    if let (Some(hidden), Some(output_heads)) = (hidden, output_heads) {
+        Ok(ValidatedEvaluation::Trace(GatTrace { hidden, output, output_heads }))
+    } else {
+        Ok(ValidatedEvaluation::Output(output))
+    }
+}

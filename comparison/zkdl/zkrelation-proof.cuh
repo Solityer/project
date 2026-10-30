@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -43,6 +44,7 @@
 #include <memory>
 #include <mutex>
 #include <numeric>
+#include <new>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -619,6 +621,8 @@ private:
 
 constexpr std::uint64_t kZkSumcheckFoldedStateBudgetBytes =
     std::uint64_t{32U} << 30U;
+constexpr std::uint64_t kZkSumcheckMontgomeryFastRowExtraFields = 6U;
+constexpr std::uint64_t kZkSumcheckMontgomeryFinalizerStackFields = 9U;
 
 inline bool zksc_montgomery_row_scratch_peak_bytes(
     std::uint64_t tensor_count, std::uint64_t row_count,
@@ -626,14 +630,21 @@ inline bool zksc_montgomery_row_scratch_peak_bytes(
     peak_bytes = 0U;
 #if defined(ZKDL_USE_BLST_G1_CODEC)
     if (tensor_count == 0U || tensor_count >
-            (std::numeric_limits<std::uint64_t>::max() - 9U) / 3U)
+            (std::numeric_limits<std::uint64_t>::max() - 9U) / 3U ||
+        tensor_count >
+            (std::numeric_limits<std::uint64_t>::max() -
+             9U - kZkSumcheckMontgomeryFastRowExtraFields) / 2U)
         return false;
     row_count = std::max<std::uint64_t>(1U, row_count);
     const std::uint64_t worker_chunks =
         static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U;
     const std::uint64_t chunks = row_count < 4096U
         ? 1U : std::min(row_count, worker_chunks);
-    const std::uint64_t fields_per_chunk = tensor_count * 3U + 9U;
+    const std::uint64_t legacy_row_fields = tensor_count * 3U;
+    const std::uint64_t fast_row_fields = tensor_count * 2U +
+        kZkSumcheckMontgomeryFastRowExtraFields;
+    const std::uint64_t fields_per_chunk =
+        std::max(legacy_row_fields, fast_row_fields) + 9U;
     if (fields_per_chunk > std::numeric_limits<std::uint64_t>::max() /
                                sizeof(zkdl_blst::blst_fr))
         return false;
@@ -649,7 +660,13 @@ inline bool zksc_montgomery_row_scratch_peak_bytes(
     const std::uint64_t metadata_bytes = chunks * vector_headers_per_chunk;
     if (payload_bytes > std::numeric_limits<std::uint64_t>::max() - metadata_bytes)
         return false;
-    peak_bytes = payload_bytes + metadata_bytes;
+    const std::uint64_t scratch_bytes = payload_bytes + metadata_bytes;
+    constexpr std::uint64_t finalizer_stack_bytes =
+        kZkSumcheckMontgomeryFinalizerStackFields * sizeof(zkdl_blst::blst_fr);
+    if (scratch_bytes >
+        std::numeric_limits<std::uint64_t>::max() - finalizer_stack_bytes)
+        return false;
+    peak_bytes = scratch_bytes + finalizer_stack_bytes;
 #else
     (void)tensor_count;
     (void)row_count;
@@ -1257,7 +1274,6 @@ public:
         if (!read_direct(destination, read_end - read_begin, read_begin, error)) return false;
         if (!direct) {
             const std::uint64_t prefix = byte_offset - read_begin;
-            const std::uint64_t payload_end = byte_offset + byte_count;
             if (read_end > logical_bytes_) {
                 const std::uint64_t padding_begin = std::max(logical_bytes_, byte_offset);
                 const std::uint64_t padding_offset = padding_begin - read_begin;
@@ -1717,27 +1733,81 @@ inline bool make_authenticated_sorted_lookup_inverse_provider(
 }
 
 struct AuthenticatedSortedLookupPrefixCache {
+    struct OutputSlot {
+        std::uint32_t segment = std::numeric_limits<std::uint32_t>::max();
+        std::unique_ptr<FrWire[]> values;
+        bool valid = false;
+    };
+
+    static constexpr std::uint32_t kMaxOutputCacheSegmentSize = 1U << 18U;
     std::uint32_t logical_domain = 0U;
     std::uint32_t segment_size = 0U;
     std::uint32_t segment_count = 0U;
     std::uint32_t key_bits = 0U;
     FrWire beta{};
     FrWire gamma{};
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    zkdl_blst::blst_fr beta_montgomery{};
+    zkdl_blst::blst_fr gamma_montgomery{};
+#endif
     std::array<byte, 32U> descriptor_digest{};
     std::mutex mutex;
     bool initialized = false;
     bool failed = false;
     std::string failure;
     std::vector<FrWire> segment_prefix;
+    std::array<OutputSlot, 2U> output_slots{};
+    std::size_t output_most_recent = 0U;
+    bool output_most_recent_valid = false;
+    bool output_cache_disabled = false;
 };
 
-inline bool make_authenticated_sorted_lookup_prefix_product_provider(
+// The two prefix caches (query and merge) retain at most two output segments
+// each. Include the already-existing per-segment seed vectors in the same
+// checked envelope so the prover's auxiliary live set matches actual storage.
+inline bool authenticated_sorted_lookup_prefix_cache_peak_bytes(
+    std::uint64_t query_domain, std::uint64_t merge_domain,
+    std::uint64_t segment_size, std::uint64_t& peak_bytes) noexcept {
+    peak_bytes = 0U;
+    if (query_domain == 0U || merge_domain == 0U || segment_size == 0U ||
+        (segment_size & (segment_size - 1U)) != 0U ||
+        query_domain % segment_size != 0U ||
+        merge_domain % segment_size != 0U) return false;
+    std::uint64_t output_elements = 0U;
+    if (segment_size <= AuthenticatedSortedLookupPrefixCache::
+                            kMaxOutputCacheSegmentSize) {
+        if (segment_size > std::numeric_limits<std::uint64_t>::max() / 2U)
+            return false;
+        output_elements = 2U * segment_size;
+    }
+    const auto add_domain = [&](std::uint64_t domain) {
+        const std::uint64_t seed_elements = domain / segment_size;
+        if (seed_elements > std::numeric_limits<std::uint64_t>::max() -
+                                output_elements) return false;
+        const std::uint64_t elements = seed_elements + output_elements;
+        if (elements > std::numeric_limits<std::uint64_t>::max() / sizeof(FrWire))
+            return false;
+        const std::uint64_t bytes = elements * sizeof(FrWire);
+        if (bytes > std::numeric_limits<std::uint64_t>::max() - peak_bytes)
+            return false;
+        peak_bytes += bytes;
+        return true;
+    };
+    return add_domain(query_domain) && add_domain(merge_domain);
+}
+
+template<bool UseMontgomeryFastPath>
+inline bool make_authenticated_sorted_lookup_prefix_product_provider_impl(
     const SegmentedTensorProvider& keys, const SegmentedTensorProvider& active_mask,
     const FrWire& beta, const FrWire& gamma,
     SegmentedTensorProvider& prefix_provider, std::string* error = nullptr,
     NativeOperationProgressReporter* progress = nullptr,
     const std::array<byte, 32U>& descriptor_digest = {},
     std::uint32_t key_bits = 127U) {
+#if !defined(ZKDL_USE_BLST_G1_CODEC)
+    static_assert(!UseMontgomeryFastPath,
+                  "Montgomery prefix path requires the BLST scalar codec");
+#endif
     if (!keys.valid(error) || !active_mask.valid(error) ||
         keys.logical_domain() != active_mask.logical_domain() ||
         keys.segment_size() != active_mask.segment_size() ||
@@ -1755,7 +1825,15 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
     cache->key_bits = key_bits;
     cache->beta = beta;
     cache->gamma = gamma;
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    if constexpr (UseMontgomeryFastPath) {
+        cache->beta_montgomery = zkdl::cpu_ipa_frwire_to_montgomery_checked(beta);
+        cache->gamma_montgomery = zkdl::cpu_ipa_frwire_to_montgomery_checked(gamma);
+    }
+#endif
     cache->descriptor_digest = descriptor_digest;
+    cache->output_cache_disabled = keys.segment_size() >
+        AuthenticatedSortedLookupPrefixCache::kMaxOutputCacheSegmentSize;
     prefix_provider = SegmentedTensorProvider(
         keys.logical_domain(), keys.segment_size(),
         [keys, active_mask, beta, gamma, cache, progress, key_bits, descriptor_digest](
@@ -1788,6 +1866,12 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
                 std::vector<FrWire> segment_prefix;
                 segment_prefix.reserve(keys.segment_count());
                 FrWire product = zkdl::fr_from_u32(1U);
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                zkdl_blst::blst_fr product_montgomery{};
+                if constexpr (UseMontgomeryFastPath) {
+                    product_montgomery = zkdl::cpu_ipa_frwire_to_montgomery_checked(product);
+                }
+#endif
                 bool padding_seen = false;
                 for (std::uint32_t segment = 0U; segment < keys.segment_count(); ++segment) {
                     std::vector<FrWire> key_block, active_block;
@@ -1798,7 +1882,19 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
                         return fail_cache(read_error && !read_error->empty()
                             ? *read_error : "sorted-lookup prefix cache source segment shape mismatch");
                     }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                    if constexpr (UseMontgomeryFastPath) {
+                        const FrWire segment_seed =
+                            zkdl::cpu_ipa_montgomery_to_frwire(product_montgomery);
+                        if (!zkdl::fr_canonical(segment_seed))
+                            return fail_cache("sorted-lookup prefix seed is not canonical");
+                        segment_prefix.push_back(segment_seed);
+                    } else {
+                        segment_prefix.push_back(product);
+                    }
+#else
                     segment_prefix.push_back(product);
+#endif
                     for (std::uint32_t inside = 0U; inside < keys.segment_size(); ++inside) {
                         if (!sorted_lookup_boolean(active_block[inside])) {
                             return fail_cache("sorted-lookup prefix active mask is not boolean");
@@ -1812,9 +1908,29 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
                             if (key != 0U) return fail_cache("sorted-lookup prefix inactive key is nonzero");
                         } else {
                             if (padding_seen) return fail_cache("sorted-lookup prefix active mask is not contiguous");
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                            if constexpr (UseMontgomeryFastPath) {
+                                const auto key_montgomery =
+                                    zkdl::cpu_ipa_frwire_to_montgomery_unchecked(
+                                        key_block[inside]);
+                                zkdl_blst::blst_fr beta_key{}, factor{}, next_product{};
+                                zkdl_blst::blst_fr_mul(
+                                    &beta_key, &cache->beta_montgomery, &key_montgomery);
+                                zkdl_blst::blst_fr_add(
+                                    &factor, &beta_key, &cache->gamma_montgomery);
+                                zkdl_blst::blst_fr_mul(
+                                    &next_product, &product_montgomery, &factor);
+                                product_montgomery = next_product;
+                            } else {
+                                product = zkdl::fr_mul(
+                                    product, zkdl::fr_add(
+                                        zkdl::fr_mul(beta, key_block[inside]), gamma));
+                            }
+#else
                             product = zkdl::fr_mul(
                                 product, zkdl::fr_add(
                                     zkdl::fr_mul(beta, key_block[inside]), gamma));
+#endif
                         }
                     }
                     if (progress != nullptr)
@@ -1831,6 +1947,34 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
             const std::uint32_t requested_segments = static_cast<std::uint32_t>(
                 (offset % keys.segment_size() + count + keys.segment_size() - 1U) /
                 keys.segment_size());
+            const auto disable_output_cache = [&]() {
+                cache->output_cache_disabled = true;
+                cache->output_most_recent_valid = false;
+                for (auto& slot : cache->output_slots) {
+                    slot.values.reset();
+                    slot.segment = std::numeric_limits<std::uint32_t>::max();
+                    slot.valid = false;
+                }
+            };
+            if (!cache->output_cache_disabled) {
+                bool slots_ready = true;
+                if (cache->segment_size >
+                    std::numeric_limits<std::size_t>::max() / sizeof(FrWire)) {
+                    slots_ready = false;
+                } else {
+                    for (auto& slot : cache->output_slots) {
+                        if (slot.values) continue;
+                        std::unique_ptr<FrWire[]> values(new (std::nothrow)
+                            FrWire[cache->segment_size]);
+                        if (!values) {
+                            slots_ready = false;
+                            break;
+                        }
+                        slot.values = std::move(values);
+                    }
+                }
+                if (!slots_ready) disable_output_cache();
+            }
             while (remaining != 0U) {
                 std::uint32_t segment = 0U, inside = 0U;
                 if (!checked_relation_u32(cursor / keys.segment_size(), segment,
@@ -1838,36 +1982,133 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
                     !checked_relation_u32(cursor % keys.segment_size(), inside,
                                           "sorted-lookup prefix segment offset", read_error) ||
                     segment >= cache->segment_prefix.size()) return false;
-                std::vector<FrWire> key_block, active_block;
-                if (!keys.read_segment(segment, key_block, read_error) ||
-                    !active_mask.read_segment(segment, active_block, read_error) ||
-                    key_block.size() != keys.segment_size() ||
-                    active_block.size() != keys.segment_size())
-                    return fail_cache(read_error && !read_error->empty()
-                        ? *read_error : "sorted-lookup prefix requested segment shape mismatch");
                 const std::uint32_t take = std::min(
                     remaining, keys.segment_size() - inside);
-                FrWire product = cache->segment_prefix[segment];
-                const std::uint32_t stop = inside + take;
-                for (std::uint32_t local = 0U; local < stop; ++local) {
-                    if (!sorted_lookup_boolean(active_block[local])) {
-                        return fail_cache("sorted-lookup prefix active mask is not boolean");
+                std::size_t slot_index = 0U;
+                bool slot_hit = false;
+                if (!cache->output_cache_disabled) {
+                    for (std::size_t index = 0U;
+                         index < cache->output_slots.size(); ++index) {
+                        if (cache->output_slots[index].valid &&
+                            cache->output_slots[index].segment == segment) {
+                            slot_index = index;
+                            slot_hit = true;
+                            break;
+                        }
                     }
-                    unsigned __int128 key = 0U;
-                    if (!sorted_lookup_u128_from_field(key_block[local], key_bits, key, read_error))
+                    if (slot_hit) {
+                        cache->output_most_recent = slot_index;
+                        cache->output_most_recent_valid = true;
+                    } else {
+                        if (!cache->output_slots[0U].valid) slot_index = 0U;
+                        else if (!cache->output_slots[1U].valid) slot_index = 1U;
+                        else slot_index = cache->output_most_recent_valid
+                            ? 1U - cache->output_most_recent : 0U;
+                        auto& slot = cache->output_slots[slot_index];
+                        slot.valid = false;
+                        std::vector<FrWire> key_block, active_block;
+                        if (!keys.read_segment(segment, key_block, read_error) ||
+                            !active_mask.read_segment(segment, active_block, read_error) ||
+                            key_block.size() != keys.segment_size() ||
+                            active_block.size() != keys.segment_size())
+                            return fail_cache(read_error && !read_error->empty()
+                                ? *read_error : "sorted-lookup prefix requested segment shape mismatch");
+                        FrWire product = cache->segment_prefix[segment];
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                        zkdl_blst::blst_fr product_montgomery{};
+                        if constexpr (UseMontgomeryFastPath) {
+                            if (!zkdl::fr_canonical(product))
+                                return fail_cache("sorted-lookup prefix seed is not canonical");
+                            product_montgomery =
+                                zkdl::cpu_ipa_frwire_to_montgomery_checked(product);
+                        }
+#endif
+                        for (std::uint32_t local = 0U;
+                             local < keys.segment_size(); ++local) {
+                            slot.values[local] = FrWire{};
+                            if (!sorted_lookup_boolean(active_block[local])) {
+                                return fail_cache("sorted-lookup prefix active mask is not boolean");
+                            }
+                            unsigned __int128 key = 0U;
+                            if (!sorted_lookup_u128_from_field(
+                                    key_block[local], key_bits, key, read_error))
+                                return fail_cache(read_error && !read_error->empty()
+                                    ? *read_error : "sorted-lookup prefix key is not canonical");
+                            if (active_block[local] == zkdl::fr_from_u32(0U) && key != 0U)
+                                return fail_cache("sorted-lookup prefix inactive key is nonzero");
+                            if (active_block[local] == zkdl::fr_from_u32(1U)) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+                                if constexpr (UseMontgomeryFastPath) {
+                                    slot.values[local] =
+                                        zkdl::cpu_ipa_montgomery_to_frwire(product_montgomery);
+                                    if (!zkdl::fr_canonical(slot.values[local]))
+                                        return fail_cache("sorted-lookup prefix output is not canonical");
+                                    const auto key_montgomery =
+                                        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(
+                                            key_block[local]);
+                                    zkdl_blst::blst_fr beta_key{}, factor{}, next_product{};
+                                    zkdl_blst::blst_fr_mul(
+                                        &beta_key, &cache->beta_montgomery, &key_montgomery);
+                                    zkdl_blst::blst_fr_add(
+                                        &factor, &beta_key, &cache->gamma_montgomery);
+                                    zkdl_blst::blst_fr_mul(
+                                        &next_product, &product_montgomery, &factor);
+                                    product_montgomery = next_product;
+                                } else {
+                                    slot.values[local] = product;
+                                    product = zkdl::fr_mul(
+                                        product, zkdl::fr_add(
+                                            zkdl::fr_mul(beta, key_block[local]), gamma));
+                                }
+#else
+                                slot.values[local] = product;
+                                product = zkdl::fr_mul(
+                                    product, zkdl::fr_add(
+                                        zkdl::fr_mul(beta, key_block[local]), gamma));
+#endif
+                            }
+                        }
+                        slot.segment = segment;
+                        slot.valid = true;
+                        cache->output_most_recent = slot_index;
+                        cache->output_most_recent_valid = true;
+                    }
+                }
+                if (!cache->output_cache_disabled) {
+                    const auto& slot = cache->output_slots[slot_index];
+                    std::copy(slot.values.get() + inside,
+                              slot.values.get() + inside + take,
+                              output.begin() + static_cast<std::ptrdiff_t>(cursor - offset));
+                } else {
+                    std::vector<FrWire> key_block, active_block;
+                    if (!keys.read_segment(segment, key_block, read_error) ||
+                        !active_mask.read_segment(segment, active_block, read_error) ||
+                        key_block.size() != keys.segment_size() ||
+                        active_block.size() != keys.segment_size())
                         return fail_cache(read_error && !read_error->empty()
-                            ? *read_error : "sorted-lookup prefix key is not canonical");
-                    const std::uint64_t global =
-                        static_cast<std::uint64_t>(segment) * keys.segment_size() + local;
-                    if (active_block[local] == zkdl::fr_from_u32(0U) && key != 0U)
-                        return fail_cache("sorted-lookup prefix inactive key is nonzero");
-                    if (local >= inside && global < offset + count &&
-                        active_block[local] == zkdl::fr_from_u32(1U))
-                        output[static_cast<std::size_t>(global - offset)] = product;
-                    if (active_block[local] == zkdl::fr_from_u32(1U))
-                        product = zkdl::fr_mul(
-                            product, zkdl::fr_add(
-                                zkdl::fr_mul(beta, key_block[local]), gamma));
+                            ? *read_error : "sorted-lookup prefix requested segment shape mismatch");
+                    FrWire product = cache->segment_prefix[segment];
+                    const std::uint32_t stop = inside + take;
+                    for (std::uint32_t local = 0U; local < stop; ++local) {
+                        if (!sorted_lookup_boolean(active_block[local]))
+                            return fail_cache("sorted-lookup prefix active mask is not boolean");
+                        unsigned __int128 key = 0U;
+                        if (!sorted_lookup_u128_from_field(
+                                key_block[local], key_bits, key, read_error))
+                            return fail_cache(read_error && !read_error->empty()
+                                ? *read_error : "sorted-lookup prefix key is not canonical");
+                        if (active_block[local] == zkdl::fr_from_u32(0U) && key != 0U)
+                            return fail_cache("sorted-lookup prefix inactive key is nonzero");
+                        const std::uint64_t global =
+                            static_cast<std::uint64_t>(segment) * keys.segment_size() + local;
+                        if (local >= inside && global < offset + count &&
+                            active_block[local] == zkdl::fr_from_u32(1U))
+                            output[static_cast<std::size_t>(global - offset)] = product;
+                        if (active_block[local] == zkdl::fr_from_u32(1U))
+                            product = zkdl::fr_mul(
+                                product, zkdl::fr_add(
+                                    zkdl::fr_mul(beta, key_block[local]), gamma));
+                    }
                 }
                 cursor += take;
                 remaining -= take;
@@ -1879,6 +2120,24 @@ inline bool make_authenticated_sorted_lookup_prefix_product_provider(
             return true;
         });
     return true;
+}
+
+inline bool make_authenticated_sorted_lookup_prefix_product_provider(
+    const SegmentedTensorProvider& keys, const SegmentedTensorProvider& active_mask,
+    const FrWire& beta, const FrWire& gamma,
+    SegmentedTensorProvider& prefix_provider, std::string* error = nullptr,
+    NativeOperationProgressReporter* progress = nullptr,
+    const std::array<byte, 32U>& descriptor_digest = {},
+    std::uint32_t key_bits = 127U) {
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+    return make_authenticated_sorted_lookup_prefix_product_provider_impl<true>(
+        keys, active_mask, beta, gamma, prefix_provider, error, progress,
+        descriptor_digest, key_bits);
+#else
+    return make_authenticated_sorted_lookup_prefix_product_provider_impl<false>(
+        keys, active_mask, beta, gamma, prefix_provider, error, progress,
+        descriptor_digest, key_bits);
+#endif
 }
 
 inline bool authenticated_sorted_lookup_prefix_product_endpoint(
@@ -3621,9 +3880,25 @@ inline std::vector<byte> encode_public_field_vector(const std::vector<FrWire>& v
 }
 
 inline bool decode_public_field_vector(const std::vector<byte>& encoded,
+                                      std::uint64_t expected_count,
                                       std::vector<FrWire>& values) {
     size_t offset = 0U;
-    if (!read_fr_vector(encoded, offset, values) || offset != encoded.size() || values.empty()) return false;
+    std::uint64_t count = 0U;
+    if (expected_count == 0U || !zkdl::read_u64(encoded, offset, count) ||
+        count == 0U || count != expected_count ||
+        count > static_cast<std::uint64_t>(std::numeric_limits<size_t>::max()) ||
+        offset > encoded.size() ||
+        count > static_cast<std::uint64_t>(
+                    (std::numeric_limits<size_t>::max() - offset) / sizeof(FrWire)))
+        return false;
+    const size_t payload_bytes = static_cast<size_t>(count) * sizeof(FrWire);
+    if (encoded.size() - offset != payload_bytes) return false;
+
+    std::vector<FrWire> parsed(static_cast<size_t>(count));
+    for (auto& value : parsed)
+        if (!read_fr_wire(encoded, offset, value)) return false;
+    if (offset != encoded.size()) return false;
+    values.swap(parsed);
     return true;
 }
 
@@ -5585,14 +5860,26 @@ struct ZkSumcheckRoundEvaluationScratch {
     ZkSumcheckRoundEvaluationScratch(std::size_t chunk_count,
                                      std::size_t tensor_count,
                                      std::size_t evaluation_count,
-                                     bool use_montgomery = false) {
+                                     bool use_montgomery = false,
+                                     bool use_fast_coefficients = false) {
 #if defined(ZKDL_USE_BLST_G1_CODEC)
         if (use_montgomery) {
             if (tensor_count > std::numeric_limits<std::size_t>::max() / 3U)
                 throw std::length_error("Sumcheck Montgomery row scratch shape overflows");
+            std::size_t row_fields = tensor_count * 3U;
+            if (use_fast_coefficients) {
+                if (tensor_count >
+                    (std::numeric_limits<std::size_t>::max() -
+                     kZkSumcheckMontgomeryFastRowExtraFields) / 2U)
+                    throw std::length_error("Sumcheck Montgomery fast row scratch shape overflows");
+                row_fields = std::max<std::size_t>(
+                    row_fields, tensor_count * 2U +
+                        static_cast<std::size_t>(
+                            kZkSumcheckMontgomeryFastRowExtraFields));
+            }
             montgomery_row_state.assign(
                 chunk_count,
-                std::vector<zkdl_blst::blst_fr>(tensor_count * 3U));
+                std::vector<zkdl_blst::blst_fr>(row_fields));
             montgomery_chunk_evaluations.assign(
                 chunk_count,
                 std::vector<zkdl_blst::blst_fr>(evaluation_count));
@@ -5601,6 +5888,7 @@ struct ZkSumcheckRoundEvaluationScratch {
         }
 #else
         (void)use_montgomery;
+        (void)use_fast_coefficients;
 #endif
         row_values.assign(chunk_count, std::vector<FrWire>(tensor_count));
         chunk_evaluations.assign(
@@ -5613,12 +5901,26 @@ struct ZkSumcheckMontgomeryConstraintPlan {
     struct Term {
         zkdl_blst::blst_fr coefficient{};
         const std::vector<std::uint32_t>* refs = nullptr;
+        std::uint8_t auxiliary_base_arity = 0U;
+        std::int8_t coefficient_unit_sign = 0;
     };
     zkdl_blst::blst_fr constant{};
     std::array<zkdl_blst::blst_fr, 9U> evaluation_points{};
     std::vector<Term> terms;
+    std::array<std::uint32_t, 2U> fast_common_refs{};
+    std::uint32_t fast_linear_ref = 0U;
+    std::array<std::uint32_t, 2U> fast_product_refs{};
+    std::array<std::uint32_t, 2U> auxiliary_factor_refs{};
     std::size_t tensor_count = 0U;
     std::uint32_t degree = 0U;
+    std::uint32_t auxiliary_base_degree = 0U;
+    std::uint64_t auxiliary_multiplications_per_row = 0U;
+    std::uint64_t legacy_multiplications_per_row = 0U;
+    std::uint8_t fast_linear_term_index = 0U;
+    bool fast_linear_positive = false;
+    bool fast_linear_is_constant = false;
+    bool fast_coefficients = false;
+    bool auxiliary_factorized_coefficients = false;
     bool enabled = false;
 #else
     bool enabled = false;
@@ -5686,6 +5988,8 @@ inline bool zksc_compile_montgomery_constraint_plan(
     try {
         plan.constant = zkdl::cpu_ipa_frwire_to_montgomery_checked(
             descriptor.constant);
+        const FrWire one = zkdl::fr_from_u32(1U);
+        const FrWire negative_one = zkdl::fr_neg(one);
         for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
             plan.evaluation_points[evaluation] =
                 zkdl::cpu_ipa_frwire_to_montgomery_checked(
@@ -5696,6 +6000,8 @@ inline bool zksc_compile_montgomery_constraint_plan(
             compiled.coefficient = zkdl::cpu_ipa_frwire_to_montgomery_checked(
                 term.coefficient);
             compiled.refs = &term.refs;
+            compiled.coefficient_unit_sign = term.coefficient == one ? 1
+                : (term.coefficient == negative_one ? -1 : 0);
             plan.terms.push_back(compiled);
         }
     } catch (const std::exception& exception) {
@@ -5704,6 +6010,123 @@ inline bool zksc_compile_montgomery_constraint_plan(
     }
     plan.tensor_count = tensor_count;
     plan.degree = degree;
+    std::uint64_t reference_count = 0U;
+    bool work_estimate_valid = true;
+    for (const auto& term : descriptor.terms) {
+        const std::uint64_t term_refs =
+            static_cast<std::uint64_t>(term.refs.size());
+        if (term_refs > std::numeric_limits<std::uint64_t>::max() -
+                            reference_count) {
+            work_estimate_valid = false;
+            break;
+        }
+        reference_count += term_refs;
+    }
+    const std::uint64_t tensor_count_u64 =
+        static_cast<std::uint64_t>(tensor_count);
+    if (work_estimate_valid &&
+        tensor_count_u64 <= std::numeric_limits<std::uint64_t>::max() -
+                                reference_count) {
+        const std::uint64_t operations_per_evaluation =
+            tensor_count_u64 + reference_count;
+        if (operations_per_evaluation != 0U &&
+            static_cast<std::uint64_t>(degree + 1U) <=
+                std::numeric_limits<std::uint64_t>::max() /
+                    operations_per_evaluation) {
+            plan.legacy_multiplications_per_row =
+                static_cast<std::uint64_t>(degree + 1U) *
+                operations_per_evaluation;
+        }
+    }
+    if (degree == 4U && descriptor.constant == FrWire{} &&
+        descriptor.terms.size() == 2U) {
+        const Monomial* residual = nullptr;
+        const Monomial* product = nullptr;
+        std::uint8_t residual_index = 0U;
+        for (std::size_t index = 0U; index < descriptor.terms.size(); ++index) {
+            const auto& term = descriptor.terms[index];
+            if (term.refs.size() == 2U || term.refs.size() == 3U) {
+                residual = &term;
+                residual_index = static_cast<std::uint8_t>(index);
+            } else if (term.refs.size() == 4U) {
+                product = &term;
+            }
+        }
+        if (residual != nullptr && product != nullptr) {
+            const FrWire one = zkdl::fr_from_u32(1U);
+            const FrWire negative_one = zkdl::fr_neg(one);
+            const bool residual_positive = residual->coefficient == one;
+            const bool residual_negative = residual->coefficient == negative_one;
+            const bool product_positive = product->coefficient == one;
+            const bool product_negative = product->coefficient == negative_one;
+            const bool opposite_unit_coefficients =
+                (residual_positive && product_negative) ||
+                (residual_negative && product_positive);
+            const std::size_t common_offset = residual->refs.size() - 2U;
+            if (opposite_unit_coefficients &&
+                residual->refs[common_offset] == product->refs[2U] &&
+                residual->refs[common_offset + 1U] == product->refs[3U]) {
+                plan.fast_linear_is_constant = residual->refs.size() == 2U;
+                if (!plan.fast_linear_is_constant)
+                    plan.fast_linear_ref = residual->refs[0U];
+                plan.fast_linear_term_index = residual_index;
+                plan.fast_product_refs = {product->refs[0U], product->refs[1U]};
+                plan.fast_common_refs = {product->refs[2U], product->refs[3U]};
+                plan.fast_linear_positive = residual_positive;
+                plan.fast_coefficients = true;
+            }
+        }
+    }
+    if (!plan.fast_coefficients && (degree == 3U || degree == 4U) &&
+        descriptor.constant == FrWire{} && !descriptor.terms.empty() &&
+        tensor_count >= 2U && tensor_count <=
+            static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
+        const std::array<std::uint32_t, 2U> auxiliary_refs = {
+            static_cast<std::uint32_t>(tensor_count - 2U),
+            static_cast<std::uint32_t>(tensor_count - 1U)};
+        bool supported_shape = true;
+        std::uint32_t base_degree = 0U;
+        std::uint64_t base_multiplications = 0U;
+        for (std::size_t index = 0U; index < descriptor.terms.size(); ++index) {
+            const auto& refs = descriptor.terms[index].refs;
+            if (refs.size() < 2U || refs[refs.size() - 2U] != auxiliary_refs[0U] ||
+                refs.back() != auxiliary_refs[1U]) {
+                supported_shape = false;
+                break;
+            }
+            const std::size_t base_arity = refs.size() - 2U;
+            if (base_arity > 2U || base_arity > degree - 2U) {
+                supported_shape = false;
+                break;
+            }
+            const auto& compiled = plan.terms[index];
+            const std::uint64_t term_multiplications = base_arity == 0U ? 0U
+                : (base_arity == 1U
+                    ? (compiled.coefficient_unit_sign == 0 ? 2U : 0U)
+                    : 4U + (compiled.coefficient_unit_sign == 0 ? 3U : 0U));
+            if (term_multiplications >
+                std::numeric_limits<std::uint64_t>::max() - base_multiplications) {
+                supported_shape = false;
+                break;
+            }
+            base_multiplications += term_multiplications;
+            plan.terms[index].auxiliary_base_arity =
+                static_cast<std::uint8_t>(base_arity);
+            base_degree = std::max(base_degree,
+                                   static_cast<std::uint32_t>(base_arity));
+        }
+        const std::uint64_t convolution_multiplications =
+            3U * (static_cast<std::uint64_t>(base_degree) + 1U);
+        if (supported_shape && base_multiplications <=
+                std::numeric_limits<std::uint64_t>::max() -
+                    4U - convolution_multiplications) {
+            plan.auxiliary_factor_refs = auxiliary_refs;
+            plan.auxiliary_base_degree = base_degree;
+            plan.auxiliary_multiplications_per_row = base_multiplications + 4U +
+                convolution_multiplications;
+            plan.auxiliary_factorized_coefficients = true;
+        }
+    }
     plan.enabled = true;
     return true;
 }
@@ -5724,6 +6147,273 @@ inline zkdl_blst::blst_fr zksc_eval_constraint_montgomery(
         result = next;
     }
     return result;
+}
+
+inline bool zksc_montgomery_fast_coefficients_worthwhile(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    std::size_t row_count) noexcept {
+    if (!plan.fast_coefficients || row_count == 0U ||
+        plan.terms.size() != 2U || plan.terms[0U].refs == nullptr ||
+        plan.terms[1U].refs == nullptr) return false;
+    const std::uint64_t reference_count =
+        static_cast<std::uint64_t>(plan.terms[0U].refs->size()) +
+        static_cast<std::uint64_t>(plan.terms[1U].refs->size());
+    const std::uint64_t legacy_multiplications_per_row =
+        (static_cast<std::uint64_t>(plan.degree) + 1U) *
+        (static_cast<std::uint64_t>(plan.tensor_count) + reference_count);
+    const long double rows = static_cast<long double>(row_count);
+    const long double legacy_cost =
+        static_cast<long double>(legacy_multiplications_per_row) * rows;
+    const long double coefficient_cost = 17.0L * rows + 20.0L;
+    return coefficient_cost * 4.0L <= legacy_cost * 3.0L;
+}
+
+inline bool zksc_montgomery_auxiliary_coefficients_worthwhile(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    std::size_t row_count) noexcept {
+    if (!plan.auxiliary_factorized_coefficients || row_count < 1024U ||
+        plan.auxiliary_multiplications_per_row == 0U ||
+        plan.legacy_multiplications_per_row == 0U) return false;
+    const long double rows = static_cast<long double>(row_count);
+    const long double optimized_cost =
+        static_cast<long double>(plan.auxiliary_multiplications_per_row) * rows +
+        3.0L * static_cast<long double>(plan.degree + 1U);
+    const long double legacy_cost =
+        static_cast<long double>(plan.legacy_multiplications_per_row) * rows;
+    return optimized_cost * 4.0L <= legacy_cost * 3.0L;
+}
+
+inline void zksc_add_scaled_montgomery_coefficient(
+    zkdl_blst::blst_fr& accumulator,
+    const zkdl_blst::blst_fr& value,
+    const zkdl_blst::blst_fr& coefficient,
+    std::int8_t unit_sign) noexcept {
+    zkdl_blst::blst_fr next{};
+    if (unit_sign > 0) {
+        zkdl_blst::blst_fr_add(&next, &accumulator, &value);
+    } else if (unit_sign < 0) {
+        zkdl_blst::blst_fr_sub(&next, &accumulator, &value);
+    } else {
+        zkdl_blst::blst_fr scaled{};
+        zkdl_blst::blst_fr_mul(&scaled, &coefficient, &value);
+        zkdl_blst::blst_fr_add(&next, &accumulator, &scaled);
+    }
+    accumulator = next;
+}
+
+inline void zksc_accumulate_montgomery_auxiliary_factorized_row(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    const zkdl_blst::blst_fr* left_values,
+    const zkdl_blst::blst_fr* delta_values,
+    zkdl_blst::blst_fr* polynomial_scratch,
+    zkdl_blst::blst_fr* partial_coefficients) noexcept {
+    auto* base_polynomial = polynomial_scratch;
+    auto* mask_polynomial = polynomial_scratch + 3U;
+    std::fill_n(base_polynomial, 3U, zkdl_blst::blst_fr{});
+    std::fill_n(mask_polynomial, 3U, zkdl_blst::blst_fr{});
+
+    for (const auto& term : plan.terms) {
+        const auto& refs = *term.refs;
+        const std::uint8_t arity = term.auxiliary_base_arity;
+        if (arity == 0U) {
+            zkdl_blst::blst_fr next{};
+            zkdl_blst::blst_fr_add(&next, &base_polynomial[0U],
+                                   &term.coefficient);
+            base_polynomial[0U] = next;
+        } else if (arity == 1U) {
+            const std::uint32_t ref = refs[0U];
+            zksc_add_scaled_montgomery_coefficient(
+                base_polynomial[0U], left_values[ref], term.coefficient,
+                term.coefficient_unit_sign);
+            zksc_add_scaled_montgomery_coefficient(
+                base_polynomial[1U], delta_values[ref], term.coefficient,
+                term.coefficient_unit_sign);
+        } else {
+            const std::uint32_t ref0 = refs[0U];
+            const std::uint32_t ref1 = refs[1U];
+            zkdl_blst::blst_fr product0{};
+            zkdl_blst::blst_fr cross0{};
+            zkdl_blst::blst_fr cross1{};
+            zkdl_blst::blst_fr product1{};
+            zkdl_blst::blst_fr product2{};
+            zkdl_blst::blst_fr_mul(
+                &product0, &left_values[ref0], &left_values[ref1]);
+            zkdl_blst::blst_fr_mul(
+                &cross0, &left_values[ref0], &delta_values[ref1]);
+            zkdl_blst::blst_fr_mul(
+                &cross1, &delta_values[ref0], &left_values[ref1]);
+            zkdl_blst::blst_fr_add(&product1, &cross0, &cross1);
+            zkdl_blst::blst_fr_mul(
+                &product2, &delta_values[ref0], &delta_values[ref1]);
+            zksc_add_scaled_montgomery_coefficient(
+                base_polynomial[0U], product0, term.coefficient,
+                term.coefficient_unit_sign);
+            zksc_add_scaled_montgomery_coefficient(
+                base_polynomial[1U], product1, term.coefficient,
+                term.coefficient_unit_sign);
+            zksc_add_scaled_montgomery_coefficient(
+                base_polynomial[2U], product2, term.coefficient,
+                term.coefficient_unit_sign);
+        }
+    }
+
+    const std::uint32_t auxiliary0 = plan.auxiliary_factor_refs[0U];
+    const std::uint32_t auxiliary1 = plan.auxiliary_factor_refs[1U];
+    zkdl_blst::blst_fr cross0{};
+    zkdl_blst::blst_fr cross1{};
+    zkdl_blst::blst_fr_mul(
+        &mask_polynomial[0U], &left_values[auxiliary0],
+        &left_values[auxiliary1]);
+    zkdl_blst::blst_fr_mul(
+        &cross0, &left_values[auxiliary0], &delta_values[auxiliary1]);
+    zkdl_blst::blst_fr_mul(
+        &cross1, &delta_values[auxiliary0], &left_values[auxiliary1]);
+    zkdl_blst::blst_fr_add(&mask_polynomial[1U], &cross0, &cross1);
+    zkdl_blst::blst_fr_mul(
+        &mask_polynomial[2U], &delta_values[auxiliary0],
+        &delta_values[auxiliary1]);
+
+    for (std::uint32_t base_degree = 0U;
+         base_degree <= plan.auxiliary_base_degree; ++base_degree) {
+        for (std::uint32_t mask_degree = 0U; mask_degree <= 2U; ++mask_degree) {
+            const std::uint32_t coefficient = base_degree + mask_degree;
+            zkdl_blst::blst_fr product{};
+            zkdl_blst::blst_fr next{};
+            zkdl_blst::blst_fr_mul(
+                &product, &base_polynomial[base_degree],
+                &mask_polynomial[mask_degree]);
+            zkdl_blst::blst_fr_add(
+                &next, &partial_coefficients[coefficient], &product);
+            partial_coefficients[coefficient] = next;
+        }
+    }
+}
+
+inline void zksc_accumulate_montgomery_factorized_row(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    const zkdl_blst::blst_fr* left_values,
+    const zkdl_blst::blst_fr* delta_values,
+    zkdl_blst::blst_fr* polynomial_scratch,
+    zkdl_blst::blst_fr* partial_coefficients) noexcept {
+    auto* residual = polynomial_scratch;
+    auto* common = residual + 3U;
+    const auto& product0_left = left_values[plan.fast_product_refs[0U]];
+    const auto& product0_delta = delta_values[plan.fast_product_refs[0U]];
+    const auto& product1_left_value = left_values[plan.fast_product_refs[1U]];
+    const auto& product1_delta = delta_values[plan.fast_product_refs[1U]];
+
+    zkdl_blst::blst_fr product0{};
+    zkdl_blst::blst_fr product1_left_term{};
+    zkdl_blst::blst_fr product1_right_term{};
+    zkdl_blst::blst_fr product1{};
+    zkdl_blst::blst_fr product2{};
+    zkdl_blst::blst_fr_mul(&product0, &product0_left, &product1_left_value);
+    zkdl_blst::blst_fr_mul(&product1_left_term, &product0_left, &product1_delta);
+    zkdl_blst::blst_fr_mul(&product1_right_term, &product0_delta, &product1_left_value);
+    zkdl_blst::blst_fr_add(&product1, &product1_left_term, &product1_right_term);
+    zkdl_blst::blst_fr_mul(&product2, &product0_delta, &product1_delta);
+
+    if (plan.fast_linear_is_constant) {
+        const auto& constant_residual =
+            plan.terms[plan.fast_linear_term_index].coefficient;
+        if (plan.fast_linear_positive) {
+            zkdl_blst::blst_fr_sub(&residual[0U], &constant_residual, &product0);
+            const zkdl_blst::blst_fr zero{};
+            zkdl_blst::blst_fr_sub(&residual[1U], &zero, &product1);
+            zkdl_blst::blst_fr_sub(&residual[2U], &zero, &product2);
+        } else {
+            zkdl_blst::blst_fr_add(&residual[0U], &product0, &constant_residual);
+            residual[1U] = product1;
+            residual[2U] = product2;
+        }
+    } else {
+        const auto& linear_left = left_values[plan.fast_linear_ref];
+        const auto& linear_delta = delta_values[plan.fast_linear_ref];
+        if (plan.fast_linear_positive) {
+            zkdl_blst::blst_fr_sub(&residual[0U], &linear_left, &product0);
+            zkdl_blst::blst_fr_sub(&residual[1U], &linear_delta, &product1);
+            const zkdl_blst::blst_fr zero{};
+            zkdl_blst::blst_fr_sub(&residual[2U], &zero, &product2);
+        } else {
+            zkdl_blst::blst_fr_sub(&residual[0U], &product0, &linear_left);
+            zkdl_blst::blst_fr_sub(&residual[1U], &product1, &linear_delta);
+            residual[2U] = product2;
+        }
+    }
+
+    const auto& common0_left = left_values[plan.fast_common_refs[0U]];
+    const auto& common0_delta = delta_values[plan.fast_common_refs[0U]];
+    const auto& common1_left = left_values[plan.fast_common_refs[1U]];
+    const auto& common1_delta = delta_values[plan.fast_common_refs[1U]];
+    zkdl_blst::blst_fr common1_left_product{};
+    zkdl_blst::blst_fr common1_right_product{};
+    zkdl_blst::blst_fr_mul(&common[0U], &common0_left, &common1_left);
+    zkdl_blst::blst_fr_mul(&common1_left_product, &common0_left, &common1_delta);
+    zkdl_blst::blst_fr_mul(&common1_right_product, &common0_delta, &common1_left);
+    zkdl_blst::blst_fr_add(&common[1U], &common1_left_product,
+                           &common1_right_product);
+    zkdl_blst::blst_fr_mul(&common[2U], &common0_delta, &common1_delta);
+
+    for (std::uint32_t residual_degree = 0U; residual_degree <= 2U;
+         ++residual_degree) {
+        for (std::uint32_t common_degree = 0U; common_degree <= 2U;
+             ++common_degree) {
+            zkdl_blst::blst_fr product{};
+            zkdl_blst::blst_fr next{};
+            const std::uint32_t coefficient =
+                residual_degree + common_degree;
+            zkdl_blst::blst_fr_mul(
+                &product, &residual[residual_degree], &common[common_degree]);
+            zkdl_blst::blst_fr_add(
+                &next, &partial_coefficients[coefficient], &product);
+            partial_coefficients[coefficient] = next;
+        }
+    }
+}
+
+inline void zksc_finish_montgomery_chunk_partials(
+    const ZkSumcheckMontgomeryConstraintPlan& plan,
+    const ZkSumcheckRoundEvaluationScratch& scratch,
+    std::size_t active_chunks, bool coefficient_mode,
+    std::vector<FrWire>& evaluations) {
+    if (!coefficient_mode) {
+        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
+            for (std::uint32_t evaluation = 0U;
+                 evaluation <= plan.degree; ++evaluation)
+                evaluations[evaluation] = zkdl::fr_add(
+                    evaluations[evaluation],
+                    zkdl::cpu_ipa_montgomery_to_frwire(
+                        scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        return;
+    }
+    std::array<zkdl_blst::blst_fr, 9U> total_coefficients{};
+    for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+        for (std::uint32_t coefficient = 0U;
+             coefficient <= plan.degree; ++coefficient) {
+            zkdl_blst::blst_fr next{};
+            zkdl_blst::blst_fr_add(
+                &next, &total_coefficients[coefficient],
+                &scratch.montgomery_chunk_evaluations[chunk][coefficient]);
+            total_coefficients[coefficient] = next;
+        }
+    }
+    for (std::uint32_t evaluation = 0U;
+         evaluation <= plan.degree; ++evaluation) {
+        auto value = total_coefficients[plan.degree];
+        for (std::uint32_t coefficient = plan.degree;
+             coefficient > 0U; --coefficient) {
+            zkdl_blst::blst_fr product{};
+            zkdl_blst::blst_fr next{};
+            zkdl_blst::blst_fr_mul(
+                &product, &value, &plan.evaluation_points[evaluation]);
+            zkdl_blst::blst_fr_add(
+                &next, &product, &total_coefficients[coefficient - 1U]);
+            value = next;
+        }
+        evaluations[evaluation] = zkdl::fr_add(
+            evaluations[evaluation],
+            zkdl::cpu_ipa_montgomery_to_frwire(value));
+    }
 }
 #endif
 
@@ -5778,7 +6468,21 @@ inline bool zksc_accumulate_round_evaluation_rows(
             if (error) *error = "segmented ZkSumcheck Montgomery scratch/plan shape is invalid";
             return false;
         }
-        const std::size_t row_state_size = current.size() * 3U;
+        const std::size_t legacy_row_state_size = current.size() * 3U;
+        const std::size_t fast_row_state_size = current.size() * 2U +
+            static_cast<std::size_t>(kZkSumcheckMontgomeryFastRowExtraFields);
+        const std::size_t row_state_size =
+            (montgomery_plan->fast_coefficients ||
+             montgomery_plan->auxiliary_factorized_coefficients)
+            ? std::max(legacy_row_state_size, fast_row_state_size)
+            : legacy_row_state_size;
+        const bool use_fast_coefficients =
+            zksc_montgomery_fast_coefficients_worthwhile(
+                *montgomery_plan, row_count);
+        const bool use_auxiliary_coefficients =
+            !use_fast_coefficients &&
+            zksc_montgomery_auxiliary_coefficients_worthwhile(
+                *montgomery_plan, row_count);
         for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
             if (scratch.montgomery_row_state[chunk].size() != row_state_size ||
                 scratch.montgomery_chunk_evaluations[chunk].size() != evaluations.size()) {
@@ -5810,22 +6514,35 @@ inline bool zksc_accumulate_round_evaluation_rows(
                 zkdl_blst::blst_fr_sub(
                     &row_state[current.size() + tensor], &right, &left);
             }
-            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
-                const auto& x = montgomery_plan->evaluation_points[evaluation];
-                for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
-                    zkdl_blst::blst_fr scaled{};
-                    zkdl_blst::blst_fr_mul(
-                        &scaled, &x, &row_state[current.size() + tensor]);
+            if (use_fast_coefficients) {
+                zksc_accumulate_montgomery_factorized_row(
+                    *montgomery_plan, row_state.data(),
+                    row_state.data() + current.size(),
+                    row_state.data() + 2U * current.size(), partial.data());
+            } else if (use_auxiliary_coefficients) {
+                zksc_accumulate_montgomery_auxiliary_factorized_row(
+                    *montgomery_plan, row_state.data(),
+                    row_state.data() + current.size(),
+                    row_state.data() + 2U * current.size(), partial.data());
+            } else {
+                for (std::uint32_t evaluation = 0U;
+                     evaluation <= degree; ++evaluation) {
+                    const auto& x = montgomery_plan->evaluation_points[evaluation];
+                    for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                        zkdl_blst::blst_fr scaled{};
+                        zkdl_blst::blst_fr_mul(
+                            &scaled, &x, &row_state[current.size() + tensor]);
+                        zkdl_blst::blst_fr_add(
+                            &row_state[2U * current.size() + tensor],
+                            &row_state[tensor], &scaled);
+                    }
+                    const auto value = zksc_eval_constraint_montgomery(
+                        *montgomery_plan, row_state.data() + 2U * current.size());
+                    zkdl_blst::blst_fr next{};
                     zkdl_blst::blst_fr_add(
-                        &row_state[2U * current.size() + tensor],
-                        &row_state[tensor], &scaled);
+                        &next, &partial[evaluation], &value);
+                    partial[evaluation] = next;
                 }
-                const auto value = zksc_eval_constraint_montgomery(
-                    *montgomery_plan, row_state.data() + 2U * current.size());
-                zkdl_blst::blst_fr next{};
-                zkdl_blst::blst_fr_add(
-                    &next, &partial[evaluation], &value);
-                partial[evaluation] = next;
             }
         });
         for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
@@ -5834,12 +6551,9 @@ inline bool zksc_accumulate_round_evaluation_rows(
                 return false;
             }
         }
-        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
-            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
-                evaluations[evaluation] = zkdl::fr_add(
-                    evaluations[evaluation],
-                    zkdl::cpu_ipa_montgomery_to_frwire(
-                        scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        zksc_finish_montgomery_chunk_partials(
+            *montgomery_plan, scratch, active_chunks,
+            use_fast_coefficients || use_auxiliary_coefficients, evaluations);
         return true;
     }
 #else
@@ -5914,7 +6628,10 @@ inline bool zksc_accumulate_round_evaluations(
                  static_cast<std::size_t>(zkdl::cpu_parallel_worker_count()) + 1U);
     ZkSumcheckRoundEvaluationScratch scratch(
         scratch_chunks, current.size(), evaluations.size(),
-        montgomery_plan != nullptr);
+        montgomery_plan != nullptr,
+        montgomery_plan != nullptr &&
+            (montgomery_plan->fast_coefficients ||
+             montgomery_plan->auxiliary_factorized_coefficients));
     for (std::size_t row_begin = 0U; row_begin < row_count;) {
         const std::size_t row_end = row_begin + std::min(
             row_count - row_begin, progress == nullptr ? row_count : kProgressRows);
@@ -6034,7 +6751,11 @@ inline bool zksc_segmented_fold_state_initialize(
                 if (error && error->empty()) *error = "segmented ZkSumcheck fold-state provider layout mismatch";
                 return false;
             }
+#if defined(ZKDL_USE_BLST_G1_CODEC)
+            state[tensor].resize(logical_domain / 2U);
+#else
             state[tensor].reserve(logical_domain / 2U);
+#endif
         }
 #if defined(ZKDL_USE_BLST_G1_CODEC)
         const zkdl_blst::blst_fr challenge_montgomery =
@@ -6046,25 +6767,36 @@ inline bool zksc_segmented_fold_state_initialize(
                 if (!providers[tensor].read_segment(segment, block, error) ||
                     block.size() != segment_size) return false;
 #if defined(ZKDL_USE_BLST_G1_CODEC)
-                std::vector<zkdl_blst::blst_fr> folded_values;
-                folded_values.reserve(segment_size / 2U);
-                for (std::size_t index = 0U; index < block.size() / 2U; ++index) {
-                    if (!zkdl::fr_canonical(block[2U * index]) ||
-                        !zkdl::fr_canonical(block[2U * index + 1U])) {
-                        if (error) *error = "segmented ZkSumcheck provider scalar is not canonical";
-                        return false;
-                    }
-                    const zkdl_blst::blst_fr left =
-                        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(block[2U * index]);
-                    const zkdl_blst::blst_fr right =
-                        zkdl::cpu_ipa_frwire_to_montgomery_unchecked(block[2U * index + 1U]);
-                    zkdl_blst::blst_fr difference{}, scaled{}, folded{};
-                    zkdl_blst::blst_fr_sub(&difference, &right, &left);
-                    zkdl_blst::blst_fr_mul(&scaled, &challenge_montgomery, &difference);
-                    zkdl_blst::blst_fr_add(&folded, &left, &scaled);
-                    folded_values.push_back(folded);
+                const std::size_t folded_segment_size = segment_size / 2U;
+                const std::size_t destination_offset =
+                    static_cast<std::size_t>(segment) * folded_segment_size;
+                auto* folded_values = state[tensor].data() + destination_offset;
+                std::atomic<bool> canonical_inputs{true};
+                zkdl::cpu_parallel_for_expensive_tasks(
+                    block.size() / 2U, 1024U, 4U,
+                    [&](std::size_t index) {
+                        const FrWire& left_wire = block[2U * index];
+                        const FrWire& right_wire = block[2U * index + 1U];
+                        if (!zkdl::fr_canonical(left_wire) ||
+                            !zkdl::fr_canonical(right_wire)) {
+                            canonical_inputs.store(false, std::memory_order_relaxed);
+                            return;
+                        }
+                        const zkdl_blst::blst_fr left =
+                            zkdl::cpu_ipa_frwire_to_montgomery_unchecked(left_wire);
+                        const zkdl_blst::blst_fr right =
+                            zkdl::cpu_ipa_frwire_to_montgomery_unchecked(right_wire);
+                        zkdl_blst::blst_fr difference{}, scaled{}, folded{};
+                        zkdl_blst::blst_fr_sub(&difference, &right, &left);
+                        zkdl_blst::blst_fr_mul(
+                            &scaled, &challenge_montgomery, &difference);
+                        zkdl_blst::blst_fr_add(&folded, &left, &scaled);
+                        folded_values[index] = folded;
+                    });
+                if (!canonical_inputs.load(std::memory_order_relaxed)) {
+                    if (error) *error = "segmented ZkSumcheck provider scalar is not canonical";
+                    return false;
                 }
-                state[tensor].insert(state[tensor].end(), folded_values.begin(), folded_values.end());
 #else
                 fold_values(block, challenge);
                 state[tensor].insert(state[tensor].end(), block.begin(), block.end());
@@ -6101,35 +6833,74 @@ inline bool zksc_fold_values_in_place(std::vector<ZkSumcheckFoldedScalar>& value
     const std::size_t folded_size = values.size() / 2U;
     constexpr std::size_t kProgressRows = 1U << 18U;
 #if defined(ZKDL_USE_BLST_G1_CODEC)
+    constexpr std::size_t kSerialPrefixRows = 4096U;
+    constexpr std::size_t kParallelLayerRows = 16384U;
+    constexpr std::size_t kParallelGrain = 1024U;
     const zkdl_blst::blst_fr challenge_montgomery =
         zkdl::cpu_ipa_frwire_to_montgomery_unchecked(challenge);
+    const auto fold_row = [&](std::size_t index) {
+        const zkdl_blst::blst_fr left = values[2U * index];
+        const zkdl_blst::blst_fr right = values[2U * index + 1U];
+        zkdl_blst::blst_fr difference{}, scaled{}, folded{};
+        zkdl_blst::blst_fr_sub(&difference, &right, &left);
+        zkdl_blst::blst_fr_mul(&scaled, &challenge_montgomery, &difference);
+        zkdl_blst::blst_fr_add(&folded, &left, &scaled);
+        values[index] = folded;
+    };
+    std::size_t cursor = 0U;
+    std::size_t next_progress_end = progress == nullptr
+        ? folded_size : std::min(folded_size, kProgressRows);
+    const auto emit_progress = [&]() {
+        if (progress == nullptr || cursor != next_progress_end) return;
+        (*progress)("fold_state_rows", progress_round, tensor_index,
+                    cursor, folded_size);
+        if (cursor < folded_size)
+            next_progress_end = cursor +
+                std::min(kProgressRows, folded_size - cursor);
+    };
+
+    const std::size_t serial_prefix_end =
+        std::min(folded_size, kSerialPrefixRows);
+    for (; cursor < serial_prefix_end; ++cursor) fold_row(cursor);
+    emit_progress();
+
+    while (cursor < folded_size) {
+        const std::size_t wave_begin = cursor;
+        const std::size_t wave_size =
+            std::min(wave_begin, folded_size - wave_begin);
+        const std::size_t wave_end = wave_begin + wave_size;
+        while (cursor < wave_end) {
+            const std::size_t end = std::min(wave_end, next_progress_end);
+            const std::size_t count = end - cursor;
+            if (wave_size >= kParallelLayerRows) {
+                zkdl::cpu_parallel_for_expensive_tasks(
+                    count, kParallelGrain, kParallelLayerRows,
+                    [&](std::size_t offset) { fold_row(cursor + offset); });
+            } else {
+                for (std::size_t index = cursor; index < end; ++index)
+                    fold_row(index);
+            }
+            cursor = end;
+            emit_progress();
+        }
+    }
 #else
     const FrWire one_minus = zkdl::fr_sub(zkdl::fr_from_u32(1U), challenge);
-#endif
     for (std::size_t begin = 0U; begin < folded_size;) {
         const std::size_t end = progress == nullptr
             ? folded_size : std::min(folded_size, begin + kProgressRows);
         for (std::size_t index = begin; index < end; ++index) {
-#if defined(ZKDL_USE_BLST_G1_CODEC)
-            const zkdl_blst::blst_fr left = values[2U * index];
-            const zkdl_blst::blst_fr right = values[2U * index + 1U];
-            zkdl_blst::blst_fr difference{}, scaled{}, folded{};
-            zkdl_blst::blst_fr_sub(&difference, &right, &left);
-            zkdl_blst::blst_fr_mul(&scaled, &challenge_montgomery, &difference);
-            zkdl_blst::blst_fr_add(&folded, &left, &scaled);
-            values[index] = folded;
-#else
             const FrWire left = values[2U * index];
             const FrWire right = values[2U * index + 1U];
             values[index] = zkdl::fr_add(zkdl::fr_mul(one_minus, left),
                                          zkdl::fr_mul(challenge, right));
-#endif
         }
         begin = end;
         if (progress != nullptr)
             (*progress)("fold_state_rows", progress_round, tensor_index,
                         end, folded_size);
     }
+#endif
     values.resize(folded_size);
     return true;
 }
@@ -6208,7 +6979,10 @@ inline bool zksc_spilled_round_evaluations(
             static_cast<std::uint64_t>(zkdl::cpu_parallel_worker_count()) + 1U);
     ZkSumcheckRoundEvaluationScratch scratch(
         scratch_chunks, static_cast<std::size_t>(tensor_count), degree + 1U,
-        montgomery_plan != nullptr);
+        montgomery_plan != nullptr,
+        montgomery_plan != nullptr &&
+            (montgomery_plan->fast_coefficients ||
+             montgomery_plan->auxiliary_factorized_coefficients));
     evaluations.assign(degree + 1U, FrWire{});
     for (std::uint64_t row_begin = 0U; row_begin < row_count;) {
         const std::uint64_t rows = std::min<std::uint64_t>(
@@ -6243,12 +7017,33 @@ inline bool zksc_spilled_round_evaluations(
                 if (error) *error = "Sumcheck spill Montgomery scratch/plan shape is invalid";
                 return false;
             }
+            const std::size_t tensor_size = static_cast<std::size_t>(tensor_count);
+            const std::size_t legacy_row_state_size = tensor_size * 3U;
+            const std::size_t fast_row_state_size = tensor_size * 2U +
+                static_cast<std::size_t>(kZkSumcheckMontgomeryFastRowExtraFields);
+            const std::size_t row_state_size =
+                (montgomery_plan->fast_coefficients ||
+                 montgomery_plan->auxiliary_factorized_coefficients)
+                ? std::max(legacy_row_state_size, fast_row_state_size)
+                : legacy_row_state_size;
             for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
+                if (scratch.montgomery_row_state[chunk].size() != row_state_size ||
+                    scratch.montgomery_chunk_evaluations[chunk].size() != degree + 1U) {
+                    if (error) *error = "Sumcheck spill Montgomery scratch shape is invalid";
+                    return false;
+                }
                 std::fill(scratch.montgomery_chunk_evaluations[chunk].begin(),
                           scratch.montgomery_chunk_evaluations[chunk].end(),
                           zkdl_blst::blst_fr{});
                 scratch.montgomery_chunk_valid[chunk] = 1U;
             }
+            const bool use_fast_coefficients =
+                zksc_montgomery_fast_coefficients_worthwhile(
+                    *montgomery_plan, static_cast<std::size_t>(rows));
+            const bool use_auxiliary_coefficients =
+                !use_fast_coefficients &&
+                zksc_montgomery_auxiliary_coefficients_worthwhile(
+                    *montgomery_plan, static_cast<std::size_t>(rows));
             zkdl::cpu_parallel_for(static_cast<std::size_t>(rows), grain,
                 [&](std::size_t local_row) {
                     const std::size_t chunk = local_row / grain;
@@ -6274,24 +7069,36 @@ inline bool zksc_spilled_round_evaluations(
                             &row_state[static_cast<std::size_t>(tensor_count) + tensor],
                             &right, &left);
                     }
-                    for (std::uint32_t evaluation = 0U;
-                         evaluation <= degree; ++evaluation) {
-                        const auto& x = montgomery_plan->evaluation_points[evaluation];
-                        for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
-                            zkdl_blst::blst_fr scaled{};
-                            zkdl_blst::blst_fr_mul(
-                                &scaled, &x,
-                                &row_state[static_cast<std::size_t>(tensor_count) + tensor]);
-                            zkdl_blst::blst_fr_add(
-                                &row_state[2U * static_cast<std::size_t>(tensor_count) + tensor],
-                                &row_state[tensor], &scaled);
+                    if (use_fast_coefficients) {
+                        zksc_accumulate_montgomery_factorized_row(
+                            *montgomery_plan, row_state.data(),
+                            row_state.data() + tensor_size,
+                            row_state.data() + 2U * tensor_size, partial.data());
+                    } else if (use_auxiliary_coefficients) {
+                        zksc_accumulate_montgomery_auxiliary_factorized_row(
+                            *montgomery_plan, row_state.data(),
+                            row_state.data() + tensor_size,
+                            row_state.data() + 2U * tensor_size, partial.data());
+                    } else {
+                        for (std::uint32_t evaluation = 0U;
+                             evaluation <= degree; ++evaluation) {
+                            const auto& x = montgomery_plan->evaluation_points[evaluation];
+                            for (std::size_t tensor = 0U; tensor < tensor_count; ++tensor) {
+                                zkdl_blst::blst_fr scaled{};
+                                zkdl_blst::blst_fr_mul(
+                                    &scaled, &x,
+                                    &row_state[static_cast<std::size_t>(tensor_count) + tensor]);
+                                zkdl_blst::blst_fr_add(
+                                    &row_state[2U * static_cast<std::size_t>(tensor_count) + tensor],
+                                    &row_state[tensor], &scaled);
+                            }
+                            const auto value = zksc_eval_constraint_montgomery(
+                                *montgomery_plan,
+                                row_state.data() + 2U * static_cast<std::size_t>(tensor_count));
+                            zkdl_blst::blst_fr next{};
+                            zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
+                            partial[evaluation] = next;
                         }
-                        const auto value = zksc_eval_constraint_montgomery(
-                            *montgomery_plan,
-                            row_state.data() + 2U * static_cast<std::size_t>(tensor_count));
-                        zkdl_blst::blst_fr next{};
-                        zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
-                        partial[evaluation] = next;
                     }
                 });
             for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
@@ -6300,12 +7107,10 @@ inline bool zksc_spilled_round_evaluations(
                     return false;
                 }
             }
-            for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
-                for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
-                    evaluations[evaluation] = zkdl::fr_add(
-                        evaluations[evaluation],
-                        zkdl::cpu_ipa_montgomery_to_frwire(
-                            scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+            zksc_finish_montgomery_chunk_partials(
+                *montgomery_plan, scratch, active_chunks,
+                use_fast_coefficients || use_auxiliary_coefficients,
+                evaluations);
         } else
 #endif
         {
@@ -6565,7 +7370,21 @@ inline bool zksc_accumulate_montgomery_folded_round_evaluation_rows(
             if (error) *error = "segmented ZkSumcheck Montgomery cached plan/scratch shape is invalid";
             return false;
         }
-        const std::size_t row_state_size = current.size() * 3U;
+        const std::size_t legacy_row_state_size = current.size() * 3U;
+        const std::size_t fast_row_state_size = current.size() * 2U +
+            static_cast<std::size_t>(kZkSumcheckMontgomeryFastRowExtraFields);
+        const std::size_t row_state_size =
+            (montgomery_plan->fast_coefficients ||
+             montgomery_plan->auxiliary_factorized_coefficients)
+            ? std::max(legacy_row_state_size, fast_row_state_size)
+            : legacy_row_state_size;
+        const bool use_fast_coefficients =
+            zksc_montgomery_fast_coefficients_worthwhile(
+                *montgomery_plan, row_count);
+        const bool use_auxiliary_coefficients =
+            !use_fast_coefficients &&
+            zksc_montgomery_auxiliary_coefficients_worthwhile(
+                *montgomery_plan, row_count);
         for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk) {
             if (scratch.montgomery_row_state[chunk].size() != row_state_size ||
                 scratch.montgomery_chunk_evaluations[chunk].size() != evaluations.size()) {
@@ -6589,29 +7408,40 @@ inline bool zksc_accumulate_montgomery_folded_round_evaluation_rows(
                 zkdl_blst::blst_fr_sub(
                     &row_state[current.size() + tensor], &right, &left);
             }
-            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation) {
-                const auto& x = montgomery_plan->evaluation_points[evaluation];
-                for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
-                    zkdl_blst::blst_fr scaled{};
-                    zkdl_blst::blst_fr_mul(
-                        &scaled, &x, &row_state[current.size() + tensor]);
-                    zkdl_blst::blst_fr_add(
-                        &row_state[2U * current.size() + tensor],
-                        &row_state[tensor], &scaled);
+            if (use_fast_coefficients) {
+                zksc_accumulate_montgomery_factorized_row(
+                    *montgomery_plan, row_state.data(),
+                    row_state.data() + current.size(),
+                    row_state.data() + 2U * current.size(), partial.data());
+            } else if (use_auxiliary_coefficients) {
+                zksc_accumulate_montgomery_auxiliary_factorized_row(
+                    *montgomery_plan, row_state.data(),
+                    row_state.data() + current.size(),
+                    row_state.data() + 2U * current.size(), partial.data());
+            } else {
+                for (std::uint32_t evaluation = 0U;
+                     evaluation <= degree; ++evaluation) {
+                    const auto& x = montgomery_plan->evaluation_points[evaluation];
+                    for (std::size_t tensor = 0U; tensor < current.size(); ++tensor) {
+                        zkdl_blst::blst_fr scaled{};
+                        zkdl_blst::blst_fr_mul(
+                            &scaled, &x, &row_state[current.size() + tensor]);
+                        zkdl_blst::blst_fr_add(
+                            &row_state[2U * current.size() + tensor],
+                            &row_state[tensor], &scaled);
+                    }
+                    const auto value = zksc_eval_constraint_montgomery(
+                        *montgomery_plan, row_state.data() + 2U * current.size());
+                    zkdl_blst::blst_fr next{};
+                    zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
+                    partial[evaluation] = next;
                 }
-                const auto value = zksc_eval_constraint_montgomery(
-                    *montgomery_plan, row_state.data() + 2U * current.size());
-                zkdl_blst::blst_fr next{};
-                zkdl_blst::blst_fr_add(&next, &partial[evaluation], &value);
-                partial[evaluation] = next;
             }
         });
-        for (std::size_t chunk = 0U; chunk < active_chunks; ++chunk)
-            for (std::uint32_t evaluation = 0U; evaluation <= degree; ++evaluation)
-                evaluations[evaluation] = zkdl::fr_add(
-                    evaluations[evaluation],
-                    zkdl::cpu_ipa_montgomery_to_frwire(
-                        scratch.montgomery_chunk_evaluations[chunk][evaluation]));
+        zksc_finish_montgomery_chunk_partials(
+            *montgomery_plan, scratch, active_chunks,
+            use_fast_coefficients || use_auxiliary_coefficients,
+            evaluations);
         return true;
     }
     if (active_chunks > scratch.row_values.size() ||
@@ -6676,7 +7506,10 @@ inline bool zksc_montgomery_folded_round_evaluations(
         std::min(scratch_rows,
                  static_cast<std::size_t>(zkdl::cpu_parallel_worker_count()) + 1U);
     ZkSumcheckRoundEvaluationScratch scratch(
-        scratch_chunks, state.size(), evaluations.size(), montgomery_plan != nullptr);
+        scratch_chunks, state.size(), evaluations.size(), montgomery_plan != nullptr,
+        montgomery_plan != nullptr &&
+            (montgomery_plan->fast_coefficients ||
+             montgomery_plan->auxiliary_factorized_coefficients));
     for (std::size_t row_begin = 0U; row_begin < row_count;) {
         const std::size_t row_end = row_begin + std::min(
             row_count - row_begin, progress == nullptr ? row_count : kProgressRows);
@@ -10370,10 +11203,11 @@ inline bool pointwise_eqmask_weight_table_peak_bytes(
     std::uint32_t bit_count, std::uint64_t& peak_bytes) noexcept;
 
 struct PointwiseEqmaskWeightTable {
-    static constexpr std::uint32_t kChunkBits = 8U;
+    static constexpr std::uint32_t kLegacyChunkBits = 8U;
+    static constexpr std::uint32_t kChunkBits = 15U;
     static constexpr std::uint32_t kMaxBits = kMaxRelationPointBits;
     static constexpr std::size_t kMaxChunks =
-        (kMaxBits + kChunkBits - 1U) / kChunkBits;
+        (kMaxBits + kLegacyChunkBits - 1U) / kLegacyChunkBits;
     struct Chunk {
         std::uint32_t bit_offset = 0U;
         std::uint32_t bit_count = 0U;
@@ -10388,6 +11222,22 @@ struct PointwiseEqmaskWeightTable {
     std::uint64_t entry_count = 0U;
     std::uint64_t peak_live_bytes = 0U;
 
+    static std::uint32_t group_count_for_bits(std::uint32_t bit_count) noexcept {
+        const std::uint32_t chunk_bits = bit_count <= 16U
+            ? kLegacyChunkBits
+            : kChunkBits;
+        return bit_count == 0U
+            ? 0U
+            : (bit_count + chunk_bits - 1U) / chunk_bits;
+    }
+
+    static std::uint32_t balanced_group_bits(
+        std::uint32_t remaining_bits, std::uint32_t groups_remaining) noexcept {
+        return groups_remaining == 0U
+            ? 0U
+            : (remaining_bits + groups_remaining - 1U) / groups_remaining;
+    }
+
     bool build(const std::vector<FrWire>& rho, std::string* error = nullptr) {
         clear();
         if (rho.size() > kMaxBits) {
@@ -10401,18 +11251,23 @@ struct PointwiseEqmaskWeightTable {
             }
         }
         bits = static_cast<std::uint32_t>(rho.size());
+        chunk_count = group_count_for_bits(bits);
         std::uint64_t payload_entries = 0U;
-        for (std::uint32_t offset = 0U; offset < bits; offset += kChunkBits) {
-            const std::uint32_t chunk_bits =
-                std::min<std::uint32_t>(kChunkBits, bits - offset);
+        std::uint32_t offset = 0U;
+        for (std::uint32_t chunk_index = 0U;
+             chunk_index < chunk_count; ++chunk_index) {
+            const std::uint32_t chunk_bits = bits <= 16U
+                ? std::min<std::uint32_t>(kLegacyChunkBits, bits - offset)
+                : balanced_group_bits(bits - offset, chunk_count - chunk_index);
             const std::uint32_t entries = 1U << chunk_bits;
             if (payload_entries > std::numeric_limits<std::uint64_t>::max() - entries) {
                 if (error) *error = "pointwise eqmask weight-table entry count overflows";
                 clear();
                 return false;
             }
-            chunks[chunk_count++] = Chunk{offset, chunk_bits, entries, payload_entries};
+            chunks[chunk_index] = Chunk{offset, chunk_bits, entries, payload_entries};
             payload_entries += entries;
+            offset += chunk_bits;
         }
         std::uint64_t checked_peak_bytes = 0U;
         if (!pointwise_eqmask_weight_table_peak_bytes(bits, checked_peak_bytes) ||
@@ -10456,8 +11311,12 @@ struct PointwiseEqmaskWeightTable {
     FrWire evaluate(std::uint64_t index) const {
         if (bits >= 64U || index >= (std::uint64_t{1U} << bits))
             throw std::out_of_range("pointwise eqmask lookup index exceeds its domain");
-        FrWire value = zkdl::fr_from_u32(1U);
-        for (std::uint32_t chunk_index = 0U;
+        if (chunk_count == 0U) return zkdl::fr_from_u32(1U);
+        const Chunk& first = chunks[0U];
+        const std::uint64_t first_mask = first.entry_count - 1U;
+        const std::uint64_t first_entry = (index >> first.bit_offset) & first_mask;
+        FrWire value = weights[first.entry_offset + first_entry];
+        for (std::uint32_t chunk_index = 1U;
              chunk_index < chunk_count; ++chunk_index) {
             const Chunk& chunk = chunks[chunk_index];
             const std::uint64_t mask = chunk.entry_count - 1U;
@@ -10483,14 +11342,22 @@ inline bool pointwise_eqmask_weight_table_peak_bytes(
     peak_bytes = 0U;
     if (bit_count > PointwiseEqmaskWeightTable::kMaxBits) return false;
     std::uint64_t entries = 0U;
-    for (std::uint32_t offset = 0U; offset < bit_count;
-         offset += PointwiseEqmaskWeightTable::kChunkBits) {
-        const std::uint32_t chunk_bits = std::min<std::uint32_t>(
-            PointwiseEqmaskWeightTable::kChunkBits, bit_count - offset);
+    const std::uint32_t chunk_count =
+        PointwiseEqmaskWeightTable::group_count_for_bits(bit_count);
+    std::uint32_t offset = 0U;
+    for (std::uint32_t chunk_index = 0U;
+         chunk_index < chunk_count; ++chunk_index) {
+        const std::uint32_t chunk_bits = bit_count <= 16U
+            ? std::min<std::uint32_t>(
+                  PointwiseEqmaskWeightTable::kLegacyChunkBits,
+                  bit_count - offset)
+            : PointwiseEqmaskWeightTable::balanced_group_bits(
+                  bit_count - offset, chunk_count - chunk_index);
         const std::uint64_t chunk_entries = std::uint64_t{1U} << chunk_bits;
         if (entries > std::numeric_limits<std::uint64_t>::max() - chunk_entries)
             return false;
         entries += chunk_entries;
+        offset += chunk_bits;
     }
     constexpr std::uint64_t allocator_reserve = 64U;
     constexpr std::uint64_t construction_scratch = 4U * sizeof(FrWire);
@@ -15014,7 +15881,7 @@ inline bool verify(
     std::vector<FrWire> point;
     for (std::uint32_t i = 0U; i < bits; ++i) point.push_back(zkdl::fr_wire(transcript.challenge("gat.public_output.point." + std::to_string(i))));
     std::vector<FrWire> public_values;
-    if (!decode_public_field_vector(proof.statement.public_output, public_values) || public_values.size() != domain) { if (error) *error = "public Y is not a canonical field vector matching commitment domain"; return false; }
+    if (!decode_public_field_vector(proof.statement.public_output, domain, public_values)) { if (error) *error = "public Y is not a canonical field vector matching commitment domain"; return false; }
     SegmentedTensorProvider provider;
     if (!SegmentedTensorProvider::from_values(public_values, context.ipa_generators.size(), provider, error)) return false;
     VerifierContext output_public;
@@ -15317,6 +16184,13 @@ inline bool prove_authenticated_sorted_lookup(
                 *error = "sorted-lookup phase=prefix_endpoint failed";
             return false;
         }
+        std::uint64_t prefix_cache_peak_bytes = 0U;
+        if (!authenticated_sorted_lookup_prefix_cache_peak_bytes(
+                descriptor.query_domain, descriptor.merge_domain,
+                descriptor.segment_size, prefix_cache_peak_bytes)) {
+            if (error) *error = "sorted-lookup prefix cache live-memory bound overflows";
+            return false;
+        }
 
         struct State {
             zkdl::CpuG1Point commitment;
@@ -15579,15 +16453,23 @@ inline bool prove_authenticated_sorted_lookup(
                                      &lookup_progress)) return false;
             ZkSumcheckProverResult sumcheck;
             failure_phase = "sumcheck";
+            if (prefix_cache_peak_bytes >
+                std::numeric_limits<std::uint64_t>::max() -
+                    eqmask_table.peak_live_bytes) {
+                if (error) *error = "sorted-lookup Sumcheck auxiliary live-memory bound overflows";
+                return false;
+            }
+            const std::uint64_t auxiliary_live_bytes =
+                eqmask_table.peak_live_bytes + prefix_cache_peak_bytes;
             if (!prove_zk_sumcheck_segmented(
                     weighted, weighted_providers, weighted.degree,
                     relation_providers.front().logical_domain(), generators,
                     blinding_generator, u_generator, initial_claim, statement, context,
                     transcript, sumcheck, error, descriptor.segment_size,
                     zksc_folded_state_within_budget(
-                        weighted_providers, weighted, eqmask_table.peak_live_bytes),
+                        weighted_providers, weighted, auxiliary_live_bytes),
                     "sorted_lookup_sumcheck", descriptor.operation_id.c_str(),
-                    spill_directory, true, eqmask_table.peak_live_bytes)) {
+                    spill_directory, true, auxiliary_live_bytes)) {
                 return false;
             }
             weighted_providers.clear();

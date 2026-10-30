@@ -4174,7 +4174,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     put_matrix("output_sum", trace.output_sum);
     put_matrix("public_Y", trace.logits);
 
-    const auto put_round_views = [&](const std::string &operation, const SignedRoundDivWitness &witness, const Matrix &numerator, u64 numerator_scale,
+    const auto put_round_views = [&](const std::string &operation, const SignedRoundDivWitness &witness, const Matrix &numerator,
                                      const Matrix &quotient, const std::vector<i64> *raw_denominator_nodes) {
         proof_auxiliary_construction_seconds += witness.proof_auxiliary_construction_seconds;
         const auto validation_start = std::chrono::steady_clock::now();
@@ -4232,7 +4232,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
         }
         proof_auxiliary_construction_seconds += std::chrono::duration<double>(
             std::chrono::steady_clock::now() - validation_start).count();
-        put(operation + "/view/signed_numerator", view(count, 2U, [&numerator, numerator_scale, operation](std::uint64_t index) { return native_wire(checked_i128(static_cast<__int128>(numerator.values.at(index)) * numerator_scale, operation + ".signed_numerator")); }), &proof_auxiliary_construction_seconds);
+        put(operation + "/view/signed_numerator", view(count, 2U, [&numerator](std::uint64_t index) { return native_wire(numerator.values.at(index)); }), &proof_auxiliary_construction_seconds);
         if (bounds.binds_raw_denominator) {
             put(operation + "/view/divisor", view(witness.rows * padded_width, 2U,
                  [raw_denominator_nodes, padded_width](std::uint64_t index) {
@@ -4265,7 +4265,7 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                     native_bit_column(*std::get<1>(role), bit, operation + "." + std::get<0>(role)), &proof_auxiliary_construction_seconds);
     };
 
-    const auto put_group_views = [&](const std::string &stage, u64 width, bool output, u64 aggregate_scale, const auto &head_trace) {
+    const auto put_group_views = [&](const std::string &stage, u64 width, bool output, const auto &head_trace) {
         using HeadTrace = std::decay_t<decltype(head_trace)>;
         constexpr bool is_hidden = std::is_same_v<HeadTrace, HiddenHeadTrace>;
         u64 padded_width = 1U;
@@ -4394,9 +4394,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
                 return head_trace.y_quantized;
             }
         }();
-        put_round_views(round, head_trace.aggregate_round_div, head_trace.aggregate_num, aggregate_scale, rounded, &denominator_nodes);
+        put_round_views(round, head_trace.aggregate_round_div, head_trace.aggregate_num, rounded, &denominator_nodes);
         if constexpr (!is_hidden) {
-            put_round_views(stage + "/output_scale_alignment", head_trace.alignment_round_div, head_trace.y_quantized, config.quantization.output_head,
+            put_round_views(stage + "/output_scale_alignment", head_trace.alignment_round_div, head_trace.y_quantized,
                             head_trace.aligned, nullptr);
             const std::string bias = stage + "/output_bias";
             put(bias + "/view/input0", native_matrix_values(head_trace.aligned));
@@ -4407,10 +4407,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
 
     for (u64 layer = 0U; layer < config.architecture.hidden_dims.size(); ++layer) {
         const u64 width = config.architecture.hidden_dims.at(layer);
-        const u64 aggregate_scale = config.quantization.hidden_aggregate_pre.at(layer);
         for (u64 head = 0U; head < config.architecture.hidden_heads.at(layer); ++head) {
             const std::string stage = "hidden/layer" + std::to_string(layer) + "/head" + std::to_string(head);
-            put_group_views(stage, width, false, aggregate_scale, trace.hidden_layers.at(layer).heads.at(head));
+            put_group_views(stage, width, false, trace.hidden_layers.at(layer).heads.at(head));
         }
         const std::string concat = "hidden/layer" + std::to_string(layer) + "/concat";
         const u64 head_count = config.architecture.hidden_heads.at(layer);
@@ -4424,9 +4423,9 @@ NativeRelationWitnessInput build_native_relation_witness(const Config &config, c
     }
     for (u64 head = 0U; head < config.architecture.output_heads; ++head) {
         const std::string stage = "output/head" + std::to_string(head);
-        put_group_views(stage, config.architecture.classes, true, config.quantization.output_pre, trace.output_heads.at(head));
+        put_group_views(stage, config.architecture.classes, true, trace.output_heads.at(head));
     }
-    put_round_views("final_average", trace.final_average_round_div, trace.output_sum, 1U, trace.logits, nullptr);
+    put_round_views("final_average", trace.final_average_round_div, trace.output_sum, trace.logits, nullptr);
 
     NativeRelationWitnessInput result;
     result.tensors.reserve(plan.tensor_families.size());

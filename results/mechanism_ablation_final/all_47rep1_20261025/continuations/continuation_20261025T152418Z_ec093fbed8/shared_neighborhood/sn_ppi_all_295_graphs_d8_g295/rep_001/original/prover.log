@@ -1,0 +1,9 @@
+stage=real-mechanism-prover
+start_utc=2026-10-25T18:35:58Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism shared_neighborhood --variant original --nodes 56944 --edges 850576 --width 8 --graphs 295 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_all_295_graphs/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_all_295_graphs/metadata.json --srs /home/pzh/project/artifacts/srs/ppi_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T152418Z_ec093fbed8/shared_neighborhood/sn_ppi_all_295_graphs_d8_g295/rep_001/original/prover_result.json
+MECHANISM_PROOF_WRITTEN mechanism=shared_neighborhood variant=original backend=cuda actual_cuda=true commitment_time_ms=7442.27 prove_time_ms=46675.3 proof_size_bytes=6428 proof_sha256=b3b8c7085882aee7113724f9927e39201a26062e46bcba831e73afd29fac8db7
+end_utc=2026-10-25T18:38:38Z
+process_pid=3763301
+return_code=0
+timed_out=false
+wall_time_seconds=159.711400

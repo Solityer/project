@@ -1221,6 +1221,18 @@ where
             let prepared_header = std::mem::size_of::<lookup::prover::Prepared<Scheme::Curve>>();
             bytes.checked_add((polynomial_header + transient_vector_headers + prepared_header) as u128)
         })
+        .and_then(|bytes| {
+            // m is committed inside Argument::prepare. Bound its ≤32 indexed
+            // scalar pairs and conservative fixed CPU projective temporaries
+            // in the same per-task prepare window.
+            let sparse_commitment_scratch_bytes = crate::poly::commitment::MAX_SPARSE_LAGRANGE_COMMITMENT_TERMS
+                .checked_mul(std::mem::size_of::<(usize, Scheme::Scalar)>())?
+                .checked_add(std::mem::size_of::<Vec<(usize, Scheme::Scalar)>>())?
+                .checked_add(
+                    8usize.checked_mul(std::mem::size_of::<<Scheme::Curve as CurveAffine>::CurveExt>())?,
+                )?;
+            bytes.checked_add(sparse_commitment_scratch_bytes as u128)
+        })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .filter(|bytes| *bytes > 0)
         .ok_or_else(|| invalid_native_prepare_policy("mv-lookup per-task byte bound is invalid"))?;
@@ -1517,9 +1529,7 @@ where
             // N-row mapped phi polynomial is built. Compact tapes, codebooks,
             // inverse codebooks, sparse counts, and blinds are retained-source
             // backing and are reserved separately by the admission envelope.
-            bytes.checked_add(
-                (4 * std::mem::size_of::<Vec<Scheme::Scalar>>()) as u128,
-            )
+            bytes.checked_add((4 * std::mem::size_of::<Vec<Scheme::Scalar>>()) as u128)
         })
         .and_then(|bytes| u64::try_from(bytes).ok())
         .filter(|bytes| *bytes > 0)

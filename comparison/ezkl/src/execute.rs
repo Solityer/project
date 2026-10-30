@@ -14,8 +14,9 @@ use crate::gat_adapter::{
     FormalCliContract, GpuEvidence, PublicStatement, RoundingMode, SrsProvenance,
 };
 use crate::graph::input::GraphData;
-use crate::graph::modules::ModuleForwardResult;
-use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model, SupportedOp, Visibility};
+use crate::graph::modules::{GraphModules, ModuleForwardResult};
+use crate::graph::{GraphCircuit, GraphSettings, GraphWitness, Model, NodeType, SupportedOp, Visibility};
+use crate::circuit::InputType;
 use crate::pfsys::{
     create_keys, create_keys_with_native_gate, load_pk,
     load_pk_with_native_backing_budget_and_timing, load_vk, save_params, save_pk,
@@ -59,6 +60,7 @@ use itertools::Itertools;
 use lazy_static::lazy_static;
 use log::debug;
 use log::{info, trace, warn};
+use maybe_rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -549,6 +551,265 @@ pub(crate) fn get_file_hash(path: &Path) -> Result<String, EZKLError> {
     crate::gat_adapter::schema::sha256_file_with_progress(path, "native file identity")
         .map(|(_, digest)| digest)
         .map_err(EZKLError::from)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct FormalFileIdentity {
+    len: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    mtime: i64,
+    #[cfg(unix)]
+    mtime_nsec: i64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+    #[cfg(not(unix))]
+    modified_unix_nanos: u128,
+}
+
+impl FormalFileIdentity {
+    fn from_metadata(metadata: &std::fs::Metadata, path: &Path) -> Result<Self, EZKLError> {
+        if !metadata.is_file() {
+            return Err(format!("formal digest path is not a regular file: {}", path.display()).into());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Ok(Self {
+                len: metadata.len(),
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                mtime: metadata.mtime(),
+                mtime_nsec: metadata.mtime_nsec(),
+                ctime: metadata.ctime(),
+                ctime_nsec: metadata.ctime_nsec(),
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let modified = metadata.modified().map_err(|error| {
+                format!("read formal digest modification time for {}: {}", path.display(), error)
+            })?;
+            let modified_unix_nanos = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| format!("invalid formal digest modification time for {}: {}", path.display(), error))?
+                .as_nanos();
+            Ok(Self { len: metadata.len(), modified_unix_nanos })
+        }
+    }
+}
+
+#[derive(Default)]
+struct VerifiedDigestContext {
+    digests: std::collections::HashMap<(PathBuf, FormalFileIdentity), String>,
+}
+
+impl VerifiedDigestContext {
+    /// Hash a guarded regular file once per verification invocation. Every use
+    /// rechecks the caller's path guard and opens the canonical file to compare
+    /// its live identity with the cached digest before reuse.
+    fn digest(
+        &mut self,
+        path: &Path,
+        label: &str,
+        artifact_root: Option<&Path>,
+    ) -> Result<String, EZKLError> {
+        if let Some(root) = artifact_root {
+            ensure_no_symlink_path(path, root)?;
+        } else {
+            require_formal_local_path(path, label)?;
+        }
+        let path_before = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot stat {} {}: {}", label, path.display(), error))?;
+        if path_before.file_type().is_symlink() || !path_before.is_file() {
+            return Err(format!("{} must be a regular non-symlink file: {}", label, path.display()).into());
+        }
+        let canonical = std::fs::canonicalize(path)
+            .map_err(|error| format!("cannot canonicalize {} {}: {}", label, path.display(), error))?;
+        let identity = FormalFileIdentity::from_metadata(&path_before, path)?;
+        let canonical_before = std::fs::symlink_metadata(&canonical)?;
+        if canonical_before.file_type().is_symlink()
+            || !canonical_before.is_file()
+            || FormalFileIdentity::from_metadata(&canonical_before, &canonical)? != identity
+        {
+            return Err(format!("{} changed while resolving its canonical path: {}", label, path.display()).into());
+        }
+        let mut file = File::open(&canonical)
+            .map_err(|error| format!("cannot open {} {}: {}", label, path.display(), error))?;
+        if FormalFileIdentity::from_metadata(&file.metadata()?, path)? != identity {
+            return Err(format!("{} changed while opening: {}", label, path.display()).into());
+        }
+
+        #[cfg(unix)]
+        {
+            let key = (canonical.clone(), identity.clone());
+            if let Some(digest) = self.digests.get(&key) {
+                self.recheck_open_file(path, label, artifact_root, &canonical, &file, &identity)?;
+                return Ok(digest.clone());
+            }
+        }
+
+        let (_, digest) = hash_open_file_with_progress(&mut file, path, label)?;
+        self.recheck_open_file(path, label, artifact_root, &canonical, &file, &identity)?;
+        // Non-Unix metadata does not provide a strong enough stable identity
+        // to safely reuse a cached digest after an in-place file rewrite.
+        #[cfg(unix)]
+        self.digests.insert((canonical, identity), digest.clone());
+        Ok(digest)
+    }
+
+    fn recheck_open_file(
+        &self,
+        path: &Path,
+        label: &str,
+        artifact_root: Option<&Path>,
+        canonical: &Path,
+        file: &File,
+        expected_identity: &FormalFileIdentity,
+    ) -> Result<(), EZKLError> {
+        if let Some(root) = artifact_root {
+            ensure_no_symlink_path(path, root)?;
+        } else {
+            require_formal_local_path(path, label)?;
+        }
+        let path_after = std::fs::symlink_metadata(path)?;
+        let canonical_after = std::fs::symlink_metadata(canonical)?;
+        if path_after.file_type().is_symlink()
+            || !path_after.is_file()
+            || canonical_after.file_type().is_symlink()
+            || !canonical_after.is_file()
+            || std::fs::canonicalize(path)? != canonical
+            || FormalFileIdentity::from_metadata(&path_after, path)? != *expected_identity
+            || FormalFileIdentity::from_metadata(&canonical_after, canonical)? != *expected_identity
+            || FormalFileIdentity::from_metadata(&file.metadata()?, path)? != *expected_identity
+        {
+            return Err(format!("{} changed while authenticating its digest: {}", label, path.display()).into());
+        }
+        Ok(())
+    }
+}
+
+fn ensure_expected_digest(
+    actual: &str,
+    expected: &str,
+    mismatch_message: impl Into<String>,
+) -> Result<(), EZKLError> {
+    if actual != expected {
+        return Err(mismatch_message.into().into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod verified_digest_context_tests {
+    use super::*;
+
+    #[test]
+    fn verified_digest_context_reuses_only_current_guarded_identity() {
+        let directory = tempfile::tempdir().expect("temporary digest fixture");
+        let root = directory.path();
+        let path = root.join("artifact.bin");
+        std::fs::write(&path, b"alpha").expect("write initial artifact");
+
+        let mut digests = VerifiedDigestContext::default();
+        let first = digests
+            .digest(&path, "test artifact", Some(root))
+            .expect("hash initial artifact");
+        let repeated = digests
+            .digest(&path, "test artifact", Some(root))
+            .expect("reuse current artifact digest");
+        assert_eq!(first, repeated);
+        assert_eq!(digests.digests.len(), 1, "same live identity should be hashed once");
+        ensure_expected_digest(&repeated, &first, "unexpected digest mismatch")
+            .expect("matching expected digest accepted");
+        assert!(ensure_expected_digest(
+            &repeated,
+            "not-the-expected-digest",
+            "artifact digest mismatch",
+        )
+        .is_err(), "a cache hit must still be checked against each expected digest");
+
+        std::fs::write(&path, b"changed in place").expect("replace artifact bytes in place");
+        let changed = digests
+            .digest(&path, "test artifact", Some(root))
+            .expect("rehash in-place changed artifact");
+        assert_ne!(changed, first, "in-place content change must not reuse stale digest");
+        assert_eq!(digests.digests.len(), 2);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+
+            let replacement = root.join("replacement.bin");
+            std::fs::write(&replacement, b"new content text")
+                .expect("write atomic replacement source");
+            std::fs::rename(&replacement, &path).expect("atomically replace artifact");
+            let replaced = digests
+                .digest(&path, "test artifact", Some(root))
+                .expect("rehash atomically replaced artifact");
+            assert_ne!(replaced, changed, "replacement must not reuse stale digest");
+            assert_eq!(digests.digests.len(), 3);
+
+            let symlink_path = root.join("artifact-link.bin");
+            symlink(&path, &symlink_path).expect("create symlink fixture");
+            assert!(digests
+                .digest(&symlink_path, "test artifact", Some(root))
+                .is_err(), "symlink artifact paths must be rejected before hashing");
+        }
+    }
+}
+
+fn hash_open_file_with_progress(file: &mut File, path: &Path, stage: &str) -> Result<(u64, String), EZKLError> {
+    #[cfg(feature = "ezkl")]
+    {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
+        let total = file.metadata()?.len();
+        eprintln!("[sha256] {}: started {} (0/{} bytes)", stage, path.display(), total);
+        let started = Instant::now();
+        let mut last_report = started;
+        let mut last_report_bytes = 0_u64;
+        let mut processed = 0_u64;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0_u8; 1024 * 1024];
+        loop {
+            let count = file.read(&mut buffer)
+                .map_err(|error| format!("read {}: {}", path.display(), error))?;
+            if count == 0 { break; }
+            processed = processed.checked_add(count as u64)
+                .ok_or_else(|| format!("size overflow while reading {}", path.display()))?;
+            if processed > total {
+                return Err(format!("{} grew while hashing: {}", stage, path.display()).into());
+            }
+            hasher.update(&buffer[..count]);
+            let now = Instant::now();
+            if processed.saturating_sub(last_report_bytes) >= 1024 * 1024 * 1024
+                || now.duration_since(last_report) >= Duration::from_secs(20)
+            {
+                eprintln!("[sha256] {}: progress {} ({}/{}) bytes, {:.1}s", stage, path.display(), processed, total, started.elapsed().as_secs_f64());
+                last_report = now;
+                last_report_bytes = processed;
+            }
+        }
+        if processed != total {
+            return Err(format!("{} size changed while hashing: {}", stage, path.display()).into());
+        }
+        let digest = hex::encode(hasher.finalize());
+        eprintln!("[sha256] {}: complete {} ({}/{} bytes, {:.1}s)", stage, path.display(), processed, total, started.elapsed().as_secs_f64());
+        Ok((processed, digest))
+    }
+    #[cfg(not(feature = "ezkl"))]
+    {
+        let _ = (file, path, stage);
+        Err("streaming file SHA-256 requires the official ezkl feature".into())
+    }
 }
 
 fn check_srs_hash(logrows: u32, srs_path: Option<PathBuf>) -> Result<String, EZKLError> {
@@ -1610,6 +1871,14 @@ fn enforce_gat_gpu(requested: bool) -> Result<(), EZKLError> {
 }
 
 fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
+    let mut digests = VerifiedDigestContext::default();
+    require_authentic_srs_with_context(path, &mut digests)
+}
+
+fn require_authentic_srs_with_context(
+    path: &Path,
+    digests: &mut VerifiedDigestContext,
+) -> Result<String, EZKLError> {
     require_formal_local_path(path, "SRS")?;
     if std::fs::symlink_metadata(path)?.file_type().is_symlink() {
         return Err(format!("official SRS must not be a symlink: {}", path.display()).into());
@@ -1641,11 +1910,7 @@ fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
             );
         }
     }
-    let (_, digest) = crate::gat_adapter::schema::sha256_file_with_progress(
-        path,
-        "official SRS authentication",
-    )
-    .map_err(EZKLError::from)?;
+    let digest = digests.digest(path, "official SRS authentication", None)?;
     let expected = crate::srs_sha::PUBLIC_SRS_SHA256_HASHES
         .get(&crate::graph::MAX_PUBLIC_SRS)
         .ok_or_else(|| {
@@ -1654,13 +1919,14 @@ fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
                 crate::graph::MAX_PUBLIC_SRS
             )
         })?;
-    if digest != *expected {
-        return Err(format!(
+    ensure_expected_digest(
+        &digest,
+        expected,
+        format!(
             "official SRS digest {} does not match the native trusted maximum-domain digest {}",
             digest, expected
-        )
-        .into());
-    }
+        ),
+    )?;
     Ok(digest)
 }
 
@@ -1691,6 +1957,33 @@ fn fp_values(values: &[i128]) -> Vec<Fr> {
     values
         .iter()
         .map(|value| crate::fieldutils::integer_rep_to_felt::<Fr>(*value))
+        .collect()
+}
+
+const FORMAL_INSTANCE_PAR_CONVERSION_MIN: usize = 1 << 15;
+
+fn formal_instance_fp_values(values: &[i128]) -> Vec<Fr> {
+    if values.len() < FORMAL_INSTANCE_PAR_CONVERSION_MIN {
+        return fp_values(values);
+    }
+
+    values
+        .par_iter()
+        .map(|value| crate::fieldutils::integer_rep_to_felt::<Fr>(*value))
+        .collect()
+}
+
+fn formal_instance_usize_fp_values(values: &[usize]) -> Vec<Fr> {
+    if values.len() < FORMAL_INSTANCE_PAR_CONVERSION_MIN {
+        return values
+            .iter()
+            .map(|value| crate::fieldutils::integer_rep_to_felt::<Fr>(*value as i128))
+            .collect();
+    }
+
+    values
+        .par_iter()
+        .map(|value| crate::fieldutils::integer_rep_to_felt::<Fr>(*value as i128))
         .collect()
 }
 
@@ -1758,7 +2051,7 @@ fn native_hash_string(value: Fr) -> String {
 fn assert_native_gat_identity(
     circuit: &GraphCircuit,
     expected: &crate::gat_adapter::CanonicalGat,
-) -> Result<(), EZKLError> {
+) -> Result<RoundingMode, EZKLError> {
     match circuit.settings().gat_range_gadget_version {
         Some(version)
             if version == crate::gat_adapter::range_gadget::GAT_RANGE_GADGET_VERSION => {}
@@ -1777,10 +2070,12 @@ fn assert_native_gat_identity(
         }
     }
     let mut found = 0usize;
+    let mut rounding = None;
     for node in circuit.model().graph.nodes.values() {
         if let crate::graph::NodeType::Node(node) = node {
             if let SupportedOp::Gat(op) = &node.opkind {
                 found += 1;
+                rounding = Some(op.rounding);
                 if op.spec.graph.topology_digest != expected.graph.topology_digest
                     || op.spec.model_binding.hash != expected.model_binding.hash
                     || op.spec.model_binding.canonical_model_digest
@@ -1817,7 +2112,67 @@ fn assert_native_gat_identity(
         )
         .into());
     }
-    Ok(())
+
+    let graph = &circuit.model().graph;
+    let expected_input_ids = (0..6).collect::<Vec<_>>();
+    let expected_param_ids = vec![6];
+    let expected_output_outlets = vec![(7, 0)];
+    let expected_input_shapes = vec![
+        vec![expected.graph.n_total, expected.feature_dim],
+        vec![expected.graph.n],
+        vec![expected.graph.e],
+        vec![expected.graph.e],
+        vec![expected.graph.g_batch + 1],
+        vec![expected.graph.g_batch + 1],
+    ];
+    let expected_param_shapes = vec![vec![expected.model.flattened_params_len().map_err(EZKLError::from)?]];
+    let expected_output_shapes = vec![vec![expected.graph.n, expected.model.classes]];
+    if graph.nodes.keys().copied().collect::<Vec<_>>() != (0..8).collect::<Vec<_>>()
+        || graph.input_node_ids() != expected_input_ids.as_slice()
+        || graph.param_input_node_ids() != expected_param_ids.as_slice()
+        || graph.output_outlets() != expected_output_outlets.as_slice()
+        || graph.input_shapes().map_err(EZKLError::from)? != expected_input_shapes
+        || graph.param_shapes().map_err(EZKLError::from)? != expected_param_shapes
+        || graph.output_shapes().map_err(EZKLError::from)? != expected_output_shapes
+        || graph.get_output_types() != vec![InputType::F32]
+    {
+        return Err("compiled GAT circuit graph does not match the canonical six-input, one-parameter, one-output layout".into());
+    }
+
+    let expected_input_specs = [
+        (expected_input_shapes[0].clone(), expected.scales.s_input, InputType::F32),
+        (expected_input_shapes[1].clone(), 0, InputType::Int),
+        (expected_input_shapes[2].clone(), 0, InputType::Int),
+        (expected_input_shapes[3].clone(), 0, InputType::Int),
+        (expected_input_shapes[4].clone(), 0, InputType::Int),
+        (expected_input_shapes[5].clone(), 0, InputType::Int),
+        (expected_param_shapes[0].clone(), expected.scales.s_w_hidden[0][0], InputType::F32),
+    ];
+    for (node_id, (dims, scale, datum_type)) in expected_input_specs.iter().enumerate() {
+        let Some(NodeType::Node(node)) = graph.nodes.get(&node_id) else {
+            return Err(format!("canonical GAT input node {} is missing or is a subgraph", node_id).into());
+        };
+        let is_expected_input = matches!(
+            &node.opkind,
+            SupportedOp::Input(input) if input.scale == *scale && input.datum_type == *datum_type
+        );
+        if !is_expected_input || node.out_dims.as_slice() != dims.as_slice() || node.out_scale != *scale || node.idx != node_id {
+            return Err(format!("compiled GAT input node {} does not match the authenticated input contract", node_id).into());
+        }
+    }
+    let Some(NodeType::Node(gat_node)) = graph.nodes.get(&7) else {
+        return Err("canonical GAT relation node is missing or is a subgraph".into());
+    };
+    let expected_gat_inputs = (0..7).map(|node_id| (node_id, 0)).collect::<Vec<_>>();
+    if !matches!(&gat_node.opkind, SupportedOp::Gat(_))
+        || gat_node.inputs.as_slice() != expected_gat_inputs.as_slice()
+        || gat_node.out_dims.as_slice() != expected_output_shapes[0].as_slice()
+        || gat_node.out_scale != expected.scales.s_out
+        || gat_node.idx != 7
+    {
+        return Err("compiled GatOp wiring does not match canonical input order and output shape".into());
+    }
+    rounding.ok_or_else(|| "compiled canonical GatOp has no rounding mode".into())
 }
 
 fn assert_native_gat_public_identity(
@@ -2623,7 +2978,7 @@ fn validate_statement_against_loaded(
 /// `GraphCircuit::prepare_public_inputs` helper.  The adapter only supplies a
 /// public-only `GraphWitness` shell; it never reads or reconstructs W/trace.
 fn public_instances_from_statement(
-    circuit: &mut GraphCircuit,
+    circuit: &GraphCircuit,
     statement: &PublicStatement,
 ) -> Result<Vec<Vec<Fr>>, EZKLError> {
     let input_shapes = circuit.model().graph.input_shapes()?;
@@ -2634,62 +2989,36 @@ fn public_instances_from_statement(
         )
         .into());
     }
-    let values = [
-        statement.public_ezkl.feature_table.clone(),
-        statement
-            .public_ezkl
-            .node_ids
-            .iter()
-            .map(|value| *value as i128)
-            .collect::<Vec<_>>(),
-        statement
-            .public_ezkl
-            .src
-            .iter()
-            .map(|value| *value as i128)
-            .collect::<Vec<_>>(),
-        statement
-            .public_ezkl
-            .dst
-            .iter()
-            .map(|value| *value as i128)
-            .collect::<Vec<_>>(),
-        statement
-            .public_ezkl
-            .node_ptr
-            .iter()
-            .map(|value| *value as i128)
-            .collect::<Vec<_>>(),
-        statement
-            .public_ezkl
-            .edge_ptr
-            .iter()
-            .map(|value| *value as i128)
-            .collect::<Vec<_>>(),
+    let public = &statement.public_ezkl;
+    let input_lengths = [
+        public.feature_table.len(),
+        public.node_ids.len(),
+        public.src.len(),
+        public.dst.len(),
+        public.node_ptr.len(),
+        public.edge_ptr.len(),
     ];
-    let mut inputs = Vec::with_capacity(values.len());
-    for (index, (shape, values)) in input_shapes.iter().zip(values).enumerate() {
+    for (index, (shape, actual)) in input_shapes.iter().zip(input_lengths).enumerate() {
         let expected = shape.iter().product::<usize>();
-        if values.len() != expected {
+        if actual != expected {
             return Err(format!(
                 "external statement input {} has {} values; compiled circuit requires {}",
                 index,
-                values.len(),
+                actual,
                 expected
             )
             .into());
         }
-        inputs.push(fp_values(&values));
     }
     let output_shapes = circuit.model().graph.output_shapes()?;
     if output_shapes.len() != 1 {
         return Err("compiled GAT circuit must expose exactly one output".into());
     }
     let output_len = output_shapes[0].iter().product::<usize>();
-    if statement.public_ezkl.y.len() != output_len {
+    if public.y.len() != output_len {
         return Err(format!(
             "external public Y has {} values; compiled circuit requires {}",
-            statement.public_ezkl.y.len(),
+            public.y.len(),
             output_len
         )
         .into());
@@ -2698,19 +3027,28 @@ fn public_instances_from_statement(
     if parameter_shapes.len() != 1 {
         return Err("compiled GAT circuit must expose exactly one runtime parameter tensor".into());
     }
-    let mut witness = GraphWitness::new(inputs, vec![fp_values(&statement.public_ezkl.y)]);
+    let mut witness = GraphWitness::new(
+        vec![
+            formal_instance_fp_values(&public.feature_table),
+            formal_instance_usize_fp_values(&public.node_ids),
+            formal_instance_usize_fp_values(&public.src),
+            formal_instance_usize_fp_values(&public.dst),
+            formal_instance_usize_fp_values(&public.node_ptr),
+            formal_instance_usize_fp_values(&public.edge_ptr),
+        ],
+        vec![formal_instance_fp_values(&public.y)],
+    );
     witness.params = parameter_shapes
         .iter()
         .map(|shape| vec![Fr::from(0u64); shape.iter().product()])
         .collect();
     witness.processed_params = Some(ModuleForwardResult {
-        poseidon_hash: Some(vec![canonical_string_to_fr(&statement.public_ezkl.model_hash)
+        poseidon_hash: Some(vec![canonical_string_to_fr(&public.model_hash)
             .map_err(EZKLError::from)?]),
         poseidon_hash_duration: None,
         polycommit: None,
     });
-    circuit.load_graph_witness(&witness)?;
-    Ok(vec![circuit.prepare_public_inputs(&witness)?])
+    Ok(vec![circuit.prepare_public_inputs_from_witness(&witness)?])
 }
 
 struct FormalProofReferencePaths {
@@ -3529,8 +3867,12 @@ fn gat_prepare_admission(
         .checked_next_power_of_two()
         .ok_or_else(|| "native GAT extended proof domain is not representable".to_string())?;
     let icicle_ntt_capacity_elements = proof_domain_size.max(domain_size).min(1u64 << 25);
+    let icicle_h_resident_device_upper_bytes = icicle_ntt_capacity_elements
+        .checked_mul(32)
+        .and_then(|bytes| bytes.checked_mul(if cs.num_permutation_columns() > 0 { 4 } else { 1 }))
+        .ok_or_else(|| "native ICICLE resident H/permutation device bound overflow".to_string())?;
     let icicle_ntt_device_workspace_upper_bytes = icicle_ntt_capacity_elements
-        .checked_mul(64)
+        .checked_mul(96)
         .ok_or_else(|| "native ICICLE NTT device workspace bound overflow".to_string())?;
     let icicle_ntt_domain_cache_upper_bytes = icicle_ntt_capacity_elements
         .checked_add(1 + 64 + 6)
@@ -3656,7 +3998,7 @@ fn gat_prepare_admission(
     )
     .map_err(|_| "native permutation grand-product mapped bank exceeds u64".to_string())?;
     let memory_model = serde_json::json!({
-        "schema": "ezkl-halo2-static-envelope-v20",
+        "schema": "ezkl-halo2-static-envelope-v22",
         "evidence_kind": "source_derived_upper_bounds_and_configured_geometry",
         "coverage": "configured_geometry_and_source_upper_bounds_before_native_synthesis; actual_vk_pk_census_is_authenticated_by_setup_receipt",
         "native_target_arch": std::env::consts::ARCH,
@@ -3666,6 +4008,7 @@ fn gat_prepare_admission(
         "icicle_ntt_min_log_size": 16,
         "icicle_ntt_max_log_size": 25,
         "icicle_ntt_capacity_elements": icicle_ntt_capacity_elements,
+        "icicle_h_resident_device_upper_bytes": icicle_h_resident_device_upper_bytes,
         "icicle_ntt_device_workspace_upper_bytes": icicle_ntt_device_workspace_upper_bytes,
         "icicle_ntt_domain_cache_upper_bytes": icicle_ntt_domain_cache_upper_bytes,
         "icicle_ntt_init_scratch_upper_bytes": icicle_ntt_init_scratch_upper_bytes,
@@ -3809,7 +4152,7 @@ fn gat_prepare_admission(
     let settings_sha256 = get_file_hash(&settings_path)?;
     let relation_identity = native_admission_relation_identity(&loaded)?;
     let admission = serde_json::json!({
-        "schema_version": 8,
+        "schema_version": 10,
         "shape_evidence_kind": "configured_geometry_source_upper_bounds_before_native_synthesis_v1",
         "relation_id": "R_GAT-ezkl",
         "dataset": loaded.dataset,
@@ -3872,7 +4215,7 @@ fn native_admission_relation_identity(loaded: &crate::gat_adapter::LoadedGat) ->
         .map_err(EZKLError::from)?;
     Ok(serde_json::json!({
         "schema_version": loaded.spec.schema_version,
-        "native_layout_revision": "gat_fixed_topology_routing_v1",
+        "native_layout_revision": "gat_fixed_topology_routing_v2",
         "dataset": loaded.dataset,
         "resource_manifest_sha256": loaded.resource_manifest_sha256,
         "model_arch_id": loaded.spec.model.model_arch_id,
@@ -3919,7 +4262,7 @@ fn load_native_admission_circuit(
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let settings_bytes = std::fs::read(&settings_path)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
-    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(8)
+    if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(10)
         || admission.get("shape_evidence_kind").and_then(JsonValue::as_str)
             != Some("configured_geometry_source_upper_bounds_before_native_synthesis_v1")
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
@@ -4051,7 +4394,7 @@ fn load_native_admission_circuit(
         .and_then(JsonValue::as_object)
         .ok_or_else(|| "native admission has no memory model".to_string())?;
     if memory_model.get("schema").and_then(JsonValue::as_str)
-        != Some("ezkl-halo2-static-envelope-v20")
+        != Some("ezkl-halo2-static-envelope-v22")
         || memory_model.get("fixed_polynomial_read_mode").and_then(JsonValue::as_str)
             != Some("streamed_one_polynomial_chunked_v1")
         || memory_model.get("evidence_kind").and_then(JsonValue::as_str)
@@ -4160,8 +4503,12 @@ fn load_native_admission_circuit(
         .checked_next_power_of_two()
         .ok_or_else(|| "native admission proof-domain size overflow".to_string())?;
     let expected_icicle_ntt_capacity_elements = expected_proof_domain_size.max(n).min(1u128 << 25);
+    let expected_icicle_h_resident_device_upper_bytes = expected_icicle_ntt_capacity_elements
+        .checked_mul(std::mem::size_of::<Fr>() as u128)
+        .and_then(|bytes| bytes.checked_mul(if current_cs.num_permutation_columns() > 0 { 4 } else { 1 }))
+        .ok_or_else(|| "native admission resident H/permutation bound overflow".to_string())?;
     let expected_icicle_ntt_device_workspace_upper_bytes = expected_icicle_ntt_capacity_elements
-        .checked_mul(64)
+        .checked_mul(96)
         .ok_or_else(|| "native admission ICICLE NTT workspace bound overflow".to_string())?;
     let expected_icicle_ntt_domain_cache_upper_bytes = expected_icicle_ntt_capacity_elements
         .checked_add(1 + 64 + 6)
@@ -4246,6 +4593,11 @@ fn load_native_admission_circuit(
             "icicle_ntt_capacity_elements",
             JsonValue::from(u64::try_from(expected_icicle_ntt_capacity_elements)
                 .map_err(|_| "native admission ICICLE NTT capacity exceeds u64".to_string())?),
+        ),
+        (
+            "icicle_h_resident_device_upper_bytes",
+            JsonValue::from(u64::try_from(expected_icicle_h_resident_device_upper_bytes)
+                .map_err(|_| "native admission resident H/permutation bound exceeds u64".to_string())?),
         ),
         (
             "icicle_ntt_device_workspace_upper_bytes",
@@ -6031,7 +6383,7 @@ fn gat_witness(
         &setup_context,
     )?;
     let mut circuit = GraphCircuit::load(compiled_circuit)?;
-    assert_native_gat_identity(&circuit, &loaded.spec)?;
+    let native_gat_rounding = assert_native_gat_identity(&circuit, &loaded.spec)?;
     if !circuit.settings().run_args.input_visibility.is_public()
         || !circuit.settings().run_args.output_visibility.is_public()
         || !circuit
@@ -6042,40 +6394,45 @@ fn gat_witness(
     {
         return Err("prepared GAT circuit does not use public inputs/outputs and native public Hashed parameters".into());
     }
-    let mut native_inputs = gat_input_tensors(&loaded.spec)?;
-    let native_params = gat_parameter_tensor(&loaded.spec)?;
-    let witness = circuit.forward_with_runtime_params::<KZGCommitmentScheme<Bn256>>(
-        &mut native_inputs,
-        Some(&native_params),
+    let native_inputs = gat_input_tensors(&bound_spec)?;
+    let native_params = gat_parameter_tensor(&bound_spec)?;
+    let native_output = crate::gat_adapter::evaluate_output(&bound_spec, native_gat_rounding).map_err(EZKLError::from)?;
+    let processed_params = GraphModules::forward::<KZGCommitmentScheme<Bn256>>(
+        std::slice::from_ref(&native_params),
+        &circuit.settings().run_args.param_visibility,
         None,
         None,
-        RegionSettings::all_true(
-            circuit.settings().run_args.decomp_base,
-            circuit.settings().run_args.decomp_legs,
-        ),
     )?;
+    let mut witness = GraphWitness::new(
+        native_inputs.iter().map(|tensor| tensor.iter().copied().collect()).collect(),
+        vec![fp_values(&native_output)],
+    );
+    witness.params = vec![native_params.iter().copied().collect()];
+    witness.processed_params = Some(processed_params);
+    witness.version = Some(crate::version().to_string());
+    info!("formal GAT witness uses canonical numeric evaluator; layout statistics unavailable");
     let native_hash = witness
         .processed_params
         .as_ref()
         .and_then(|x| x.poseidon_hash.as_ref())
         .and_then(|x| (x.len() == 1).then(|| native_hash_string(x[0])))
         .ok_or_else(|| {
-            "native public Poseidon H(W) was not produced by GraphCircuit::forward".to_string()
+            "native public Poseidon H(W) was not produced by the parameter module".to_string()
         })?;
     if native_hash != statement.public_ezkl.model_hash {
         return Err(
             "external statement H(W) disagrees with native GraphCircuit parameter module".into(),
         );
     }
-    let native_output = witness
+    let witnessed_output = witness
         .outputs
         .first()
         .ok_or_else(|| "native GraphCircuit forward produced no output".to_string())?
         .iter()
         .map(|x| crate::fieldutils::felt_to_integer_rep(*x))
         .collect::<Vec<_>>();
-    if native_output != statement.public_ezkl.y {
-        return Err("external public Y disagrees with native GraphCircuit output".into());
+    if witnessed_output != statement.public_ezkl.y {
+        return Err("external public Y disagrees with the canonical numeric GAT output".into());
     }
     circuit.load_graph_witness(&witness)?;
     let native_instances = vec![circuit.prepare_public_inputs(&witness)?];
@@ -6219,7 +6576,7 @@ fn authenticated_native_prove_backing_budget(
     let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
         .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
     let expected_budget = [
-        ("schema", "ezkl.native-prove-budget.v6"),
+        ("schema", "ezkl.native-prove-budget.v8"),
         ("session_id", session_id.as_str()),
         ("setup_receipt_sha256", setup_sha256.as_str()),
         ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
@@ -6269,6 +6626,11 @@ fn authenticated_native_prove_backing_budget(
         .get("domain_size")
         .and_then(JsonValue::as_u64)
         .ok_or("formal admission lacks a valid proof domain size")?;
+    let permutation_columns = admission
+        .get("constraint_system")
+        .and_then(|value| value.get("num_permutation_columns"))
+        .and_then(JsonValue::as_u64)
+        .ok_or("formal admission lacks permutation-column geometry for resident H capacity")?;
     let ntt_read = |name: &str| -> Result<u64, EZKLError> {
         memory_model
             .get(name)
@@ -6282,7 +6644,11 @@ fn authenticated_native_prove_backing_budget(
             .ok_or_else(|| format!("formal admission lacks native resident MSM {}", name).into())
     };
     let ntt_capacity = ntt_read("proof_domain_size")?.max(admission_domain_size).min(1u64 << 25);
-    let ntt_device_workspace = ntt_capacity.checked_mul(64).ok_or("native GPU NTT workspace bound overflow")?;
+    let h_resident_device_upper = ntt_capacity
+        .checked_mul(std::mem::size_of::<Fr>() as u64)
+        .and_then(|bytes| bytes.checked_mul(if permutation_columns > 0 { 4 } else { 1 }))
+        .ok_or("native resident H/permutation device bound overflow")?;
+    let ntt_device_workspace = ntt_capacity.checked_mul(96).ok_or("native GPU NTT workspace bound overflow")?;
     let ntt_domain_cache = ntt_capacity
         .checked_add(1 + 64 + 6)
         .and_then(|elements| elements.checked_mul(32))
@@ -6332,6 +6698,7 @@ fn authenticated_native_prove_backing_budget(
     let expected_cuda_required_workspace = msm_workspace_peak
         .checked_add(ntt_device_peak)
         .and_then(|bytes| bytes.checked_add(msm_cache_upper))
+        .and_then(|bytes| bytes.checked_add(h_resident_device_upper))
         .and_then(|bytes| bytes.checked_add(halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64))
         .ok_or("native fused H CUDA requirement overflow")?;
     let host_available = prove_budget
@@ -6349,7 +6716,7 @@ fn authenticated_native_prove_backing_budget(
     let minimum_host_required = (halo2_proofs::icicle::FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES as u64)
         .checked_add(if integrated_device { expected_cuda_required_workspace } else { 0 })
         .ok_or("native fused H host-memory requirement overflow")?;
-    if halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY != "halo2_icicle-bn254-gpu-hgraph-fused-ntt-16-25-msm-lagrange-resident-f4-v5"
+    if halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY != "halo2_icicle-bn254-gpu-hgraph-fused-coset-ntt-16-25-msm-lagrange-resident-f4-sparse-m-cpu32-v8"
         || h_kernel_local_memory_upper != halo2_proofs::icicle::FORMAL_GPU_H_KERNEL_LOCAL_MEMORY_UPPER_BYTES as u64
         || h_program_metadata_upper != halo2_proofs::icicle::FORMAL_GPU_H_PROGRAM_METADATA_UPPER_BYTES as u64
         || h_workspace_borrows_ntt != Some(true)
@@ -6363,6 +6730,7 @@ fn authenticated_native_prove_backing_budget(
         || ntt_read("icicle_ntt_min_log_size")? != 16
         || ntt_read("icicle_ntt_max_log_size")? != 25
         || ntt_read("icicle_ntt_capacity_elements")? != ntt_capacity
+        || ntt_read("icicle_h_resident_device_upper_bytes")? != h_resident_device_upper
         || ntt_read("icicle_ntt_device_workspace_upper_bytes")? != ntt_device_workspace
         || ntt_read("icicle_ntt_domain_cache_upper_bytes")? != ntt_domain_cache
         || ntt_read("icicle_ntt_init_scratch_upper_bytes")? != ntt_init_scratch
@@ -6378,6 +6746,7 @@ fn authenticated_native_prove_backing_budget(
         || prove_budget.get("icicle_ntt_min_log_size").and_then(JsonValue::as_u64) != Some(16)
         || prove_budget.get("icicle_ntt_max_log_size").and_then(JsonValue::as_u64) != Some(25)
         || prove_budget.get("icicle_ntt_capacity_elements").and_then(JsonValue::as_u64) != Some(ntt_capacity)
+        || prove_budget.get("icicle_h_resident_device_upper_bytes").and_then(JsonValue::as_u64) != Some(h_resident_device_upper)
         || prove_budget.get("icicle_ntt_device_workspace_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_device_workspace)
         || prove_budget.get("icicle_ntt_domain_cache_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_domain_cache)
         || prove_budget.get("icicle_ntt_init_scratch_upper_bytes").and_then(JsonValue::as_u64) != Some(ntt_init_scratch)
@@ -6969,7 +7338,7 @@ fn write_native_pk_read_timing_receipt(
     let settings_sha256 = required_string("settings_sha256")?;
     let compiled_circuit_sha256 = required_string("compiled_circuit_sha256")?;
     let vk_sha256 = required_string("vk_sha256")?;
-    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v6")
+    if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v8")
         || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
         || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
         || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
@@ -7433,6 +7802,7 @@ fn parse_public_output(path: &Path, dataset: &str) -> Result<Vec<i128>, EZKLErro
         .collect()
 }
 
+#[allow(dead_code)]
 fn validate_artifact_files(
     artifact_path: &Path,
     artifact: &ArtifactManifest,
@@ -7442,6 +7812,31 @@ fn validate_artifact_files(
     compiled_path: &Path,
     vk_path: &Path,
     proof_path: &Path,
+) -> Result<(), EZKLError> {
+    let mut digests = VerifiedDigestContext::default();
+    validate_artifact_files_with_context(
+        artifact_path,
+        artifact,
+        statement_path,
+        srs_path,
+        settings_path,
+        compiled_path,
+        vk_path,
+        proof_path,
+        &mut digests,
+    )
+}
+
+fn validate_artifact_files_with_context(
+    artifact_path: &Path,
+    artifact: &ArtifactManifest,
+    statement_path: &Path,
+    srs_path: &Path,
+    settings_path: &Path,
+    compiled_path: &Path,
+    vk_path: &Path,
+    proof_path: &Path,
+    digests: &mut VerifiedDigestContext,
 ) -> Result<(), EZKLError> {
     artifact
         .validate_for_verification()
@@ -7454,10 +7849,12 @@ fn validate_artifact_files(
         require_formal_local_path(relative, "artifact file path")?;
         let path = root.join(relative);
         ensure_no_symlink_path(&path, root)?;
-        let digest = get_file_hash(&path)?;
-        if digest != file.sha256 {
-            return Err(format!("artifact file digest mismatch: {}", file.path).into());
-        }
+        let digest = digests.digest(&path, "artifact file", Some(root))?;
+        ensure_expected_digest(
+            &digest,
+            &file.sha256,
+            format!("artifact file digest mismatch: {}", file.path),
+        )?;
         let expected_top_level = match file.path.as_str() {
             "settings.json" => Some(&artifact.settings_sha256),
             "compiled.circuit" => Some(&artifact.compiled_circuit_sha256),
@@ -7468,9 +7865,11 @@ fn validate_artifact_files(
             _ => None,
         };
         if let Some(expected) = expected_top_level {
-            if &digest != expected {
-                return Err(format!("artifact top-level digest mismatch: {}", file.path).into());
-            }
+            ensure_expected_digest(
+                &digest,
+                expected,
+                format!("artifact top-level digest mismatch: {}", file.path),
+            )?;
         }
     }
     let checks = [
@@ -7485,10 +7884,13 @@ fn validate_artifact_files(
         (vk_path, &artifact.vk_sha256, "verification key"),
     ];
     for (path, expected, label) in checks {
-        let actual = get_file_hash(path)?;
-        if &actual != expected {
-            return Err(format!("artifact {} digest mismatch", label).into());
-        }
+        ensure_no_symlink_path(path, root)?;
+        let actual = digests.digest(path, label, Some(root))?;
+        ensure_expected_digest(
+            &actual,
+            expected,
+            format!("artifact {} digest mismatch", label),
+        )?;
     }
     let static_tables_path = root.join("gat_static_tables.json");
     let integer_ledger_path = root.join("gat_integer_ledger.json");
@@ -7524,10 +7926,13 @@ fn validate_artifact_files(
             .iter()
             .find(|file| file.path == name)
             .ok_or_else(|| format!("artifact manifest is missing required {} file", label))?;
-        let actual = get_file_hash(path)?;
-        if actual != record.sha256 {
-            return Err(format!("artifact {} digest mismatch", label).into());
-        }
+        ensure_no_symlink_path(path, root)?;
+        let actual = digests.digest(path, label, Some(root))?;
+        ensure_expected_digest(
+            &actual,
+            &record.sha256,
+            format!("artifact {} digest mismatch", label),
+        )?;
     }
     Ok(())
 }
@@ -7594,7 +7999,10 @@ pub(crate) fn verify_with_formal_inputs(
     let mut formal_proof: Option<Snark<Fr, G1Affine>> = None;
     let mut formal_proof_decode_ms = 0.0_f64;
     let mut formal_srs_sha256: Option<String> = None;
+    let mut formal_verified_digests = VerifiedDigestContext::default();
     if formal_inputs {
+        let formal_precheck_started = Instant::now();
+        info!("formal verify stage START name=formal_precheck_evidence_srs_auth");
         require_formal_regular_file(&proof_path, "proof")?;
         require_formal_regular_file(&settings_path, "settings")?;
         require_formal_regular_file(&vk_path, "verification key")?;
@@ -7620,7 +8028,11 @@ pub(crate) fn verify_with_formal_inputs(
         let authenticated_srs_path = srs_path
             .as_deref()
             .ok_or("formal verify requires an explicit authenticated SRS path")?;
-        formal_srs_sha256 = Some(require_authentic_srs(authenticated_srs_path)?);
+        formal_srs_sha256 = Some(require_authentic_srs_with_context(
+            authenticated_srs_path,
+            &mut formal_verified_digests,
+        )?);
+        info!("formal verify stage DONE name=formal_precheck_evidence_srs_auth elapsed_ms={:.3}", formal_precheck_started.elapsed().as_secs_f64() * 1000.0);
         let statement_path = statement_path.ok_or_else(|| {
             "formal verify requires --statement, --public-output and --artifact-manifest"
                 .to_string()
@@ -7635,6 +8047,8 @@ pub(crate) fn verify_with_formal_inputs(
         })?;
         let resource_manifest_path = resource_manifest_path
             .ok_or_else(|| "formal verify requires --resource-manifest".to_string())?;
+        let external_auth_started = Instant::now();
+        info!("formal verify stage START name=external_statement_resource_producer_auth");
         require_formal_regular_file(&statement_path, "statement")?;
         require_formal_regular_file(&public_output_path, "public output")?;
         require_formal_regular_file(&artifact_manifest_path, "artifact manifest")?;
@@ -7728,11 +8142,14 @@ pub(crate) fn verify_with_formal_inputs(
             &authenticated_resources,
             &baseline_root,
         )?;
+        info!("formal verify stage DONE name=external_statement_resource_producer_auth elapsed_ms={:.3}", external_auth_started.elapsed().as_secs_f64() * 1000.0);
         let srs_for_identity = srs_path
             .as_ref()
             .ok_or_else(|| "formal verify requires an explicit SRS path".to_string())?;
         let compiled_path = artifact_root.join("compiled.circuit");
-        validate_artifact_files(
+        let artifact_auth_started = Instant::now();
+        info!("formal verify stage START name=artifact_bundle_file_auth");
+        validate_artifact_files_with_context(
             &artifact_manifest_path,
             &artifact,
             &statement_path,
@@ -7741,12 +8158,19 @@ pub(crate) fn verify_with_formal_inputs(
             &compiled_path,
             &vk_path,
             &proof_path,
+            &mut formal_verified_digests,
         )?;
+        info!("formal verify stage DONE name=artifact_bundle_file_auth elapsed_ms={:.3}", artifact_auth_started.elapsed().as_secs_f64() * 1000.0);
+        let circuit_load_started = Instant::now();
+        info!("formal verify stage START name=compiled_circuit_load_and_identity");
         let mut compiled_circuit = GraphCircuit::load(compiled_path.clone())?;
         if compiled_circuit.settings().run_args.logrows == 0 {
             return Err("formal verify loaded a circuit with invalid zero logrows".into());
         }
         assert_native_gat_public_identity(&compiled_circuit, &statement)?;
+        info!("formal verify stage DONE name=compiled_circuit_load_and_identity elapsed_ms={:.3}", circuit_load_started.elapsed().as_secs_f64() * 1000.0);
+        let instances_proof_started = Instant::now();
+        info!("formal verify stage START name=public_instance_reconstruction_and_proof_decode");
         let statement_sha = get_file_hash(&statement_path)?;
         let expected_instances =
             public_instances_from_statement(&mut compiled_circuit, &statement)?;
@@ -7774,6 +8198,7 @@ pub(crate) fn verify_with_formal_inputs(
         };
         formal_proof = Some(proof);
         formal_proof_decode_ms = proof_decode_ms;
+        info!("formal verify stage DONE name=public_instance_reconstruction_and_proof_decode elapsed_ms={:.3}", instances_proof_started.elapsed().as_secs_f64() * 1000.0);
         formal_context = Some((
             statement,
             artifact,
@@ -7793,6 +8218,8 @@ pub(crate) fn verify_with_formal_inputs(
     } else {
         logrows
     };
+    let srs_params_started = Instant::now();
+    info!("formal verify stage START name=verifier_srs_parameter_load");
     let params: ParamsKZG<Bn256> = if formal_inputs {
         let path = srs_path
             .as_deref()
@@ -7804,6 +8231,7 @@ pub(crate) fn verify_with_formal_inputs(
     } else {
         load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, parameter_k)?
     };
+    info!("formal verify stage DONE name=verifier_srs_parameter_load elapsed_ms={:.3}", srs_params_started.elapsed().as_secs_f64() * 1000.0);
 
     let (verified, verify_time_ms) = verify_commitment::<
         KZGCommitmentScheme<Bn256>,
@@ -7899,15 +8327,21 @@ where
     let proof_bytes = if preloaded_proof.is_none() { Some(std::fs::read(&proof_path).map_err(|e| crate::pfsys::PfsysError::LoadProof(format!("{}", e)))?) } else { None };
 
     let strategy = Strategy::new(params);
+    let vk_load_started = Instant::now();
+    info!("verify stage START name=verifier_key_load");
     let vk = load_vk::<Scheme, C>(vk_path, settings)?;
+    info!("verify stage DONE name=verifier_key_load elapsed_ms={:.3}", vk_load_started.elapsed().as_secs_f64() * 1000.0);
+    info!("verify stage START name=native_halo2_verify_core");
     let now = Instant::now();
 
     let decoded_proof = proof_bytes.as_deref().map(Snark::<Scheme::Scalar, Scheme::Curve>::decode_json_bytes).transpose()?;
     let proof = preloaded_proof.or(decoded_proof.as_ref()).ok_or_else(|| EZKLError::from("native verifier lost its proof artifact"))?;
+    let proof_verify_started = Instant::now();
     let result =
         verify_proof_circuit::<V, _, _, _, TR>(proof, params, &vk, strategy, 1 << logrows);
-
+    let proof_verify_elapsed_ms = proof_verify_started.elapsed().as_secs_f64() * 1000.0;
     let elapsed = now.elapsed() + Duration::from_secs_f64(preloaded_proof_decode_ms.max(0.0) / 1000.0);
+    info!("verify stage DONE name=native_halo2_verify_core elapsed_ms={:.3} native_check_ms={:.3}", elapsed.as_secs_f64() * 1000.0, proof_verify_elapsed_ms);
     info!(
         "verify took {}.{}",
         elapsed.as_secs(),
@@ -8279,5 +8713,42 @@ mod formal_proof_path_contract_tests {
             .to_string()
             .contains("formal GAT proving requires an explicit proof output path"));
         assert_eq!(cora_proof.exists(), proof_existed_before, "early rejection must not create a proof");
+    }
+}
+
+#[cfg(test)]
+mod formal_public_instance_conversion_tests {
+    use super::*;
+
+    #[test]
+    fn formal_instance_parallel_conversion_matches_legacy_values_and_order() {
+        let signed_samples = [i128::MIN, i128::MAX, -1, 0, 1, -(1i128 << 100), 1i128 << 100];
+        let signed_values = (0..FORMAL_INSTANCE_PAR_CONVERSION_MIN)
+            .map(|index| signed_samples[index % signed_samples.len()])
+            .collect::<Vec<_>>();
+        assert_eq!(
+            formal_instance_fp_values(&signed_values),
+            fp_values(&signed_values),
+            "parallel signed conversion must match the legacy field values in order",
+        );
+        assert_eq!(
+            formal_instance_fp_values(&signed_values[..FORMAL_INSTANCE_PAR_CONVERSION_MIN - 1]),
+            fp_values(&signed_values[..FORMAL_INSTANCE_PAR_CONVERSION_MIN - 1]),
+            "the serial side of the conversion threshold must retain legacy values",
+        );
+
+        let usize_samples = [0usize, 1, usize::MAX / 2, usize::MAX];
+        let usize_values = (0..FORMAL_INSTANCE_PAR_CONVERSION_MIN)
+            .map(|index| usize_samples[index % usize_samples.len()])
+            .collect::<Vec<_>>();
+        let legacy_usize_i128 = usize_values
+            .iter()
+            .map(|value| *value as i128)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            formal_instance_usize_fp_values(&usize_values),
+            fp_values(&legacy_usize_i128),
+            "parallel usize conversion must match the legacy cast and field values in order",
+        );
     }
 }

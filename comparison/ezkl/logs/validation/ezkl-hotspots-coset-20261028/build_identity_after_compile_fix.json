@@ -1,0 +1,63 @@
+{
+  "build_environment": {
+    "build_environment_sha256": "6d21557f5e08e59739b41aa0423d0d5735a10e408e978c252288d5cf6bc91660",
+    "cargo": "cargo 1.93.0-nightly (2a7c49606 2025-11-25)",
+    "cargo_feature_profile": "formal-gpu",
+    "cargo_home": "/home/pzh/project/comparison/ezkl/.cargo_local",
+    "cargo_mode": "offline-release",
+    "cargo_path": "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo",
+    "cargo_target_dir": "/home/pzh/project/comparison/ezkl/target/gpu",
+    "cc": "aarch64-linux-gnu-gcc-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "cc_path": "/usr/bin/aarch64-linux-gnu-gcc-13",
+    "cmake": "cmake version 3.28.3",
+    "cmake_generator": "Unix Makefiles",
+    "cmake_path": "/usr/bin/cmake",
+    "cuda_architecture": "sm_121",
+    "cuda_home": "/usr/local/cuda-13.0",
+    "cuda_runtime": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Wed_Aug_20_01:57:39_PM_PDT_2025\nCuda compilation tools, release 13.0, V13.0.88\nBuild cuda_13.0.r13.0/compiler.36424714_0",
+    "cxx": "aarch64-linux-gnu-g++-13 (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "cxx_path": "/usr/bin/aarch64-linux-gnu-g++-13",
+    "features": [
+      "dep:halo2_solidity_verifier",
+      "ezkl",
+      "gpu-accelerated",
+      "no-banner",
+      "parallel-poly-read",
+      "reusable-verifier"
+    ],
+    "make": "GNU Make 4.3",
+    "make_path": "/usr/bin/make",
+    "numpy_version": "1.26.4",
+    "nvcc_path": "/usr/local/cuda-13.0/bin/nvcc",
+    "nvidia_smi": "NVIDIA-SMI version  : 580.142",
+    "nvidia_smi_path": "/usr/bin/nvidia-smi",
+    "path_sha256": "f4c41aa0ec0678135a838c718874ae66408b6ece1479769c48b3d1d756416c7d",
+    "python_executable": "/usr/bin/python3.12",
+    "python_version": "3.12.3",
+    "rust_toolchain": "nightly-2025-12-01",
+    "rustc": "rustc 1.93.0-nightly (b84478a1c 2025-11-30)",
+    "rustc_path": "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/rustc",
+    "rustdoc": "rustdoc 1.93.0-nightly (b84478a1c 2025-11-30)",
+    "rustdoc_path": "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/rustdoc",
+    "rustup": "rustup 1.29.0 (28d1352db 2026-03-05)",
+    "rustup_path": "/home/pzh/.cargo/bin/rustup",
+    "schema_version": 1,
+    "selected_cuda_device": {
+      "compute_capability": "12.1",
+      "driver_version": "580.142",
+      "index": 0,
+      "logical_device_id": 0,
+      "name": "NVIDIA GB10",
+      "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+    }
+  },
+  "build_environment_sha256": "6d21557f5e08e59739b41aa0423d0d5735a10e408e978c252288d5cf6bc91660",
+  "selected_cuda_device": {
+    "compute_capability": "12.1",
+    "driver_version": "580.142",
+    "index": 0,
+    "logical_device_id": 0,
+    "name": "NVIDIA GB10",
+    "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+  }
+}

@@ -619,7 +619,8 @@ impl<'a> GatGeometry<'a> {
         let q = self.region.pairwise(&sign_factor, &q_abs)?;
 
         self.bounded_range(&q_abs, (0, max_dividend_abs))?;
-        self.bounded_range(&q, (-max_dividend_abs, max_dividend_abs))?;
+        // The boolean sign and the bounded nonnegative magnitude imply the
+        // signed quotient envelope without another range assignment.
         self.bounded_range(&sign_factor, (-1, 1))?;
         self.bounded_range(divisor, (1, max_divisor))?;
 
@@ -816,24 +817,16 @@ impl<'a> GatGeometry<'a> {
         let denominator_prefix = self.segmented_prefix(&exp, &groups, 1)?;
         let denominator = self.destination_endpoints(&denominator_prefix, &groups, 1)?;
         self.bounded_range(&denominator, (1, bounds.max_sum))?;
-        let inverse = self.inverse_exact(&denominator)?;
-        let alpha = self.region.pairwise(&exp, &self.unknown(&[graph.e], inverse.scale)?)?;
+        // Retain the exact positive-denominator inverse constraint used by the
+        // live circuit. Field normalization of the integer numerator follows
+        // from this inverse by distributivity.
+        self.inverse_exact(&denominator)?;
 
         let edge_chunks = graph.e.checked_add(edge_chunk_rows - 1)
             .ok_or_else(|| "GAT aggregation chunk count overflow".to_string())? / edge_chunk_rows;
         for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
             let chunk_rows = graph.e.saturating_sub(chunk_start).min(edge_chunk_rows);
             let edge_channels = self.unknown(&[chunk_rows, channels], projected_scale)?;
-            let alpha_rows = self.unknown(&[chunk_rows, channels], alpha.scale)?;
-            let mut field_product = self.region.pairwise(&alpha_rows, &edge_channels)?;
-            canonicalize_edge_channels(
-                &mut field_product,
-                chunk_rows,
-                channels,
-                "GAT field-product chunk",
-            )?;
-            let _field_prefix = self.segmented_prefix_chunk(&field_product, &groups, chunk_start, graph.e, channels)?;
-
             let exp_rows = self.unknown(&[chunk_rows, channels], exp.scale)?;
             let mut numerator_product = self.region.pairwise(&exp_rows, &edge_channels)?;
             canonicalize_edge_channels(
@@ -848,7 +841,6 @@ impl<'a> GatGeometry<'a> {
             return Err("GAT aggregation requires at least one edge chunk".into());
         }
 
-        let field_endpoints = self.unknown(&[graph.n, channels], projected_scale)?;
         let numerator_endpoints = self.unknown(
             &[graph.n, channels],
             self.spec.scales.s_exp.checked_add(projected_scale).ok_or_else(|| "GAT aggregation scale overflow".to_string())?,
@@ -860,10 +852,6 @@ impl<'a> GatGeometry<'a> {
                 bounds.max_aggregation_num,
             ),
         )?;
-        let inverse_rows = self.unknown(&[graph.n, channels], inverse.scale)?;
-        let field_from_numerator = self.region.pairwise(&numerator_endpoints, &inverse_rows)?;
-        self.region.equality(&field_endpoints, &field_from_numerator)?;
-
         let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)?;
         let denominator_multiplier = scale_exponent_to_multiplier(projected_scale)?;
         let numerator_scale = self.constant_repeated(&[graph.n, channels], 0, recovery_multiplier)?;
@@ -1142,7 +1130,7 @@ mod tests {
         HeadWeights, HiddenLayerSpec, IntegerBoundLedger, ModelBinding, ScaleChain, StaticTables,
         GAT_SCHEMA_VERSION, MODEL_HASH_DOMAIN,
     };
-    use crate::graph::{GraphCircuit, Visibility};
+    use crate::graph::Visibility;
     use halo2curves::ff::PrimeField;
 
     fn head(input: usize, output: usize, with_bias: bool) -> HeadWeights {
@@ -1362,24 +1350,56 @@ mod tests {
         run_args.decomp_base = 256;
         run_args.decomp_legs = 2;
 
-        let model = build_model_for_run_args(
-            spec.clone(),
-            RoundingMode::NearestTiesAway,
-            &run_args,
-        )
-        .unwrap();
-        let actual = GraphCircuit::new(model, &run_args).unwrap();
-        let mut expected = actual.settings().clone();
-        let planned = gat_settings_for_run_args(&spec, &run_args).unwrap();
-
-        // Required ranges are semantically a set in the source dummy pass;
-        // canonicalize its HashSet-derived vector before checking every
-        // GraphSettings field. The timestamps are generated independently.
-        expected.required_range_checks.sort_unstable();
-        let mut planned = planned;
+        let model =
+            build_model_for_run_args(spec.clone(), RoundingMode::NearestTiesAway, &run_args)
+                .unwrap();
+        let (actual, observed_gadget_version) = model
+            .dummy_layout_with_compact_gat_for_test(&run_args)
+            .unwrap();
+        let mut planned = gat_settings_for_run_args(&spec, &run_args).unwrap();
         planned.required_range_checks.sort_unstable();
-        expected.timestamp = planned.timestamp;
-        assert_eq!(planned, expected);
+        let mut actual_ranges = actual.range_checks.iter().copied().collect::<Vec<_>>();
+        actual_ranges.sort_unstable();
+        let planned_wide_ranges = planned
+            .required_range_checks
+            .iter()
+            .copied()
+            .filter(|(lo, hi)| hi.checked_sub(*lo).is_some_and(|span| span > 1023))
+            .collect::<Vec<_>>();
+        let mut planned_table_ranges = planned
+            .required_range_checks
+            .iter()
+            .copied()
+            .filter(|(lo, hi)| hi.checked_sub(*lo).is_some_and(|span| span <= 1023))
+            .collect::<Vec<_>>();
+        if !planned_wide_ranges.is_empty() {
+            planned_table_ranges.push(BYTE_RANGE);
+        }
+        planned_table_ranges.sort_unstable();
+        planned_table_ranges.dedup();
+
+        assert_eq!(observed_gadget_version, planned.gat_range_gadget_version);
+        assert_eq!(observed_gadget_version, Some(GAT_RANGE_GADGET_VERSION));
+        assert_eq!(actual.num_rows, planned.num_rows);
+        assert_eq!(actual.linear_coord, planned.total_assignments);
+        assert_eq!(actual.total_const_size, planned.total_const_size);
+        assert_eq!(actual.dynamic_lookup_params, planned.dynamic_lookup_params);
+        assert_eq!(actual.shuffle_params, planned.shuffle_params);
+        assert_eq!(actual.einsum_params, planned.einsum_params);
+        assert_eq!(
+            planned_wide_ranges,
+            vec![
+                (-3_600, 3_600),
+                (-1_200, 1_200),
+                (-600, 600),
+                (0, 1_200),
+                (0, 7_200),
+                (0, 43_212),
+            ]
+        );
+        assert_eq!(actual_ranges, planned_table_ranges);
+        assert!(actual.lookup_ops.is_empty());
+        assert!(planned.required_lookups.is_empty());
         let max_degree = spec
             .graph
             .destination_groups_validated()
@@ -1395,17 +1415,17 @@ mod tests {
             spec.graph.e,
             spec.graph.g_batch,
             max_degree,
-            actual.settings().num_rows,
-            actual.settings().total_assignments,
-            actual.settings().total_const_size,
-            actual.settings().dynamic_lookup_params.total_dynamic_col_size,
-            actual.settings().dynamic_lookup_params.num_dynamic_lookups,
-            actual.settings().dynamic_lookup_params.max_dynamic_input_len,
-            actual.settings().einsum_params.total_einsum_col_size,
-            actual.settings().einsum_params.equations.len(),
-            actual.settings().model_instance_shapes,
-            actual.settings().module_sizes,
-            actual.settings().required_range_checks.len(),
+            actual.num_rows,
+            actual.linear_coord,
+            actual.total_const_size,
+            actual.dynamic_lookup_params.total_dynamic_col_size,
+            actual.dynamic_lookup_params.num_dynamic_lookups,
+            actual.dynamic_lookup_params.max_dynamic_input_len,
+            actual.einsum_params.total_einsum_col_size,
+            actual.einsum_params.equations.len(),
+            planned.model_instance_shapes,
+            planned.module_sizes,
+            actual_ranges.len(),
         );
         eprintln!(
             "EZKL_GAT_VALUE_LAYOUT valtype_bytes={} tensor_header_bytes={}",

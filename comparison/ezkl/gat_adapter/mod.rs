@@ -40,7 +40,7 @@ pub use geometry::gat_settings_for_run_args;
 /// Internal row-reserve constant used by the formal GAT relation fixtures.
 #[doc(hidden)]
 pub use range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE;
-pub use relation::{evaluate, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode, SignedDivision,};
+pub use relation::{evaluate, evaluate_output, evaluate_signed_division, AggregationTrace, GatTrace, HiddenTrace, RoundingMode, SignedDivision,};
 pub use schema::{
     multiplier_to_scale_exponent, scale_exponent_to_multiplier, BoundFamily, CanonicalGat, CanonicalGraph, CanonicalModel, CircuitRef, DigestIdentity,
     ExactTable, HeadWeights, IntegerBoundLedger, ModelBinding, PublicInstanceBinding, ScaleChain, StaticTables, GAT_SCHEMA_VERSION,

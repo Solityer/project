@@ -83,8 +83,8 @@ pub(crate) struct GatAggregateTensorLiveBound {
     /// Score/max-prefix stage, including the score and repeated maximum that
     /// remain live while the segmented-prefix recurrence is assembled.
     pub score_prefix_cells: usize,
-    /// Chunked numerator/field aggregation stage, including edge endpoints,
-    /// carries, and bounded chunk-local route/product/prefix tensors.
+    /// Chunked numerator aggregation stage, including endpoints, carries,
+    /// and bounded chunk-local route/product/prefix tensors.
     pub chunk_aggregation_cells: usize,
     /// SignedRoundDiv stage's dividend-sized witness tensors and node vectors.
     pub signed_round_cells: usize,
@@ -100,7 +100,7 @@ pub(crate) struct GatAggregateTensorLiveBound {
 /// The cell formulas follow the explicit `aggregate_head` lifetimes: 12E for
 /// score/max-repeat plus segmented-prefix working tensors and an assignment
 /// conversion allowance, and a separate chunk
-/// phase with persistent alpha/exp, two N*C endpoint buffers, four bounded
+/// phase with persistent exponentials, one N*C numerator endpoint buffer, four bounded
 /// edge-chunk channel tensors, the scalar edge-chunk tensor, and carry cells.
 /// Exact element size comes from the live native `ValType<Fp>` representation.
 pub(crate) fn gat_aggregate_tensor_live_bound(
@@ -154,8 +154,8 @@ pub(crate) fn gat_aggregate_tensor_live_bound(
     let chunk_aggregation_cells = add(
         add(
             add(
-                mul(graph.e, 2, "persistent alpha/exp cells")?,
-                mul(node_channels, 2, "endpoint capacity cells")?,
+                mul(graph.e, 1, "persistent exponential cells")?,
+                mul(node_channels, 1, "numerator endpoint capacity cells")?,
                 "chunk aggregation cells",
             )?,
             mul(chunk_channel_cells, 4, "chunk channel scratch cells")?,
@@ -1025,9 +1025,7 @@ impl GatOp {
                 shape("batched denominator local prefix", &edge, &[graph.e])?;
                 shape("batched denominators", &[graph.n], &[graph.n])?;
                 shape("batched denominator inverses", &[graph.n], &[graph.n])?;
-                shape("batched alpha/source values", &edge_channels, &[graph.e, layer.d_head])?;
                 shape("batched exponential/source values", &edge_channels, &[graph.e, layer.d_head])?;
-                shape("batched field local prefixes", &edge_channels, &[graph.e, layer.d_head])?;
                 shape("batched numerator local prefixes", &edge_channels, &[graph.e, layer.d_head])?;
                 shape("batched aggregation numerators", &node_channels, &[graph.n, layer.d_head])?;
                 shape("batched signed dividend", &node_channels, &[graph.n, layer.d_head])?;
@@ -1052,9 +1050,7 @@ impl GatOp {
             shape("output batched denominator local prefix", &edge, &[graph.e])?;
             shape("output batched denominators", &[graph.n], &[graph.n])?;
             shape("output batched denominator inverses", &[graph.n], &[graph.n])?;
-            shape("output batched alpha/source values", &edge_channels, &[graph.e, spec.model.classes])?;
             shape("output batched exponential/source values", &edge_channels, &[graph.e, spec.model.classes])?;
-            shape("output batched field local prefixes", &edge_channels, &[graph.e, spec.model.classes])?;
             shape("output batched numerator local prefixes", &edge_channels, &[graph.e, spec.model.classes])?;
             shape("output batched aggregation numerators", &node_channels, &[graph.n, spec.model.classes])?;
             shape("output batched signed dividend", &node_channels, &[graph.n, spec.model.classes])?;
@@ -1853,7 +1849,9 @@ impl GatOp {
         };
         let q = layouts::pairwise(config, region, &[&sign_factor, &q_abs], BaseOp::Mult)?;
         Self::range_check_bounded(config, region, &[&q_abs], &(0, max_dividend_abs))?;
-        Self::range_check_bounded(config, region, &[&q], &(-max_dividend_abs, max_dividend_abs),)?;
+        // sigma is boolean, so sign_factor is exactly +/-1. Together with
+        // q_abs in [0, max_dividend_abs], this implies the signed integer
+        // envelope for q without a second range gadget.
         Self::range_check_bounded(config, region, &[&sign_factor], &(-1, 1))?;
         Self::range_check_bounded(config, region, &[divisor], &(1, max_divisor))?;
         let d_inv_scalar = self.inverse_exact(config, region, divisor)?;
@@ -2257,25 +2255,19 @@ impl GatOp {
         drop(denominator_prefix);
         denominator.set_scale(self.spec.scales.s_exp);
         Self::range_check_bounded(config, region, &[&denominator], &(1, bounds.max_sum))?;
+        // Keep the explicit positive-denominator inverse constraint. The
+        // integer numerator below is the canonical value used by the output;
+        // its field normalization follows from this inverse and distributivity.
         let inverse = self.inverse_exact(config, region, &denominator)?;
-        let inverse_edges = Self::repeat_by_destination_groups(&inverse, destination_groups, graph.e, 1)?;
-        let mut alpha = layouts::pairwise(config, region, &[&exp, &inverse_edges], BaseOp::Mult)?;
-        drop(inverse_edges);
-        alpha.set_scale(self.spec.scales.s_exp);
+        drop(inverse);
 
         let projected_unknown = projected.any_unknowns()?;
-        let field_prefix_unknown = projected_unknown || alpha.any_unknowns()?;
         let numerator_prefix_unknown = projected_unknown || exp.any_unknowns()?;
         let endpoint_capacity = graph.n.checked_mul(channels).ok_or(CircuitError::UnsupportedOp)?;
-        let mut field_endpoint_values = Vec::with_capacity(endpoint_capacity);
         let mut numerator_endpoint_values = Vec::with_capacity(endpoint_capacity);
-        let mut field_carry_cells = Vec::new();
-        let mut field_carry_witness = Vec::new();
         let mut numerator_carry_cells = Vec::new();
         let mut numerator_carry_witness = Vec::new();
-        let mut field_next_group = 0usize;
         let mut numerator_next_group = 0usize;
-        let mut field_scale = None;
         for chunk_start in (0..graph.e).step_by(edge_chunk_rows) {
             let chunk_end = chunk_start.saturating_add(edge_chunk_rows).min(graph.e);
             let chunk_rows = chunk_end - chunk_start;
@@ -2283,43 +2275,6 @@ impl GatOp {
                 let source_rows = graph.src.get(chunk_start..chunk_end).ok_or_else(|| CircuitError::DimMismatch("compiled GAT source topology does not cover an edge chunk".into()))?;
                 let mut src_values = Self::fixed_route_rows(projected, source_rows, channels)?;
                 src_values.set_scale(projected_scale);
-
-                let alpha_chunk = Self::flatten_slice(&alpha, chunk_start, chunk_end, &[chunk_rows])?;
-                let alpha_rows = Self::tile_rows(&alpha_chunk, chunk_rows, channels)?;
-                let mut field_product = layouts::pairwise(config, region, &[&alpha_rows, &src_values], BaseOp::Mult)?;
-                Self::canonicalize_edge_channels(
-                    &mut field_product,
-                    chunk_rows,
-                    channels,
-                    "GAT field-product chunk",
-                )?;
-                field_scale.get_or_insert(field_product.scale());
-                let (field_prefix, next_field_carry_cells, next_field_carry_witness) = Self::segmented_prefix_chunk(
-                    config,
-                    region,
-                    &field_product,
-                    destination_groups,
-                    chunk_start,
-                    graph.e,
-                    channels,
-                    &field_carry_cells,
-                    &field_carry_witness,
-                    field_prefix_unknown,
-                )?;
-                Self::append_chunk_endpoints(
-                    &field_prefix,
-                    destination_groups,
-                    chunk_start,
-                    chunk_end,
-                    channels,
-                    &mut field_next_group,
-                    &mut field_endpoint_values,
-                )?;
-                field_carry_cells = next_field_carry_cells;
-                field_carry_witness = next_field_carry_witness;
-                drop(field_prefix);
-                drop(field_product);
-                drop(alpha_rows);
 
                 let exp_chunk = Self::flatten_slice(&exp, chunk_start, chunk_end, &[chunk_rows])?;
                 let exp_rows = Self::tile_rows(&exp_chunk, chunk_rows, channels)?;
@@ -2359,35 +2314,16 @@ impl GatOp {
                 drop(src_values);
             }
         }
-        drop(alpha);
         drop(exp);
-        drop(field_carry_cells);
-        drop(field_carry_witness);
         drop(numerator_carry_cells);
         drop(numerator_carry_witness);
-        if field_next_group != destination_groups.len()
-            || numerator_next_group != destination_groups.len()
-            || field_endpoint_values.len() != endpoint_capacity
+        if numerator_next_group != destination_groups.len()
             || numerator_endpoint_values.len() != endpoint_capacity
         {
             return Err(CircuitError::DimMismatch(
                 "GAT chunked aggregation did not emit every canonical destination endpoint".into(),
             ));
         }
-        let endpoint_dims = if channels == 1 {
-            vec![graph.n]
-        } else {
-            vec![graph.n, channels]
-        };
-        let mut field_sum: ValTensor<Fp> =
-            Tensor::from_vec(field_endpoint_values, &endpoint_dims)?.into();
-        Self::canonicalize_destination_channels(
-            &mut field_sum,
-            graph.n,
-            channels,
-            "GAT field endpoints",
-        )?;
-        field_sum.set_scale(field_scale.ok_or(CircuitError::UnsupportedOp)?);
         let mut numerator: ValTensor<Fp> =
             Tensor::from_vec(numerator_endpoint_values, &[graph.n, channels])?.into();
         Self::canonicalize_destination_channels(&mut numerator, graph.n, channels, "GAT numerator endpoints")?;
@@ -2406,14 +2342,6 @@ impl GatOp {
                 .checked_add(projected_scale)
                 .ok_or(CircuitError::UnsupportedOp)?,
         );
-        let inverse_rows = Self::tile_rows(&inverse, graph.n, channels)?;
-        drop(inverse);
-        let field_from_numerator = layouts::pairwise(config, region, &[&numerator, &inverse_rows], BaseOp::Mult)?;
-        layouts::enforce_equality(config, region, &[&field_sum, &field_from_numerator])?;
-        drop(field_sum);
-        drop(field_from_numerator);
-        drop(inverse_rows);
-
         let recovery_multiplier = scale_exponent_to_multiplier(recovery_scale)
             .map_err(|_| CircuitError::UnsupportedOp)
             .and_then(|value| i128::try_from(value).map_err(|_| CircuitError::UnsupportedOp))?;
@@ -2851,6 +2779,11 @@ mod segmented_batch_tests {
         plonk::{Circuit, ConstraintSystem, Error},
     };
 
+    #[test]
+    fn output_only_witness_and_chunked_layout_regressions_match_canonical_gat() {
+        crate::gat_adapter::run_geometry_and_mock_regressions();
+    }
+
     fn dummy_layout() -> (BaseConfig<Fp>, RegionCtx<'static, Fp>) {
         (
             BaseConfig::dummy(12, 2),
@@ -3003,6 +2936,12 @@ mod segmented_batch_tests {
             rounding,
         )
         .unwrap();
+        assert_eq!(
+            crate::gat_adapter::relation::evaluate_output_for_compile_for_tests(&spec, rounding)
+                .unwrap(),
+            reference.output,
+            "output-only canonical evaluator differs from the complete trace evaluator"
+        );
         let operation = GatOp {
             spec: spec.clone(),
             rounding,

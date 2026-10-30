@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Detached controls for the one official five-dataset EZKL formal chain."""
+"""Detached controls for the official selected-dataset EZKL formal chain."""
 
 from __future__ import annotations
 
@@ -16,7 +16,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from formal_common import FORMAL_SESSION_ID, ContractError, ROOT, abort, local_path, print_error
+from formal_common import (
+    DATASETS,
+    FORMAL_SESSION_ID,
+    ContractError,
+    ROOT,
+    abort,
+    local_path,
+    normalize_selected_datasets,
+    print_error,
+    selected_datasets_for_session,
+)
 from process_guardian import process_start_ticks
 
 _SCHEMA = "ezkl.formal-controller.v1"
@@ -192,6 +202,7 @@ def _session_path(output_root: Path, session_id: str) -> Path:
 
 def _child_command(
     *, output_root: Path, matrix: Path, binary: Path, session_id: str | None, resume: bool, capacity_only: bool,
+    selected_datasets: tuple[str, ...] = DATASETS,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -201,6 +212,8 @@ def _child_command(
         "--output-root", output_root.relative_to(ROOT).as_posix(),
         "--matrix", matrix.relative_to(ROOT).as_posix(),
     ]
+    if selected_datasets != DATASETS:
+        command.extend(("--datasets", *selected_datasets))
     if capacity_only:
         command.append("--capacity-preflight-only")
     if resume:
@@ -221,8 +234,12 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         or metadata.get("session_id") != session_id
         or not all(isinstance(value, str) and value and not Path(value).is_absolute() and ".." not in Path(value).parts
                    for value in (output_root, matrix, binary))
-        or mode not in {"resume", "capacity_preflight_only", "five_dataset_formal"}
+        or mode not in {"resume", "capacity_preflight_only", "five_dataset_formal", "subset_formal"}
     ):
+        return None
+    try:
+        selected_datasets = normalize_selected_datasets(metadata.get("selected_datasets"))
+    except ContractError:
         return None
     wrapper = [
         sys.executable,
@@ -232,6 +249,8 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         "--output-root", output_root,
         "--matrix", matrix,
     ]
+    if selected_datasets != DATASETS:
+        wrapper.extend(("--datasets", *selected_datasets))
     if mode == "capacity_preflight_only":
         wrapper.append("--capacity-preflight-only")
     if mode == "resume":
@@ -249,6 +268,8 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         "--matrix", matrix,
         "--_from-ezkl-entry",
     ]
+    if selected_datasets != DATASETS:
+        formal_owner.extend(("--datasets", *selected_datasets))
     if mode == "capacity_preflight_only":
         formal_owner.append("--capacity-preflight-only")
     if mode == "resume":
@@ -311,6 +332,11 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
     output_root = _safe_local(args.output_root, "output root")
     matrix = _safe_local(args.matrix, "matrix")
     binary = _safe_local(args.binary, "binary")
+    requested_datasets = (
+        normalize_selected_datasets(getattr(args, "datasets", None))
+        if getattr(args, "datasets", None) is not None
+        else None
+    )
     if resume:
         session_id = args.session_id
         session_path = _session_path(output_root, session_id)
@@ -328,8 +354,13 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
             or session.get("status") not in {"FAILED", "INTERRUPTED"}
         ):
             abort("resume requires this exact failed/interrupted EZKL session and output root")
+        saved_datasets = selected_datasets_for_session(session)
+        if requested_datasets is not None and requested_datasets != saved_datasets:
+            abort("explicit resume --datasets differs from this immutable session selection")
+        selected_datasets = saved_datasets
     else:
         session_id = uuid.uuid4().hex
+        selected_datasets = requested_datasets or DATASETS
 
     metadata_path = _metadata_path(output_root, session_id)
     log_path = output_root / ".sessions" / session_id / "logs" / "formal_session.log"
@@ -348,6 +379,7 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
         session_id=session_id,
         resume=resume,
         capacity_only=bool(getattr(args, "capacity_preflight_only", False)),
+        selected_datasets=selected_datasets,
     )
     supervisor_args = [
         sys.executable,
@@ -383,7 +415,8 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
         "output_root": output_root.relative_to(ROOT).as_posix(),
         "matrix": matrix.relative_to(ROOT).as_posix(),
         "binary": binary.relative_to(ROOT).as_posix(),
-        "mode": "resume" if resume else "capacity_preflight_only" if getattr(args, "capacity_preflight_only", False) else "five_dataset_formal",
+        "mode": "resume" if resume else "capacity_preflight_only" if getattr(args, "capacity_preflight_only", False) else "five_dataset_formal" if selected_datasets == DATASETS else "subset_formal",
+        "selected_datasets": list(selected_datasets),
         "child_command": child,
         "log_path": log_path.relative_to(ROOT).as_posix(),
         "started_at_utc": _now(),
@@ -496,7 +529,7 @@ def _supervise(args: argparse.Namespace) -> int:
     child_ticks: int | None = None
     try:
         with log_path.open("a", encoding="utf-8") as log:
-            log.write(f"\n--- {_now()} detached supervisor starting official five-dataset runner ---\n")
+            log.write(f"\n--- {_now()} detached supervisor starting official selected-dataset runner ---\n")
             log.flush()
             if stop_requested:
                 metadata["status"] = "STOPPED"
@@ -623,22 +656,26 @@ def _supervise(args: argparse.Namespace) -> int:
         signal.signal(signal.SIGINT, previous_int)
 
 
-def _read_session_status(output_root: Path, session_id: str) -> tuple[str, str]:
+def _read_session_status(output_root: Path, session_id: str) -> tuple[str, str, tuple[str, ...]]:
     path = _session_path(output_root, session_id)
     if path.is_symlink() or not path.is_file():
-        return "SESSION_NOT_CREATED", "session file is not present"
+        return "SESSION_NOT_CREATED", "session file is not present", DATASETS
     try:
         session = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return "SESSION_RECORD_INVALID", "cannot parse session file"
+        return "SESSION_RECORD_INVALID", "cannot parse session file", DATASETS
     if (
         not isinstance(session, dict)
         or session.get("baseline") != "ezkl"
         or session.get("session_id") != session_id
         or session.get("output_root") != output_root.relative_to(ROOT).as_posix()
     ):
-        return "SESSION_ANCHOR_INVALID", "session/output-root identity mismatch"
-    return str(session.get("status", "UNKNOWN")), str(session.get("stage", "unknown"))
+        return "SESSION_ANCHOR_INVALID", "session/output-root identity mismatch", DATASETS
+    return (
+        str(session.get("status", "UNKNOWN")),
+        str(session.get("stage", "unknown")),
+        selected_datasets_for_session(session),
+    )
 
 
 def _status(args: argparse.Namespace) -> int:
@@ -648,7 +685,7 @@ def _status(args: argparse.Namespace) -> int:
     control_live = _alive_exact(metadata.get("control_process"), expected_script=_SCRIPT, session_id=args.session_id)
     owner = metadata.get("formal_owner_process", metadata.get("child_process"))
     child_live = _formal_owner_matches(owner, metadata, args.session_id)
-    session_status, stage = _read_session_status(output_root, args.session_id)
+    session_status, stage, selected_datasets = _read_session_status(output_root, args.session_id)
     launcher_status = metadata.get("status", "UNKNOWN")
     if control_live:
         print(f"controller=RUNNING pid={metadata['control_process']['pid']} start_ticks={metadata['control_process']['start_ticks']}")
@@ -660,7 +697,11 @@ def _status(args: argparse.Namespace) -> int:
         print(f"controller={launcher_status} exit_code={metadata.get('exit_code')}")
     print(f"session={session_status} stage={stage}")
     print(f"log={metadata.get('log_path')}")
-    print("status is observational; only FINAL_VALIDATION_OK plus five verified results represents a completed formal run")
+    if selected_datasets == DATASETS:
+        print("status is observational; FINAL_VALIDATION_OK plus five verified results represents a completed formal run")
+    else:
+        print(f"selected_datasets={','.join(selected_datasets)}")
+        print("status is observational; SUBSET_COMPLETE plus all selected verified results represents a completed subset run")
     return 0
 
 
@@ -725,16 +766,18 @@ def _stop(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     actions = result.add_subparsers(dest="action", required=True)
-    start = actions.add_parser("start", help="start the complete five-dataset formal run in the background")
+    start = actions.add_parser("start", help="start the selected canonical formal run in the background")
     start.add_argument("--output-root", default="runs/formal")
     start.add_argument("--matrix", default="results/formal_matrix.json")
     start.add_argument("--binary", default="target/gpu/release/ezkl")
-    start.add_argument("--capacity-preflight-only", action="store_true", help="run all five native Admissions and the fixed-payload disk-floor gate, then stop before Setup")
-    resume = actions.add_parser("resume", help="resume one exact failed/interrupted five-dataset session")
+    start.add_argument("--datasets", nargs="+", choices=DATASETS, default=None, help="canonical dataset selection; omitted means all five")
+    start.add_argument("--capacity-preflight-only", action="store_true", help="run selected native Admissions and the fixed-payload disk-floor gate, then stop before Setup")
+    resume = actions.add_parser("resume", help="resume one exact failed/interrupted formal session")
     resume.add_argument("--session-id", required=True)
     resume.add_argument("--output-root", default="runs/formal")
     resume.add_argument("--matrix", default="results/formal_matrix.json")
     resume.add_argument("--binary", default="target/gpu/release/ezkl")
+    resume.add_argument("--datasets", nargs="+", choices=DATASETS, default=None, help="must match this session; omitted inherits its immutable selection")
     status = actions.add_parser("status", help="inspect one exact detached session")
     status.add_argument("--session-id", required=True)
     status.add_argument("--output-root", default="runs/formal")

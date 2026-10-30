@@ -1,0 +1,27 @@
+{
+  "command": [
+    "/usr/bin/python3",
+    "/home/pzh/project/scripts/run_mechanism_ablation.py",
+    "run",
+    "--device",
+    "0",
+    "--output-root",
+    "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025",
+    "--repetitions",
+    "1",
+    "--mechanism",
+    "all",
+    "--input-scope",
+    "all",
+    "--timeout-seconds",
+    "0",
+    "--prepare-timeout-seconds",
+    "0"
+  ],
+  "created_utc": "2026-10-25T12:55:52Z",
+  "format": "zkgat_mechanism_detached_launcher_v1",
+  "log_path": "/home/pzh/project/results/mechanism_ablation_final/launchers/cuda_20261025T125552Z_bda3b70448/runner.log",
+  "pid": 3487240,
+  "process_group": 3487240,
+  "runner_output_root": "/home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025"
+}

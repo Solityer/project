@@ -1,0 +1,970 @@
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+native ICICLE prerequisites need setup: native ICICLE libraries were not built from the current authenticated CUDA source
+[ezkl-formal] GPU_BUILD_STAGE=prepare-native-cuda-backend
+[ezkl-formal] GPU_SETUP_STAGE=reset-stale-native-build-directory path=/home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=configure selected_device=index:0 uuid:GPU-3cde57ba-ae43-4452-bd59-7b156b36db71 logical:0 architecture=sm_121 compiler=/usr/local/cuda-13.0/bin/nvcc
+-- The CUDA compiler identification is NVIDIA 13.0.88
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting CUDA compiler ABI info
+-- Detecting CUDA compiler ABI info - done
+-- Check for working CUDA compiler: /usr/local/cuda-13.0/bin/nvcc - skipped
+-- Detecting CUDA compile features
+-- Detecting CUDA compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/aarch64-linux-gnu-g++-13 - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Using multi-threaded CUDA compilation.
+-- Configuring done (1.4s)
+-- Generating done (0.0s)
+CMake Warning:
+  Manually-specified variables were not used by the project:
+
+    CMAKE_C_COMPILER
+
+
+-- Build files have been written to: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda
+[ezkl-formal] GPU_SETUP_STAGE=compile selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[ 12%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/extern.cu.o
+[ 12%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern.cu.o
+[ 18%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/vec_ops/extern.cu.o
+[ 25%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/merkle-tree/extern_mmcs.cu.o
+[ 31%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/h_eval_bn254.cu.o
+[ 37%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon/extern.cu.o
+[ 43%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/poseidon2/extern.cu.o
+[ 50%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/extern.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/kernels.cuh(40): warning #940-D: missing return statement at end of non-void function "poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon2::sbox_el(S, int) [with S=bn254::scalar_t]" at line 46
+            instantiation of "void poseidon2::sbox<S,T>(S *, int) [with S=bn254::scalar_t, T=2]" at line 210
+            instantiation of "void poseidon2::permute_state<S,T>(S *, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 293
+            instantiation of "void poseidon2::absorb_2d_state<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const poseidon2::Poseidon2Constants<S> &) [with S=bn254::scalar_t, T=2]" at line 316
+            instantiation of "void poseidon2::hash_2d_kernel<S,T>(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, unsigned int, poseidon2::Poseidon2Constants<S>) [with S=bn254::scalar_t, T=2]" at line 54 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon2/poseidon2.cuh
+            instantiation of "cudaError_t poseidon2::Poseidon2<S>::hash_2d(const matrix::Matrix<S> *, S *, unsigned int, unsigned int, uint64_t, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 11 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon2/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(44): warning #940-D: missing return statement at end of non-void function "poseidon::sbox_el(S, int) [with S=bn254::scalar_t]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::sbox_el(S, int) [with S=bn254::scalar_t]" at line 78
+            instantiation of "S poseidon::full_round<S,T>(S, size_t, int, int, __nv_bool, __nv_bool, __nv_bool, S *, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 103
+            instantiation of "void poseidon::full_rounds<S,T>(S *, size_t, size_t, __nv_bool, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 195
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+Remark: The warnings can be suppressed with "-diag-suppress <warning-number>"
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=3]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=3]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=3]" at line 45 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=5]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=5]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=5]" at line 46 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=9]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=9]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=9]" at line 47 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/kernels.cuh(136): warning #940-D: missing return statement at end of non-void function "poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]"
+    }
+    ^
+          detected during:
+            instantiation of "S poseidon::partial_round<S,T>(S *, size_t, int, const poseidon::PoseidonConstants<S> &) [with S=bn254::scalar_t, T=12]" at line 152
+            instantiation of "void poseidon::partial_rounds<S,T>(S *, size_t, size_t, poseidon::PoseidonConstants<S>) [with S=bn254::scalar_t, T=12]" at line 199
+            instantiation of "cudaError_t poseidon::poseidon_permutation_kernel<S,T>(const S *, S *, unsigned int, unsigned int, unsigned int, const poseidon::PoseidonConstants<S> &, cudaStream_t &) [with S=bn254::scalar_t, T=12]" at line 48 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "cudaError_t poseidon::Poseidon<S>::run_hash_many_kernel(const S *, S *, unsigned int, unsigned int, unsigned int, const device_context::DeviceContext &) const [with S=bn254::scalar_t]" at line 75 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/include/poseidon/poseidon.cuh
+            instantiation of "poseidon::Poseidon<S>::Poseidon(unsigned int, unsigned int, unsigned int, unsigned int, const S *, const S *, const S *, const S *, S, device_context::DeviceContext &) [with S=bn254::scalar_t]" at line 28 of /home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/poseidon/extern.cu
+
+[ 56%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/ntt/kernel_ntt.cu.o
+[ 62%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials.cu.o
+[ 68%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/cuda_backend/polynomial_cuda_backend.cu.o
+[ 75%] Building CUDA object src/fields/CMakeFiles/icicle_field.dir/__/polynomials/polynomials_c_api.cu.o
+[ 81%] Linking CUDA static library ../../lib/libingo_field_bn254.a
+[ 81%] Built target icicle_field
+[ 87%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/extern.cu.o
+[ 93%] Building CUDA object src/curves/CMakeFiles/icicle_curve.dir/__/msm/extern.cu.o
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu: In function ‘cudaError_t msm::bn254_precompute_msm_bases_cuda(bn254::affine_t*, int, int, int, bool, device_context::DeviceContext&, bn254::affine_t*)’:
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/extern.cu:37:185: warning: ‘cudaError_t msm::precompute_msm_bases(A*, int, int, int, bool, device_context::DeviceContext&, A*) [with A = Affine<Field<bn254::fq_config> >; P = Projective<Field<bn254::fq_config>, Field<bn254::fp_config>, bn254::b, bn254::generator_x, bn254::generator_y>; cudaError_t = cudaError]’ is deprecated: Use precompute_msm_points instead. [-Wdeprecated-declarations]
+   37 |     return precompute_msm_bases<affine_t, projective_t>(
+      |        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~                                                                                                                                ^                                                                                 
+/home/pzh/project/comparison/ezkl/vendor/icicle/icicle/src/msm/msm.cu:917:66: note: declared here
+  917 |   [[deprecated("Use precompute_msm_points instead.")]] cudaError_t precompute_msm_bases(
+      |                                                                  ^~~~~~~~~~~~~~~~~~~~
+[100%] Linking CUDA static library ../../lib/libingo_curve_bn254.a
+[100%] Built target icicle_curve
+[ezkl-formal] GPU_SETUP_STAGE=record_identity selected_device_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
+[ezkl-formal] native ICICLE GPU backend identity recorded: /home/pzh/project/comparison/ezkl/artifacts/build/icicle-cuda/native_backend_manifest.json
+[ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+   Compiling icicle-bn254 v2.8.0 (/home/pzh/project/comparison/ezkl/vendor/icicle/wrappers/rust/icicle-curves/icicle-bn254)
+   Compiling openssl-sys v0.9.117
+   Compiling halo2_proofs v0.3.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_proofs)
+warning: unused import: `ParallelSliceMut`
+  --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:26:23
+   |
+26 |     ParallelIterator, ParallelSliceMut,
+   |                       ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> vendor/halo2/halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: unused variable: `advice_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:692:9
+    |
+692 |         advice_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_advice_values`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:693:9
+    |
+693 |         fixed_values: &[FixedColumnSource<C::Scalar>],
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_values`
+
+warning: unused variable: `instance_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:694:9
+    |
+694 |         instance_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_instance_values`
+
+warning: unused variable: `challenges`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:695:9
+    |
+695 |         challenges: &[C::Scalar],
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenges`
+
+warning: unused variable: `theta`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:707:13
+    |
+707 |             theta,
+    |             ^^^^^ help: try ignoring the field: `theta: _`
+
+warning: variable does not need to be mutable
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:452:13
+    |
+452 |         let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `write_codes` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:164:19
+    |
+103 | impl PackedIdTape {
+    | ----------------- method in this implementation
+...
+164 |     pub(crate) fn write_codes(&mut self, start_index: usize, codes: &[usize]) -> io::Result<()> {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `from_compact` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:434:19
+    |
+413 | impl<F: PrimeField + Copy> FixedColumnSource<F> {
+    | ----------------------------------------------- associated function in this implementation
+...
+434 |     pub(crate) fn from_compact(codebook: Vec<F>, ids: PackedIdTape) -> io::Result<Self> {
+    |                   ^^^^^^^^^^^^
+
+warning: associated items `read_activation` and `activation_fingerprint` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:73:19
+    |
+ 41 | impl SelectorBitmap {
+    | ------------------- associated items in this implementation
+...
+ 73 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+198 |     pub(crate) fn activation_fingerprint(&self) -> u64 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `read_activation`, `is_activated`, and `encoded_byte_len` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:411:19
+    |
+364 | impl SelectorActivationSet {
+    | -------------------------- associated items in this implementation
+...
+411 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+494 |     pub(crate) fn is_activated(&self, row: usize) -> bool {
+    |                   ^^^^^^^^^^^^
+...
+691 |     pub(crate) fn encoded_byte_len(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `compress_selector_bitmaps` and `directly_convert_selector_bitmaps` are never used
+    --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:3199:19
+     |
+2702 | impl<F: Field> ConstraintSystem<F> {
+     | ---------------------------------- methods in this implementation
+...
+3199 |     pub(crate) fn compress_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+3378 |     pub(crate) fn directly_convert_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `process_bitmaps` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit/compress_selectors.rs:414:15
+    |
+414 | pub(crate) fn process_bitmaps<F: Field, E>(
+    |               ^^^^^^^^^^^^^^^
+
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:63:5
+   |
+43 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+63 |     Y(),
+   |     ^
+64 |     /// Previous value
+65 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `evaluate` is never used
+    --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:2387:12
+     |
+2185 | impl<C: CurveAffine> GraphEvaluator<C> {
+     | -------------------------------------- method in this implementation
+...
+2387 |     pub fn evaluate<B: Basis>(
+     |            ^^^^^^^^
+
+warning: method `pair_at` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:111:8
+    |
+ 33 | impl SuccessorEntries {
+    | --------------------- method in this implementation
+...
+111 |     fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+    |        ^^^^^^^
+
+warning: associated functions `read` and `read_with_native_backing_budget` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:279:19
+    |
+273 | / impl<C: SerdeCurveAffine> ProvingKey<C>
+274 | | where
+275 | |     C::Scalar: Field,
+    | |_____________________- associated functions in this implementation
+...
+279 |       pub(super) fn read<R: io::Read>(
+    |                     ^^^^
+...
+288 |       pub(super) fn read_with_native_backing_budget<R: io::Read>(reader: &mut R, _format: SerdeFormat, domain: &EvaluationDomain<C:...
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `domain_size` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:647:19
+    |
+565 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- method in this implementation
+...
+647 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: variant `Memory` is never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:32:5
+   |
+31 | enum PermutationState {
+   |      ---------------- variant in this enum
+32 |     Memory {
+   |     ^^^^^^
+   |
+   = note: `PermutationState` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `cell_at` and `mapping_at_idx` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:99:8
+    |
+ 54 | impl Assembly {
+    | ------------- methods in this implementation
+...
+ 99 |     fn cell_at(&self, cell: usize) -> (usize, usize) {
+    |        ^^^^^^^
+...
+111 |     fn mapping_at_idx(&mut self, column: usize, row: usize) -> Result<(usize, usize), Error> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:410:15
+    |
+410 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:456:19
+    |
+439 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+456 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:122:19
+    |
+ 61 | impl NativePermutationStore {
+    | --------------------------- associated function in this implementation
+...
+122 |     pub(crate) fn new(cell_count: usize) -> io::Result<Self> {
+    |                   ^^^
+
+warning: method `source_ordinal` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:860:8
+    |
+710 | impl NativeSuccessorReadCache {
+    | ----------------------------- method in this implementation
+...
+860 |     fn source_ordinal(
+    |        ^^^^^^^^^^^^^^
+
+warning: associated items `new` and `source_ordinal` are never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1013:19
+     |
+1012 | impl NativeSuccessorStore {
+     | ------------------------- associated items in this implementation
+1013 |     pub(crate) fn new(len: u64) -> io::Result<Self> {
+     |                   ^^^
+...
+1268 |     fn source_ordinal(&self, source: u64) -> io::Result<Option<u64>> {
+     |        ^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1432:19
+     |
+1429 | impl NativeTargetBitmap {
+     | ----------------------- associated function in this implementation
+...
+1432 |     pub(crate) fn new(bit_count: u64) -> io::Result<Self> {
+     |                   ^^^
+
+warning: method `write_value` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:2357:19
+     |
+2356 | impl<F: Copy> SpillBuilder<F> {
+     | ----------------------------- method in this implementation
+2357 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+     |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: function `read_polynomial_vec` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:125:15
+    |
+125 | pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_polynomial_slice` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:161:15
+    |
+161 | pub(crate) fn write_polynomial_slice<W: io::Write, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `polynomial_slice_byte_length` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:179:15
+    |
+179 | pub(crate) fn polynomial_slice_byte_length<F: PrimeField, B>(slice: &[Polynomial<F, B>]) -> usize {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synchronized_operation` is never used
+   --> vendor/halo2/halo2_proofs/src/icicle.rs:296:4
+    |
+296 | fn synchronized_operation(counter: &AtomicU64) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 44 warnings (run `cargo fix --lib -p halo2_proofs` to apply 14 suggestions)
+   Compiling tract-linalg v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling tract-core v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling halo2wrong v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling maingate v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling tract-nnef v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling openssl v0.10.81
+   Compiling native-tls v0.2.18
+   Compiling tokio-native-tls v0.3.1
+   Compiling integer v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling tract-onnx-opl v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling hyper-tls v0.6.0
+   Compiling ecc v0.1.0 (https://github.com/zkonduit/halo2wrong?branch=ac%2Fchunked-mv-lookup#07005dd5)
+   Compiling tract-hir v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+   Compiling reqwest v0.12.28
+   Compiling halo2_solidity_verifier v0.1.0 (https://github.com/zkonduit/ezkl-verifier?branch=main#a518a917)
+   Compiling tract-onnx v0.21.8-pre (https://github.com/sonos/tract/?rev=37132e0397d0a73e5bd3a8615d932dabe44f6736#37132e03)
+   Compiling snark-verifier v0.1.1 (https://github.com/zkonduit/snark-verifier?branch=ac%2Fchunked-mv-lookup#508d96b2)
+   Compiling halo2_gadgets v0.2.0 (/home/pzh/project/comparison/ezkl/vendor/halo2/halo2_gadgets)
+error: unused import: `VarTensor`
+  --> src/graph/model.rs:21:33
+   |
+21 |     tensor::{Tensor, ValTensor, VarTensor},
+   |                                 ^^^^^^^^^
+   |
+note: the lint level is defined here
+  --> src/lib.rs:11:5
+   |
+11 |     unused,
+   |     ^^^^^^
+   = note: `#[deny(unused_imports)]` implied by `#[deny(unused)]`
+
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib) generated 1 warning
+error: could not compile `ezkl` (lib) due to 1 previous error; 1 warning emitted
+
+--- official GPU build retry after cfg(test)-only import fix ---
+[ezkl-formal] GPU_BUILD_STAGE=prerequisite-authentication
+[ezkl-formal] BUILD_STAGE=rust-release-build backend=gpu default_features=disabled features=formal-gpu
+warning: unused manifest key: target.wasm32-unknown-unknown.runner
+warning: patch `uniffi_testing v0.28.0 (https://github.com/ElusAegis/uniffi-rs?branch=feat%2Ftesting-feature-build-fix#4684b9e7)` was not used in the crate graph
+help: Check that the patched package version and available features are compatible
+      with the dependency requirements. If the patch has a different version from
+      what is locked in the Cargo.lock file, run `cargo update` to use the new
+      version. This may also occur with an optional dependency that is not enabled.
+warning: unused import: `ParallelSliceMut`
+  --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:26:23
+   |
+26 |     ParallelIterator, ParallelSliceMut,
+   |                       ^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `maybe_rayon::prelude::IntoParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:21:5
+   |
+21 | use maybe_rayon::prelude::IntoParallelIterator;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `best_fft_cpu`
+ --> vendor/halo2/halo2_proofs/src/poly/domain.rs:5:28
+  |
+5 |     arithmetic::{best_fft, best_fft_cpu, parallelize, try_gpu_fft_if_eligible},
+  |                            ^^^^^^^^^^^^
+
+warning: unused imports: `NativePermutationAllocationPlan` and `NativeSuccessorValidationStats`
+  --> vendor/halo2/halo2_proofs/src/poly.rs:44:5
+   |
+44 |     NativePermutationAllocationPlan, NativePermutationStats, NativePermutationStore,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+45 |     NativeSuccessorStore, NativeSuccessorValidationStats,
+   |                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:108:5
+    |
+108 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+    = note: `#[warn(unused_attributes)]` (part of `#[warn(unused)]`) on by default
+
+warning: `#[must_use]` attribute cannot be used on trait methods in impl blocks
+   --> vendor/halo2/halo2_proofs/src/poly/ipa/strategy.rs:149:5
+    |
+149 |     #[must_use]
+    |     ^^^^^^^^^^^
+    |
+    = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
+    = help: `#[must_use]` can be applied to data types, foreign functions, functions, inherent methods, provided trait methods, required trait methods, traits, and unions
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/dev.rs:24:5
+   |
+24 |     IndexedParallelIterator, IntoParallelIterator, IntoParallelRefIterator, ParallelIterator,
+   |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `IndexedParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:28
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `ParallelIterator`
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:15:53
+   |
+15 | use maybe_rayon::prelude::{IndexedParallelIterator, ParallelIterator};
+   |                                                     ^^^^^^^^^^^^^^^^
+
+warning: unused variable: `advice_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:692:9
+    |
+692 |         advice_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_advice_values`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `fixed_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:693:9
+    |
+693 |         fixed_values: &[FixedColumnSource<C::Scalar>],
+    |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_fixed_values`
+
+warning: unused variable: `instance_values`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:694:9
+    |
+694 |         instance_values: &[Polynomial<C::Scalar, LagrangeCoeff>],
+    |         ^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_instance_values`
+
+warning: unused variable: `challenges`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:695:9
+    |
+695 |         challenges: &[C::Scalar],
+    |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_challenges`
+
+warning: unused variable: `theta`
+   --> vendor/halo2/halo2_proofs/src/plonk/mv_lookup/prover.rs:707:13
+    |
+707 |             theta,
+    |             ^^^^^ help: try ignoring the field: `theta: _`
+
+warning: variable does not need to be mutable
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:452:13
+    |
+452 |         let mut successors = match (file_backing, packed_payload_offset, fallback_successors) {
+    |             ----^^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: method `write_codes` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:164:19
+    |
+103 | impl PackedIdTape {
+    | ----------------- method in this implementation
+...
+164 |     pub(crate) fn write_codes(&mut self, start_index: usize, codes: &[usize]) -> io::Result<()> {
+    |                   ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated function `from_compact` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk.rs:434:19
+    |
+413 | impl<F: PrimeField + Copy> FixedColumnSource<F> {
+    | ----------------------------------------------- associated function in this implementation
+...
+434 |     pub(crate) fn from_compact(codebook: Vec<F>, ids: PackedIdTape) -> io::Result<Self> {
+    |                   ^^^^^^^^^^^^
+
+warning: associated items `read_activation` and `activation_fingerprint` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:73:19
+    |
+ 41 | impl SelectorBitmap {
+    | ------------------- associated items in this implementation
+...
+ 73 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+198 |     pub(crate) fn activation_fingerprint(&self) -> u64 {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated items `read_activation`, `is_activated`, and `encoded_byte_len` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:411:19
+    |
+364 | impl SelectorActivationSet {
+    | -------------------------- associated items in this implementation
+...
+411 |     pub(crate) fn read_activation<R: std::io::Read>(
+    |                   ^^^^^^^^^^^^^^^
+...
+494 |     pub(crate) fn is_activated(&self, row: usize) -> bool {
+    |                   ^^^^^^^^^^^^
+...
+691 |     pub(crate) fn encoded_byte_len(&self) -> usize {
+    |                   ^^^^^^^^^^^^^^^^
+
+warning: methods `compress_selector_bitmaps` and `directly_convert_selector_bitmaps` are never used
+    --> vendor/halo2/halo2_proofs/src/plonk/circuit.rs:3199:19
+     |
+2702 | impl<F: Field> ConstraintSystem<F> {
+     | ---------------------------------- methods in this implementation
+...
+3199 |     pub(crate) fn compress_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+3378 |     pub(crate) fn directly_convert_selector_bitmaps(
+     |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `process_bitmaps` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/circuit/compress_selectors.rs:414:15
+    |
+414 | pub(crate) fn process_bitmaps<F: Field, E>(
+    |               ^^^^^^^^^^^^^^^
+
+warning: variants `Y` and `PreviousValue` are never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:63:5
+   |
+43 | pub enum ValueSource {
+   |          ----------- variants in this enum
+...
+63 |     Y(),
+   |     ^
+64 |     /// Previous value
+65 |     PreviousValue(),
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `ValueSource` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `evaluate` is never used
+    --> vendor/halo2/halo2_proofs/src/plonk/evaluation.rs:2387:12
+     |
+2185 | impl<C: CurveAffine> GraphEvaluator<C> {
+     | -------------------------------------- method in this implementation
+...
+2387 |     pub fn evaluate<B: Basis>(
+     |            ^^^^^^^^
+
+warning: method `pair_at` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:111:8
+    |
+ 33 | impl SuccessorEntries {
+    | --------------------- method in this implementation
+...
+111 |     fn pair_at(&self, index: u64) -> io::Result<(u64, u64)> {
+    |        ^^^^^^^
+
+warning: associated functions `read` and `read_with_native_backing_budget` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:279:19
+    |
+273 | / impl<C: SerdeCurveAffine> ProvingKey<C>
+274 | | where
+275 | |     C::Scalar: Field,
+    | |_____________________- associated functions in this implementation
+...
+279 |       pub(super) fn read<R: io::Read>(
+    |                     ^^^^
+...
+288 |       pub(super) fn read_with_native_backing_budget<R: io::Read>(reader: &mut R, _format: SerdeFormat, domain: &EvaluationDomain<C:...
+    |                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `domain_size` is never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation.rs:647:19
+    |
+565 | impl<C: CurveAffine> ProvingKey<C> {
+    | ---------------------------------- method in this implementation
+...
+647 |     pub(super) fn domain_size(&self) -> u64 {
+    |                   ^^^^^^^^^^^
+
+warning: variant `Memory` is never constructed
+  --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:32:5
+   |
+31 | enum PermutationState {
+   |      ---------------- variant in this enum
+32 |     Memory {
+   |     ^^^^^^
+   |
+   = note: `PermutationState` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: methods `cell_at` and `mapping_at_idx` are never used
+   --> vendor/halo2/halo2_proofs/src/plonk/permutation/keygen.rs:99:8
+    |
+ 54 | impl Assembly {
+    | ------------- methods in this implementation
+...
+ 99 |     fn cell_at(&self, cell: usize) -> (usize, usize) {
+    |        ^^^^^^^
+...
+111 |     fn mapping_at_idx(&mut self, column: usize, row: usize) -> Result<(usize, usize), Error> {
+    |        ^^^^^^^^^^^^^^
+
+warning: function `batch_invert_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:410:15
+    |
+410 | pub(crate) fn batch_invert_assigned<F: Field>(
+    |               ^^^^^^^^^^^^^^^^^^^^^
+
+warning: method `invert` is never used
+   --> vendor/halo2/halo2_proofs/src/poly.rs:456:19
+    |
+439 | impl<F: Field> Polynomial<Assigned<F>, LagrangeCoeff> {
+    | ----------------------------------------------------- method in this implementation
+...
+456 |     pub(crate) fn invert(
+    |                   ^^^^^^
+
+warning: method `empty_lagrange_assigned` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/domain.rs:287:19
+    |
+ 45 | impl<F: WithSmallOrderMulGroup<3>> EvaluationDomain<F> {
+    | ------------------------------------------------------ method in this implementation
+...
+287 |     pub(crate) fn empty_lagrange_assigned(&self) -> Polynomial<Assigned<F>, LagrangeCoeff> {
+    |                   ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:122:19
+    |
+ 61 | impl NativePermutationStore {
+    | --------------------------- associated function in this implementation
+...
+122 |     pub(crate) fn new(cell_count: usize) -> io::Result<Self> {
+    |                   ^^^
+
+warning: method `source_ordinal` is never used
+   --> vendor/halo2/halo2_proofs/src/poly/spill.rs:860:8
+    |
+710 | impl NativeSuccessorReadCache {
+    | ----------------------------- method in this implementation
+...
+860 |     fn source_ordinal(
+    |        ^^^^^^^^^^^^^^
+
+warning: associated items `new` and `source_ordinal` are never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1013:19
+     |
+1012 | impl NativeSuccessorStore {
+     | ------------------------- associated items in this implementation
+1013 |     pub(crate) fn new(len: u64) -> io::Result<Self> {
+     |                   ^^^
+...
+1268 |     fn source_ordinal(&self, source: u64) -> io::Result<Option<u64>> {
+     |        ^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:1432:19
+     |
+1429 | impl NativeTargetBitmap {
+     | ----------------------- associated function in this implementation
+...
+1432 |     pub(crate) fn new(bit_count: u64) -> io::Result<Self> {
+     |                   ^^^
+
+warning: method `write_value` is never used
+    --> vendor/halo2/halo2_proofs/src/poly/spill.rs:2357:19
+     |
+2356 | impl<F: Copy> SpillBuilder<F> {
+     | ----------------------------- method in this implementation
+2357 |     pub(super) fn write_value(&mut self, value: F) -> io::Result<()> {
+     |                   ^^^^^^^^^^^
+
+warning: function `pack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:108:8
+    |
+108 | pub fn pack(bits: &[bool]) -> u8 {
+    |        ^^^^
+
+warning: function `unpack` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:118:8
+    |
+118 | pub fn unpack(byte: u8, bits: &mut [bool]) {
+    |        ^^^^^^
+
+warning: function `read_polynomial_vec` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:125:15
+    |
+125 | pub(crate) fn read_polynomial_vec<R: io::Read, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: function `write_polynomial_slice` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:161:15
+    |
+161 | pub(crate) fn write_polynomial_slice<W: io::Write, F: SerdePrimeField, B>(
+    |               ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `polynomial_slice_byte_length` is never used
+   --> vendor/halo2/halo2_proofs/src/helpers.rs:179:15
+    |
+179 | pub(crate) fn polynomial_slice_byte_length<F: PrimeField, B>(slice: &[Polynomial<F, B>]) -> usize {
+    |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `synchronized_operation` is never used
+   --> vendor/halo2/halo2_proofs/src/icicle.rs:296:4
+    |
+296 | fn synchronized_operation(counter: &AtomicU64) {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+   --> vendor/halo2/halo2_proofs/src/plonk/vanishing/verifier.rs:123:9
+    |
+123 |         &self,
+    |         ^^^^^ the lifetime is elided here
+124 |         x: ChallengeX<C>,
+125 |     ) -> impl Iterator<Item = VerifierQuery<C, M>> + Clone {
+    |                               ^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+    |
+    = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+    = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+    |
+125 |     ) -> impl Iterator<Item = VerifierQuery<'_, C, M>> + Clone {
+    |                                             +++
+
+warning: hiding a lifetime that's named elsewhere is confusing
+  --> vendor/halo2/halo2_proofs/src/poly/ipa/commitment.rs:81:36
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<C> {
+   |                   -------          ^^^^^^^^^ the same lifetime is hidden here
+   |                   |
+   |                   the lifetime is named here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+help: consistently use `'params`
+   |
+81 |     fn empty_msm(&'params self) -> MSMIPA<'params, C> {
+   |                                           ++++++++
+
+warning: `halo2_proofs` (lib) generated 44 warnings (run `cargo fix --lib -p halo2_proofs` to apply 14 suggestions)
+   Compiling ezkl v0.0.0 (/home/pzh/project/comparison/ezkl)
+warning: use of deprecated function `sha256::digest_file`: Use new function `try_digest()` instead
+   --> src/../gat_adapter/loader.rs:637:30
+    |
+637 |         let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+    |                              ^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: `ezkl` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 3m 26s
+[ezkl-formal] BUILD_STAGE=verify-native-cli-contract binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl
+[ezkl-formal] BUILD_STAGE=verify-native-source-identity sidecar=/home/pzh/project/comparison/ezkl/artifacts/gat_adapter/native_source_tree.1bhq9G2p
+[ezkl-formal] wrote current GPU build receipt /home/pzh/project/comparison/ezkl/artifacts/build/gpu/build_receipt.json
+[ezkl-formal] BUILD_STAGE=complete backend=gpu binary=/home/pzh/project/comparison/ezkl/target/gpu/release/ezkl

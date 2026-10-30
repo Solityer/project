@@ -1,0 +1,36 @@
+{
+  "command": [
+    "/home/pzh/.rustup/toolchains/nightly-2025-12-01-aarch64-unknown-linux-gnu/bin/cargo",
+    "test",
+    "--offline",
+    "--locked",
+    "--release",
+    "--manifest-path",
+    "/home/pzh/project/comparison/ezkl/vendor/halo2/Cargo.toml",
+    "--package",
+    "halo2_proofs",
+    "--lib",
+    "--features",
+    "formal-gpu-msm,mv-lookup,circuit-params,formal-permutation-spill,parallel-poly-read",
+    "--target-dir",
+    "/home/pzh/project/comparison/ezkl/target/gpu",
+    "--",
+    "plonk::evaluation::tests::resident_h_permutation_and_mv_lookup_match_cpu_oracle_across_tiles_parts_sets_and_zeros",
+    "--exact",
+    "--ignored",
+    "--nocapture",
+    "--test-threads=1"
+  ],
+  "exit_code": 0,
+  "finished_at_utc": "2026-10-28T06:11:46.350384+00:00",
+  "native_manifest_sha256": "a04adc458502e830f5102433948ec7ca2995792bfc3edb3b425a214639813260",
+  "selected_device": {
+    "compute_capability": "12.1",
+    "driver_version": "580.142",
+    "index": 0,
+    "logical_device_id": 0,
+    "name": "NVIDIA GB10",
+    "uuid": "GPU-3cde57ba-ae43-4452-bd59-7b156b36db71"
+  },
+  "started_at_utc": "2026-10-28T06:11:05.229757+00:00"
+}

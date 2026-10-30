@@ -1,0 +1,2 @@
+[ezkl-formal] normalized inherited formal environment selectors: ICICLE_BACKEND_INSTALL_DIR, ICICLE_NATIVE_LIB_DIR, ICICLE_NATIVE_MANIFEST_SHA256
+[tiny-e2e] BLOCKED/FAIL before fixture staging: formal command has unsupported environment overrides that can change identity: EZKL_FORMAL_SELECTED_CUDA_DEVICE

@@ -1,0 +1,9 @@
+stage=real-mechanism-prover
+start_utc=2026-10-25T13:00:05Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism feature_folding --variant control --nodes 3327 --edges 12431 --width 4 --graphs 1 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/citeseer_full_graph/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/citeseer_full_graph/metadata.json --srs /home/pzh/project/artifacts/srs/citeseer_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_citeseer_full_d4_g1/rep_001/control/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_citeseer_full_d4_g1/rep_001/control/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_citeseer_full_d4_g1/rep_001/control/prover_result.json
+MECHANISM_PROOF_WRITTEN mechanism=feature_folding variant=control backend=cuda actual_cuda=true commitment_time_ms=427.573 prove_time_ms=759.585 proof_size_bytes=13833 proof_sha256=017cc113be56b6de20fd357b627dd3f08d08ae661a2aafdb5e671fbe0c239778
+end_utc=2026-10-25T13:00:12Z
+process_pid=3492742
+return_code=0
+timed_out=false
+wall_time_seconds=7.317312

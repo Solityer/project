@@ -1,0 +1,9 @@
+stage=prepare-real
+start_utc=2026-10-25T12:56:25Z
+command=/home/pzh/project/build_cuda/gatzk_mechanism prepare-real --config /home/pzh/project/configs/pubmed_secure.cfg --components 0 --real-input-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/pubmed_full_graph/real_input.bin --metadata-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/pubmed_full_graph/metadata.json
+REAL_MECHANISM_INPUT_WRITTEN nodes=19717 edges=108365 graphs=1 bundle_sha256=740db8a2f35c610c5d75204a300d15805c12d7a082ef799517845e0a87a370c9 metadata_sha256=599fab65fef16847b66d51628b697e93f08e24b8799e2e3c20a6d19db83a4bd8
+end_utc=2026-10-25T12:56:28Z
+process_pid=3487509
+return_code=0
+timed_out=false
+wall_time_seconds=2.670971

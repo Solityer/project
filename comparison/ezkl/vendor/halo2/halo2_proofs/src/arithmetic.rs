@@ -146,6 +146,79 @@ pub fn try_gpu_fft_if_eligible<Scalar: Field + ff::PrimeField, G: FftGroup<Scala
     false
 }
 
+/// Whether the fixed formal profile can fuse coefficient coset scaling into
+/// a native BN254 forward NTT. Callers use this before doing any CPU scaling.
+pub fn gpu_coset_fft_is_eligible<G: Field + ff::PrimeField + FftGroup<G>>(
+    scalars: &[G],
+    omega: G,
+    log_n: u32,
+    coset_gen: G,
+) -> bool {
+    #[cfg(feature = "icicle_gpu")]
+    {
+    let Some(expected_size) = 1usize.checked_shl(log_n) else { return false; };
+    if scalars.len() != expected_size
+        || !icicle::is_gpu_supported_field(&omega)
+        || !icicle::is_gpu_supported_field(&coset_gen)
+        || !icicle::is_gpu_supported_coset_field::<G>()
+        || icicle::should_use_cpu_fft(scalars.len())
+    {
+        return false;
+    }
+
+    #[cfg(feature = "formal-gpu-msm")]
+    {
+        return icicle::native_prove_ntt_scope_active();
+    }
+
+    #[cfg(not(feature = "formal-gpu-msm"))]
+    {
+        env::var_os("ENABLE_ICICLE_GPU").is_some()
+    }
+    }
+
+    #[cfg(not(feature = "icicle_gpu"))]
+    {
+        let _ = (scalars, omega, log_n, coset_gen);
+        false
+    }
+}
+
+/// Fuse coefficient coset scaling and the forward NTT when the fixed formal
+/// BN254 Prove profile is active. `host_factors`, when present, are powers
+/// generated for this exact coset by the domain's shared-factor helper.
+pub fn try_gpu_coset_fft_if_eligible<G: Field + ff::PrimeField + FftGroup<G>>(
+    scalars: &mut [G],
+    omega: G,
+    log_n: u32,
+    coset_gen: G,
+) -> bool {
+    if !gpu_coset_fft_is_eligible(scalars, omega, log_n, coset_gen) {
+        return false;
+    }
+    best_coset_fft_gpu(scalars, omega, log_n, coset_gen, None);
+    true
+}
+
+/// Shared-factor variant of [`try_gpu_coset_fft_if_eligible`]. It uploads the
+/// host powers once when the per-device GPU cache changes coset, then reuses
+/// them for later transforms at the same `(n, coset)`.
+pub fn try_gpu_coset_fft_if_eligible_with_factors<G: Field + ff::PrimeField + FftGroup<G>>(
+    scalars: &mut [G],
+    omega: G,
+    log_n: u32,
+    coset_gen: G,
+    host_factors: &[G],
+) -> bool {
+    if host_factors.len() != scalars.len()
+        || !gpu_coset_fft_is_eligible(scalars, omega, log_n, coset_gen)
+    {
+        return false;
+    }
+    best_coset_fft_gpu(scalars, omega, log_n, coset_gen, Some(host_factors));
+    true
+}
+
 /// Performs a NTT operation on GPU using Icicle library
 #[cfg(feature = "icicle_gpu")]
 pub fn best_fft_gpu<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::PrimeField>(
@@ -155,6 +228,30 @@ pub fn best_fft_gpu<Scalar: Field + ff::PrimeField, G: FftGroup<Scalar> + ff::Pr
     inverse: bool,
 ) {
     icicle::fft_on_device::<Scalar, G>(a, omega, log_n, inverse);
+}
+
+/// Execute the fused BN254 coefficient-coset scaling and forward NTT.
+#[cfg(feature = "icicle_gpu")]
+pub fn best_coset_fft_gpu<G: Field + ff::PrimeField + FftGroup<G>>(
+    scalars: &mut [G],
+    omega: G,
+    log_n: u32,
+    coset_gen: G,
+    host_factors: Option<&[G]>,
+) {
+    icicle::fft_on_device_with_coset::<G>(scalars, omega, log_n, coset_gen, host_factors);
+}
+
+#[cfg(not(feature = "icicle_gpu"))]
+/// This function is unavailable when the native ICICLE backend is disabled.
+pub fn best_coset_fft_gpu<G: Field + ff::PrimeField + FftGroup<G>>(
+    _scalars: &mut [G],
+    _omega: G,
+    _log_n: u32,
+    _coset_gen: G,
+    _host_factors: Option<&[G]>,
+) {
+    unreachable!("GPU coset FFT dispatch requires the icicle_gpu feature");
 }
 
 /// Convert coefficient bases group elements to lagrange basis by inverse FFT.

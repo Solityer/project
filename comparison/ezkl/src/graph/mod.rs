@@ -1616,6 +1616,25 @@ impl GraphCircuit {
 
     /// Prepare the public inputs for the circuit.
     pub fn prepare_public_inputs(&self, data: &GraphWitness) -> Result<Vec<Fp>, GraphError> {
+        self.prepare_public_inputs_from_parts(&self.graph_witness, data)
+    }
+
+    /// Prepare public instances directly from an explicit borrowed witness.
+    /// This is used by verification paths that reconstruct instances from an
+    /// authenticated statement and must not first clone the witness into the
+    /// circuit's persistent witness slot.
+    pub(crate) fn prepare_public_inputs_from_witness(
+        &self,
+        witness: &GraphWitness,
+    ) -> Result<Vec<Fp>, GraphError> {
+        self.prepare_public_inputs_from_parts(witness, witness)
+    }
+
+    fn prepare_public_inputs_from_parts(
+        &self,
+        graph_witness: &GraphWitness,
+        data: &GraphWitness,
+    ) -> Result<Vec<Fp>, GraphError> {
         // the ordering here is important, we want the inputs to come before the outputs
         // as they are configured in that order as Column<Instances>
         let mut public_inputs: Vec<Fp> = vec![];
@@ -1632,12 +1651,16 @@ impl GraphCircuit {
 
         // if the inputs are public, we add them to the public inputs AFTER the processed params as they are configured in that order as Column<Instances>
         if self.settings().run_args.input_visibility.is_public() {
-            public_inputs.extend(self.graph_witness.inputs.clone().into_iter().flatten())
+            for input in &graph_witness.inputs {
+                public_inputs.extend(input.iter().copied());
+            }
         }
 
         // if the outputs are public, we add them to the public inputs
         if self.settings().run_args.output_visibility.is_public() {
-            public_inputs.extend(self.graph_witness.outputs.clone().into_iter().flatten());
+            for output in &graph_witness.outputs {
+                public_inputs.extend(output.iter().copied());
+            }
         // if the outputs are processed, we add the processed outputs to the public inputs
         } else if let Some(processed_outputs) = &data.processed_outputs {
             public_inputs.extend(processed_outputs.get_instances().into_iter().flatten());
@@ -2660,6 +2683,123 @@ impl Circuit<Fp> for GraphCircuit {
 /// Tests for the graph module
 pub mod tests {
     use super::*;
+
+    fn public_instance_test_circuit() -> GraphCircuit {
+        let mut run_args = crate::RunArgs::default();
+        run_args.input_visibility = Visibility::Public;
+        run_args.output_visibility = Visibility::Public;
+        GraphCircuit {
+            core: CoreCircuit {
+                model: Model::default(),
+                settings: GraphSettings {
+                    run_args,
+                    ..GraphSettings::default()
+                },
+            },
+            graph_witness: GraphWitness::default(),
+            native_gat_witnessless: false,
+        }
+    }
+
+    #[test]
+    fn borrowed_public_instances_match_legacy_order_and_stored_witness_behavior() {
+        let mut witness = GraphWitness::new(
+            vec![
+                vec![Fp::from(2u64), Fp::from(3u64)],
+                vec![Fp::from(4u64)],
+            ],
+            vec![vec![Fp::from(5u64), Fp::from(6u64)]],
+        );
+        witness.processed_inputs = Some(ModuleForwardResult {
+            poseidon_hash: Some(vec![Fp::from(7u64)]),
+            ..ModuleForwardResult::default()
+        });
+        witness.processed_params = Some(ModuleForwardResult {
+            poseidon_hash: Some(vec![Fp::from(8u64), Fp::from(9u64)]),
+            ..ModuleForwardResult::default()
+        });
+        // Public output visibility must take the explicit output tensor and
+        // leave the processed output hash out of the instance column.
+        witness.processed_outputs = Some(ModuleForwardResult {
+            poseidon_hash: Some(vec![Fp::from(10u64)]),
+            ..ModuleForwardResult::default()
+        });
+
+        let expected = vec![
+            Fp::from(7u64), // processed inputs
+            Fp::from(8u64),
+            Fp::from(9u64), // processed params
+            Fp::from(2u64),
+            Fp::from(3u64),
+            Fp::from(4u64), // public inputs
+            Fp::from(5u64),
+            Fp::from(6u64), // public outputs
+        ];
+
+        let circuit = public_instance_test_circuit();
+        let borrowed = circuit
+            .prepare_public_inputs_from_witness(&witness)
+            .expect("borrowed instance preparation");
+        let mut legacy_circuit = circuit.clone();
+        legacy_circuit
+            .load_graph_witness(&witness)
+            .expect("legacy witness load");
+        let legacy = legacy_circuit
+            .prepare_public_inputs(&witness)
+            .expect("legacy instance preparation");
+        assert_eq!(borrowed, expected);
+        assert_eq!(borrowed, legacy);
+
+        // With private output visibility the module's processed output is the
+        // public outlet, matching the legacy path's visibility branch.
+        let mut private_output_circuit = public_instance_test_circuit();
+        private_output_circuit
+            .settings_mut()
+            .run_args
+            .output_visibility = Visibility::Private;
+        let private_borrowed = private_output_circuit
+            .prepare_public_inputs_from_witness(&witness)
+            .expect("borrowed processed-output preparation");
+        let mut private_legacy_circuit = private_output_circuit.clone();
+        private_legacy_circuit
+            .load_graph_witness(&witness)
+            .expect("legacy processed-output witness load");
+        let private_legacy = private_legacy_circuit
+            .prepare_public_inputs(&witness)
+            .expect("legacy processed-output preparation");
+        let expected_private_output = vec![
+            Fp::from(7u64),
+            Fp::from(8u64),
+            Fp::from(9u64),
+            Fp::from(2u64),
+            Fp::from(3u64),
+            Fp::from(4u64),
+            Fp::from(10u64),
+        ];
+        assert_eq!(private_borrowed, expected_private_output);
+        assert_eq!(private_borrowed, private_legacy);
+
+        // The public API historically uses the circuit's stored input/output
+        // tensors while reading processed module results from its argument.
+        // Keep that behavior when the two witness references differ.
+        legacy_circuit.graph_witness = GraphWitness::new(
+            vec![vec![Fp::from(21u64)]],
+            vec![vec![Fp::from(22u64)]],
+        );
+        let stored_witness_legacy = legacy_circuit
+            .prepare_public_inputs(&witness)
+            .expect("legacy stored-witness behavior");
+        assert_eq!(
+            stored_witness_legacy,
+            vec![
+                Fp::from(7u64),
+                Fp::from(8u64),
+                Fp::from(9u64),
+                Fp::from(21u64),
+                Fp::from(22u64),
+            ]
+        );
+    }
 
     #[test]
     fn test_graph_settings_serialization_roundtrip() {

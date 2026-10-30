@@ -1,0 +1,9 @@
+test_compact_v2_reference_metadata_and_bad_hashes_fail_closed (test_ezkl_compact_v2_contract.CompactNativeProofContractTest.test_compact_v2_reference_metadata_and_bad_hashes_fail_closed) ... ok
+test_five_dataset_ntt_plans_and_integrated_memory_envelopes (test_ezkl_compact_v2_contract.CompactNativeProofContractTest.test_five_dataset_ntt_plans_and_integrated_memory_envelopes) ... ok
+test_metrics_v4_exact_timing_equations_and_tolerance_reject_drift (test_ezkl_compact_v2_contract.CompactNativeProofContractTest.test_metrics_v4_exact_timing_equations_and_tolerance_reject_drift) ... ok
+test_native_prepare_rejects_budget_and_cardinality_mismatch (test_gat_input_preprocessing.GatInputPreprocessingTest.test_native_prepare_rejects_budget_and_cardinality_mismatch) ... ok
+
+----------------------------------------------------------------------
+Ran 4 tests in 0.007s
+
+OK

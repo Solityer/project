@@ -19,6 +19,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 DATASETS = ("cora", "citeseer", "pubmed", "ppi", "ogbn_arxiv")
 GPU_OFFLOAD_STAGE = "hyrax_ipa_fold"
+RESUME_VERIFY_ENV = "ZKDL_RESUME_VERIFY"
 SESSION_RE = re.compile(r"formal_([0-9a-f]{32})\Z")
 ACTIVE_PGID: int | None = None
 INTERRUPTED: int | None = None
@@ -1055,6 +1056,49 @@ def _read_kv(path: Path) -> dict[str, str]:
     return values
 
 
+def _read_resume_kv(path: Path, label: str) -> dict[str, str]:
+    if path.is_symlink() or not path.is_file():
+        raise PhaseError(f"cannot reuse proved artifact: {label} is missing or not a regular file")
+    values: dict[str, str] = {}
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if "=" not in line:
+            raise PhaseError(f"cannot reuse proved artifact: malformed {label} line {number}")
+        key, value = line.split("=", 1)
+        if not key or key in values:
+            raise PhaseError(f"cannot reuse proved artifact: duplicate or empty {label} field {key!r}")
+        values[key] = value
+    return values
+
+
+def _validate_reusable_proof(run_dir: Path, dataset: str) -> None:
+    if run_dir.is_symlink() or not run_dir.is_dir():
+        raise PhaseError("cannot reuse proved artifact: dataset run directory is missing or not local")
+    statement = _read_resume_kv(run_dir / "statement.txt", "public statement")
+    envelope = _read_resume_kv(run_dir / "proof.meta", "proof envelope")
+    timing = _read_resume_kv(run_dir / "proof.timing", "proof timing")
+    statement_id = statement.get("statement_id", "")
+    if (statement.get("schema") != "zkDL_gat_statement_v1" or statement.get("dataset") != dataset or
+            statement.get("proof_scope") != "full_gat_forward" or
+            re.fullmatch(r"[0-9a-f]{64}", statement_id) is None):
+        raise PhaseError("cannot reuse proved artifact: public statement identity is incomplete or mismatched")
+    if (envelope.get("schema_id") != "zkDL_gat_proof_envelope_v1" or envelope.get("status") != "PROVED" or
+            envelope.get("backend") != "cpu" or envelope.get("proof_scope") != "full_gat_forward" or
+            envelope.get("statement_id") != statement_id):
+        raise PhaseError("cannot reuse proved artifact: proof envelope is not PROVED for this statement")
+    if (timing.get("schema_id") != "zkDL_gat_proof_timing_v1" or timing.get("status") != "PROVED" or
+            timing.get("statement_id") != statement_id):
+        raise PhaseError("cannot reuse proved artifact: proof timing is not PROVED for this statement")
+    proof_path = run_dir / "proof.bin"
+    if proof_path.is_symlink() or not proof_path.is_file():
+        raise PhaseError("cannot reuse proved artifact: proof.bin is missing or not a regular file")
+    try:
+        declared_size = int(envelope.get("proof_size_bytes", "0"))
+    except ValueError as exc:
+        raise PhaseError("cannot reuse proved artifact: proof envelope size is invalid") from exc
+    if declared_size <= 0 or proof_path.stat().st_size != declared_size:
+        raise PhaseError("cannot reuse proved artifact: proof.bin size does not match the PROVED envelope")
+
+
 def _cell_stage(stage: str, dataset: str, operation: Any, log_path: Path | None = None) -> Any:
     started = time.monotonic()
     start_marker = {"zkdl_cell_stage": stage, "dataset": dataset, "status": "START"}
@@ -1102,6 +1146,10 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
     run_dir = session / dataset
     log_path = session / "logs" / f"{dataset}.log"
     runner = str(ROOT / "gat_runner")
+    resume_verify = os.environ.get(RESUME_VERIFY_ENV) or None
+    if resume_verify is not None and resume_verify not in DATASETS:
+        raise PhaseError(f"unsupported {RESUME_VERIFY_ENV} dataset: {resume_verify}")
+    reuse_proved = resume_verify == dataset
 
     def cleanup() -> None:
         for private_path in (run_dir / ".private_native", run_dir / "scratch" / "sorted_lookup"):
@@ -1113,11 +1161,18 @@ def cell(session: Path, session_id: str, dataset: str) -> None:
         if scratch_parent.is_dir() and not any(scratch_parent.iterdir()):
             scratch_parent.rmdir()
 
+    if reuse_proved:
+        # This must precede prove and cleanup: prove overwrites proof metadata, while
+        # cleanup removes prover scratch that may still be needed for diagnosis.
+        _cell_stage("reuse_proved_preflight", dataset,
+                    lambda: _validate_reusable_proof(run_dir, dataset), log_path)
+
     try:
-        _cell_stage("prove", dataset,
-                    lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu",
-                                  "--gpu-offload-stage", GPU_OFFLOAD_STAGE, "--run-dir", str(run_dir)],
-                                 log_path=log_path, env=env), log_path)
+        if not reuse_proved:
+            _cell_stage("prove", dataset,
+                        lambda: _run([runner, "prove", "--config", str(config), "--backend", "cpu",
+                                      "--gpu-offload-stage", GPU_OFFLOAD_STAGE, "--run-dir", str(run_dir)],
+                                     log_path=log_path, env=env), log_path)
         _cell_stage("cleanup", dataset, cleanup, log_path)
         _cell_stage("verify", dataset,
                     lambda: _run([runner, "verify", "--config", str(config), "--run-dir", str(run_dir)],

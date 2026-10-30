@@ -4,3 +4,8 @@ members = [
     "halo2_proofs",
     "halo2_gadgets"
 ]
+
+[patch."https://github.com/ingonyama-zk/icicle"]
+icicle-core = { path = "../icicle/wrappers/rust/icicle-core" }
+icicle-bn254 = { path = "../icicle/wrappers/rust/icicle-curves/icicle-bn254" }
+icicle-cuda-runtime = { path = "../icicle/wrappers/rust/icicle-cuda-runtime" }

@@ -854,6 +854,8 @@ def main(
     record_stage("prove", prove_stage_inputs, prove_stage_outputs, prove_ms)
 
     verify_log = logs / "verify.log"
+    verify_srs = output / "srs.kzg"
+    require_file(verify_srs, "manifest-bound artifact SRS copy")
     verify_command = [
             str(binary),
             contract["verify_command"],
@@ -864,7 +866,7 @@ def main(
             "--vk-path",
             cli_path(vk, "verification key"),
             "--srs-path",
-            cli_path(srs, "SRS"),
+            cli_path(verify_srs, "artifact-bound SRS"),
             "--statement",
             cli_path(statement, "public statement"),
             "--public-output",
@@ -878,7 +880,7 @@ def main(
         "settings": settings,
         "proof": proof,
         "verification_key": vk,
-        "srs": srs,
+        "srs": verify_srs,
         "statement": statement,
         "public_output": public_output,
         "artifact_manifest": artifact_manifest,

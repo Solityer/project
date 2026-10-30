@@ -21,6 +21,8 @@ use crate::{
     tensor::{Tensor, ValTensor},
     RunArgs,
 };
+#[cfg(test)]
+use crate::tensor::VarTensor;
 use halo2curves::bn256::Fr as Fp;
 
 #[cfg(all(feature = "ezkl", not(target_arch = "wasm32")))]
@@ -430,9 +432,19 @@ impl ParsedNodes {
         self.inputs.len()
     }
 
+    /// Return the ordered public input node IDs.
+    pub(crate) fn input_node_ids(&self) -> &[usize] {
+        &self.inputs
+    }
+
     /// Returns the number of explicit runtime parameter inputs.
     pub fn num_param_inputs(&self) -> usize {
         self.param_inputs.len()
+    }
+
+    /// Return the ordered explicit runtime parameter input node IDs.
+    pub(crate) fn param_input_node_ids(&self) -> &[usize] {
+        &self.param_inputs
     }
 
     /// Returns shapes of the explicit runtime parameter inputs.
@@ -484,6 +496,11 @@ impl ParsedNodes {
     /// Returns the number of the computational graph's outputs
     pub fn num_outputs(&self) -> usize {
         self.outputs.len()
+    }
+
+    /// Return the ordered output node and tensor-slot pairs.
+    pub(crate) fn output_outlets(&self) -> &[Outlet] {
+        &self.outputs
     }
 
     /// Returns shapes of the computational graph's outputs
@@ -1840,6 +1857,125 @@ impl Model {
         runtime_params: &[ValTensor<Fp>],
         region_settings: RegionSettings,
     ) -> Result<DummyPassRes, GraphError> {
+        self.dummy_layout_with_runtime_params_and_config(
+            run_args,
+            inputs,
+            runtime_params,
+            region_settings,
+            None,
+        )
+    }
+
+    /// Run the native compact GAT range layout through the same model core as
+    /// production, with the versioned storage shape used by the adapter.
+    #[cfg(test)]
+    pub(crate) fn dummy_layout_with_compact_gat_for_test(
+        &self,
+        run_args: &RunArgs,
+    ) -> Result<(DummyPassRes, Option<u32>), GraphError> {
+        let input_shapes = self.graph.input_shapes()?;
+        let input_scales = self.graph.get_input_scales();
+        let inputs = input_shapes
+            .iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                let len = shape.iter().product();
+                let mut tensor: ValTensor<Fp> = (0..len)
+                    .map(|_| {
+                        if self.visibility.input.is_fixed() {
+                            ValType::Constant(Fp::random(&mut rand::thread_rng()))
+                        } else {
+                            ValType::Value(Value::<Fp>::unknown())
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into();
+                tensor.reshape(shape)?;
+                tensor.set_scale(input_scales[index]);
+                Ok(tensor)
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        let param_shapes = self.graph.param_shapes()?;
+        if param_shapes.len() != self.graph.param_inputs.len() {
+            return Err(GraphError::MisformedParams(format!(
+                "graph parameter shape count {} does not match parameter node count {}",
+                param_shapes.len(),
+                self.graph.param_inputs.len()
+            )));
+        }
+        let runtime_params = param_shapes
+            .iter()
+            .enumerate()
+            .map(|(index, shape)| {
+                let len = shape.iter().product();
+                let mut tensor: ValTensor<Fp> = (0..len)
+                    .map(|_| ValType::Value(Value::<Fp>::unknown()))
+                    .collect::<Vec<_>>()
+                    .into();
+                tensor.reshape(shape)?;
+                let node_index = self.graph.param_inputs[index];
+                let scale = self
+                    .graph
+                    .nodes
+                    .get(&node_index)
+                    .ok_or(GraphError::MissingNode(node_index))?
+                    .out_scales()
+                    .first()
+                    .copied()
+                    .ok_or(GraphError::MissingNode(node_index))?;
+                tensor.set_scale(scale);
+                Ok(tensor)
+            })
+            .collect::<Result<Vec<_>, GraphError>>()?;
+
+        let logrows = usize::try_from(run_args.logrows).map_err(|_| {
+            GraphError::MisformedParams("GAT test logrows does not fit usize".into())
+        })?;
+        let domain = 1usize.checked_shl(run_args.logrows).ok_or_else(|| {
+            GraphError::MisformedParams("GAT test logrows overflows usize".into())
+        })?;
+        let reserve = crate::gat_adapter::range_gadget::GAT_RANGE_BLINDING_FACTOR_RESERVE
+            .checked_add(1)
+            .ok_or_else(|| GraphError::MisformedParams("GAT row reserve overflows".into()))?;
+        let col_size = domain.checked_sub(reserve).ok_or_else(|| {
+            GraphError::MisformedParams("GAT test domain is smaller than its row reserve".into())
+        })?;
+        let mut dummy_config = if run_args.disable_freivalds {
+            PolyConfig::dummy_without_freivalds(logrows, run_args.num_inner_cols)
+        } else {
+            PolyConfig::dummy(logrows, run_args.num_inner_cols)
+        };
+        let storage = VarTensor::Dummy {
+            col_size,
+            num_inner_cols: run_args.num_inner_cols,
+        };
+        dummy_config.custom_gates.output = storage.clone();
+        dummy_config.custom_gates.inputs = vec![storage.clone(), storage];
+        dummy_config.gat_range_checks =
+            crate::gat_adapter::range_gadget::GatRangeChecks::dummy_for_test(
+                col_size,
+                run_args.num_inner_cols,
+            );
+        let observed_version = dummy_config.gat_range_checks.version();
+        let result = self.dummy_layout_with_runtime_params_and_config(
+            run_args,
+            &inputs,
+            &runtime_params,
+            RegionSettings::all_false(run_args.decomp_base, run_args.decomp_legs),
+            Some(dummy_config),
+        )?;
+        Ok((result, observed_version))
+    }
+
+    fn dummy_layout_with_runtime_params_and_config(
+        &self,
+        run_args: &RunArgs,
+        inputs: &[ValTensor<Fp>],
+        runtime_params: &[ValTensor<Fp>],
+        region_settings: RegionSettings,
+        dummy_config_override: Option<PolyConfig<Fp>>,
+    ) -> Result<DummyPassRes, GraphError> {
         let formal_phase_log = std::env::var_os("EZKL_FORMAL_BUILD_RECEIPT_SHA256").is_some();
         let layout_started = instant::Instant::now();
         if formal_phase_log {
@@ -1884,7 +2020,7 @@ impl Model {
             results.insert(*param_idx, vec![param]);
         }
 
-        let mut dummy_config = {
+        let mut dummy_config = dummy_config_override.unwrap_or_else(|| {
             if run_args.disable_freivalds {
                 PolyConfig::dummy_without_freivalds(
                     run_args.logrows as usize,
@@ -1893,7 +2029,7 @@ impl Model {
             } else {
                 PolyConfig::dummy(run_args.logrows as usize, run_args.num_inner_cols)
             }
-        };
+        });
         let mut model_config = ModelConfig {
             base: dummy_config.clone(),
             vars: ModelVars::new_dummy(),

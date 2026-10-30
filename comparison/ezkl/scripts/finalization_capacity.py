@@ -16,7 +16,14 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from collect_results import build_matrix_document
-from formal_common import DATASETS, ROOT, has_compact_native_proof_v2_prefix, sha256
+from formal_common import (
+    DATASETS,
+    ROOT,
+    has_compact_native_proof_v2_prefix,
+    normalize_selected_datasets,
+    selected_datasets_for_session,
+    sha256,
+)
 
 MAX_RESULT_JSON_BYTES = 4 * 1024 * 1024
 MAX_SESSION_JSON_BYTES = 1024 * 1024
@@ -406,30 +413,32 @@ def _host_requirements(
     proof_requirements: Mapping[str, Mapping[str, Any]] | None = None,
     small_json_sizes: Mapping[str, int] | None = None,
     phase: str = "collector",
+    datasets: tuple[str, ...] = DATASETS,
 ) -> dict[str, int | float | str]:
-    if set(proof_sizes) != set(DATASETS) or set(result_sizes) != set(DATASETS):
-        _fail("finalization capacity input does not contain the exact five EZKL datasets")
+    selected_datasets = normalize_selected_datasets(datasets)
+    if set(proof_sizes) != set(selected_datasets) or set(result_sizes) != set(selected_datasets):
+        _fail("finalization capacity input does not match the immutable selected EZKL datasets")
     if any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 for size in (*proof_sizes.values(), *result_sizes.values())):
         _fail("finalization capacity input has an invalid artifact size")
     if phase not in {"collector", "validator"}:
         _fail("finalization capacity phase must be collector or validator")
-    if statement_requirements is not None and set(statement_requirements) != set(DATASETS):
-        _fail("finalization capacity statement bounds do not contain the exact five EZKL datasets")
-    if proof_requirements is not None and set(proof_requirements) != set(DATASETS):
-        _fail("finalization capacity proof bounds do not contain the exact five EZKL datasets")
+    if statement_requirements is not None and set(statement_requirements) != set(selected_datasets):
+        _fail("finalization capacity statement bounds do not match the selected EZKL datasets")
+    if proof_requirements is not None and set(proof_requirements) != set(selected_datasets):
+        _fail("finalization capacity proof bounds do not match the selected EZKL datasets")
     small_json_sizes = small_json_sizes or {}
     if any(isinstance(size, bool) or not isinstance(size, int) or size <= 0 or size > MAX_SMALL_JSON_BYTES for size in small_json_sizes.values()):
         _fail("finalization capacity input has an invalid or oversized small JSON artifact")
     dom_factor = _runtime_dom_wire_factor()
     proof_factor = dom_factor + PROOF_TEXT_WIRE_FACTOR + PROOF_CANONICAL_WIRE_FACTOR
     if proof_requirements is None:
-        proof_peaks = {dataset: math.ceil(proof_sizes[dataset] * proof_factor) for dataset in DATASETS}
+        proof_peaks = {dataset: math.ceil(proof_sizes[dataset] * proof_factor) for dataset in selected_datasets}
         proof_document_doms = proof_peaks
     else:
-        if any(proof_requirements[dataset].get("proof_file_stat_size_bytes") != proof_sizes[dataset] for dataset in DATASETS):
+        if any(proof_requirements[dataset].get("proof_file_stat_size_bytes") != proof_sizes[dataset] for dataset in selected_datasets):
             _fail("typed native proof capacity bounds are not tied to current proof stat sizes")
-        proof_peaks = {dataset: int(proof_requirements[dataset]["proof_peak_bytes_source_derived_typed_snark"]) for dataset in DATASETS}
-        proof_document_doms = {dataset: int(proof_requirements[dataset]["proof_document_dom_bytes_upper_typed_snark"]) for dataset in DATASETS}
+        proof_peaks = {dataset: int(proof_requirements[dataset]["proof_peak_bytes_source_derived_typed_snark"]) for dataset in selected_datasets}
+        proof_document_doms = {dataset: int(proof_requirements[dataset]["proof_document_dom_bytes_upper_typed_snark"]) for dataset in selected_datasets}
     proof_peak = max(proof_peaks.values())
     result_dom = math.ceil(sum(result_sizes.values()) * dom_factor)
     result_text = math.ceil(sum(result_sizes.values()) * PROOF_TEXT_WIRE_FACTOR)
@@ -442,7 +451,7 @@ def _host_requirements(
     cell_peaks: dict[str, int] = {}
     statement_dom_max = statement_text_max = output_dom_max = output_text_max = validation_work_max = 0
     if statement_requirements is not None:
-        for dataset in DATASETS:
+        for dataset in selected_datasets:
             shape = statement_requirements[dataset]
             statement_wire = shape["statement_wire_bytes_upper"]
             output_wire = shape["public_output_wire_bytes_upper"]
@@ -463,11 +472,12 @@ def _host_requirements(
             output_with_proof_peak = proof_document_doms[dataset] + statement_dom + output_dom + output_text
             cell_peaks[dataset] = max(statement_parse_peak, statement_validate_peak, output_parse_peak, proof_with_statement_peak, output_with_proof_peak)
     else:
-        cell_peaks = {dataset: proof_peaks[dataset] for dataset in DATASETS}
+        cell_peaks = {dataset: proof_peaks[dataset] for dataset in selected_datasets}
     current_cell_peak = max(cell_peaks.values())
     collector_peak = fixed_floor + result_dom + result_text + metadata_dom + metadata_text + current_cell_peak + matrix_write_buffers
     validator_peak = fixed_floor + matrix_dom + matrix_text + result_dom + result_text + metadata_dom + metadata_text + current_cell_peak
     accounting: dict[str, int | float | str] = {
+        "selected_dataset_count": len(selected_datasets),
         "proof_wire_bytes_max": max(proof_sizes.values()),
         "bounded_metadata_dom_bytes_per_wire_byte": dom_factor,
         "proof_peak_bytes_source_derived_single_current_proof": proof_peak,
@@ -515,6 +525,7 @@ def estimate_finalization_capacity(
     proof_requirements: Mapping[str, Mapping[str, Any]] | None = None,
     small_json_sizes: Mapping[str, int] | None = None,
     phase: str = "collector",
+    datasets: tuple[str, ...] = DATASETS,
 ) -> dict[str, Any]:
     if isinstance(matrix_bytes, bool) or not isinstance(matrix_bytes, int) or matrix_bytes <= 0 or isinstance(session_temp_bytes, bool) or not isinstance(session_temp_bytes, int) or session_temp_bytes <= 0:
         _fail("finalization matrix/session temporary size is invalid")
@@ -522,7 +533,17 @@ def estimate_finalization_capacity(
         _fail("host available capacity is invalid")
     if phase not in {"collector", "validator"}:
         _fail("finalization capacity phase must be collector or validator")
-    host = _host_requirements(proof_sizes, result_sizes, matrix_bytes, statement_requirements=statement_requirements, proof_requirements=proof_requirements, small_json_sizes=small_json_sizes, phase=phase)
+    selected_datasets = normalize_selected_datasets(datasets)
+    host = _host_requirements(
+        proof_sizes,
+        result_sizes,
+        matrix_bytes,
+        statement_requirements=statement_requirements,
+        proof_requirements=proof_requirements,
+        small_json_sizes=small_json_sizes,
+        phase=phase,
+        datasets=selected_datasets,
+    )
     disk_required: dict[int, int] = {}
     disk_required[matrix_device_id] = disk_required.get(matrix_device_id, 0) + (matrix_bytes if phase == "collector" else 0)
     disk_required[session_device_id] = disk_required.get(session_device_id, 0) + session_temp_bytes
@@ -534,6 +555,7 @@ def estimate_finalization_capacity(
             _fail(f"EZKL finalization filesystem device {device_id} needs {required} new bytes; only {available} are available")
     return {
         "phase": phase,
+        "selected_datasets": list(selected_datasets),
         "write_matrix": phase == "collector",
         "host": {**host, "available_bytes": host_available_bytes},
         "filesystems": {str(device): {"available_bytes": filesystem_available_bytes[device], "required_new_bytes": required} for device, required in sorted(disk_required.items())},
@@ -557,7 +579,14 @@ def _require_matrix_size_within_upper(actual_bytes: int, predicted_upper_bytes: 
         _fail(f"existing formal matrix exceeds the shared-schema serialization upper bound ({actual_bytes} > {predicted_upper_bytes})")
 
 
-def _session_temp_size(session_document: dict[str, Any], receipt: dict[str, Any], *, receipt_field: str, terminal: bool = False) -> int:
+def _session_temp_size(
+    session_document: dict[str, Any],
+    receipt: dict[str, Any],
+    *,
+    receipt_field: str,
+    terminal: bool = False,
+    terminal_status: str = "FINAL_VALIDATION_OK",
+) -> int:
     candidate = SESSION_TEMP_ALLOWANCE_BYTES
     for _ in range(12):
         receipt["session_atomic_temp_bytes"] = candidate
@@ -566,7 +595,7 @@ def _session_temp_size(session_document: dict[str, Any], receipt: dict[str, Any]
         receipt_size = _atomic_json_bytes(candidate_document)
         if terminal:
             terminal_document = dict(candidate_document)
-            terminal_document["status"] = "FINAL_VALIDATION_OK"
+            terminal_document["status"] = terminal_status
             terminal_document["stage"] = "final_validation_complete"
             terminal_document["updated_at_utc"] = "2099-12-31T23:59:59.999999+00:00"
             terminal_document["completed_at_utc"] = "2099-12-31T23:59:59.999999+00:00"
@@ -686,7 +715,11 @@ def _check_shape_source_identities(source_stats: Mapping[str, Any]) -> None:
                 _fail(f"{dataset} {filename} identity changed during finalization capacity admission")
 
 
-def _dataset_shape_bounds(expected_resource_manifest_sha256: str) -> tuple[dict[str, dict[str, int]], dict[str, Any]]:
+def _dataset_shape_bounds(
+    expected_resource_manifest_sha256: str,
+    datasets: tuple[str, ...] = DATASETS,
+) -> tuple[dict[str, dict[str, int]], dict[str, Any]]:
+    selected_datasets = normalize_selected_datasets(datasets)
     manifest_path = _rooted_path(ROOT / "resources/resource_manifest.json", "canonical resource manifest")
     manifest_stat_before = _regular_file(manifest_path, "canonical resource manifest")
     manifest = _read_json(manifest_path, "canonical resource manifest", MAX_RESOURCE_MANIFEST_BYTES)
@@ -719,7 +752,7 @@ def _dataset_shape_bounds(expected_resource_manifest_sha256: str) -> tuple[dict[
         manifest_entries[entry["path"]] = entry
     shapes: dict[str, dict[str, int]] = {}
     source_stats: dict[str, Any] = {"resource_manifest": {"stat": _stat_record(manifest_stat_before), "sha256": manifest_digest}, "datasets": {}}
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         data_root = _rooted_path(ROOT / "resources/canonical/cache" / dataset, f"{dataset} resource cache")
         meta_path = _rooted_path(data_root / "meta.cfg", f"{dataset} canonical metadata")
         meta_stat = _regular_file(meta_path, f"{dataset} canonical metadata")
@@ -752,12 +785,13 @@ def _dataset_shape_bounds(expected_resource_manifest_sha256: str) -> tuple[dict[
     return shapes, source_stats
 
 
-def _small_metadata_paths(output_root: Path) -> dict[str, Path]:
+def _small_metadata_paths(output_root: Path, datasets: tuple[str, ...] = DATASETS) -> dict[str, Path]:
+    selected_datasets = normalize_selected_datasets(datasets)
     paths: dict[str, Path] = {
         "gpu_build_receipt": ROOT / "artifacts/build/gpu/build_receipt.json",
         "native_backend_manifest": ROOT / "artifacts/build/icicle-cuda/native_backend_manifest.json",
     }
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         directory = output_root / dataset
         for name in (
             "artifact_manifest.json",
@@ -813,7 +847,10 @@ def check_finalization_capacity(
     if session_stat.st_size > MAX_SESSION_JSON_BYTES:
         _fail("active formal session record exceeds the bounded JSON read limit")
     session_document = _read_json(session_file, "active formal session record", MAX_SESSION_JSON_BYTES)
-    expected_stage = "collect_five_results" if phase == "collector" else "final_matrix_validation"
+    if not isinstance(session_document, dict):
+        _fail("active formal session record is not an object")
+    selected_datasets = selected_datasets_for_session(session_document)
+    expected_stage = "collect_selected_results" if phase == "collector" else "final_matrix_validation"
     if not isinstance(session_document, dict) or session_document.get("baseline") != "ezkl" or session_document.get("session_id") != session_id or session_document.get("status") != "RUNNING" or session_document.get("stage") != expected_stage or session_document.get("source_tree_sha256") != source_tree_sha256 or session_document.get("resource_manifest_sha256") != resource_manifest_sha256:
         _fail(f"active session record is not bound to the current EZKL {phase} source/resource stage")
     artifact_paths: dict[str, dict[str, Path]] = {}
@@ -822,7 +859,7 @@ def check_finalization_capacity(
     result_sizes: dict[str, int] = {}
     statement_sizes: dict[str, int] = {}
     output_sizes: dict[str, int] = {}
-    small_paths = _small_metadata_paths(output_root)
+    small_paths = _small_metadata_paths(output_root, selected_datasets)
     small_stats: dict[str, dict[str, int]] = {}
     small_sizes: dict[str, int] = {}
     for name, path in small_paths.items():
@@ -834,7 +871,7 @@ def check_finalization_capacity(
         small_stats[name] = _stat_record(info)
         small_sizes[name] = int(info.st_size)
     small_sizes["active_session_record"] = int(session_stat.st_size)
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         directory = _rooted_path(output_root / dataset, f"{dataset} formal output directory")
         paths = {name: _rooted_path(directory / name, f"{dataset} {name}") for name in ("result.json", "proof.json", "statement.json", "public_output.json")}
         stats = {name.removesuffix(".json"): _regular_file(path, f"{dataset} {name}") for name, path in paths.items()}
@@ -848,16 +885,16 @@ def check_finalization_capacity(
         proof_sizes[dataset] = int(stats["proof"].st_size)
         statement_sizes[dataset] = int(stats["statement"].st_size)
         output_sizes[dataset] = int(stats["public_output"].st_size)
-    shapes, shape_source_stats = _dataset_shape_bounds(resource_manifest_sha256)
+    shapes, shape_source_stats = _dataset_shape_bounds(resource_manifest_sha256, selected_datasets)
     proof_bounds = {
         dataset: typed_proof_requirements(
             proof_size_bytes=proof_sizes[dataset],
             statement_shape=shapes[dataset],
             compact_v2=has_compact_native_proof_v2_prefix(artifact_paths[dataset]["proof.json"]),
         )
-        for dataset in DATASETS
+        for dataset in selected_datasets
     }
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         if statement_sizes[dataset] > shapes[dataset]["statement_wire_bytes_upper"]:
             _fail(f"{dataset} statement JSON exceeds the producer-derived typed-list upper bound before parsing")
         if output_sizes[dataset] > shapes[dataset]["public_output_wire_bytes_upper"]:
@@ -893,9 +930,10 @@ def check_finalization_capacity(
         proof_requirements=proof_bounds,
         small_json_sizes=small_sizes,
         phase=phase,
+        datasets=selected_datasets,
     )
     cells: list[dict[str, Any]] = []
-    for dataset in DATASETS:
+    for dataset in selected_datasets:
         result_path = artifact_paths[dataset]["result.json"]
         proof_path = artifact_paths[dataset]["proof.json"]
         cell = _read_json(result_path, f"{dataset} result", MAX_RESULT_JSON_BYTES)
@@ -914,7 +952,7 @@ def check_finalization_capacity(
         _result_path_matches({"path": verify_metric.get("path")}, "path", small_paths[f"{dataset}/native_verify_metrics.json"], dataset)
         cell["_result_path"] = result_path.relative_to(ROOT).as_posix()
         cells.append(cell)
-    matrix_document = build_matrix_document(cells, datasets=DATASETS, source_sha256=source_tree_sha256, resource_sha256=resource_manifest_sha256, collected_at_utc="2099-12-31T23:59:59.999999+00:00", formal_session_id=session_id, backends=None)
+    matrix_document = build_matrix_document(cells, datasets=selected_datasets, source_sha256=source_tree_sha256, resource_sha256=resource_manifest_sha256, collected_at_utc="2099-12-31T23:59:59.999999+00:00", formal_session_id=session_id, backends=None)
     predicted_matrix_bytes = _atomic_json_bytes(matrix_document)
     if predicted_matrix_bytes > MAX_MATRIX_JSON_BYTES:
         _fail("predicted final matrix exceeds the bounded 32 MiB final JSON limit")
@@ -927,7 +965,7 @@ def check_finalization_capacity(
         # The matrix is bounded by stat and the exact shared-builder size before
         # this parse; the independent final validator still performs all checks.
         parsed_matrix = _read_json(matrix_path, "existing formal matrix", MAX_MATRIX_JSON_BYTES)
-        if not isinstance(parsed_matrix, dict) or parsed_matrix.get("baseline") != "ezkl" or parsed_matrix.get("formal_session_id") != session_id or parsed_matrix.get("source_tree_sha256") != source_tree_sha256 or parsed_matrix.get("resource_manifest_sha256") != resource_manifest_sha256 or parsed_matrix.get("datasets") != list(DATASETS) or parsed_matrix.get("cell_count") != len(DATASETS):
+        if not isinstance(parsed_matrix, dict) or parsed_matrix.get("baseline") != "ezkl" or parsed_matrix.get("formal_session_id") != session_id or parsed_matrix.get("source_tree_sha256") != source_tree_sha256 or parsed_matrix.get("resource_manifest_sha256") != resource_manifest_sha256 or parsed_matrix.get("datasets") != list(selected_datasets) or parsed_matrix.get("cell_count") != len(selected_datasets):
             _fail("existing formal matrix is not bound to the current final validation session/source/resources")
     host_available, host_accounting = _current_host_available()
     session_available, session_device = _filesystem(session_file.parent)
@@ -960,6 +998,7 @@ def check_finalization_capacity(
         "phase": phase,
         "write_matrix": phase == "collector",
         "session_id": session_id,
+        "selected_datasets": list(selected_datasets),
         "source_tree_sha256": source_tree_sha256,
         "resource_manifest_sha256": resource_manifest_sha256,
         "observed_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -979,9 +1018,18 @@ def check_finalization_capacity(
         "matrix_file_stat": matrix_stat_record,
         "host_accounting": host_accounting,
         "early_capacity_accounting": early_capacity,
-        "coverage": "SOURCE_DERIVED conservative CPython host/output bound from one active typed statement/output/proof cell plus five small result/matrix cells; partial and not a complete native peak estimate",
+        "coverage": "SOURCE_DERIVED conservative CPython host/output bound from one active selected statement/output/proof cell plus selected result/matrix metadata; partial and not a complete native peak estimate",
     }
-    receipt["host"] = _host_requirements(proof_sizes, result_sizes, matrix_bytes, statement_requirements=shapes, proof_requirements=proof_bounds, small_json_sizes=small_sizes, phase=phase)
+    receipt["host"] = _host_requirements(
+        proof_sizes,
+        result_sizes,
+        matrix_bytes,
+        statement_requirements=shapes,
+        proof_requirements=proof_bounds,
+        small_json_sizes=small_sizes,
+        phase=phase,
+        datasets=selected_datasets,
+    )
     receipt["host"]["available_bytes"] = host_available
     available_by_device = {session_device: session_available, matrix_device: min(session_available if session_device == matrix_device else matrix_available, matrix_available)}
     temp_size = SESSION_TEMP_ALLOWANCE_BYTES
@@ -992,7 +1040,13 @@ def check_finalization_capacity(
         required_by_device[session_device] = required_by_device.get(session_device, 0) + temp_size
         filesystem_plan = {str(device): {"available_bytes": available_by_device[device], "required_new_bytes": required} for device, required in sorted(required_by_device.items())}
         receipt["filesystems"] = filesystem_plan
-        actual_size = _session_temp_size(dict(session_document), receipt, receipt_field=receipt_field, terminal=terminal_session)
+        actual_size = _session_temp_size(
+            dict(session_document),
+            receipt,
+            receipt_field=receipt_field,
+            terminal=terminal_session,
+            terminal_status="FINAL_VALIDATION_OK" if selected_datasets == DATASETS else "SUBSET_COMPLETE",
+        )
         if actual_size == temp_size:
             break
         temp_size = actual_size
@@ -1013,5 +1067,6 @@ def check_finalization_capacity(
         proof_requirements=proof_bounds,
         small_json_sizes=small_sizes,
         phase=phase,
+        datasets=selected_datasets,
     )
     return receipt

@@ -1090,8 +1090,10 @@ namespace gatzk::mechanism
             offset += edge_marker.size();
             const auto edges = parse_number(offset, '}');
             const bool cora = nodes == 4096 && edges == 32768;
+            const bool pubmed = nodes == 32768 && edges == 262144;
             const bool ppi = nodes == 65536 && edges == 8388608;
-            if (!cora && !ppi)
+            const bool ogbn_arxiv = nodes == 262144 && edges == 16777216;
+            if (!cora && !pubmed && !ppi && !ogbn_arxiv)
                 throw std::runtime_error("mechanism statement requests a domain catalog outside the trusted registry");
             return {nodes, edges};
         }

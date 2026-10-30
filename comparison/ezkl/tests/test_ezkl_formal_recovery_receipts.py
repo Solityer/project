@@ -176,6 +176,32 @@ class FormalRecoveryReceiptTest(unittest.TestCase):
             changed_matrix = dict(metadata, matrix="results/other_matrix.json")
             self.assertFalse(ezkl_formal_control._formal_owner_matches(identity, changed_matrix, session_id))
 
+        selected = ("ppi", "ogbn_arxiv")
+        subset_wrapper = ezkl_formal_control._child_command(
+            output_root=output_root,
+            matrix=matrix,
+            binary=binary,
+            session_id=session_id,
+            resume=False,
+            capacity_only=False,
+            selected_datasets=selected,
+        )
+        subset_metadata = {
+            **metadata,
+            "mode": "subset_formal",
+            "selected_datasets": list(selected),
+            "child_command": subset_wrapper,
+        }
+        subset_variants = ezkl_formal_control._formal_owner_command_variants(subset_metadata, session_id)
+        self.assertIsNotNone(subset_variants)
+        assert subset_variants is not None
+        for command in subset_variants:
+            self.assertIn("--datasets", command)
+            selection_index = command.index("--datasets")
+            self.assertEqual(command[selection_index + 1:selection_index + 1 + len(selected)], list(selected))
+        changed_selection = {**subset_metadata, "selected_datasets": ["ppi"]}
+        self.assertIsNone(ezkl_formal_control._formal_owner_command_variants(changed_selection, session_id))
+
 
 if __name__ == "__main__":
     unittest.main()
