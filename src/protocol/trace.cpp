@@ -10,6 +10,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <exception>
 #include <future>
 #include <iomanip>
 #include <initializer_list>
@@ -414,13 +415,20 @@ namespace gatzk::protocol
             trace.reference_fp32_logits_hash = hash_float_matrix(reference_fp32_logits);
         }
 
-        template <typename Fn> void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn &&fn)
+        template <typename Fn>
+        void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn &&fn,
+                                 std::size_t estimated_work_per_item = 1)
         {
+            constexpr std::size_t kBaselineRowsPerWorker = 4096;
             constexpr std::size_t kMinimumRowsPerWorker = 512;
             constexpr std::size_t kMaximumWorkers = 16;
+
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
-            const auto minimum_rows = std::max(min_parallel_items, kMinimumRowsPerWorker);
-            const auto task_count = item_count < minimum_rows * 2 || cpu_count <= 1
+            const auto per_item_work = std::clamp(estimated_work_per_item, std::size_t{1}, kBaselineRowsPerWorker);
+            const auto rows_by_cost = (kBaselineRowsPerWorker + per_item_work - 1) / per_item_work;
+            const auto minimum_rows = std::max({min_parallel_items, kMinimumRowsPerWorker, rows_by_cost});
+
+            const auto task_count = item_count / minimum_rows < 2 || cpu_count <= 1
                                         ? std::size_t{1}
                                         : std::min<std::size_t>({cpu_count, kMaximumWorkers, item_count / minimum_rows});
             if (task_count <= 1)
@@ -431,8 +439,9 @@ namespace gatzk::protocol
 
             const auto chunk_size = (item_count + task_count - 1) / task_count;
             std::vector<std::future<void>> futures;
-            futures.reserve(task_count);
-            for (std::size_t task = 0; task < task_count; ++task)
+            futures.reserve(task_count - 1);
+
+            for (std::size_t task = 1; task < task_count; ++task)
             {
                 const auto begin = task * chunk_size;
                 const auto end = std::min(item_count, begin + chunk_size);
@@ -442,9 +451,35 @@ namespace gatzk::protocol
                 }
                 futures.push_back(std::async(std::launch::async, [&fn, begin, end]() { fn(begin, end); }));
             }
+
+            std::exception_ptr failure;
+            try
+            {
+                fn(0, std::min(item_count, chunk_size));
+            }
+            catch (...)
+            {
+                failure = std::current_exception();
+            }
+
             for (auto &future : futures)
             {
-                future.get();
+                try
+                {
+                    future.get();
+                }
+                catch (...)
+                {
+                    if (failure == nullptr)
+                    {
+                        failure = std::current_exception();
+                    }
+                }
+            }
+
+            if (failure != nullptr)
+            {
+                std::rethrow_exception(failure);
             }
         }
 
@@ -1569,7 +1604,8 @@ namespace gatzk::protocol
                                             out[base + column] = row_id + eta_feature_index * feature_indices[column] + eta_feature_value * feature_row[column];
                                         }
                                     }
-                                });
+                                },
+                                row_width);
         }
 
         void fill_repeated_row_values(const std::vector<FieldElement> &row_values, std::size_t row_width, std::vector<FieldElement> &out)
@@ -1586,7 +1622,8 @@ namespace gatzk::protocol
                                         std::fill_n(out.begin() + static_cast<std::ptrdiff_t>(row * row_width), static_cast<std::ptrdiff_t>(row_width),
                                                     row_values[row]);
                                     }
-                                });
+                                },
+                                row_width);
         }
 
         PreparedDynamicCommitment materialize_commitment(DynamicCommitmentSpec spec, const ProtocolCompilerArtifact &compiler_artifact,
@@ -2974,7 +3011,8 @@ namespace gatzk::protocol
                                             out[row][col] = checked_raw_value(sum, label);
                                         }
                                     }
-                                });
+                                },
+                                std::min<std::size_t>(shared, 64) * std::min<std::size_t>(cols, 64));
             return out;
         }
 
@@ -2997,7 +3035,8 @@ namespace gatzk::protocol
                                         }
                                         out[row] = checked_raw_value(sum, label);
                                     }
-                                });
+                                },
+                                vector.size());
             return out;
         }
 
@@ -9425,6 +9464,9 @@ namespace gatzk::protocol
         }
 
         std::vector<std::int64_t> out(node_count * width, 0);
+        const auto average_group_edges = edge_weights.size() / std::max<std::size_t>(1, destination_groups.size());
+        const auto estimated_group_work = std::min<std::size_t>(width, 64) *
+                                          std::min<std::size_t>(std::max<std::size_t>(1, average_group_edges), 64);
         parallel_for_ranges(destination_groups.size(), 256,
                             [&](std::size_t group_begin, std::size_t group_end)
                             {
@@ -9448,7 +9490,8 @@ namespace gatzk::protocol
                                         out[destination * width + column] = checked_raw_value(sums[column], label);
                                     }
                                 }
-                            });
+                            },
+                            estimated_group_work);
         return out;
     }
 

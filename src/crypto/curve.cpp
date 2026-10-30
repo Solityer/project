@@ -827,29 +827,6 @@ namespace gatzk::crypto
                 {
                     const auto current_batch = std::min<std::size_t>(kMaximumBatchSize, group.requests.size() - offset);
 
-                    std::size_t effective_scalar_count = 0;
-                    for (std::size_t batch = 0; batch < current_batch; ++batch)
-                    {
-                        const auto request_count = group.requests[offset + batch]->count;
-                        if (request_count > std::numeric_limits<std::size_t>::max() - effective_scalar_count)
-                        {
-                            effective_scalar_count = std::numeric_limits<std::size_t>::max();
-                            break;
-                        }
-                        effective_scalar_count += request_count;
-                    }
-
-                    const auto minimum_effective_scalar_count =
-                        current_batch == 1 ? (std::size_t{1} << 14) : (std::size_t{1} << 13);
-                    if (!group.resident_scalars && effective_scalar_count < minimum_effective_scalar_count)
-                    {
-                        for (std::size_t batch = 0; batch < current_batch; ++batch)
-                        {
-                            group.requests[offset + batch]->executed_on_cuda = false;
-                        }
-                        continue;
-                    }
-
                     try
                     {
                         if (current_batch == 1)
@@ -1354,9 +1331,15 @@ namespace gatzk::crypto
                 return out;
             }
 
+            if (nonzero_count == 1 &&
+                try_single_nonzero_scalar_msm(out, points, scalars, count, zero_scalar, nonzero_count, profile, options))
+            {
+                return out;
+            }
+
             const auto live_prefix_count = last_nonzero_exclusive;
             const bool coalesced_same_srs_request = current_cuda_msm_batch_window() != nullptr &&
-                                                   count >= (std::size_t{1} << 12);
+                                                   live_prefix_count >= (std::size_t{1} << 12);
 
             if (stable_srs_bases && util::route2_options().cuda_field_hotspots &&
                 (live_prefix_count >= (std::size_t{1} << 14) || coalesced_same_srs_request))
