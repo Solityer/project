@@ -827,6 +827,29 @@ namespace gatzk::crypto
                 {
                     const auto current_batch = std::min<std::size_t>(kMaximumBatchSize, group.requests.size() - offset);
 
+                    std::size_t effective_scalar_count = 0;
+                    for (std::size_t batch = 0; batch < current_batch; ++batch)
+                    {
+                        const auto request_count = group.requests[offset + batch]->count;
+                        if (request_count > std::numeric_limits<std::size_t>::max() - effective_scalar_count)
+                        {
+                            effective_scalar_count = std::numeric_limits<std::size_t>::max();
+                            break;
+                        }
+                        effective_scalar_count += request_count;
+                    }
+
+                    const auto minimum_effective_scalar_count =
+                        current_batch == 1 ? (std::size_t{1} << 14) : (std::size_t{1} << 13);
+                    if (!group.resident_scalars && effective_scalar_count < minimum_effective_scalar_count)
+                    {
+                        for (std::size_t batch = 0; batch < current_batch; ++batch)
+                        {
+                            group.requests[offset + batch]->executed_on_cuda = false;
+                        }
+                        continue;
+                    }
+
                     try
                     {
                         if (current_batch == 1)
@@ -1001,14 +1024,15 @@ namespace gatzk::crypto
     private:
         CudaMsmBatchWindow *previous_ = nullptr;
     };
-
-    bool should_use_cuda_msm_shape(const G1Point *points, std::size_t count, bool stable_srs_bases, std::size_t stable_srs_capacity)
+    bool should_use_cuda_msm_shape(const G1Point *points, std::size_t count, bool stable_srs_bases, std::size_t stable_srs_capacity,
+                                   std::size_t batch_eligibility_count = 0)
     {
         if (count == 0)
         {
             return false;
         }
 
+        const auto dispatch_count = batch_eligibility_count == 0 ? count : batch_eligibility_count;
         const bool resident = stable_srs_bases && cuda_g1_msm_resident_prefix_available(points, count, stable_srs_capacity);
 
         if (stable_srs_bases)
@@ -1023,7 +1047,7 @@ namespace gatzk::crypto
             }
         }
 
-        if (stable_srs_bases && current_cuda_msm_batch_window() != nullptr && count >= (std::size_t{1} << 12))
+        if (stable_srs_bases && current_cuda_msm_batch_window() != nullptr && dispatch_count >= (std::size_t{1} << 12))
         {
             return true;
         }
@@ -1038,25 +1062,29 @@ namespace gatzk::crypto
 
     bool execute_cuda_msm_when_requested(G1Point *output, const G1Point *points, const algebra::FieldElement *scalars, std::size_t count, bool stable_srs_bases,
                                          std::size_t stable_srs_capacity, const std::uint64_t *device_montgomery_scalars = nullptr,
-                                         std::size_t device_montgomery_scalar_capacity = 0, int device_montgomery_scalar_device = -1)
+                                         std::size_t device_montgomery_scalar_capacity = 0, int device_montgomery_scalar_device = -1,
+                                         std::size_t batch_eligibility_count = 0)
     {
         if (!util::route2_options().cuda_field_hotspots)
         {
             return false;
         }
-        if (device_montgomery_scalars == nullptr && !should_use_cuda_msm_shape(points, count, stable_srs_bases, stable_srs_capacity))
+
+        const auto dispatch_count = batch_eligibility_count == 0 ? count : batch_eligibility_count;
+        if (device_montgomery_scalars == nullptr &&
+            !should_use_cuda_msm_shape(points, count, stable_srs_bases, stable_srs_capacity, dispatch_count))
         {
             return false;
         }
 
         constexpr std::size_t kMinimumCoalescedMsmCount = 1ULL << 12;
 
-        if (stable_srs_bases && count >= kMinimumCoalescedMsmCount)
+        if (stable_srs_bases && dispatch_count >= kMinimumCoalescedMsmCount)
         {
             if (auto *batch_window = current_cuda_msm_batch_window(); batch_window != nullptr)
             {
-                return batch_window->submit(output, points, scalars, count, stable_srs_capacity, device_montgomery_scalars, device_montgomery_scalar_capacity,
-                                            device_montgomery_scalar_device);
+                return batch_window->submit(output, points, scalars, count, stable_srs_capacity, device_montgomery_scalars,
+                                            device_montgomery_scalar_capacity, device_montgomery_scalar_device);
             }
         }
 
@@ -1328,7 +1356,7 @@ namespace gatzk::crypto
 
             const auto live_prefix_count = last_nonzero_exclusive;
             const bool coalesced_same_srs_request = current_cuda_msm_batch_window() != nullptr &&
-                                                   live_prefix_count >= (std::size_t{1} << 12);
+                                                   count >= (std::size_t{1} << 12);
 
             if (stable_srs_bases && util::route2_options().cuda_field_hotspots &&
                 (live_prefix_count >= (std::size_t{1} << 14) || coalesced_same_srs_request))
@@ -1342,7 +1370,8 @@ namespace gatzk::crypto
                     profile->effective_scalar_count = live_prefix_count;
                 }
 
-                if (execute_cuda_msm_when_requested(&out, points, scalars, live_prefix_count, true, stable_srs_capacity))
+                if (execute_cuda_msm_when_requested(&out, points, scalars, live_prefix_count, true, stable_srs_capacity,
+                                                     nullptr, 0, -1, count))
                 {
                     return out;
                 }

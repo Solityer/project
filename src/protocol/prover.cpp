@@ -5628,7 +5628,7 @@ namespace gatzk::protocol
                 cuda_t_edge_admitted_program_.reset();
 
                 const auto leaf_cache_slots = cuda_t_edge_selected_cache_slots_;
-                if (leaf_cache_slots < 96 && program.terms.size() >= 128)
+                if (leaf_cache_slots > 0 && leaf_cache_slots < 96 && program.terms.size() >= 128)
                 {
                     const auto register_bucket = [](std::size_t depth)
                     {
@@ -5639,15 +5639,23 @@ namespace gatzk::protocol
                         return std::size_t{kMaximumProgramStackDepth};
                     };
                     const auto term_count = program.terms.size();
-                    std::vector<std::vector<std::string>> dependencies(term_count);
+                    std::unordered_map<std::string, std::size_t> dependency_label_ids;
+                    dependency_label_ids.reserve(program.accesses.size());
+                    std::vector<std::vector<std::size_t>> dependencies(term_count);
                     for (std::size_t i = 0; i < term_count; ++i)
                     {
                         auto &required = dependencies[i];
                         const auto include = [&](const std::string &label)
                         {
-                            if (std::find(required.begin(), required.end(), label) == required.end())
+                            auto found = dependency_label_ids.find(label);
+                            if (found == dependency_label_ids.end())
                             {
-                                required.push_back(label);
+                                found = dependency_label_ids.emplace(label, dependency_label_ids.size()).first;
+                            }
+                            const auto label_id = found->second;
+                            if (std::find(required.begin(), required.end(), label_id) == required.end())
+                            {
+                                required.push_back(label_id);
                             }
                         };
                         for (const auto access_index : program.terms[i].required_accesses)
@@ -5676,33 +5684,37 @@ namespace gatzk::protocol
                         }
                     }
 
-                    const auto touch = [leaf_cache_slots](std::vector<std::string> *cache, const std::string &label)
+                    const auto touch = [leaf_cache_slots](std::vector<std::size_t> *cache, std::vector<std::uint8_t> *present,
+                                                          std::size_t label_id)
                     {
-                        const auto it = std::find(cache->begin(), cache->end(), label);
+                        const auto it = std::find(cache->begin(), cache->end(), label_id);
                         if (it != cache->end())
                         {
                             cache->erase(it);
                         }
                         else if (cache->size() >= leaf_cache_slots)
                         {
+                            (*present)[cache->front()] = 0;
                             cache->erase(cache->begin());
                         }
-                        cache->push_back(label);
+                        cache->push_back(label_id);
+                        (*present)[label_id] = 1;
                     };
                     const auto simulated_misses = [&](const std::vector<std::size_t> &order)
                     {
-                        std::vector<std::string> cache;
+                        std::vector<std::size_t> cache;
                         cache.reserve(leaf_cache_slots);
+                        std::vector<std::uint8_t> cache_present(dependency_label_ids.size(), 0);
                         std::size_t misses = 0;
                         for (const auto index : order)
                         {
-                            for (const auto &label : dependencies[index])
+                            for (const auto label_id : dependencies[index])
                             {
-                                if (std::find(cache.begin(), cache.end(), label) == cache.end())
+                                if (cache_present[label_id] == 0)
                                 {
                                     ++misses;
                                 }
-                                touch(&cache, label);
+                                touch(&cache, &cache_present, label_id);
                             }
                         }
                         return misses;
@@ -5711,7 +5723,8 @@ namespace gatzk::protocol
                     std::vector<std::size_t> original(term_count);
                     std::vector<std::size_t> scheduled;
                     std::vector<std::uint8_t> chosen(term_count, 0);
-                    std::vector<std::string> recent;
+                    std::vector<std::size_t> recent;
+                    std::vector<std::uint8_t> recent_present(dependency_label_ids.size(), 0);
                     recent.reserve(leaf_cache_slots);
                     scheduled.reserve(term_count);
                     for (std::size_t i = 0; i < term_count; ++i)
@@ -5736,9 +5749,9 @@ namespace gatzk::protocol
                             }
                             ++candidates;
                             std::int64_t score = 0;
-                            for (const auto &label : dependencies[index])
+                            for (const auto label_id : dependencies[index])
                             {
-                                score += std::find(recent.begin(), recent.end(), label) != recent.end() ? 32 : -4;
+                                score += recent_present[label_id] != 0 ? 32 : -4;
                             }
                             if (!scheduled.empty() &&
                                 register_bucket(program.terms[index].maximum_stack_depth) ==
@@ -5755,9 +5768,9 @@ namespace gatzk::protocol
                         }
                         chosen[best] = 1;
                         scheduled.push_back(best);
-                        for (const auto &label : dependencies[best])
+                        for (const auto label_id : dependencies[best])
                         {
-                            touch(&recent, label);
+                            touch(&recent, &recent_present, label_id);
                         }
                     }
 

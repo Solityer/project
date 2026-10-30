@@ -416,8 +416,8 @@ namespace gatzk::protocol
 
         template <typename Fn> void parallel_for_ranges(std::size_t item_count, std::size_t min_parallel_items, Fn &&fn)
         {
-            constexpr std::size_t kMinimumRowsPerWorker = 4096;
-            constexpr std::size_t kMaximumWorkers = 8;
+            constexpr std::size_t kMinimumRowsPerWorker = 512;
+            constexpr std::size_t kMaximumWorkers = 16;
             const auto cpu_count = std::max<std::size_t>(1, std::thread::hardware_concurrency());
             const auto minimum_rows = std::max(min_parallel_items, kMinimumRowsPerWorker);
             const auto task_count = item_count < minimum_rows * 2 || cpu_count <= 1
