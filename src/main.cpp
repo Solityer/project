@@ -795,7 +795,7 @@ int main(int argc, char **argv)
 
             if (log_benchmark)
             {
-                std::cout << "dataset=" << metrics.dataset << " config=" << config_path
+                std::cout << "dataset=" << metrics.dataset << " config=" << config_path << " backend=" << console_backend_label(metrics)
                           << " status=" << (final_accepted ? "VERIFY_OK" : "VERIFY_FAIL") << " commitment_time_ms="
                           << format_ms(metrics.commitment_time_ms)
                           << " prove_time_ms=" << format_ms(metrics.prove_time_ms) << " verify_time_ms=" << format_ms(metrics.verify_time_ms)

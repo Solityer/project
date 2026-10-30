@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 runs/
 artifacts/
+results/
 data/cache/build_cpu_diag/
 # Build artifacts
 comparison/ezkl/target/
