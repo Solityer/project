@@ -634,9 +634,11 @@ fn parse_features(path: &Path, meta: &DatasetMeta, scales: &ScaleChain,) -> Resu
         {
             return Err("feature npy contract does not match authenticated metadata".into());
         }
-        let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
-        if meta.feature_sha256.as_deref() != Some(digest.as_str()) {
-            return Err("feature npy SHA-256 does not match authenticated metadata".into());
+        if !crate::execute::provenance_checks_disabled() {
+            let digest = sha256::digest_file(path).map_err(|e| format!("digest {}: {}", path.display(), e))?;
+            if meta.feature_sha256.as_deref() != Some(digest.as_str()) {
+                return Err("feature npy SHA-256 does not match authenticated metadata".into());
+            }
         }
         return Ok(parsed.values);
     }

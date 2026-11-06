@@ -104,9 +104,25 @@ from compatible_resume import (
     COMPATIBILITY_SCHEMA as COMPAT_RECEIPT_SCHEMA,
     REQUEST_SCHEMA as COMPAT_REQUEST_SCHEMA,
     admission_semantics_digest,
+    artifact_manifest_file_sha256,
     compatible_source_review_index_digest,
     compare_admission_semantics,
     freeze_original_session_snapshot,
+    apply_compatible_configured_admission_retry_commit,
+    apply_compatible_capacity_admission_retry_commit,
+    apply_interrupted_before_prove_recovery_commit,
+    prepare_compatible_capacity_admission_retry,
+    prepare_compatible_configured_admission_retry,
+    prepare_compatible_admission_preflight_retry,
+    prepare_compatible_preflight_retry,
+    prepare_interrupted_before_prove_recovery,
+    validate_failed_admission_preflight_resume_gate,
+    validate_failed_capacity_admission_resume_gate,
+    validate_capacity_admission_v2_rebind_candidate,
+    validate_failed_configured_admission_resume_gate,
+    validate_failed_preflight_resume_gate,
+    validate_historical_preflight_request,
+    validate_interrupted_before_prove_resume_candidate,
     install_compatible_artifact_manifest,
     validate_compatible_resume_request,
     validate_compatible_artifact_manifest,
@@ -870,22 +886,108 @@ def _compatible_review_request(
         abort("compatible source review must be explicitly approved")
     if original.get("status") != "INTERRUPTED" or original.get("completed_cells") not in (None, {}):
         abort("compatible resume requires the original interrupted session with no completed result cells")
-    snapshot_legacy_json_files(
-        output_root / "ppi",
-        output_root / ".sessions" / session_id / "compatibility",
-        ("native_prove_budget.json",),
-    )
-    existing = load_json(session_file, "compatible resume session request").get("compatible_resume_request")
+    original_manifest, _, _ = validate_original_artifact_manifest(original, session_id=session_id)
+    original_budget_records = [
+        record for record in original_manifest.get("files", [])
+        if isinstance(record, dict) and record.get("path") == "native_prove_budget.json"
+    ]
+    witness_anchor = original.get("stage_receipts", {}).get("ppi", {}).get("witness")
+    witness_receipt = witness_anchor.get("receipt") if isinstance(witness_anchor, dict) else None
+    if (
+        len(original_budget_records) != 1
+        or not isinstance(original_budget_records[0].get("sha256"), str)
+        or not isinstance(witness_anchor, dict)
+        or set(witness_anchor) != {"receipt", "sha256"}
+        or not isinstance(witness_receipt, dict)
+        or witness_anchor.get("sha256") != canonical_json_digest(witness_receipt)
+        or witness_receipt.get("session_id") != session_id
+        or witness_receipt.get("dataset") != "ppi"
+        or witness_receipt.get("stage") != "witness"
+        or witness_receipt.get("native_prove_budget_sha256") != original_budget_records[0]["sha256"]
+    ):
+        abort("compatible resume original PPI Witness does not bind the frozen artifact-manifest prove budget")
+    original_budget_sha256 = str(original_budget_records[0]["sha256"])
+    session_document = load_json(session_file, "compatible resume session request")
+    existing = session_document.get("compatible_resume_request")
+    allow_completed_ppi_artifacts = False
     if existing is not None:
+        if existing == request:
+            validated_request, validated_original = validate_compatible_resume_request(
+                session_document, expected_session_id=session_id,
+            )
+            if validated_request != request or validated_original != original:
+                abort("compatible resume request is not bound to the exact frozen old session")
+            completed = session_document.get("completed_cells")
+            if isinstance(completed, dict) and "ppi" in completed:
+                allow_completed_ppi_artifacts = _completed_cell_checkpoint(
+                    output_root / "ppi",
+                    "ppi",
+                    session_id,
+                    session_file,
+                    require_existing=True,
+                )
+        else:
+            if session_document.get("compatible_configured_admission_retry") is not None:
+                if session_document.get("compatible_capacity_admission_retry") is not None:
+                    validate_capacity_admission_v2_rebind_candidate(session_file, request)
+                else:
+                    validate_failed_capacity_admission_resume_gate(session_document)
+            elif session_document.get("compatible_interrupted_before_prove_recovery") is not None:
+                if session_document.get("compatible_configured_admission_retry") is not None:
+                    abort("compatible configured-Admission retry is one-time and already recorded")
+                validate_failed_configured_admission_resume_gate(session_document)
+            elif session_document.get("compatible_admission_preflight_retry") is not None:
+                validate_interrupted_before_prove_resume_candidate(session_document, request)
+            elif session_document.get("compatible_preflight_retry") is not None:
+                validate_failed_admission_preflight_resume_gate(session_document)
+            else:
+                validate_historical_preflight_request(existing)
+                validate_failed_preflight_resume_gate(session_document)
+        legacy_budget_path = output_root / ".sessions" / session_id / "compatibility" / "legacy" / "native_prove_budget.json"
+        if (
+            legacy_budget_path.is_symlink()
+            or not legacy_budget_path.is_file()
+            or sha256(legacy_budget_path) != original_budget_sha256
+        ):
+            abort("compatible resume immutable legacy prove-budget snapshot differs from the original Witness anchor")
         if existing != request:
-            abort("compatible source review request differs from its immutable session binding")
-        validate_compatible_resume_request(load_json(session_file, "compatible resume session"), expected_session_id=session_id)
-    elif load_json(session_file, "original compatible resume session") != original:
-        abort("compatible resume session changed after its original snapshot but before request binding")
+            pending_ogbn_output = output_root / "ogbn_arxiv"
+            if pending_ogbn_output.is_symlink():
+                abort("compatible V8 retry refuses a symlinked OGBN-Arxiv output directory")
+            if pending_ogbn_output.is_dir() and any(os.scandir(pending_ogbn_output)):
+                abort("compatible V8 retry requires an absent or empty OGBN-Arxiv output before the new Admission epoch")
+    else:
+        if session_document != original:
+            abort("compatible resume session changed after its original snapshot but before request binding")
+        live_budget_path = output_root / "ppi" / "native_prove_budget.json"
+        if live_budget_path.is_symlink() or not live_budget_path.is_file() or sha256(live_budget_path) != original_budget_sha256:
+            abort("compatible resume live prove budget differs from the frozen original PPI artifact manifest")
+        snapshot_legacy_json_files(
+            output_root / "ppi",
+            output_root / ".sessions" / session_id / "compatibility",
+            ("native_prove_budget.json",),
+        )
     for dataset in selected_datasets:
+        if dataset == "ppi" and allow_completed_ppi_artifacts:
+            continue
         output = output_root / dataset
         if output.is_symlink():
             abort(f"compatible resume output must not be a symlink: {output}")
+        if output.exists() and not output.is_dir():
+            abort(f"compatible resume output must be a regular directory: {output}")
+        if dataset == "ogbn_arxiv" and output.is_dir():
+            allowed_setup_entries = set(_SETUP_REUSE_FILES) | {"setup_receipt.json"}
+            try:
+                entries = list(os.scandir(output))
+            except OSError as exc:
+                abort(f"compatible OGBN-Arxiv partial output cannot be inspected: {exc}")
+            for entry in entries:
+                if (
+                    entry.name not in allowed_setup_entries
+                    or entry.is_symlink()
+                    or not entry.is_file(follow_symlinks=False)
+                ):
+                    abort(f"compatible OGBN-Arxiv output contains an unapproved partial artifact: {entry.name}")
         for artifact in ("proof.json", "result.json", "native_verify_metrics.json", "core_run_manifest.json"):
             path = output / artifact
             if path.exists() or path.is_symlink():
@@ -968,6 +1070,177 @@ def _validate_native_admission_domain(dataset: str, admission: dict[str, object]
         abort(f"{dataset} native admission domain does not match its bounded logrows")
 
 
+def _compatible_fresh_preflight_capacity_prefix(
+    session_document: object,
+    original_session: object,
+    capacity_preflight_checks: object,
+) -> list[dict[str, object]]:
+    """Bind the compatible PPI prefix only to checks emitted by this preflight call."""
+    current = session_document.get("capacity_checks") if isinstance(session_document, dict) else None
+    original = original_session.get("capacity_checks") if isinstance(original_session, dict) else None
+    generated = capacity_preflight_checks
+    if (
+        not isinstance(current, list)
+        or not isinstance(original, list)
+        or not isinstance(generated, list)
+        or any(not isinstance(check, dict) for check in current + original + generated)
+        or current != [*original, *generated]
+    ):
+        abort("compatible PPI cell gate requires the untouched original prefix plus this call's capacity checks")
+    generated_ppi_checks = [
+        check for check in generated
+        if check.get("dataset") == "ppi" and check.get("phase") == "witness_prove_verify"
+    ]
+    recorded_ppi_checks = [
+        check for check in current[len(original) :]
+        if check.get("dataset") == "ppi" and check.get("phase") == "witness_prove_verify"
+    ]
+    if (
+        len(generated_ppi_checks) != 1
+        or len(recorded_ppi_checks) != 1
+        or canonical_json_digest(generated_ppi_checks[0]) != canonical_json_digest(recorded_ppi_checks[0])
+    ):
+        abort("compatible PPI cell gate requires the single matching fresh PPI preflight check")
+    return list(current)
+
+
+def _append_compatible_capacity_preflight_diagnostic(
+    session_document: dict[str, object],
+    *,
+    session_id: str,
+    current_prover_identity: dict[str, object],
+    capacity_source_identity: dict[str, object],
+    capacity_report: dict[str, str],
+    checks: list[dict[str, object]],
+) -> dict[str, object]:
+    """Record checks run after PPI Verify without treating them as cell-boundary gates."""
+    if (
+        session_document.get("session_id") != session_id
+        or not isinstance(session_document.get("capacity_checks"), list)
+        or not isinstance(capacity_report, dict)
+        or set(capacity_report) != {"path", "sha256"}
+        or not isinstance(capacity_report.get("path"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", str(capacity_report.get("sha256", ""))) is None
+        or not checks
+    ):
+        abort("compatible capacity preflight diagnostic has incomplete session/report/check anchors")
+    check_refs: list[dict[str, object]] = []
+    for check in checks:
+        if (
+            not isinstance(check, dict)
+            or check.get("dataset") != "ogbn_arxiv"
+            or check.get("phase") not in {"setup", "witness_prove_verify"}
+        ):
+            abort("completed-PPI capacity preflight diagnostic contains a non-pending OGBN phase")
+        check_refs.append({
+            "dataset": check["dataset"],
+            "phase": check["phase"],
+            "check": check,
+            "check_sha256": canonical_json_digest(check),
+        })
+    record: dict[str, object] = {
+        "schema": "ezkl.compatible-capacity-preflight-diagnostic.v1",
+        "session_id": session_id,
+        "current_prover_identity_sha256": canonical_json_digest(current_prover_identity),
+        "capacity_source_identity_sha256": canonical_json_digest(capacity_source_identity),
+        "capacity_report": dict(capacity_report),
+        "authorizes_capacity_gate": False,
+        "checks": check_refs,
+        "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    history = session_document.setdefault("capacity_preflight_diagnostics", [])
+    if not isinstance(history, list):
+        abort("compatible capacity preflight diagnostic history is malformed")
+    history.append(record)
+    return record
+
+
+def _validate_compatible_capacity_history_for_pending(
+    session_document: object,
+    original_session: object,
+    *,
+    selected_datasets: tuple[str, ...],
+    pending_datasets: tuple[str, ...],
+    completed_datasets: set[str],
+    capacity_rechecks: object | None = None,
+) -> bool:
+    """Keep a completed PPI ledger intact while allowing only pending cells to add gates."""
+    current = session_document.get("capacity_checks") if isinstance(session_document, dict) else None
+    original = original_session.get("capacity_checks") if isinstance(original_session, dict) else None
+    if not isinstance(current, list) or not isinstance(original, list):
+        abort("compatible native capacity preflight capacity history is malformed")
+    if "ppi" in pending_datasets:
+        if current != original:
+            abort("compatible pending PPI requires the untouched original capacity-check prefix")
+        return False
+    elif "ppi" in selected_datasets:
+        if "ppi" not in completed_datasets or current[: len(original)] != original:
+            abort("compatible completed PPI resume requires its verified checkpoint and preserved original capacity prefix")
+        if not isinstance(capacity_rechecks, dict):
+            abort("compatible completed PPI resume lacks its immutable PPI capacity-boundary record")
+        prefix = capacity_rechecks.get("capacity_checks_prefix")
+        checks = capacity_rechecks.get("checks")
+        if (
+            capacity_rechecks.get("schema") != "ezkl.compatible-current-capacity-rechecks.v1"
+            or capacity_rechecks.get("session_id") != session_document.get("session_id")
+            or not isinstance(prefix, dict)
+            or set(prefix) != {"count", "sha256"}
+            or isinstance(prefix.get("count"), bool)
+            or not isinstance(prefix.get("count"), int)
+            or not isinstance(prefix.get("sha256"), str)
+            or not isinstance(checks, list)
+            or len(checks) != 1
+            or not isinstance(checks[0], dict)
+            or set(checks[0]) != {"dataset", "phase", "check", "check_sha256"}
+            or checks[0].get("dataset") != "ppi"
+            or checks[0].get("phase") != "witness_prove_verify"
+            or checks[0].get("check_sha256") != canonical_json_digest(checks[0].get("check"))
+        ):
+            abort("compatible completed PPI capacity-boundary record is malformed")
+        prefix_count = prefix["count"]
+        if (
+            prefix_count < len(original)
+            or prefix_count >= len(current)
+            or canonical_json_digest(current[:prefix_count]) != prefix["sha256"]
+            or current[prefix_count] != checks[0]["check"]
+        ):
+            abort("compatible completed PPI ledger already contains a later OGBN gate or changed PPI boundary")
+        post_boundary = current[prefix_count + 1 :]
+        if not post_boundary:
+            return False
+        if (
+            len(post_boundary) != 1
+            or not isinstance(post_boundary[0], dict)
+            or post_boundary[0].get("dataset") != "ogbn_arxiv"
+            or post_boundary[0].get("phase") != "setup"
+        ):
+            abort("compatible completed PPI resume refuses repeated or unsupported OGBN capacity gates")
+        return True
+    return False
+
+
+def _pending_reused_proof_capacity_datasets(
+    selected_datasets: tuple[str, ...],
+    pending_datasets: tuple[str, ...],
+    setup_reused_datasets: set[str],
+) -> tuple[str, ...]:
+    return tuple(
+        dataset for dataset in selected_datasets
+        if dataset in pending_datasets and dataset in setup_reused_datasets
+    )
+
+
+def _require_prior_ogbn_setup_gate_reused(
+    prior_ogbn_setup_gate: bool,
+    setup_reused_datasets: set[str],
+) -> None:
+    """A persisted OGBN Setup gate is valid only with its authenticated reusable Setup."""
+    if type(prior_ogbn_setup_gate) is not bool or not isinstance(setup_reused_datasets, set):
+        abort("compatible OGBN capacity history or Setup reuse state is malformed")
+    if prior_ogbn_setup_gate and "ogbn_arxiv" not in setup_reused_datasets:
+        abort("compatible OGBN capacity history contains a Setup gate without a reusable current-session Setup anchor")
+
+
 def _mark_released_session_interrupted(lock_fd: int, output_root: Path) -> None:
     os.lseek(lock_fd, 0, os.SEEK_SET)
     raw = os.read(lock_fd, 8192).decode("utf-8", errors="replace").strip()
@@ -1040,11 +1313,38 @@ def begin_formal_session(
         if compatible_request_factory is not None and resume_session_id is None:
             abort("compatible resume request factory requires one exact resumed session")
         compatible_request: dict[str, object] | None = None
+        compatible_retry_record: dict[str, object] | None = None
+        compatible_admission_retry_record: dict[str, object] | None = None
+        compatible_configured_admission_retry_record: dict[str, object] | None = None
+        compatible_capacity_admission_retry_record: dict[str, object] | None = None
+        compatible_interrupted_recovery_plan: dict[str, object] | None = None
         if compatible_request_factory is not None:
             # Freeze and validate the original session while holding the formal
             # lock, before any helper can mark or rewrite session state.
             compatible_session_file = output_root / ".sessions" / f"{resume_session_id}.json"
             compatible_request = compatible_request_factory(resume_session_id, compatible_session_file)
+            compatible_capacity_admission_retry_record = prepare_compatible_capacity_admission_retry(
+                compatible_session_file, compatible_request,
+            )
+            session_after_capacity_prepare = load_json(compatible_session_file, "compatible capacity retry preparation state")
+            v8_already_recorded = (
+                isinstance(session_after_capacity_prepare, dict)
+                and session_after_capacity_prepare.get("compatible_capacity_admission_retry") is not None
+            )
+            if compatible_capacity_admission_retry_record is None and not v8_already_recorded:
+                compatible_configured_admission_retry_record = prepare_compatible_configured_admission_retry(
+                    compatible_session_file, compatible_request,
+                )
+            if compatible_capacity_admission_retry_record is None and not v8_already_recorded and compatible_configured_admission_retry_record is None:
+                compatible_retry_record = prepare_compatible_preflight_retry(
+                    compatible_session_file, compatible_request,
+                )
+                compatible_admission_retry_record = prepare_compatible_admission_preflight_retry(
+                    compatible_session_file, compatible_request,
+                )
+                compatible_interrupted_recovery_plan = prepare_interrupted_before_prove_recovery(
+                    compatible_session_file, compatible_request,
+                )
         _mark_released_session_interrupted(lock_fd, output_root)
         session_dir = output_root / ".sessions"
         if session_dir.is_symlink() or (session_dir.exists() and not session_dir.is_dir()):
@@ -1081,9 +1381,89 @@ def begin_formal_session(
                 document["selected_datasets"] = list(saved_selection)
             if compatible_request is not None:
                 existing_request = document.get("compatible_resume_request")
-                if existing_request is not None and existing_request != compatible_request:
+                if (
+                    existing_request is not None
+                    and existing_request != compatible_request
+                    and compatible_retry_record is None
+                    and compatible_admission_retry_record is None
+                    and compatible_configured_admission_retry_record is None
+                    and compatible_capacity_admission_retry_record is None
+                    and compatible_interrupted_recovery_plan is None
+                ):
                     abort("compatible source review request differs from its immutable session binding")
-                document["compatible_resume_request"] = compatible_request
+                if compatible_capacity_admission_retry_record is not None:
+                    apply_compatible_capacity_admission_retry_commit(
+                        document, compatible_request, compatible_capacity_admission_retry_record,
+                    )
+                elif compatible_configured_admission_retry_record is not None:
+                    if existing_request == compatible_request:
+                        abort("compatible configured-admission retry unexpectedly targets an already-current request")
+                    apply_compatible_configured_admission_retry_commit(
+                        document, compatible_request, compatible_configured_admission_retry_record,
+                    )
+                elif compatible_interrupted_recovery_plan is not None:
+                    if existing_request == compatible_request:
+                        abort("compatible interrupted recovery plan unexpectedly targets an already-current request")
+                    apply_interrupted_before_prove_recovery_commit(
+                        document, compatible_request, compatible_interrupted_recovery_plan,
+                    )
+                else:
+                    document["compatible_resume_request"] = compatible_request
+                if compatible_retry_record is not None:
+                    existing_retry_record = document.get("compatible_preflight_retry")
+                    if existing_retry_record is not None and existing_retry_record != compatible_retry_record:
+                        abort("compatible preflight retry audit differs from the immutable session binding")
+                    prior_capacity_identity = document.get("compatible_capacity_source_identity")
+                    prior_capacity_identity_sha = document.get("compatible_capacity_source_identity_sha256")
+                    if (
+                        not isinstance(prior_capacity_identity, dict)
+                        or prior_capacity_identity_sha != canonical_json_digest(prior_capacity_identity)
+                        or prior_capacity_identity_sha != compatible_retry_record.get("prior_capacity_source_identity_sha256")
+                    ):
+                        abort("compatible preflight retry cannot clear an unbound prior capacity-source identity")
+                    document.pop("compatible_capacity_source_identity", None)
+                    document.pop("compatible_capacity_source_identity_sha256", None)
+                    document["compatible_preflight_retry"] = compatible_retry_record
+                if compatible_admission_retry_record is not None:
+                    if (
+                        not isinstance(existing_request, dict)
+                        or existing_request == compatible_request
+                        or canonical_json_digest(existing_request)
+                        != compatible_admission_retry_record.get("old_request_canonical_sha256")
+                        or document.get("compatible_admission_preflight_retry") is not None
+                    ):
+                        abort("compatible Admission preflight retry old request changed before commit")
+                    prior_prover_sha = document.get("compatible_prover_identity_sha256")
+                    prior_capacity_sha = document.get("compatible_capacity_source_identity_sha256")
+                    prior_admissions = document.get("compatible_native_admissions")
+                    if (
+                        prior_prover_sha != compatible_admission_retry_record.get("prior_prover_identity_sha256")
+                        or prior_capacity_sha != compatible_admission_retry_record.get("prior_capacity_source_identity_sha256")
+                        or not isinstance(prior_admissions, dict)
+                    ):
+                        abort("compatible Admission retry cannot clear an unbound current identity/Admission map")
+                    snapshot_map_ref = compatible_admission_retry_record.get("admissions_map_snapshot")
+                    if not isinstance(snapshot_map_ref, dict) or not isinstance(snapshot_map_ref.get("sha256"), str):
+                        abort("compatible Admission retry lacks an immutable current Admission-map snapshot")
+                    snapshot_map_path = ROOT / str(snapshot_map_ref.get("path"))
+                    if (
+                        snapshot_map_path.is_symlink()
+                        or not snapshot_map_path.is_file()
+                        or sha256(snapshot_map_path) != snapshot_map_ref.get("sha256")
+                    ):
+                        abort("compatible Admission retry Admission-map snapshot is missing or unsafe")
+                    try:
+                        snapshot_map = json.loads(snapshot_map_path.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError) as exc:
+                        abort(f"compatible Admission retry Admission-map snapshot is invalid: {exc}")
+                    if canonical_json_digest(snapshot_map) != canonical_json_digest(prior_admissions):
+                        abort("compatible Admission retry current Admission map changed before atomic commit")
+                    for name in (
+                        "compatible_native_admissions", "compatible_prover_identity", "compatible_prover_identity_sha256",
+                        "compatible_capacity_source_identity", "compatible_capacity_source_identity_sha256",
+                    ):
+                        document.pop(name, None)
+                    document["compatible_admission_preflight_retry"] = compatible_admission_retry_record
             document["status"] = "PREFLIGHT_STARTED"
             document["stage"] = "session_resume_started"
             document["resumed_at_utc"] = datetime.now(timezone.utc).isoformat()
@@ -4110,6 +4490,51 @@ def _native_shplonk_fixed_cache_optional_limits(
     }
 
 
+def _build_compatible_resume_receipt(
+    *,
+    session_id: str,
+    source_review: dict[str, object],
+    old_session_snapshot: dict[str, object],
+    old_setup_identity_sha256: str,
+    current_identity: dict[str, object],
+    admission_semantics_sha256: str,
+    bound_setup_admission: dict[str, object],
+    current_capacity_admission: dict[str, object],
+    capacity_precheck: dict[str, object],
+    setup_refs: dict[str, object],
+    current_prover_receipts: dict[str, object],
+    original_manifest: dict[str, object],
+    original_manifest_ref: dict[str, object],
+) -> dict[str, object]:
+    """Build the sole sealed pre-Prove compatibility receipt from authenticated inputs."""
+    setup_files = setup_refs.get("setup_files")
+    if not isinstance(setup_files, dict):
+        abort("compatible receipt builder requires the authenticated retained Setup-file map")
+    return {
+        "schema": COMPAT_RECEIPT_SCHEMA,
+        "session_id": session_id,
+        "dataset": "ppi",
+        "status": "SEALED_FOR_PROVE_ONLY",
+        "baseline_manifest_sha256": COMPAT_BASELINE_MANIFEST_SHA256,
+        "old_session_snapshot": old_session_snapshot,
+        "source_review": source_review,
+        "old_setup_identity_sha256": old_setup_identity_sha256,
+        "current_prover_identity_sha256": canonical_json_digest(current_identity),
+        "admission_semantics_sha256": admission_semantics_sha256,
+        "bound_setup_admission": bound_setup_admission,
+        "current_capacity_admission": current_capacity_admission,
+        "capacity_precheck": capacity_precheck,
+        "setup_chain": {name: value for name, value in setup_refs.items() if name != "bound_setup_admission"},
+        "current_prover_receipts": current_prover_receipts,
+        "shared_artifacts": {
+            "statement_sha256": original_manifest.get("statement_sha256"),
+            "public_output_sha256": artifact_manifest_file_sha256(original_manifest, "public_output.json"),
+            **setup_files,
+            "original_artifact_manifest": original_manifest_ref,
+        },
+    }
+
+
 def _write_native_prove_budget_receipt(
     output: Path,
     *,
@@ -4137,7 +4562,7 @@ def _write_native_prove_budget_receipt(
             or not path.is_file()
             or sha256(path) != replace_existing_sha256
         ):
-            abort("compatible PPI prove budget replacement is not bound to the frozen legacy bytes")
+            abort("compatible PPI prove budget replacement is not bound to its exact archived bytes")
     elif path.exists():
         abort(f"{dataset} native prove budget refuses to overwrite an existing receipt")
     disk_available = prove_check.get("disk_available_bytes")
@@ -4334,7 +4759,7 @@ def _write_native_prove_budget_receipt(
         "host_scope": "one_shared_GB10_CPU_GPU_physical_pool; device_workspace_counted_once",
     }
     if replace_existing_sha256 is not None and sha256(path) != replace_existing_sha256:
-        abort("compatible PPI legacy prove budget changed while its replacement was being prepared")
+        abort("compatible PPI prove budget changed while its archived-byte replacement was being prepared")
     _write_session_record(path, value)
     return sha256(path)
 
@@ -4366,7 +4791,7 @@ def _load_reusable_native_prove_budget_receipt(
             or trusted_setup_files is None
             or re.fullmatch(r"[0-9a-f]{64}", replace_existing_sha256) is None
         ):
-            abort("compatible PPI prove-budget reuse has an invalid frozen legacy reference")
+            abort("compatible PPI prove-budget reuse has an invalid archived-budget reference")
         if sha256(path) == replace_existing_sha256:
             return None
     try:
@@ -5642,6 +6067,31 @@ def _reusable_final_stage_srs(
 _FORMAL_FINALIZATION_SCHEMA = "ezkl.formal-finalization-stage-receipt.v1"
 
 
+def _validate_finalization_prepare_phase_timing(
+    dataset: str,
+    setup_elapsed: object,
+    native_setup_wall_ms: float,
+    final_elapsed: object,
+    reported_prepare_elapsed: object,
+) -> None:
+    numeric_values = (setup_elapsed, native_setup_wall_ms, final_elapsed, reported_prepare_elapsed)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        for value in numeric_values
+    ):
+        abort(f"{dataset} native setup log/timing differs from the verified result")
+    prepare_elapsed = float(setup_elapsed) + float(final_elapsed)
+    if (
+        not math.isfinite(prepare_elapsed)
+        or round(float(setup_elapsed), 6) != round(float(native_setup_wall_ms), 6)
+        or round(prepare_elapsed, 3) != float(reported_prepare_elapsed)
+    ):
+        abort(f"{dataset} native setup log/timing differs from the verified result")
+
+
 def _latest_successful_log_wall_ms(path: Path, exit_field: str, label: str) -> float:
     if path.is_symlink() or not path.is_file():
         abort(f"{label} has no regular stage log: {path}")
@@ -5953,13 +6403,13 @@ def _finalization_result_identity(
         )
         setup_elapsed = setup_timing.get("duration_ms") if isinstance(setup_timing, dict) else None
         reported_setup_elapsed = result.get("phase_timings_ms", {}).get("prepare_compile_setup")
-        if (
-            isinstance(setup_elapsed, bool) or not isinstance(setup_elapsed, (int, float))
-            or not math.isfinite(setup_elapsed) or setup_elapsed <= 0
-            or round(float(setup_elapsed), 6) != round(native_setup_wall_ms, 6)
-            or round(float(setup_elapsed), 3) != reported_setup_elapsed
-        ):
-            abort(f"{dataset} native setup log/timing differs from the verified result")
+        _validate_finalization_prepare_phase_timing(
+            dataset,
+            setup_elapsed,
+            native_setup_wall_ms,
+            stage_identities["final"]["elapsed_ms"],
+            reported_setup_elapsed,
+        )
         datasets.append({
             "dataset": dataset,
             "result_sha256": result_sha256,
@@ -6782,7 +7232,10 @@ def _run_dataset_cells(
     session_file: Path,
     execute_cell: Callable[[int, str], None],
     log_paths_for_dataset: Callable[[str], list[str]] | None = None,
+    compatible_prove_only: bool = False,
 ) -> None:
+    if compatible_prove_only and datasets != _COMPAT_SELECTED_DATASETS:
+        abort("compatible prove-only cell order must be exactly PPI then OGBN-Arxiv")
     stale_failures = completed_datasets.intersection(dataset_failures)
     if stale_failures:
         for dataset in stale_failures:
@@ -6795,6 +7248,8 @@ def _run_dataset_cells(
         if dataset in completed_datasets:
             print(f"[ezkl-formal] reuse completed {dataset} cell after independent result/artifact validation", flush=True)
             continue
+        if compatible_prove_only and dataset == "ogbn_arxiv" and "ppi" not in completed_datasets:
+            abort("compatible OGBN-Arxiv Setup is gated on a completed independently verified PPI cell")
         try:
             execute_cell(dataset_index, dataset)
         except Exception as exc:
@@ -6816,6 +7271,8 @@ def _run_dataset_cells(
             document["dataset_failure_history"] = dataset_failure_history
             _write_session_record(session_file, document)
             print(f"[ezkl-formal] dataset failure recorded dataset={dataset} stage={failure['stage']} type={type(exc).__name__}: {exc}", flush=True)
+            if compatible_prove_only:
+                abort(f"compatible prove-only {dataset} cell failed; refusing later dataset stages: {exc}")
         else:
             completed_datasets.add(dataset)
             if dataset in dataset_failures:
@@ -6993,7 +7450,13 @@ def _run_five_admission_preflight(
             current_admission = load_json(current_path, f"{dataset} current capacity Admission")
             if sha256(old_path) != old_anchor["sha256"] or sha256(current_path) != admissions[dataset].get("sha256"):
                 abort(f"{dataset} compatible Admission bytes differ from the exact original/current receipt anchors")
-            compare_admission_semantics(old_admission, current_admission, dataset=dataset)
+            compare_admission_semantics(
+                old_admission,
+                current_admission,
+                dataset=dataset,
+                old_settings_path=old_path.parent / "settings.json",
+                current_settings_path=current_path.parent / "settings.json",
+            )
         current_session_document = load_json(session_file, "formal session record")
         compatible_provenance = _compatible_capacity_provenance(
             session_document=current_session_document,
@@ -7121,7 +7584,10 @@ def _run_five_native_capacity_preflight(
     compatible_old_resume_identity: dict[str, object] | None = None,
     compatible_old_admission: dict[str, object] | None = None,
     compatible_setup_refs: dict[str, object] | None = None,
-) -> tuple[dict[str, dict[str, object]], dict[str, object] | None, dict[str, dict[str, int]], set[str], set[str]]:
+) -> tuple[
+    dict[str, dict[str, object]], dict[str, object] | None, dict[str, dict[str, int]], set[str], set[str],
+    list[dict[str, object]],
+]:
     """Authenticate selected Admissions and gate every pending long phase before the first cell starts."""
     selected_datasets = normalize_selected_datasets(selected_datasets)
     compatible = compatible_resume_identity is not None
@@ -7133,6 +7599,26 @@ def _run_five_native_capacity_preflight(
         compatible_setup_refs,
     )):
         abort("compatible native capacity preflight has an incomplete retained Setup identity")
+    capacity_preflight_checks: list[dict[str, object]] = []
+    pending_datasets = tuple(dataset for dataset in selected_datasets if dataset not in completed_datasets)
+    diagnostic_only_preflight = compatible and "ppi" in completed_datasets and "ogbn_arxiv" in pending_datasets
+    prior_ogbn_setup_gate = False
+    if compatible:
+        session_document = load_json(session_file, "compatible capacity preflight session record")
+        capacity_rechecks: object | None = None
+        if "ppi" in completed_datasets:
+            rechecks_path = session_dir / "compatibility" / "capacity_rechecks.json"
+            if rechecks_path.is_symlink() or not rechecks_path.is_file():
+                abort("compatible completed PPI resume capacity-boundary sidecar is missing or unsafe")
+            capacity_rechecks = load_json(rechecks_path, "compatible PPI capacity-boundary sidecar")
+        prior_ogbn_setup_gate = _validate_compatible_capacity_history_for_pending(
+            session_document,
+            compatible_original_session,
+            selected_datasets=selected_datasets,
+            pending_datasets=pending_datasets,
+            completed_datasets=completed_datasets,
+            capacity_rechecks=capacity_rechecks,
+        )
     admissions = _run_five_admission_preflight(
         binary=binary,
         srs=srs,
@@ -7147,9 +7633,8 @@ def _run_five_native_capacity_preflight(
         compatible_resume_identity=compatible_resume_identity,
         compatible_capacity_source_identity=compatible_capacity_source_identity,
     )
-    pending_datasets = tuple(dataset for dataset in selected_datasets if dataset not in completed_datasets)
     if not pending_datasets:
-        return admissions, workspace_receipt, {}, set(), set()
+        return admissions, workspace_receipt, {}, set(), set(), capacity_preflight_checks
     json_output_bounds = {
         dataset: _native_json_output_bounds(admissions[dataset], dataset)
         for dataset in pending_datasets
@@ -7212,6 +7697,8 @@ def _run_five_native_capacity_preflight(
         ):
             setup_reused_datasets.add(dataset)
 
+    _require_prior_ogbn_setup_gate_reused(prior_ogbn_setup_gate, setup_reused_datasets)
+
     pending_finalize_datasets = set(pending_datasets)
     for dataset in sorted(setup_reused_datasets):
         if compatible and dataset == "ppi":
@@ -7270,13 +7757,15 @@ def _run_five_native_capacity_preflight(
                 disk_budget_components=setup_disk_components,
             )
             session_document = load_json(session_file, "formal session record")
-            session_document.setdefault("capacity_checks", []).append(setup_check)
+            capacity_preflight_checks.append(setup_check)
+            if not diagnostic_only_preflight:
+                session_document.setdefault("capacity_checks", []).append(setup_check)
             _write_session_record(session_file, session_document)
 
     reusable_proof_capacities: dict[str, dict[str, int]] = {}
-    for dataset in selected_datasets:
-        if dataset not in setup_reused_datasets:
-            continue
+    for dataset in _pending_reused_proof_capacity_datasets(
+        selected_datasets, pending_datasets, setup_reused_datasets,
+    ):
         output = output_root / dataset
         keygen_identity = compatible_old_resume_identity if compatible and dataset == "ppi" else resume_identity
         keygen_admission = compatible_old_admission if compatible and dataset == "ppi" else admissions[dataset]
@@ -7348,10 +7837,37 @@ def _run_five_native_capacity_preflight(
                 disk_budget_components=proof_disk_components,
             )
             session_document = load_json(session_file, "formal session record")
-            session_document.setdefault("capacity_checks", []).append(prove_check)
+            capacity_preflight_checks.append(prove_check)
+            if not diagnostic_only_preflight:
+                session_document.setdefault("capacity_checks", []).append(prove_check)
             _write_session_record(session_file, session_document)
 
-    return admissions, workspace_receipt, capacity_requirements, setup_reused_datasets, pending_finalize_datasets
+    if diagnostic_only_preflight:
+        session_document = load_json(session_file, "completed-PPI capacity diagnostic session")
+        capacity_attempts = session_document.get("capacity_admission_attempts")
+        if (
+            not isinstance(capacity_attempts, dict)
+            or not isinstance(capacity_attempts.get("report_path"), str)
+            or not isinstance(capacity_attempts.get("report_sha256"), str)
+        ):
+            abort("completed-PPI capacity preflight lacks a report identity for its diagnostic record")
+        _append_compatible_capacity_preflight_diagnostic(
+            session_document,
+            session_id=session_id,
+            current_prover_identity=compatible_resume_identity,
+            capacity_source_identity=compatible_capacity_source_identity,
+            capacity_report={
+                "path": str(capacity_attempts["report_path"]),
+                "sha256": str(capacity_attempts["report_sha256"]),
+            },
+            checks=capacity_preflight_checks,
+        )
+        _write_session_record(session_file, session_document)
+
+    return (
+        admissions, workspace_receipt, capacity_requirements, setup_reused_datasets,
+        pending_finalize_datasets, capacity_preflight_checks,
+    )
 
 
 def _load_dataset_failure_state(
@@ -7596,6 +8112,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     compatible_original_manifest_sha256: str | None = None
     compatible_original_manifest_ref: dict[str, str] | None = None
     compatible_retained_witness: dict[str, object] | None = None
+    compatible_native_prove_budget_replace_sha256: str | None = None
     compatible_capacity_source_identity: dict[str, object] | None = None
     compatible_current_admissions: dict[str, dict[str, object]] | None = None
     compatible_capacity_report_path = output_root / ".sessions" / session_id / "compatibility" / "capacity_precheck_current.json"
@@ -7924,6 +8441,45 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         compatible_retained_witness = validate_retained_witness_chain(
             compatible_original_session, session_id=session_id,
         )
+        capacity_retry_record = session_document.get("compatible_capacity_admission_retry")
+        if capacity_retry_record is None:
+            old_budget_ref = compatible_retained_witness.get("old_native_prove_budget")
+            replace_sha256 = old_budget_ref.get("sha256") if isinstance(old_budget_ref, dict) else None
+        else:
+            retry_schema = capacity_retry_record.get("schema") if isinstance(capacity_retry_record, dict) else None
+            budget_field = "ppi_v8_native_prove_budget" if retry_schema == "ezkl.compatible-capacity-admission-retry.v2" else "ppi_v7_native_prove_budget"
+            budget_ref = capacity_retry_record.get(budget_field) if isinstance(capacity_retry_record, dict) else None
+            source_ref = budget_ref.get("source") if isinstance(budget_ref, dict) else None
+            snapshot_ref = budget_ref.get("snapshot") if isinstance(budget_ref, dict) else None
+            expected_source_path = f"{_COMPAT_OUTPUT_ROOT}/ppi/native_prove_budget.json"
+            if retry_schema == "ezkl.compatible-capacity-admission-retry.v2":
+                expected_snapshot_path = (
+                    f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/"
+                    "capacity_admission_retry_v9/ppi_native_prove_budget_v8.json"
+                )
+            else:
+                expected_snapshot_path = (
+                    f"{_COMPAT_OUTPUT_ROOT}/.sessions/{session_id}/compatibility/"
+                    "capacity_admission_retry_v8/ppi_native_prove_budget_v7.json"
+                )
+            if (
+                not isinstance(budget_ref, dict)
+                or set(budget_ref) != {"source", "snapshot"}
+                or not isinstance(source_ref, dict)
+                or set(source_ref) != {"path", "sha256"}
+                or not isinstance(snapshot_ref, dict)
+                or set(snapshot_ref) != {"path", "sha256"}
+                or source_ref.get("path") != expected_source_path
+                or snapshot_ref.get("path") != expected_snapshot_path
+                or not isinstance(source_ref.get("sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", source_ref["sha256"]) is None
+                or snapshot_ref.get("sha256") != source_ref.get("sha256")
+            ):
+                abort("V8-compatible PPI prove-budget replacement lacks the exact archived V7 budget anchor")
+            replace_sha256 = snapshot_ref["sha256"]
+        if not isinstance(replace_sha256, str) or re.fullmatch(r"[0-9a-f]{64}", replace_sha256) is None:
+            abort("compatible PPI prove-budget replacement digest is malformed")
+        compatible_native_prove_budget_replace_sha256 = replace_sha256
         old_admission_anchor = compatible_original_session["native_admissions"]["ppi"]
         old_admission_path = local_path(str(old_admission_anchor["path"]), "frozen original PPI Admission")
         old_admission_document = load_json(old_admission_path, "frozen original PPI Admission")
@@ -7972,7 +8528,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     if not isinstance(archived_value, bool):
         abort("formal output archive state is malformed")
     completed_datasets: set[str] = set()
-    if args.resume_session is not None and archived_value:
+    if args.resume_session is not None and (archived_value or args.compatible_prove_only):
         for dataset in selected_datasets:
             output = output_root / dataset
             if output.is_symlink():
@@ -8027,7 +8583,10 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
     _write_session_record(session_file, session_document)
 
     _set_stage(session_file, "selected_dataset_native_capacity_preflight")
-    admissions, workspace_receipt, capacity_requirements, setup_reused_datasets, pending_finalize_datasets = _run_five_native_capacity_preflight(
+    (
+        admissions, workspace_receipt, capacity_requirements, setup_reused_datasets,
+        pending_finalize_datasets, capacity_preflight_checks,
+    ) = _run_five_native_capacity_preflight(
         binary=binary,
         srs=srs,
         output_root=output_root,
@@ -8066,6 +8625,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         dataset_log_dir = session_dir / "logs" / dataset
         output = output_root / dataset
         compatible_ppi = dataset == "ppi" and compatible_request is not None
+        compatible_current_admission_document: dict[str, object] | None = None
+        compatible_current_admission_settings_path: Path | None = None
+        compatible_admission_semantics_sha256: str | None = None
 
         def validate_retained_ppi_stage_receipts() -> dict[str, float]:
             if not compatible_ppi:
@@ -8249,7 +8811,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 or compatible_original_manifest is None
                 or compatible_original_manifest_ref is None
                 or compatible_retained_witness is None
-                or compatible_current_capacity_source_identity is None
+                or compatible_capacity_source_identity is None
                 or compatible_current_admissions is None
                 or compatible_old_admission is None
                 or len(selected_datasets) != 2
@@ -8257,13 +8819,38 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 or compatible_original_session.get("resume_identity") != compatible_old_resume_identity
                 or session_document.get("compatible_prover_identity") != resume_identity
                 or session_document.get("compatible_prover_identity_sha256") != expected_identity_digest
-                or session_document.get("compatible_capacity_source_identity") != compatible_current_capacity_source_identity
-                or session_document.get("compatible_capacity_source_identity_sha256") != canonical_json_digest(compatible_current_capacity_source_identity)
+                or session_document.get("compatible_capacity_source_identity") != compatible_capacity_source_identity
+                or session_document.get("compatible_capacity_source_identity_sha256") != canonical_json_digest(compatible_capacity_source_identity)
                 or not isinstance(execution_admission, dict)
                 or execution_admission.get("sha256") != compatible_setup_refs.get("bound_setup_admission", {}).get("sha256")
             ):
                 abort("compatible PPI cell is missing an authenticated old Setup or current Prover/capacity identity")
-            compare_admission_semantics(compatible_old_admission, admission, dataset="ppi")
+            old_admission_path = local_path(
+                str(compatible_old_admission.get("path")), "frozen original PPI Admission"
+            )
+            current_admission_path = local_path(
+                str(admission.get("path")), "current compatible PPI Admission"
+            )
+            compatible_current_admission_document = load_json(
+                current_admission_path, "current compatible PPI Admission document"
+            )
+            if (
+                not isinstance(compatible_current_admission_document, dict)
+                or sha256(old_admission_path) != compatible_old_admission.get("sha256")
+                or sha256(current_admission_path) != admission.get("sha256")
+            ):
+                abort("compatible PPI raw Admission files differ from their authenticated session anchors")
+            compatible_old_admission_document = load_json(
+                old_admission_path, "frozen original PPI Admission document"
+            )
+            compatible_current_admission_settings_path = current_admission_path.parent / "settings.json"
+            compatible_admission_semantics_sha256 = compare_admission_semantics(
+                compatible_old_admission_document,
+                compatible_current_admission_document,
+                dataset="ppi",
+                old_settings_path=old_admission_path.parent / "settings.json",
+                current_settings_path=compatible_current_admission_settings_path,
+            )
             if not output.is_dir() or output.is_symlink():
                 abort("compatible PPI retained output directory is missing or unsafe")
             retained_stage_timings = validate_retained_ppi_stage_receipts()
@@ -8283,7 +8870,11 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             abort(f"formal output path is not a regular directory: {output}")
         if output.is_dir():
             if not setup_reused:
-                _quarantine_session_path(output, output_root, session_id, f"{dataset}-partial-cell")
+                has_output_entries = any(os.scandir(output))
+                if compatible_request is not None and dataset == "ogbn_arxiv" and has_output_entries:
+                    abort("compatible OGBN-Arxiv output lacks the current session-bound reusable Setup receipt")
+                if has_output_entries:
+                    _quarantine_session_path(output, output_root, session_id, f"{dataset}-partial-cell")
         item = _formal_dataset_command_plan(binary, srs, output_root, admissions, datasets=(dataset,))[0]
         if not setup_reused:
             setup_disk_required = _remaining_setup_disk_bytes(
@@ -8430,6 +9021,12 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             build_environment=build_environment,
             disk_budget_components=proof_disk_components,
         )
+        compatible_capacity_prefix: list[dict[str, object]] | None = None
+        if compatible_ppi:
+            prefix_document = load_json(session_file, "compatible PPI preflight capacity prefix")
+            compatible_capacity_prefix = _compatible_fresh_preflight_capacity_prefix(
+                prefix_document, compatible_original_session, capacity_preflight_checks,
+            )
         native_prove_budget_sha256 = _load_reusable_native_prove_budget_receipt(
             output,
             dataset=dataset,
@@ -8444,7 +9041,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
             **(
                 {
                     "trusted_setup_files": compatible_setup_refs["setup_files"],
-                    "replace_existing_sha256": compatible_retained_witness["old_native_prove_budget"]["sha256"],
+                    "replace_existing_sha256": compatible_native_prove_budget_replace_sha256,
                 }
                 if compatible_ppi else {}
             ),
@@ -8468,7 +9065,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 **(
                     {
                         "trusted_setup_files": compatible_setup_refs["setup_files"],
-                        "replace_existing_sha256": compatible_retained_witness["old_native_prove_budget"]["sha256"],
+                        "replace_existing_sha256": compatible_native_prove_budget_replace_sha256,
                     }
                     if compatible_ppi else {}
                 ),
@@ -8481,29 +9078,22 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         session_document = load_json(session_file, "formal session record")
         if compatible_ppi:
             previous_checks = session_document.get("capacity_checks", [])
-            original_checks = compatible_original_session.get("capacity_checks", [])
             if (
                 not isinstance(previous_checks, list)
-                or not isinstance(original_checks, list)
-                or previous_checks[: len(original_checks)] != original_checks
-                or any(
-                    isinstance(check, dict)
-                    and check.get("dataset") == "ppi"
-                    and check.get("phase") == "witness_prove_verify"
-                    for check in previous_checks[len(original_checks) :]
-                )
+                or compatible_capacity_prefix is None
+                or previous_checks != compatible_capacity_prefix
                 or compatible_capacity_report_path.is_symlink()
                 or not compatible_capacity_report_path.is_file()
             ):
-                abort("compatible PPI capacity gate cannot be frozen over a conflicting prior gate/report")
+                abort("compatible PPI capacity gate cannot freeze over a stale or mismatched fresh preflight prefix")
             current_identity_digest = canonical_json_digest(resume_identity)
-            capacity_source_digest = canonical_json_digest(compatible_current_capacity_source_identity)
+            capacity_source_digest = canonical_json_digest(compatible_capacity_source_identity)
             capacity_report = load_json(compatible_capacity_report_path, "current compatible capacity report")
             if not isinstance(capacity_report, dict):
                 abort("compatible PPI current capacity report is not an object")
             report_provenance = capacity_report.get("current_provenance")
             if (
-                capacity_report.get("source_identity") != compatible_current_capacity_source_identity
+                capacity_report.get("source_identity") != compatible_capacity_source_identity
                 or not isinstance(report_provenance, dict)
                 or report_provenance.get("resume_identity_sha256") != current_identity_digest
             ):
@@ -8566,6 +9156,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 or not isinstance(old_setup_sha256, str)
                 or not isinstance(current_capacity_admission, dict)
                 or not isinstance(compatible_rechecks_sha256, str)
+                or not isinstance(compatible_admission_semantics_sha256, str)
             ):
                 abort("compatible PPI receipt inputs are incomplete after the capacity gate")
             source_review = {
@@ -8582,30 +9173,24 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                 name: current_capacity_admission.get(name)
                 for name in ("path", "sha256", "settings_sha256")
             }
-            compatible_receipt = {
-                "schema": COMPAT_RECEIPT_SCHEMA,
-                "session_id": session_id,
-                "dataset": "ppi",
-                "status": "SEALED_FOR_PROVE_ONLY",
-                "baseline_manifest_sha256": COMPAT_BASELINE_MANIFEST_SHA256,
-                "old_session_snapshot": old_session_snapshot,
-                "source_review": source_review,
-                "old_setup_identity_sha256": compatible_old_setup_identity_sha256,
-                "current_prover_identity_sha256": canonical_json_digest(resume_identity),
-                "admission_semantics_sha256": admission_semantics_digest(admission, dataset="ppi"),
-                "bound_setup_admission": setup_refs.get("bound_setup_admission"),
-                "current_capacity_admission": current_capacity_ref,
-                "capacity_precheck": {
+            compatible_receipt = _build_compatible_resume_receipt(
+                session_id=session_id,
+                source_review=source_review,
+                old_session_snapshot=old_session_snapshot,
+                old_setup_identity_sha256=compatible_old_setup_identity_sha256,
+                current_identity=resume_identity,
+                admission_semantics_sha256=compatible_admission_semantics_sha256,
+                bound_setup_admission=setup_refs.get("bound_setup_admission"),
+                current_capacity_admission=current_capacity_ref,
+                capacity_precheck={
                     "path": compatible_capacity_report_snapshot_path.relative_to(ROOT).as_posix(),
                     "sha256": capacity_report_sha256,
                     "capacity_source_identity_sha256": capacity_source_digest,
                     "recheck_path": compatible_capacity_rechecks_path.relative_to(ROOT).as_posix(),
                     "recheck_sha256": compatible_rechecks_sha256,
                 },
-                "setup_chain": {
-                    name: value for name, value in setup_refs.items() if name != "bound_setup_admission"
-                },
-                "current_prover_receipts": {
+                setup_refs=setup_refs,
+                current_prover_receipts={
                     "native_prove_budget": {
                         "path": (output / "native_prove_budget.json").relative_to(ROOT).as_posix(),
                         "sha256": native_prove_budget_sha256,
@@ -8615,13 +9200,9 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
                     "build_environment_sha256": resume_identity.get("build_environment_sha256"),
                     "retained_witness": compatible_retained_witness,
                 },
-                "shared_artifacts": {
-                    "statement_sha256": compatible_original_manifest.get("statement_sha256"),
-                    "public_output_sha256": compatible_original_manifest.get("public_output_sha256"),
-                    **setup_refs.get("setup_files", {}),
-                    "original_artifact_manifest": compatible_original_manifest_ref,
-                },
-            }
+                original_manifest=compatible_original_manifest,
+                original_manifest_ref=compatible_original_manifest_ref,
+            )
             receipt_sha256 = write_immutable_json(
                 compatible_receipt_path, compatible_receipt, "PPI compatible resume receipt"
             )
@@ -8933,6 +9514,7 @@ def _run_session(args: argparse.Namespace, *, session_id: str, session_file: Pat
         session_file,
         execute_cell,
         log_paths_for_dataset=lambda dataset: _dataset_failure_log_paths(output_root, session_dir, dataset),
+        compatible_prove_only=args.compatible_prove_only,
     )
     _require_formal_dataset_completion(selected_datasets, completed_datasets, dataset_failures)
 

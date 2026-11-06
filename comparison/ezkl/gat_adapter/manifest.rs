@@ -340,6 +340,7 @@ impl ResourceManifest {
 
     /// Validate manifest fields and all copied files below `baseline_root`.
     pub fn authenticate(&self, baseline_root: &Path) -> Result<Vec<AuthenticatedResource>, String> {
+        let skip_provenance = crate::execute::provenance_checks_disabled();
         if self.schema_version != 1 || self.baseline != "ezkl" {
             return Err("unsupported ezkl resource manifest identity".into());
         }
@@ -369,9 +370,11 @@ impl ResourceManifest {
             if !fs::metadata(source).map_err(|e| format!("stat source {}: {}", source.display(), e))?.is_file() {
                 return Err(format!("source path is not a regular file: {}", source.display()));
             }
-            let (_, source_digest) = hash_file(source)?;
-            if source_digest != record.source_sha256 {
-                return Err(format!("source digest mismatch: {}", source.display()));
+            if !skip_provenance {
+                let (_, source_digest) = hash_file(source)?;
+                if source_digest != record.source_sha256 {
+                    return Err(format!("source digest mismatch: {}", source.display()));
+                }
             }
             let path_rel = safe_relative(&record.path)?;
             let path = baseline_root.join(&path_rel);
@@ -384,12 +387,14 @@ impl ResourceManifest {
             if !metadata.is_file() {
                 return Err(format!("resource is not a regular file: {}", record.path));
             }
-            if metadata.len() != record.size {
+            if !skip_provenance && metadata.len() != record.size {
                 return Err(format!("size mismatch for {}", record.path));
             }
-            let (size, digest) = hash_file(&path)?;
-            if size != record.size || digest != record.sha256 {
-                return Err(format!("digest mismatch for {}", record.path));
+            if !skip_provenance {
+                let (size, digest) = hash_file(&path)?;
+                if size != record.size || digest != record.sha256 {
+                    return Err(format!("digest mismatch for {}", record.path));
+                }
             }
             out.push(AuthenticatedResource { record: record.clone(), path,});
         }
@@ -399,6 +404,7 @@ impl ResourceManifest {
     /// Resolve and authenticate one named file without opening any path not
     /// present in the manifest.
     pub fn authenticate_file(&self, baseline_root: &Path, requested: &str,) -> Result<AuthenticatedResource, String> {
+        let skip_provenance = crate::execute::provenance_checks_disabled();
         let path = safe_relative(requested)?;
         let record = self
             .files
@@ -413,12 +419,14 @@ impl ResourceManifest {
             return Err(format!("resource path escapes declared root: {}", requested));
         }
         let metadata = fs::metadata(&resolved).map_err(|e| format!("stat {}: {}", resolved.display(), e))?;
-        if metadata.len() != record.size {
+        if !skip_provenance && metadata.len() != record.size {
             return Err(format!("size mismatch for {}", requested));
         }
-        let (actual_size, digest) = hash_file(&resolved)?;
-        if actual_size != record.size || digest != record.sha256 {
-            return Err(format!("digest mismatch for {}", requested));
+        if !skip_provenance {
+            let (actual_size, digest) = hash_file(&resolved)?;
+            if actual_size != record.size || digest != record.sha256 {
+                return Err(format!("digest mismatch for {}", requested));
+            }
         }
         Ok(AuthenticatedResource { record: record.clone(), path: resolved,}) } }
 

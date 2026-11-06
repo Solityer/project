@@ -747,7 +747,13 @@ def _compatible_provenance_document(
                 admission_value = _integer(admission.get(name), f"{dataset} {label} Admission {name}", minimum=minimum)
                 if receipt_value != admission_value:
                     abort(f"{dataset} {label} Admission receipt disagrees with its bound {name}")
-        compare_admission_semantics(old_admission, current_admission, dataset=dataset)
+        compare_admission_semantics(
+            old_admission,
+            current_admission,
+            dataset=dataset,
+            old_settings_path=old_settings_path,
+            current_settings_path=current_settings_path,
+        )
 
     old_ppi_admission = old_admissions["ppi"]
     if old_setup_refs.get("bound_setup_admission") != {

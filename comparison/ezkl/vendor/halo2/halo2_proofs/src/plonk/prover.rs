@@ -309,6 +309,8 @@ pub(crate) fn native_shplonk_batch_width(
 use group::prime::PrimeCurveAffine;
 
 const ASSIGNED_EVENT_BATCH_SIZE: usize = 8192;
+const EMPTY_ADVICE_SPARSE_TAIL_MAX_TERMS: usize = 9;
+const EMPTY_ADVICE_SPARSE_MIN_DOMAIN: usize = 1 << 18;
 
 struct AssignedEvent<F: PrimeField> {
     row: usize,
@@ -470,137 +472,116 @@ impl<F: PrimeField> AssignedEventColumn<F> {
             ));
         }
 
-        let mut latest = Polynomial::<u64, LagrangeCoeff>::mapped_filled(domain_len, 0)?;
-        {
+        let values = {
             let mut reader = log.reader()?;
-            let mut remaining = self.event_count;
-            let mut first_index = 0u64;
-            let mut consumed_bytes = 0u64;
-            while remaining > 0 {
-                let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
-                    })?;
-                for offset in 0..count {
-                    let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
-                    consumed_bytes = consumed_bytes
-                        .checked_add(event_bytes as u64)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "advice event byte count overflow",
-                            )
-                        })?;
-                    if event.row >= domain_len {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "advice event row exceeds native polynomial domain",
-                        ));
-                    }
-                    latest[event.row] = first_index
-                        .checked_add(offset as u64)
-                        .and_then(|index| index.checked_add(1))
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "advice event index overflow",
-                            )
-                        })?;
-                }
-                first_index = first_index.checked_add(count as u64).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow")
-                })?;
-                remaining -= count as u64;
-            }
-            if consumed_bytes != expected_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "advice event decoder byte count disagrees with its writer count",
-                ));
-            }
-            if reader.fill_buf()?.len() != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "advice event log has trailing bytes",
-                ));
-            }
-        }
-
-        let mut values = Polynomial::<F, LagrangeCoeff>::mapped_filled(domain_len, F::ZERO)?;
-        {
-            let mut reader = log.reader()?;
-            let mut remaining = self.event_count;
-            let mut first_index = 0u64;
-            let mut consumed_bytes = 0u64;
-            while remaining > 0 {
-                let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
-                    .map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
-                    })?;
-                let mut events = Vec::with_capacity(count);
-                for _ in 0..count {
-                    let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
-                    consumed_bytes = consumed_bytes
-                        .checked_add(event_bytes as u64)
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "advice event byte count overflow",
-                            )
-                        })?;
-                    if event.row >= domain_len {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "advice event row exceeds native polynomial domain",
-                        ));
-                    }
-                    events.push(event);
-                }
-                let mut inverse_denominators = events
-                    .iter()
-                    .map(|event| event.value.denominator())
-                    .collect::<Vec<_>>();
-                inverse_denominators
-                    .iter_mut()
-                    .filter_map(Option::as_mut)
-                    .batch_invert();
-                for (offset, (event, inverse)) in
-                    events.iter().zip(inverse_denominators).enumerate()
-                {
-                    let event_index = first_index
-                        .checked_add(offset as u64)
-                        .and_then(|index| index.checked_add(1))
-                        .ok_or_else(|| {
-                            io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "advice event index overflow",
-                            )
-                        })?;
-                    if latest[event.row] == event_index {
-                        values[event.row] = event.value.numerator() * inverse.unwrap_or(F::ONE);
-                    }
-                }
-                first_index = first_index.checked_add(count as u64).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow")
-                })?;
-                remaining -= count as u64;
-            }
-            if consumed_bytes != expected_bytes {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "advice event decoder byte count disagrees with its writer count",
-                ));
-            }
-            if reader.fill_buf()?.len() != 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "advice event log has trailing bytes",
-                ));
-            }
-        }
+            replay_assigned_events::<F, _>(
+                &mut reader,
+                self.event_count,
+                expected_bytes,
+                domain_len,
+            )?
+        };
         drop(log);
         Ok(values)
     }
+}
+
+fn empty_advice_sparse_domain_eligible(
+    has_no_assigned_events: bool,
+    domain_len: usize,
+) -> bool {
+    has_no_assigned_events && domain_len >= EMPTY_ADVICE_SPARSE_MIN_DOMAIN
+}
+
+fn sparse_advice_tail_entries<F: PrimeField>(
+    poly: &Polynomial<F, LagrangeCoeff>,
+    tail_start: usize,
+) -> Option<Vec<(usize, F)>> {
+    let tail = poly.get(tail_start..)?;
+    let mut entries = Vec::with_capacity(EMPTY_ADVICE_SPARSE_TAIL_MAX_TERMS);
+    for (offset, value) in tail.iter().enumerate() {
+        if *value != F::ZERO {
+            if entries.len() == EMPTY_ADVICE_SPARSE_TAIL_MAX_TERMS {
+                return None;
+            }
+            entries.push((tail_start + offset, *value));
+        }
+    }
+    Some(entries)
+}
+
+fn empty_advice_sparse_tail<F: PrimeField>(
+    has_no_assigned_events: bool,
+    poly: &Polynomial<F, LagrangeCoeff>,
+    tail_start: usize,
+) -> Option<Vec<(usize, F)>> {
+    if !empty_advice_sparse_domain_eligible(has_no_assigned_events, poly.len()) {
+        return None;
+    }
+    sparse_advice_tail_entries(poly, tail_start)
+}
+
+fn replay_assigned_events<F: PrimeField, R: Read + BufRead>(
+    reader: &mut R,
+    event_count: u64,
+    expected_bytes: u64,
+    domain_len: usize,
+) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+    let mut values = Polynomial::<F, LagrangeCoeff>::mapped_filled(domain_len, F::ZERO)?;
+    let mut remaining = event_count;
+    let mut consumed_bytes = 0u64;
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow")
+            })?;
+        let mut events = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (event, event_bytes) = read_assigned_event::<F, _>(reader)?;
+            consumed_bytes = consumed_bytes
+                .checked_add(event_bytes as u64)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "advice event byte count overflow",
+                    )
+                })?;
+            if event.row >= domain_len {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "advice event row exceeds native polynomial domain",
+                ));
+            }
+            events.push(event);
+        }
+        let mut inverse_denominators = events
+            .iter()
+            .map(|event| event.value.denominator())
+            .collect::<Vec<_>>();
+        inverse_denominators
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .batch_invert();
+        for (event, inverse) in events.iter().zip(inverse_denominators) {
+            // Replaying every decoded event in order preserves last-write-wins
+            // while still validating even records that a later event replaces.
+            values[event.row] = event.value.numerator() * inverse.unwrap_or(F::ONE);
+        }
+        remaining -= count as u64;
+    }
+    if consumed_bytes != expected_bytes {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "advice event decoder byte count disagrees with its writer count",
+        ));
+    }
+    if reader.fill_buf()?.len() != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "advice event log has trailing bytes",
+        ));
+    }
+    Ok(values)
 }
 
 fn read_assigned_event<F: PrimeField, R: Read>(
@@ -997,7 +978,16 @@ where
             .next()
             .expect("constraint system must expose its initial advice phase");
         for current_phase in pk.vk.cs.phases() {
-            let _start = Instant::now();
+            let phase_gpu_stats_before = crate::icicle::execution_stats();
+            let mut synthesis_ms = 0.0;
+            let mut materialize_ms = 0.0;
+            let mut commitment_ms = 0.0;
+            let mut normalization_ms = 0.0;
+            let mut transcript_ms = 0.0;
+            let mut empty_event_columns = 0usize;
+            let mut sparse_commit_columns = 0usize;
+            let mut dense_commit_columns = 0usize;
+            let mut logical_gpu_scalar_input_bytes = 0u128;
             let column_indices = meta
                 .advice_column_phase
                 .iter()
@@ -1014,7 +1004,6 @@ where
             for ((circuit, advice), instances) in
                 circuits.iter().zip(advice.iter_mut()).zip(instances)
             {
-                let _start = Instant::now();
                 let mut witness = WitnessCollection {
                     k: params.k(),
                     current_phase,
@@ -1032,7 +1021,7 @@ where
                     _marker: std::marker::PhantomData,
                 };
 
-                let _start = Instant::now();
+                let synthesis_started = Instant::now();
                 // Synthesize the circuit to obtain the witness and other information.
                 ConcreteCircuit::FloorPlanner::synthesize(
                     &mut witness,
@@ -1040,8 +1029,9 @@ where
                     config.clone(),
                     meta.constants.clone(),
                 )?;
+                synthesis_ms += synthesis_started.elapsed().as_secs_f64() * 1000.0;
 
-                let _start = Instant::now();
+                let materialize_started = Instant::now();
                 // Finish each current-phase source log before choosing an
                 // order, so encoded_bytes is the exact on-disk event length.
                 // Descending source size drains the largest logs first while
@@ -1067,11 +1057,17 @@ where
                 // Convert one assigned column at a time. Each source backing
                 // is released before the next column is materialized, and
                 // outputs remain stored at their original column indices.
+                let mut advice_columns_have_no_events = vec![false; meta.num_advice_columns];
                 for column_index in materialize_indices {
                     let assigned = std::mem::replace(
                         &mut witness.advice[column_index],
                         AssignedEventColumn::<Scheme::Scalar>::new(),
                     );
+                    let has_no_assigned_events = assigned.event_count == 0;
+                    advice_columns_have_no_events[column_index] = has_no_assigned_events;
+                    if has_no_assigned_events {
+                        empty_event_columns += 1;
+                    }
                     let mut advice_values = assigned
                         .into_lagrange(params.n() as usize)
                         .map_err(Error::NativeStorage)?;
@@ -1086,8 +1082,9 @@ where
                     }
                     advice.advice_polys[column_index] = advice_values;
                 }
+                materialize_ms += materialize_started.elapsed().as_secs_f64() * 1000.0;
 
-                let _start = Instant::now();
+                let commitment_started = Instant::now();
                 // Compute commitments to advice column polynomials
                 let blinds: Vec<_> = column_indices
                     .iter()
@@ -1103,15 +1100,45 @@ where
                     Vec::with_capacity(column_indices.len());
                 for (column_index, blind) in column_indices.iter().zip(blinds.iter().copied()) {
                     let poly = &advice.advice_polys[*column_index];
-                    let commitment = if current_phase == initial_advice_phase {
-                        let _commitment_timer =
-                            crate::plonk::commitment_timing::advice_guard();
-                        params.commit_lagrange(poly, blind)
+                    let sparse_entries = empty_advice_sparse_tail(
+                        advice_columns_have_no_events[*column_index],
+                        poly,
+                        unusable_rows_start,
+                    );
+                    let gpu_stats_before = crate::icicle::execution_stats();
+                    let commitment = if let Some(entries) = sparse_entries {
+                        sparse_commit_columns += 1;
+                        if current_phase == initial_advice_phase {
+                            let _commitment_timer =
+                                crate::plonk::commitment_timing::advice_guard();
+                            params
+                                .commit_lagrange_sparse(params.n(), &entries, blind)
+                                .map_err(Error::NativeStorage)?
+                        } else {
+                            params
+                                .commit_lagrange_sparse(params.n(), &entries, blind)
+                                .map_err(Error::NativeStorage)?
+                        }
                     } else {
-                        params.commit_lagrange(poly, blind)
+                        dense_commit_columns += 1;
+                        if current_phase == initial_advice_phase {
+                            let _commitment_timer =
+                                crate::plonk::commitment_timing::advice_guard();
+                            params.commit_lagrange(poly, blind)
+                        } else {
+                            params.commit_lagrange(poly, blind)
+                        }
                     };
+                    let gpu_stats_after = crate::icicle::execution_stats();
+                    let gpu_msm_calls = gpu_stats_after.0.saturating_sub(gpu_stats_before.0);
+                    logical_gpu_scalar_input_bytes += (poly.len() as u128)
+                        * (std::mem::size_of::<Scheme::Scalar>() as u128)
+                        * (gpu_msm_calls as u128);
                     advice_commitments_projective.push(commitment);
                 }
+                commitment_ms += commitment_started.elapsed().as_secs_f64() * 1000.0;
+
+                let normalization_started = Instant::now();
                 let mut advice_commitments =
                     vec![Scheme::Curve::identity(); advice_commitments_projective.len()];
                 if current_phase == initial_advice_phase {
@@ -1126,25 +1153,49 @@ where
                         &mut advice_commitments,
                     );
                 }
+                normalization_ms += normalization_started.elapsed().as_secs_f64() * 1000.0;
                 let advice_commitments = advice_commitments;
                 drop(advice_commitments_projective);
 
-                let _start = Instant::now();
+                let transcript_started = Instant::now();
                 for commitment in &advice_commitments {
                     transcript.write_point(*commitment)?;
                 }
                 for (column_index, blind) in column_indices.iter().zip(blinds) {
                     advice.advice_blinds[*column_index] = blind;
                 }
+                transcript_ms += transcript_started.elapsed().as_secs_f64() * 1000.0;
             }
 
             for (index, phase) in meta.challenge_phase.iter().enumerate() {
                 if current_phase == *phase {
+                    let transcript_started = Instant::now();
                     let existing =
                         challenges.insert(index, *transcript.squeeze_challenge_scalar::<()>());
+                    transcript_ms += transcript_started.elapsed().as_secs_f64() * 1000.0;
                     assert!(existing.is_none());
                 }
             }
+
+            let phase_gpu_stats_after = crate::icicle::execution_stats();
+            println!(
+                "EZKL_NATIVE_PHASE DONE stage=advice_phase phase={:?} synthesize_ms={:.3} materialize_ms={:.3} commit_ms={:.3} normalize_ms={:.3} transcript_ms={:.3} empty_event_columns={} sparse_commit_columns={} dense_commit_columns={} gpu_msm_calls={} gpu_msm_chunks={} gpu_msm_precompute_calls={} gpu_msm_cached_chunks={} gpu_sync_operations={} logical_gpu_msm_scalar_input_bytes={}",
+                current_phase,
+                synthesis_ms,
+                materialize_ms,
+                commitment_ms,
+                normalization_ms,
+                transcript_ms,
+                empty_event_columns,
+                sparse_commit_columns,
+                dense_commit_columns,
+                phase_gpu_stats_after.0.saturating_sub(phase_gpu_stats_before.0),
+                phase_gpu_stats_after.1.saturating_sub(phase_gpu_stats_before.1),
+                phase_gpu_stats_after.12.saturating_sub(phase_gpu_stats_before.12),
+                phase_gpu_stats_after.13.saturating_sub(phase_gpu_stats_before.13),
+                phase_gpu_stats_after.4.saturating_sub(phase_gpu_stats_before.4),
+                logical_gpu_scalar_input_bytes,
+            );
         }
 
         assert_eq!(challenges.len(), meta.num_challenges);
@@ -2604,11 +2655,142 @@ fn earlier_phase_values_feed_later_phase_without_evaluating_future_callbacks() {
 
 #[cfg(test)]
 mod assigned_event_tests {
-    use super::{Assigned, AssignedEventColumn};
-    use crate::poly::native_spill_scope;
-    use ff::Field;
-    use halo2curves::bn256::Fr;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use super::{
+        empty_advice_sparse_domain_eligible, empty_advice_sparse_tail, read_assigned_event,
+        replay_assigned_events, sparse_advice_tail_entries, Assigned, AssignedEventColumn,
+        ASSIGNED_EVENT_BATCH_SIZE, EMPTY_ADVICE_SPARSE_MIN_DOMAIN,
+    };
+    use crate::poly::{
+        commitment::{Blind, Params, ParamsProver},
+        kzg::commitment::ParamsKZG,
+        native_spill_scope, LagrangeCoeff, Polynomial,
+    };
+    use ff::{BatchInvert, Field, PrimeField};
+    use halo2curves::bn256::{Bn256, Fr};
+    use std::io::{self, BufRead, Read};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn empty_advice_sparse_fastpath_has_minimum_domain_and_requires_no_events() {
+        assert!(!empty_advice_sparse_domain_eligible(
+            true,
+            EMPTY_ADVICE_SPARSE_MIN_DOMAIN - 1,
+        ));
+        assert!(empty_advice_sparse_domain_eligible(
+            true,
+            EMPTY_ADVICE_SPARSE_MIN_DOMAIN,
+        ));
+        assert!(!empty_advice_sparse_domain_eligible(
+            false,
+            EMPTY_ADVICE_SPARSE_MIN_DOMAIN,
+        ));
+
+        let mut pending_nonempty = AssignedEventColumn::<Fr>::new();
+        pending_nonempty
+            .push(2, Assigned::Trivial(Fr::from(42)))
+            .expect("append pending nonzero event");
+        assert_eq!(pending_nonempty.event_count, 1);
+        assert!(pending_nonempty.log.is_none());
+        assert!(!empty_advice_sparse_domain_eligible(
+            pending_nonempty.event_count == 0,
+            EMPTY_ADVICE_SPARSE_MIN_DOMAIN,
+        ));
+    }
+
+    fn replay_assigned_events_two_pass<F: PrimeField>(
+        bytes: &[u8],
+        event_count: u64,
+        expected_bytes: u64,
+        domain_len: usize,
+    ) -> io::Result<Polynomial<F, LagrangeCoeff>> {
+        let mut latest = Polynomial::<u64, LagrangeCoeff>::mapped_filled(domain_len, 0)?;
+        let mut reader = io::Cursor::new(bytes);
+        let mut remaining = event_count;
+        let mut first_index = 0u64;
+        let mut consumed_bytes = 0u64;
+        while remaining > 0 {
+            let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow"))?;
+            for offset in 0..count {
+                let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
+                consumed_bytes = consumed_bytes.checked_add(event_bytes as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "advice event byte count overflow")
+                })?;
+                if event.row >= domain_len {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event row exceeds native polynomial domain"));
+                }
+                latest[event.row] = first_index
+                    .checked_add(offset as u64)
+                    .and_then(|index| index.checked_add(1))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow"))?;
+            }
+            first_index = first_index.checked_add(count as u64)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow"))?;
+            remaining -= count as u64;
+        }
+        if consumed_bytes != expected_bytes {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event decoder byte count disagrees with its writer count"));
+        }
+        if reader.fill_buf()?.len() != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event log has trailing bytes"));
+        }
+
+        let mut values = Polynomial::<F, LagrangeCoeff>::mapped_filled(domain_len, F::ZERO)?;
+        let mut reader = io::Cursor::new(bytes);
+        let mut remaining = event_count;
+        let mut first_index = 0u64;
+        let mut consumed_bytes = 0u64;
+        while remaining > 0 {
+            let count = usize::try_from(remaining.min(ASSIGNED_EVENT_BATCH_SIZE as u64))
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "advice batch length overflow"))?;
+            let mut events = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (event, event_bytes) = read_assigned_event::<F, _>(&mut reader)?;
+                consumed_bytes = consumed_bytes.checked_add(event_bytes as u64).ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidData, "advice event byte count overflow")
+                })?;
+                if event.row >= domain_len {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event row exceeds native polynomial domain"));
+                }
+                events.push(event);
+            }
+            let mut inverse_denominators = events.iter()
+                .map(|event| event.value.denominator())
+                .collect::<Vec<_>>();
+            inverse_denominators.iter_mut().filter_map(Option::as_mut).batch_invert();
+            for (offset, (event, inverse)) in events.iter().zip(inverse_denominators).enumerate() {
+                let event_index = first_index
+                    .checked_add(offset as u64)
+                    .and_then(|index| index.checked_add(1))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow"))?;
+                if latest[event.row] == event_index {
+                    values[event.row] = event.value.numerator() * inverse.unwrap_or(F::ONE);
+                }
+            }
+            first_index = first_index.checked_add(count as u64)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "advice event index overflow"))?;
+            remaining -= count as u64;
+        }
+        if consumed_bytes != expected_bytes {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event decoder byte count disagrees with its writer count"));
+        }
+        if reader.fill_buf()?.len() != 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "advice event log has trailing bytes"));
+        }
+        Ok(values)
+    }
+
+    fn assert_replay_error_matches(bytes: &[u8], event_count: u64, expected_bytes: u64, domain_len: usize) {
+        let old = replay_assigned_events_two_pass::<Fr>(bytes, event_count, expected_bytes, domain_len)
+            .err()
+            .expect("old two-pass replay should reject malformed input");
+        let mut reader = io::Cursor::new(bytes);
+        let new = replay_assigned_events::<Fr, _>(&mut reader, event_count, expected_bytes, domain_len)
+            .err()
+            .expect("single-pass replay should reject malformed input");
+        assert_eq!(old.kind(), new.kind());
+        assert_eq!(old.to_string(), new.to_string());
+    }
 
     #[test]
     fn assigned_events_preserve_zero_rational_and_last_write() {
@@ -2657,6 +2839,19 @@ mod assigned_event_tests {
             .expect("empty advice column remains zero");
         assert!(empty.iter().all(|value| *value == Fr::ZERO));
 
+        let mut pending_nonempty = AssignedEventColumn::<Fr>::new();
+        pending_nonempty
+            .push(2, Assigned::Trivial(Fr::from(42)))
+            .expect("append nonzero event that remains pending");
+        assert_eq!(pending_nonempty.event_count, 1);
+        assert!(pending_nonempty.log.is_none());
+        assert!(empty_advice_sparse_tail(pending_nonempty.event_count == 0, &empty, 0).is_none());
+        let pending_values = pending_nonempty
+            .into_lagrange(4)
+            .expect("materialize pending nonempty event");
+        assert_eq!(pending_values[2], Fr::from(42));
+        drop(pending_values);
+
         let mut out_of_domain = AssignedEventColumn::<Fr>::new();
         out_of_domain
             .push(4, Assigned::Trivial(Fr::ONE))
@@ -2670,5 +2865,285 @@ mod assigned_event_tests {
         drop(values);
         drop(spill);
         std::fs::remove_dir_all(base).expect("remove test scratch parent");
+    }
+
+    #[test]
+    fn single_pass_assigned_replay_matches_two_pass_and_validation() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "halo2-assigned-replay-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&base).expect("create replay test scratch parent");
+        let spill = native_spill_scope(&base).expect("create replay test spill scope");
+
+        let mut assigned = AssignedEventColumn::<Fr>::new();
+        let event_count = ASSIGNED_EVENT_BATCH_SIZE + 3;
+        for index in 0..event_count {
+            let row = index % 60;
+            let value = if index == 0 {
+                Assigned::Rational(Fr::from(7), Fr::ZERO)
+            } else if index % 13 == 0 {
+                Assigned::Rational(
+                    Fr::from((index % 29 + 1) as u64),
+                    Fr::from((index % 7 + 1) as u64),
+                )
+            } else if index % 11 == 0 {
+                Assigned::Zero
+            } else {
+                Assigned::Trivial(Fr::from((index % 251 + 1) as u64))
+            };
+            assigned.push(row, value).expect("append benchmark event");
+        }
+        assigned.flush_pending().expect("flush benchmark events");
+        assert_eq!(assigned.event_count, event_count as u64);
+        let expected_bytes = assigned.encoded_bytes;
+        let mut log = assigned.log.take().expect("nonempty event log");
+        let mut encoded = Vec::new();
+        log.reader()
+            .expect("open fixture event reader")
+            .read_to_end(&mut encoded)
+            .expect("read encoded fixture");
+        assert_eq!(encoded.len() as u64, expected_bytes);
+        assert_eq!(log.bytes_written(), expected_bytes);
+
+        const REPEATS: usize = 8;
+        let old_started = Instant::now();
+        let mut old_result = None;
+        for _ in 0..REPEATS {
+            let result = replay_assigned_events_two_pass::<Fr>(
+                &encoded,
+                event_count as u64,
+                expected_bytes,
+                64,
+            )
+            .expect("old two-pass replay");
+            std::hint::black_box(result[0]);
+            old_result = Some(result);
+        }
+        let old_wall_ms = old_started.elapsed().as_secs_f64() * 1000.0;
+
+        let new_started = Instant::now();
+        let mut new_result = None;
+        for _ in 0..REPEATS {
+            let mut reader = io::Cursor::new(encoded.as_slice());
+            let result = replay_assigned_events::<Fr, _>(
+                &mut reader,
+                event_count as u64,
+                expected_bytes,
+                64,
+            )
+            .expect("single-pass replay");
+            std::hint::black_box(result[0]);
+            new_result = Some(result);
+        }
+        let new_wall_ms = new_started.elapsed().as_secs_f64() * 1000.0;
+        let old_result = old_result.expect("old replay result");
+        let new_result = new_result.expect("single-pass replay result");
+        assert!(old_result
+            .iter()
+            .zip(new_result.iter())
+            .all(|(old, new)| *old == *new));
+        println!(
+            "EZKL_NATIVE_ADVICE_REPLAY_AB events={} domain=64 batch_limit={} encoded_bytes_per_replay={} old_reader_passes_total={} new_reader_passes_total={} old_logical_read_bytes_total={} new_logical_read_bytes_total={} repeats={} old_wall_ms={:.3} new_wall_ms={:.3} input=real_spill_writer_sequence_replayed_from_memory measurement=bounded_cpu_substep_only",
+            event_count,
+            ASSIGNED_EVENT_BATCH_SIZE,
+            expected_bytes,
+            REPEATS * 2,
+            REPEATS,
+            expected_bytes * 2 * REPEATS as u64,
+            expected_bytes * REPEATS as u64,
+            REPEATS,
+            old_wall_ms,
+            new_wall_ms,
+        );
+
+        let mut rational_zero_denominator = Vec::new();
+        rational_zero_denominator.extend_from_slice(&1u64.to_le_bytes());
+        rational_zero_denominator.push(2);
+        rational_zero_denominator.extend_from_slice(Fr::from(7).to_repr().as_ref());
+        rational_zero_denominator.extend_from_slice(Fr::ZERO.to_repr().as_ref());
+        let rational_len = rational_zero_denominator.len() as u64;
+        let old_rational = replay_assigned_events_two_pass::<Fr>(
+            &rational_zero_denominator,
+            1,
+            rational_len,
+            64,
+        )
+        .expect("old defensive rational replay");
+        let mut reader = io::Cursor::new(rational_zero_denominator.as_slice());
+        let new_rational = replay_assigned_events::<Fr, _>(&mut reader, 1, rational_len, 64)
+            .expect("single-pass defensive rational replay");
+        assert_eq!(old_rational[1], Fr::ZERO);
+        assert_eq!(old_rational[1], new_rational[1]);
+
+        let mut out_of_domain = 64u64.to_le_bytes().to_vec();
+        out_of_domain.push(0);
+        assert_replay_error_matches(&out_of_domain, 1, 9, 64);
+
+        let mut invalid_tag = 0u64.to_le_bytes().to_vec();
+        invalid_tag.push(3);
+        assert_replay_error_matches(&invalid_tag, 1, 9, 64);
+
+        let mut truncated = 0u64.to_le_bytes().to_vec();
+        truncated.push(1);
+        assert_replay_error_matches(
+            &truncated,
+            1,
+            9 + <Fr as PrimeField>::Repr::default().as_ref().len() as u64,
+            64,
+        );
+
+        let mut noncanonical = 0u64.to_le_bytes().to_vec();
+        noncanonical.push(1);
+        noncanonical.extend(
+            std::iter::repeat(0xff).take(<Fr as PrimeField>::Repr::default().as_ref().len()),
+        );
+        assert_replay_error_matches(
+            &noncanonical,
+            1,
+            noncanonical.len() as u64,
+            64,
+        );
+
+        let mut trailing = 0u64.to_le_bytes().to_vec();
+        trailing.push(0);
+        trailing.push(0);
+        assert_replay_error_matches(&trailing, 1, 9, 64);
+        assert_replay_error_matches(&trailing[..9], 1, 8, 64);
+
+        drop(new_rational);
+        drop(old_rational);
+        drop(new_result);
+        drop(old_result);
+        drop(log);
+        drop(spill);
+        std::fs::remove_dir_all(base).expect("remove replay test scratch parent");
+    }
+
+    fn assert_dense_sparse_commitments_equal_and_measure(
+        params: &ParamsKZG<Bn256>,
+        poly: &Polynomial<Fr, LagrangeCoeff>,
+        entries: &[(usize, Fr)],
+        blind: Blind<Fr>,
+        label: &str,
+    ) {
+        let dense = params.commit_lagrange(poly, blind);
+        let sparse = params
+            .commit_lagrange_sparse(params.n(), entries, blind)
+            .expect("bounded sparse KZG commitment");
+        assert_eq!(dense, sparse, "{label} dense and sparse commitments differ");
+
+        const REPEATS: usize = 32;
+        let dense_started = Instant::now();
+        let mut dense_last = None;
+        for _ in 0..REPEATS {
+            dense_last = Some(std::hint::black_box(params.commit_lagrange(poly, blind)));
+        }
+        let dense_wall_ms = dense_started.elapsed().as_secs_f64() * 1000.0;
+
+        let sparse_started = Instant::now();
+        let mut sparse_last = None;
+        for _ in 0..REPEATS {
+            sparse_last = Some(std::hint::black_box(
+                params
+                    .commit_lagrange_sparse(params.n(), entries, blind)
+                    .expect("bounded sparse KZG commitment"),
+            ));
+        }
+        let sparse_wall_ms = sparse_started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(dense_last.expect("dense benchmark result"), dense);
+        assert_eq!(sparse_last.expect("sparse benchmark result"), sparse);
+        println!(
+            "EZKL_NATIVE_ADVICE_COMMIT_MICRO label={} k=6 domain={} tail_support={} repeats={} dense_cpu_wall_ms={:.3} sparse_cpu_wall_ms={:.3} measurement=small_k_cpu_substep_only",
+            label,
+            poly.len(),
+            entries.len(),
+            REPEATS,
+            dense_wall_ms,
+            sparse_wall_ms,
+        );
+    }
+
+    #[test]
+    fn empty_advice_sparse_commitments_match_dense_for_blinded_tails() {
+        const K: u32 = 6;
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before Unix epoch")
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "halo2-advice-sparse-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&base).expect("create sparse advice scratch parent");
+        let spill = native_spill_scope(&base).expect("create sparse advice spill scope");
+        let params = ParamsKZG::<Bn256>::new(K);
+        let stats_before = crate::icicle::execution_stats();
+        let domain_len = params.n() as usize;
+        let tail_start = domain_len - 9;
+
+        let unblinded = AssignedEventColumn::<Fr>::new()
+            .into_lagrange(domain_len)
+            .expect("materialize unblinded empty column");
+        let unblinded_entries = sparse_advice_tail_entries(&unblinded, tail_start)
+            .expect("unblinded zero tail is representable sparsely");
+        assert!(unblinded_entries.is_empty());
+        assert_dense_sparse_commitments_equal_and_measure(
+            &params,
+            &unblinded,
+            &unblinded_entries,
+            Blind::default(),
+            "unblinded_zero_tail",
+        );
+
+        let mut blinded = AssignedEventColumn::<Fr>::new()
+            .into_lagrange(domain_len)
+            .expect("materialize blinded empty column");
+        for (offset, value) in blinded[tail_start..].iter_mut().enumerate() {
+            *value = Fr::from((offset + 1) as u64);
+        }
+        let blinded_entries = sparse_advice_tail_entries(&blinded, tail_start)
+            .expect("blinded tail with at most nine terms is representable sparsely");
+        assert_eq!(blinded_entries.len(), 9);
+        assert_dense_sparse_commitments_equal_and_measure(
+            &params,
+            &blinded,
+            &blinded_entries,
+            Blind(Fr::from(17)),
+            "blinded_nine_term_tail",
+        );
+
+        let mut pending = AssignedEventColumn::<Fr>::new();
+        pending
+            .push(2, Assigned::Trivial(Fr::from(42)))
+            .expect("append pending nonzero event");
+        assert_eq!(pending.event_count, 1);
+        assert!(pending.log.is_none(), "single pending event must remain unflushed");
+        assert!(empty_advice_sparse_tail(pending.event_count == 0, &blinded, tail_start).is_none());
+        let pending_values = pending
+            .into_lagrange(domain_len)
+            .expect("materialize pending nonempty column");
+        assert_eq!(pending_values[2], Fr::from(42));
+        drop(pending_values);
+
+        let mut too_many_terms = Polynomial::<Fr, LagrangeCoeff>::mapped_filled(domain_len, Fr::ZERO)
+            .expect("allocate over-limit tail fixture");
+        for (offset, value) in too_many_terms[domain_len - 10..].iter_mut().enumerate() {
+            *value = Fr::from((offset + 1) as u64);
+        }
+        assert!(sparse_advice_tail_entries(&too_many_terms, domain_len - 10).is_none());
+
+        drop(too_many_terms);
+        drop(blinded);
+        drop(unblinded);
+        drop(spill);
+        std::fs::remove_dir_all(base).expect("remove sparse advice scratch parent");
+        let stats_after = crate::icicle::execution_stats();
+        assert_eq!(stats_after.0, stats_before.0, "CPU oracle must not invoke GPU MSM");
+        assert_eq!(stats_after.1, stats_before.1, "CPU oracle must not launch GPU MSM chunks");
     }
 }

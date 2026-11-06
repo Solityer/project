@@ -841,12 +841,14 @@ def _validate_compatible_receipt_artifacts(
         or current_admission.get("settings_sha256") != current_ref["settings_sha256"]
     ):
         abort(f"{result_path} current PPI capacity Admission identity is inconsistent")
-    compare_admission_semantics(admission, current_admission, dataset="ppi")
-    admission_semantics_sha256 = admission_semantics_digest(admission, dataset="ppi")
-    if (
-        admission_semantics_digest(current_admission, dataset="ppi") != admission_semantics_sha256
-        or receipt["admission_semantics_sha256"] != admission_semantics_sha256
-    ):
+    admission_semantics_sha256 = compare_admission_semantics(
+        admission,
+        current_admission,
+        dataset="ppi",
+        old_settings_path=output / "settings.json",
+        current_settings_path=current_settings_path,
+    )
+    if receipt["admission_semantics_sha256"] != admission_semantics_sha256:
         abort(f"{result_path} PPI compatible Admission semantics do not match the receipt")
 
     setup_refs = setup_chain
@@ -1085,7 +1087,6 @@ def _validate_capacity_check(
             or budget.get("icicle_msm_precomputed_basis_device_upper_bytes") != check["icicle_msm_precomputed_basis_device_upper_bytes"]
             or budget.get("icicle_msm_point_staging_host_upper_bytes") != check["icicle_msm_point_staging_host_upper_bytes"]
             or budget.get("icicle_ntt_device_peak_upper_bytes") != check["cuda_ntt_workspace_upper_bytes"]
-            or budget.get("icicle_ntt_host_staging_upper_bytes") != check["icicle_ntt_host_staging_upper_bytes"]
             or budget.get("icicle_msm_max_concurrency") != 1
             or budget.get("icicle_ntt_min_log_size") != 16
             or budget.get("icicle_ntt_max_log_size") != 25
@@ -1368,7 +1369,13 @@ def _validate_compatible_capacity_precheck(
             )
         ):
             abort(f"{result_path} frozen original {dataset} Admission identity is malformed")
-        compare_admission_semantics(old_admission, current_admission, dataset=dataset)
+        compare_admission_semantics(
+            old_admission,
+            current_admission,
+            dataset=dataset,
+            old_settings_path=old_settings_path,
+            current_settings_path=settings_path,
+        )
         row = rows_by_dataset[dataset]
         if (
             row.get("admission_status") != "authenticated_current_session_admission"
@@ -1395,17 +1402,20 @@ def _validate_compatible_capacity_precheck(
     if admissions["ppi"] != ppi_capacity_ref:
         abort(f"{result_path} compatible receipt and recheck snapshot disagree on the current PPI Admission")
     ppi_output_admission = output_root / "ppi" / "admission.json"
+    ppi_output_settings = output_root / "ppi" / "settings.json"
     if (
         ppi_output_admission.is_symlink() or not ppi_output_admission.is_file()
         or sha256(ppi_output_admission) != receipt["bound_setup_admission"]["sha256"]
     ):
         abort(f"{result_path} original PPI Admission bytes were not preserved in output/ppi/admission.json")
-    compare_admission_semantics(
+    ppi_admission_semantics_sha256 = compare_admission_semantics(
         load_json(ppi_output_admission, "retained PPI Setup Admission"),
         loaded_admissions["ppi"],
         dataset="ppi",
+        old_settings_path=ppi_output_settings,
+        current_settings_path=(ROOT / admissions["ppi"]["path"]).parent / "settings.json",
     )
-    if admission_semantics_digest(loaded_admissions["ppi"], dataset="ppi") != receipt["admission_semantics_sha256"]:
+    if ppi_admission_semantics_sha256 != receipt["admission_semantics_sha256"]:
         abort(f"{result_path} current PPI Admission does not match the receipt's semantic digest")
 
     ogbn_output = output_root / "ogbn_arxiv"

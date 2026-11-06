@@ -20,7 +20,7 @@ GAT_RESOURCE_TARGET := gat_resource_setup
 BLST_LIBRARY := third_party/blst/libblst.a
 BLST_SOURCES := $(shell find third_party/blst/src third_party/blst/build third_party/blst/bindings -type f)
 
-.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check sorted-lookup-prefix-cache-check public-field-vector-decode-check pointwise-eqmask-table-check cpu-g1-blst-check cpu-g1-msm-nbits-check output-stream-failure-check formal-closure-check hyrax-gpu-msm-fixture-check clean
+.PHONY: all baseline-local-build test-short checkpoint-manifest-check ledger-contract-check lookup-table-index-bits-check signed-round-bounds-check static-table-bounds-check segmented-fixture-check segmented-shared-srs-check sorted-lookup-descriptor-check sorted-lookup-prefix-cache-check sorted-lookup-public-key-order-check public-field-vector-decode-check pointwise-eqmask-table-check cpu-g1-blst-check cpu-g1-msm-nbits-check output-stream-failure-check formal-closure-check hyrax-gpu-msm-fixture-check clean
 
 all: $(TARGETS) $(GAT_TARGET) $(GAT_RESOURCE_TARGET)
 
@@ -46,6 +46,9 @@ sorted-lookup-descriptor-check: tests/authenticated_sorted_lookup_descriptor_che
 
 sorted-lookup-prefix-cache-check: tests/sorted_lookup_prefix_cache_check
 	timeout 60s ./tests/sorted_lookup_prefix_cache_check
+
+sorted-lookup-public-key-order-check: tests/sorted_lookup_public_key_order_check
+	timeout 60s ./tests/sorted_lookup_public_key_order_check
 
 public-field-vector-decode-check: tests/public_field_vector_decode_check
 	timeout 60s ./tests/public_field_vector_decode_check
@@ -113,6 +116,9 @@ tests/authenticated_sorted_lookup_descriptor_check: tests/authenticated_sorted_l
 
 tests/sorted_lookup_prefix_cache_check: tests/sorted_lookup_prefix_cache_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	timeout 300s $(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
+
+tests/sorted_lookup_public_key_order_check: tests/sorted_lookup_public_key_order_check.cu gat_adapter/gat_native_core.cuh gat_adapter/gat_native_bridge.hpp zkrelation-proof.cuh proof.cuh $(BLST_LIBRARY)
+	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@
 
 tests/public_field_vector_decode_check: tests/public_field_vector_decode_check.cu zkrelation-proof.cuh proof.cuh cpu-backend.cuh gat_adapter/gat_native_resources.hpp gat_adapter/gat_adapter.hpp $(BLST_LIBRARY)
 	$(NVCC) $(NVCC_FLAGS) $(NVCC_HOST_FLAGS) -std=c++17 -DZKDL_USE_BLST_G1_CODEC $(INCLUDES) $(LIBS) -I. -Igat_adapter $< $(BLST_LIBRARY) -o $@

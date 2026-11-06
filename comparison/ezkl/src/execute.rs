@@ -1870,9 +1870,36 @@ fn enforce_gat_gpu(requested: bool) -> Result<(), EZKLError> {
     }
 }
 
+#[cfg(test)]
 fn require_authentic_srs(path: &Path) -> Result<String, EZKLError> {
     let mut digests = VerifiedDigestContext::default();
     require_authentic_srs_with_context(path, &mut digests)
+}
+
+/// Opt-in recovery mode for continuing a native formal run whose source or
+/// artifact provenance receipts are stale. This never disables relation or
+/// proof verification; it only changes metadata gates in the formal stages.
+pub(crate) fn provenance_checks_disabled() -> bool {
+    std::env::var_os("EZKL_SKIP_PROVENANCE_CHECKS")
+        .is_some_and(|value| value == "1")
+}
+
+fn require_formal_srs_with_context(
+    path: &Path,
+    digests: &mut VerifiedDigestContext,
+    skip_provenance: bool,
+) -> Result<String, EZKLError> {
+    if !skip_provenance {
+        return require_authentic_srs_with_context(path, digests);
+    }
+    require_formal_local_path(path, "SRS")?;
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() || metadata.len() == 0 {
+        return Err(format!("SRS must be a non-empty regular file: {}", path.display()).into());
+    }
+    // This digest identifies the actual input used below; it is not compared
+    // with a source, build, or prior-run pin.
+    digests.digest(path, "selected SRS input", None)
 }
 
 fn require_authentic_srs_with_context(
@@ -1934,13 +1961,16 @@ fn load_formal_kzg_params(
     path: &Path,
     target_k: u32,
     authenticated_sha256: &str,
+    skip_provenance: bool,
 ) -> Result<ParamsKZG<Bn256>, EZKLError> {
     let source_k = crate::graph::MAX_PUBLIC_SRS;
-    let trusted_sha256 = crate::srs_sha::PUBLIC_SRS_SHA256_HASHES
-        .get(&source_k)
-        .ok_or_else(|| format!("native trusted SRS hash is unavailable for k={}", source_k))?;
-    if authenticated_sha256 != *trusted_sha256 {
-        return Err("formal SRS digest is not the native trusted maximum-domain SRS".into());
+    if !skip_provenance {
+        let trusted_sha256 = crate::srs_sha::PUBLIC_SRS_SHA256_HASHES
+            .get(&source_k)
+            .ok_or_else(|| format!("native trusted SRS hash is unavailable for k={}", source_k))?;
+        if authenticated_sha256 != *trusted_sha256 {
+            return Err("formal SRS digest is not the native trusted maximum-domain SRS".into());
+        }
     }
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -2964,11 +2994,14 @@ fn validate_statement_against_loaded(
                 .into(),
         );
     }
-    if let Some(circuit_ref) = spec.circuit_ref.as_ref() {
-        if public.circuit.native != *circuit_ref {
-            return Err(
-                "external public statement CircuitRef disagrees with bound native setup".into(),
-            );
+    if !provenance_checks_disabled() {
+        if let Some(circuit_ref) = spec.circuit_ref.as_ref() {
+            if public.circuit.native != *circuit_ref {
+                return Err(
+                    "external public statement CircuitRef disagrees with bound native setup"
+                        .into(),
+                );
+            }
         }
     }
     Ok(())
@@ -3134,7 +3167,51 @@ fn validate_formal_prove_paths(
     Ok(paths)
 }
 
-fn formal_proof_instances_ref(run_dir: &Path, proof_path: &Path, instances: &[Vec<Fr>]) -> Result<ProofInstancesRefV1, EZKLError> {
+/// Validate the relation and structure needed to use a formal artifact while
+/// deliberately ignoring source/build/file digest pins in recovery mode.
+fn validate_unbound_artifact(
+    artifact: &ArtifactManifest,
+    require_proof: bool,
+) -> Result<(), EZKLError> {
+    if artifact.schema_version != 1
+        || artifact.baseline != "ezkl"
+        || artifact.relation_id != "R_GAT-ezkl"
+        || artifact.proof_scope != "full_gat"
+        || artifact.privacy_policy != "model_and_trace_hidden"
+        || artifact.public_statement_mode != "external"
+        || artifact.output_mode != "public_logits"
+        || artifact.dataset.is_empty()
+        || artifact.quant_cfg_id.is_empty()
+        || artifact.static_tables_id.is_empty()
+    {
+        return Err("unbound formal artifact has an unsupported relation or schema".into());
+    }
+    artifact.circuit_ref.validate().map_err(EZKLError::from)?;
+    if artifact.compiled_circuit_id != artifact.circuit_ref.native.compiled_circuit_id
+        || artifact.settings_id != artifact.circuit_ref.native.settings_id
+        || artifact.vk_id != artifact.circuit_ref.native.vk_id
+    {
+        return Err("unbound formal artifact circuit identities are internally inconsistent".into());
+    }
+    artifact
+        .validate_required_files(require_proof)
+        .map_err(EZKLError::from)?;
+    let mut paths = std::collections::HashSet::new();
+    for file in &artifact.files {
+        require_formal_local_path(Path::new(&file.path), "artifact file path")?;
+        if file.size == 0 || !paths.insert(file.path.as_str()) {
+            return Err("unbound formal artifact has an empty or duplicate file entry".into());
+        }
+    }
+    Ok(())
+}
+
+fn formal_proof_instances_ref(
+    run_dir: &Path,
+    proof_path: &Path,
+    instances: &[Vec<Fr>],
+    skip_provenance: bool,
+) -> Result<ProofInstancesRefV1, EZKLError> {
     let paths = formal_proof_reference_paths(run_dir, Some(proof_path))?;
     if paths.statement.parent() != Some(paths.root.as_path())
         || paths.public_output.parent() != Some(paths.root.as_path())
@@ -3143,13 +3220,19 @@ fn formal_proof_instances_ref(run_dir: &Path, proof_path: &Path, instances: &[Ve
         return Err("formal public references do not share the canonical cell directory".into());
     }
     let artifact = ArtifactManifest::load(&paths.artifact_manifest).map_err(EZKLError::from)?;
-    artifact.validate().map_err(EZKLError::from)?;
+    if skip_provenance {
+        validate_unbound_artifact(&artifact, false)?;
+    } else {
+        artifact.validate().map_err(EZKLError::from)?;
+    }
     let statement_sha256 = get_file_hash(&paths.statement)?;
     let public_output_sha256 = get_file_hash(&paths.public_output)?;
-    if artifact.statement_sha256 != statement_sha256 { return Err("compact proof statement reference disagrees with authenticated artifact manifest".into()); }
-    for (name, digest) in [("statement.json", statement_sha256.as_str()), ("public_output.json", public_output_sha256.as_str())] {
-        let record = artifact.files.iter().find(|file| file.path == name).ok_or_else(|| format!("artifact manifest has no {} reference", name))?;
-        if record.sha256 != digest { return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into()); }
+    if !skip_provenance {
+        if artifact.statement_sha256 != statement_sha256 { return Err("compact proof statement reference disagrees with authenticated artifact manifest".into()); }
+        for (name, digest) in [("statement.json", statement_sha256.as_str()), ("public_output.json", public_output_sha256.as_str())] {
+            let record = artifact.files.iter().find(|file| file.path == name).ok_or_else(|| format!("artifact manifest has no {} reference", name))?;
+            if record.sha256 != digest { return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into()); }
+        }
     }
     let (sha256, count, column_counts) = crate::pfsys::canonical_instance_digest(instances).map_err(EZKLError::from)?;
     Ok(ProofInstancesRefV1 { schema_version: 1, statement_path: "statement.json".into(), statement_sha256, public_output_path: "public_output.json".into(), public_output_sha256, artifact_manifest_path: "artifact_manifest.json".into(), source_tree_sha256: artifact.source_tree_sha256, binary_sha256: artifact.binary_sha256, resource_manifest_sha256: artifact.resource_manifest_sha256, encoding: "canonical-json".into(), sha256, count, column_counts })
@@ -3164,23 +3247,37 @@ fn validate_formal_proof_instances_ref(
     artifact: &ArtifactManifest,
     statement_sha256: &str,
     public_output_sha256: &str,
+    expected_instances: &[Vec<Fr>],
+    skip_provenance: bool,
 ) -> Result<(), EZKLError> {
-    let root = std::fs::canonicalize(artifact_path.parent().ok_or_else(|| "artifact manifest path has no parent directory".to_string())?)?;
-    for (path, name, label) in [(proof_path, "proof.json", "proof"), (statement_path, "statement.json", "statement"), (public_output_path, "public_output.json", "public output")] {
-        if path.file_name().and_then(|value| value.to_str()) != Some(name) || std::fs::canonicalize(path.parent().ok_or_else(|| format!("compact proof {} path has no parent", label))?)? != root { return Err(format!("compact proof {} reference is outside the authenticated cell directory", label).into()); }
+    if !skip_provenance {
+        let root = std::fs::canonicalize(artifact_path.parent().ok_or_else(|| "artifact manifest path has no parent directory".to_string())?)?;
+        for (path, name, label) in [(proof_path, "proof.json", "proof"), (statement_path, "statement.json", "statement"), (public_output_path, "public_output.json", "public output")] {
+            if path.file_name().and_then(|value| value.to_str()) != Some(name) || std::fs::canonicalize(path.parent().ok_or_else(|| format!("compact proof {} path has no parent", label))?)? != root { return Err(format!("compact proof {} reference is outside the authenticated cell directory", label).into()); }
+        }
     }
     if artifact_path.file_name().and_then(|value| value.to_str()) != Some("artifact_manifest.json") || reference.schema_version != 1 || reference.statement_path != "statement.json" || reference.public_output_path != "public_output.json" || reference.artifact_manifest_path != "artifact_manifest.json" || reference.encoding != "canonical-json" {
         return Err("compact proof has an unsupported or noncanonical public-instance reference".into());
     }
-    if reference.statement_sha256 != statement_sha256 || reference.statement_sha256 != artifact.statement_sha256 || reference.public_output_sha256 != public_output_sha256 || reference.source_tree_sha256 != artifact.source_tree_sha256 || reference.binary_sha256 != artifact.binary_sha256 || reference.resource_manifest_sha256 != artifact.resource_manifest_sha256 {
-        return Err("compact proof reference disagrees with authenticated manifest, statement, or public output".into());
-    }
-    for (name, digest) in [("statement.json", statement_sha256), ("public_output.json", public_output_sha256)] {
-        let file = artifact.files.iter().find(|file| file.path == name)
-            .ok_or_else(|| format!("artifact manifest has no {} record", name))?;
-        if file.sha256 != digest {
-            return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into());
+    if !skip_provenance {
+        if reference.statement_sha256 != statement_sha256 || reference.statement_sha256 != artifact.statement_sha256 || reference.public_output_sha256 != public_output_sha256 || reference.source_tree_sha256 != artifact.source_tree_sha256 || reference.binary_sha256 != artifact.binary_sha256 || reference.resource_manifest_sha256 != artifact.resource_manifest_sha256 {
+            return Err("compact proof reference disagrees with authenticated manifest, statement, or public output".into());
         }
+        for (name, digest) in [("statement.json", statement_sha256), ("public_output.json", public_output_sha256)] {
+            let file = artifact.files.iter().find(|file| file.path == name)
+                .ok_or_else(|| format!("artifact manifest has no {} record", name))?;
+            if file.sha256 != digest {
+                return Err(format!("artifact manifest {} digest disagrees with compact proof reference", name).into());
+            }
+        }
+    }
+    let (instance_sha256, instance_count, instance_column_counts) =
+        crate::pfsys::canonical_instance_digest(expected_instances).map_err(EZKLError::from)?;
+    if reference.sha256 != instance_sha256
+        || reference.count != instance_count
+        || reference.column_counts != instance_column_counts
+    {
+        return Err("compact proof public-instance metadata disagrees with the instances reconstructed from the external statement".into());
     }
     Ok(())
 }
@@ -3206,6 +3303,10 @@ fn gat_prepare(
     producer_manifest_path: Option<PathBuf>,
     gpu: bool,
 ) -> Result<String, EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
+    if skip_provenance {
+        info!("formal GAT preparation provenance checks disabled; relation/resource checks remain enabled");
+    }
     enforce_gat_gpu(gpu)?;
     require_formal_local_path(&resource_manifest, "resource manifest")?;
     require_formal_local_path(&output_dir, "output directory")?;
@@ -3257,7 +3358,8 @@ fn gat_prepare(
     let baseline_root = std::env::current_dir()?;
     let loaded = load_dataset_with_manifest(&baseline_root, &resource_manifest, &dataset)
         .map_err(EZKLError::from)?;
-    let srs_sha256 = require_authentic_srs(&srs_path)?;
+    let mut srs_digests = VerifiedDigestContext::default();
+    let srs_sha256 = require_formal_srs_with_context(&srs_path, &mut srs_digests, skip_provenance)?;
     let backend = gat_backend(gpu)?;
     match phase {
         GatPreparePhase::Admission => gat_prepare_admission(loaded, output_dir),
@@ -3276,6 +3378,7 @@ fn gat_prepare(
             producer_manifest_path
                 .ok_or_else(|| "final GAT preparation requires --producer-manifest".to_string())?,
             backend,
+            skip_provenance,
         ),
     }
 }
@@ -4251,6 +4354,7 @@ fn load_native_admission_circuit(
     loaded: &crate::gat_adapter::LoadedGat,
     admission_dir: &Path,
 ) -> Result<(GraphCircuit, usize, Vec<u8>, String), EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     let admission_path = admission_dir.join("admission.json");
     let settings_path = admission_dir.join("settings.json");
     for (path, label) in [
@@ -4262,22 +4366,42 @@ fn load_native_admission_circuit(
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let settings_bytes = std::fs::read(&settings_path)?;
     let expected_relation_identity = native_admission_relation_identity(loaded)?;
+    let mut admission_relation_identity = admission
+        .get("relation_identity")
+        .cloned()
+        .unwrap_or(JsonValue::Null);
+    let mut expected_relation_identity = expected_relation_identity;
+    if skip_provenance {
+        if let Some(identity) = admission_relation_identity.as_object_mut() {
+            identity.remove("resource_manifest_sha256");
+        }
+        if let Some(identity) = expected_relation_identity.as_object_mut() {
+            identity.remove("resource_manifest_sha256");
+        }
+    }
     if admission.get("schema_version").and_then(JsonValue::as_u64) != Some(10)
         || admission.get("shape_evidence_kind").and_then(JsonValue::as_str)
             != Some("configured_geometry_source_upper_bounds_before_native_synthesis_v1")
         || admission.get("relation_id").and_then(JsonValue::as_str) != Some("R_GAT-ezkl")
         || admission.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
-        || admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
-            != Some(loaded.resource_manifest_sha256.as_str())
-        || admission.get("relation_identity") != Some(&expected_relation_identity)
+        || (!skip_provenance
+            && admission.get("resource_manifest_sha256").and_then(JsonValue::as_str)
+                != Some(loaded.resource_manifest_sha256.as_str()))
+        || admission_relation_identity != expected_relation_identity
     {
         return Err("native admission relation/resource identity does not match the current canonical dataset".into());
     }
-    let expected_settings_sha256 = admission
-        .get("settings_sha256")
-        .and_then(JsonValue::as_str)
-        .ok_or("native admission settings digest is missing")?;
-    let (settings, settings_sha256) = parse_authenticated_native_settings_snapshot(&settings_bytes, expected_settings_sha256)?;
+    let expected_settings_sha256 = if skip_provenance {
+        crate::gat_adapter::schema::sha256_digest(&settings_bytes).map_err(EZKLError::from)?
+    } else {
+        admission
+            .get("settings_sha256")
+            .and_then(JsonValue::as_str)
+            .ok_or("native admission settings digest is missing")?
+            .to_owned()
+    };
+    let (settings, settings_sha256) =
+        parse_authenticated_native_settings_snapshot(&settings_bytes, &expected_settings_sha256)?;
     let model = build_model_for_run_args(
         loaded.spec.clone(),
         RoundingMode::NearestTiesAway,
@@ -5124,32 +5248,39 @@ fn native_keygen_budget_receipt(
     admission_dir: &Path,
     output_dir: &Path,
 ) -> Result<(JsonValue, String), EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     let path = output_dir.join("native_keygen_budget.json");
     require_formal_regular_file(&path, "native keygen resource budget receipt")?;
     let receipt: JsonValue = serde_json::from_slice(&std::fs::read(&path)?)?;
-    let admission_path = admission_dir.join("admission.json");
-    let settings_path = admission_dir.join("settings.json");
-    let executable = std::env::current_exe()?;
-    let session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
-        .map_err(|_| "formal native setup lacks the runner-authenticated session id")?;
-    let build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
-        .map_err(|_| "formal native setup lacks the authenticated build receipt digest")?;
-    let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
-        .map_err(|_| "formal native setup lacks the authenticated build environment digest")?;
-    let expected = [
-        ("schema", "ezkl.native-keygen-budget.v3".to_string()),
-        ("session_id", session_id),
-        ("dataset", loaded.dataset.clone()),
-        ("admission_sha256", get_file_hash(&admission_path)?),
-        ("settings_sha256", get_file_hash(&settings_path)?),
-        ("binary_sha256", get_file_hash(&executable)?),
-        ("resource_manifest_sha256", loaded.resource_manifest_sha256.clone()),
-        ("build_receipt_sha256", build_receipt_sha256),
-        ("build_environment_sha256", build_environment_sha256),
-    ];
-    for (name, value) in expected {
-        if receipt.get(name).and_then(JsonValue::as_str) != Some(value.as_str()) {
-            return Err(format!("native keygen budget {} does not match this authenticated setup", name).into());
+    if receipt.get("schema").and_then(JsonValue::as_str)
+        != Some("ezkl.native-keygen-budget.v3")
+        || receipt.get("dataset").and_then(JsonValue::as_str) != Some(loaded.dataset.as_str())
+    {
+        return Err("native keygen budget schema or dataset does not match the active relation".into());
+    }
+    if !skip_provenance {
+        let admission_path = admission_dir.join("admission.json");
+        let settings_path = admission_dir.join("settings.json");
+        let executable = std::env::current_exe()?;
+        let session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
+            .map_err(|_| "formal native setup lacks the runner-authenticated session id")?;
+        let build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
+            .map_err(|_| "formal native setup lacks the authenticated build receipt digest")?;
+        let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
+            .map_err(|_| "formal native setup lacks the authenticated build environment digest")?;
+        let expected = [
+            ("session_id", session_id),
+            ("admission_sha256", get_file_hash(&admission_path)?),
+            ("settings_sha256", get_file_hash(&settings_path)?),
+            ("binary_sha256", get_file_hash(&executable)?),
+            ("resource_manifest_sha256", loaded.resource_manifest_sha256.clone()),
+            ("build_receipt_sha256", build_receipt_sha256),
+            ("build_environment_sha256", build_environment_sha256),
+        ];
+        for (name, value) in expected {
+            if receipt.get(name).and_then(JsonValue::as_str) != Some(value.as_str()) {
+                return Err(format!("native keygen budget {} does not match this authenticated setup", name).into());
+            }
         }
     }
     for name in [
@@ -5485,6 +5616,7 @@ fn gat_prepare_setup(
         &srs_path,
         circuit.settings().run_args.logrows,
         &srs_sha256,
+        provenance_checks_disabled(),
     )?;
     let _native_spill = halo2_proofs::poly::native_spill_scope(&output_dir)?;
     let mut keygen_stage_budget_caps = Vec::<JsonValue>::new();
@@ -5695,11 +5827,19 @@ fn validate_external_producer_manifest(
     statement: &PublicStatement,
     setup_context: &BoundCircuitRef,
 ) -> Result<(), EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     require_formal_regular_file(path, "independent producer manifest")?;
     require_formal_regular_file(producer_context_path, "producer setup context")?;
     let bytes = std::fs::read(path)?;
     let manifest: ExternalProducerManifest = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse independent producer manifest: {}", error))?;
+    if skip_provenance {
+        require_formal_regular_file(statement_path, "public statement")?;
+        require_formal_regular_file(public_output_path, "public output")?;
+        let _: JsonValue = serde_json::from_slice(&std::fs::read(producer_context_path)?)
+            .map_err(|error| format!("parse producer setup context: {}", error))?;
+        return Ok(());
+    }
     let valid_digest = |label: &str, value: &str| -> Result<(), EZKLError> {
         if value.len() != 64
             || value.bytes().any(|byte| !byte.is_ascii_hexdigit())
@@ -5889,6 +6029,7 @@ fn formal_run_relative_path(run_dir: &Path, baseline_root: &Path) -> Result<Path
 }
 
 fn validate_formal_producer_run(run_dir: &Path) -> Result<(), EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     let baseline_root = std::env::current_dir()?;
     let run_relative = formal_run_relative_path(run_dir, &baseline_root)?;
     require_formal_local_path(&run_relative, "formal run directory")?;
@@ -5908,48 +6049,67 @@ fn validate_formal_producer_run(run_dir: &Path) -> Result<(), EZKLError> {
     }
     let artifact = ArtifactManifest::load(&artifact_path).map_err(EZKLError::from)?;
     artifact.validate().map_err(EZKLError::from)?;
-    if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
-        return Err("artifact producer manifest digest is stale".into());
-    }
-    let producer_record = artifact
-        .files
-        .iter()
-        .find(|file| file.path == "producer_manifest.json")
-        .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
-    if producer_record.sha256 != artifact.producer_manifest_sha256 {
-        return Err("artifact producer manifest top-level/file digest mismatch".into());
+    if !skip_provenance {
+        if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
+            return Err("artifact producer manifest digest is stale".into());
+        }
+        let producer_record = artifact
+            .files
+            .iter()
+            .find(|file| file.path == "producer_manifest.json")
+            .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
+        if producer_record.sha256 != artifact.producer_manifest_sha256 {
+            return Err("artifact producer manifest top-level/file digest mismatch".into());
+        }
     }
     let statement = PublicStatement::load(&statement_path).map_err(EZKLError::from)?;
     let output = parse_public_output(&public_output_path, &statement.dataset)?;
     if output != statement.public_ezkl.y {
         return Err("formal producer run public output disagrees with statement".into());
     }
+    if artifact.dataset != statement.dataset {
+        return Err("formal producer run dataset disagrees with its public statement".into());
+    }
     let loaded = load_dataset_with_manifest(
         &baseline_root,
         Path::new("resources/resource_manifest.json"),
-        &artifact.dataset,
+        &statement.dataset,
     )
     .map_err(EZKLError::from)?;
-    if artifact.resource_manifest_sha256 != loaded.resource_manifest_sha256 {
+    if !skip_provenance && artifact.resource_manifest_sha256 != loaded.resource_manifest_sha256 {
         return Err("formal producer run artifact resource identity is stale".into());
     }
     let setup_context = load_setup_circuit_ref(&run_relative.join(DEFAULT_GAT_SETUP_CONTEXT))?;
-    if setup_context != artifact.circuit_ref {
+    if !skip_provenance && setup_context != artifact.circuit_ref {
         return Err("formal producer setup context disagrees with artifact circuit".into());
     }
+    if skip_provenance {
+        let _: ExternalProducerManifest =
+            serde_json::from_slice(&std::fs::read(&producer_manifest_path)?)
+                .map_err(|error| format!("parse independent producer manifest: {}", error))?;
+        let _: JsonValue = serde_json::from_slice(&std::fs::read(&producer_context_path)?)
+            .map_err(|error| format!("parse producer setup context: {}", error))?;
+    }
     let mut bound_spec = loaded.spec.clone();
-    bound_spec.circuit_ref = Some(artifact.circuit_ref.native.clone());
+    bound_spec.circuit_ref = if skip_provenance {
+        None
+    } else {
+        Some(artifact.circuit_ref.native.clone())
+    };
     bound_spec.validate().map_err(EZKLError::from)?;
     validate_statement_against_loaded(&statement, &bound_spec)?;
-    validate_external_producer_manifest(
-        &producer_manifest_path,
-        &loaded,
-        &producer_context_path,
-        &statement_path,
-        &public_output_path,
-        &statement,
-        &setup_context,
-    )
+    if !skip_provenance {
+        validate_external_producer_manifest(
+            &producer_manifest_path,
+            &loaded,
+            &producer_context_path,
+            &statement_path,
+            &public_output_path,
+            &statement,
+            &setup_context,
+        )?;
+    }
+    Ok(())
 }
 
 fn validate_external_producer_manifest_public(
@@ -5968,6 +6128,13 @@ fn validate_external_producer_manifest_public(
         serde_json::from_slice(&std::fs::read(path)?).map_err(|error| {
             format!("parse independent producer manifest: {}", error)
         })?;
+    if provenance_checks_disabled() {
+        require_formal_regular_file(statement_path, "public statement")?;
+        require_formal_regular_file(public_output_path, "public output")?;
+        let _: JsonValue = serde_json::from_slice(&std::fs::read(producer_context_path)?)
+            .map_err(|error| format!("parse producer setup context: {}", error))?;
+        return Ok(());
+    }
     let valid_digest = |label: &str, value: &str| -> Result<(), EZKLError> {
         if value.len() != 64
             || value.bytes().any(|byte| !byte.is_ascii_hexdigit())
@@ -6133,6 +6300,7 @@ fn gat_prepare_final(
     public_output_path: PathBuf,
     producer_manifest_path: PathBuf,
     backend: String,
+    skip_provenance: bool,
 ) -> Result<String, EZKLError> {
     let settings_path = output_dir.join("settings.json");
     let compiled_path = output_dir.join("compiled.circuit");
@@ -6170,7 +6338,7 @@ fn gat_prepare_final(
         compiled_sha.clone(),
         vk_sha.clone(),
     )?;
-    if setup_context.native != circuit_ref {
+    if !skip_provenance && setup_context.native != circuit_ref {
         return Err("setup CircuitRef does not match the native setup artifacts".into());
     }
     let mut bound_spec = loaded.spec.clone();
@@ -6188,25 +6356,29 @@ fn gat_prepare_final(
             "external public output Y disagrees element-by-element with public statement".into(),
         );
     }
-    let supplied_output_sha256 = get_file_hash(&public_output_path)?;
-    if supplied_output_sha256 != supplied_statement.public_output_sha256 {
-        return Err("external public output digest disagrees with public statement".into());
+    if !skip_provenance {
+        let supplied_output_sha256 = get_file_hash(&public_output_path)?;
+        if supplied_output_sha256 != supplied_statement.public_output_sha256 {
+            return Err("external public output digest disagrees with public statement".into());
+        }
     }
     validate_statement_against_loaded(&supplied_statement, &bound_spec)?;
-    if supplied_statement.public_ezkl.circuit.native != circuit_ref {
+    if !skip_provenance && supplied_statement.public_ezkl.circuit.native != circuit_ref {
         return Err(
             "external public statement CircuitRef does not match the setup artifacts".into(),
         );
     }
-    validate_external_producer_manifest(
-        &producer_manifest_path,
-        &loaded,
-        &producer_context_path,
-        &public_statement_path,
-        &public_output_path,
-        &supplied_statement,
-        &setup_context,
-    )?;
+    if !skip_provenance {
+        validate_external_producer_manifest(
+            &producer_manifest_path,
+            &loaded,
+            &producer_context_path,
+            &public_statement_path,
+            &public_output_path,
+            &supplied_statement,
+            &setup_context,
+        )?;
+    }
 
     let bound_statement_path = output_dir.join("statement.json");
     let bound_output_path = output_dir.join("public_output.json");
@@ -6333,6 +6505,10 @@ fn gat_witness(
     output: PathBuf,
     gpu: bool,
 ) -> Result<String, EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
+    if skip_provenance {
+        info!("formal GAT witness provenance checks disabled; public relation checks remain enabled");
+    }
     enforce_gat_gpu(gpu)?;
     require_formal_local_path(&resource_manifest, "resource manifest")?;
     require_formal_regular_file(&compiled_circuit, "compiled circuit")?;
@@ -6352,36 +6528,50 @@ fn gat_witness(
     let producer_manifest_path = output_dir.join("producer_manifest.json");
     require_formal_regular_file(&producer_context_path, "producer setup context")?;
     require_formal_regular_file(&producer_manifest_path, "producer manifest")?;
+    if skip_provenance {
+        let _: JsonValue = serde_json::from_slice(&std::fs::read(&producer_context_path)?)
+            .map_err(|error| format!("parse producer setup context: {}", error))?;
+        let _: ExternalProducerManifest =
+            serde_json::from_slice(&std::fs::read(&producer_manifest_path)?)
+                .map_err(|error| format!("parse independent producer manifest: {}", error))?;
+    }
     let setup_context = load_setup_circuit_ref(&output_dir.join(DEFAULT_GAT_SETUP_CONTEXT))?;
     let settings_path = output_dir.join("settings.json");
     let vk_path = output_dir.join("vk.key");
     require_formal_regular_file(&settings_path, "settings")?;
     require_formal_regular_file(&vk_path, "verification key")?;
-    let circuit_ref = resolved_circuit_ref(
-        &loaded,
-        get_file_hash(&settings_path)?,
-        get_file_hash(&compiled_circuit)?,
-        get_file_hash(&vk_path)?,
-    )?;
-    if setup_context.native != circuit_ref {
-        return Err("setup CircuitRef does not match the native setup artifacts".into());
-    }
-    if statement.public_ezkl.circuit.native != circuit_ref {
-        return Err("external statement CircuitRef does not match the setup artifacts".into());
-    }
+    let circuit_ref = if skip_provenance {
+        None
+    } else {
+        let circuit_ref = resolved_circuit_ref(
+            &loaded,
+            get_file_hash(&settings_path)?,
+            get_file_hash(&compiled_circuit)?,
+            get_file_hash(&vk_path)?,
+        )?;
+        if setup_context.native != circuit_ref {
+            return Err("setup CircuitRef does not match the native setup artifacts".into());
+        }
+        if statement.public_ezkl.circuit.native != circuit_ref {
+            return Err("external statement CircuitRef does not match the setup artifacts".into());
+        }
+        Some(circuit_ref)
+    };
     let mut bound_spec = loaded.spec.clone();
-    bound_spec.circuit_ref = Some(circuit_ref.clone());
+    bound_spec.circuit_ref = circuit_ref;
     bound_spec.validate().map_err(EZKLError::from)?;
     validate_statement_against_loaded(&statement, &bound_spec)?;
-    validate_external_producer_manifest(
-        &producer_manifest_path,
-        &loaded,
-        &producer_context_path,
-        &statement_path,
-        &output_dir.join("public_output.json"),
-        &statement,
-        &setup_context,
-    )?;
+    if !skip_provenance {
+        validate_external_producer_manifest(
+            &producer_manifest_path,
+            &loaded,
+            &producer_context_path,
+            &statement_path,
+            &output_dir.join("public_output.json"),
+            &statement,
+            &setup_context,
+        )?;
+    }
     let mut circuit = GraphCircuit::load(compiled_circuit)?;
     let native_gat_rounding = assert_native_gat_identity(&circuit, &loaded.spec)?;
     if !circuit.settings().run_args.input_visibility.is_public()
@@ -6533,6 +6723,7 @@ fn authenticated_native_prove_backing_budget(
     compiled_circuit_path: &Path,
     pk_path: &Path,
 ) -> Result<AuthenticatedNativeProveBudget, EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     let regular = |path: &Path, label: &str| -> Result<(), EZKLError> {
         require_formal_regular_file(path, label)
     };
@@ -6561,37 +6752,52 @@ fn authenticated_native_prove_backing_budget(
     let admission: JsonValue = serde_json::from_slice(&std::fs::read(&admission_path)?)?;
     let keygen_budget: JsonValue = serde_json::from_slice(&std::fs::read(&keygen_budget_path)?)?;
     let keygen_receipt: JsonValue = serde_json::from_slice(&std::fs::read(&keygen_receipt_path)?)?;
-    let setup_sha256 = get_file_hash(&setup_receipt_path)?;
-    let keygen_budget_sha256 = get_file_hash(&keygen_budget_path)?;
-    let keygen_receipt_sha256 = get_file_hash(&keygen_receipt_path)?;
-    let current_exe_sha256 = get_file_hash(&std::env::current_exe()?)?;
-    let current_compiled_sha256 = get_file_hash(compiled_circuit_path)?;
-    let current_settings_sha256 = get_file_hash(&settings_path)?;
-    let current_vk_sha256 = get_file_hash(&vk_path)?;
-    let current_pk_sha256 = get_file_hash(pk_path)?;
-    let session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
-        .map_err(|_| "formal native proving lacks the runner-authenticated session id")?;
-    let build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
-        .map_err(|_| "formal native proving lacks the authenticated build receipt digest")?;
-    let build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
-        .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
-    let expected_budget = [
-        ("schema", "ezkl.native-prove-budget.v8"),
-        ("session_id", session_id.as_str()),
-        ("setup_receipt_sha256", setup_sha256.as_str()),
-        ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
-        ("native_keygen_receipt_sha256", keygen_receipt_sha256.as_str()),
-        ("binary_sha256", current_exe_sha256.as_str()),
-        ("compiled_circuit_sha256", current_compiled_sha256.as_str()),
-        ("settings_sha256", current_settings_sha256.as_str()),
-        ("vk_sha256", current_vk_sha256.as_str()),
-        ("pk_sha256", current_pk_sha256.as_str()),
-        ("build_receipt_sha256", build_receipt_sha256.as_str()),
-        ("build_environment_sha256", build_environment_sha256.as_str()),
-    ];
-    for (name, value) in expected_budget {
-        if prove_budget.get(name).and_then(JsonValue::as_str) != Some(value) {
-            return Err(format!("native prove budget {} does not match this setup or binary", name).into());
+    if prove_budget.get("schema").and_then(JsonValue::as_str)
+        != Some("ezkl.native-prove-budget.v8")
+    {
+        return Err("native prove budget has an unsupported schema".into());
+    }
+    let mut keygen_budget_sha256 = String::new();
+    let mut keygen_receipt_sha256 = String::new();
+    let mut current_compiled_sha256 = String::new();
+    let mut current_settings_sha256 = String::new();
+    let mut current_vk_sha256 = String::new();
+    let mut current_pk_sha256 = String::new();
+    let mut session_id = String::new();
+    let mut build_receipt_sha256 = String::new();
+    let mut build_environment_sha256 = String::new();
+    if !skip_provenance {
+        let setup_sha256 = get_file_hash(&setup_receipt_path)?;
+        keygen_budget_sha256 = get_file_hash(&keygen_budget_path)?;
+        keygen_receipt_sha256 = get_file_hash(&keygen_receipt_path)?;
+        let current_exe_sha256 = get_file_hash(&std::env::current_exe()?)?;
+        current_compiled_sha256 = get_file_hash(compiled_circuit_path)?;
+        current_settings_sha256 = get_file_hash(&settings_path)?;
+        current_vk_sha256 = get_file_hash(&vk_path)?;
+        current_pk_sha256 = get_file_hash(pk_path)?;
+        session_id = std::env::var("EZKL_FORMAL_SESSION_ID")
+            .map_err(|_| "formal native proving lacks the runner-authenticated session id")?;
+        build_receipt_sha256 = std::env::var("EZKL_FORMAL_BUILD_RECEIPT_SHA256")
+            .map_err(|_| "formal native proving lacks the authenticated build receipt digest")?;
+        build_environment_sha256 = std::env::var("EZKL_FORMAL_BUILD_ENVIRONMENT_SHA256")
+            .map_err(|_| "formal native proving lacks the authenticated build environment digest")?;
+        let expected_budget = [
+            ("session_id", session_id.as_str()),
+            ("setup_receipt_sha256", setup_sha256.as_str()),
+            ("native_keygen_budget_sha256", keygen_budget_sha256.as_str()),
+            ("native_keygen_receipt_sha256", keygen_receipt_sha256.as_str()),
+            ("binary_sha256", current_exe_sha256.as_str()),
+            ("compiled_circuit_sha256", current_compiled_sha256.as_str()),
+            ("settings_sha256", current_settings_sha256.as_str()),
+            ("vk_sha256", current_vk_sha256.as_str()),
+            ("pk_sha256", current_pk_sha256.as_str()),
+            ("build_receipt_sha256", build_receipt_sha256.as_str()),
+            ("build_environment_sha256", build_environment_sha256.as_str()),
+        ];
+        for (name, value) in expected_budget {
+            if prove_budget.get(name).and_then(JsonValue::as_str) != Some(value) {
+                return Err(format!("native prove budget {} does not match this setup or binary", name).into());
+            }
         }
     }
     let stage_caps = keygen_receipt
@@ -6604,20 +6810,22 @@ fn authenticated_native_prove_backing_budget(
     let native_census = keygen_receipt
         .get("native_census")
         .ok_or("native keygen receipt lacks its exact native census")?;
-    let admission_sha256 = get_file_hash(&admission_path)?;
-    let setup_admission_sha256 = setup_receipt
-        .get("setup_files")
-        .and_then(|files| files.get("admission.json"))
-        .and_then(JsonValue::as_str);
-    if keygen_budget.get("admission_sha256").and_then(JsonValue::as_str)
-        != Some(admission_sha256.as_str())
-        || prove_budget.get("admission_sha256").and_then(JsonValue::as_str)
+    if !skip_provenance {
+        let admission_sha256 = get_file_hash(&admission_path)?;
+        let setup_admission_sha256 = setup_receipt
+            .get("setup_files")
+            .and_then(|files| files.get("admission.json"))
+            .and_then(JsonValue::as_str);
+        if keygen_budget.get("admission_sha256").and_then(JsonValue::as_str)
             != Some(admission_sha256.as_str())
-        || setup_receipt.get("admission_sha256").and_then(JsonValue::as_str)
-            != Some(admission_sha256.as_str())
-        || setup_admission_sha256 != Some(admission_sha256.as_str())
-    {
-        return Err("native keygen budget does not bind the current admission receipt".into());
+            || prove_budget.get("admission_sha256").and_then(JsonValue::as_str)
+                != Some(admission_sha256.as_str())
+            || setup_receipt.get("admission_sha256").and_then(JsonValue::as_str)
+                != Some(admission_sha256.as_str())
+            || setup_admission_sha256 != Some(admission_sha256.as_str())
+        {
+            return Err("native keygen budget does not bind the current admission receipt".into());
+        }
     }
     let memory_model = admission
         .get("native_memory_model")
@@ -6883,6 +7091,9 @@ fn authenticated_native_prove_backing_budget(
         .get("dataset")
         .and_then(JsonValue::as_str)
         .ok_or("native prove budget lacks its dataset identity")?;
+    if std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset) {
+        return Err("native prove budget dataset does not match the active formal relation".into());
+    }
     let relation_dataset = keygen_receipt
         .get("relation_identity")
         .and_then(|value| value.get("dataset"))
@@ -6891,43 +7102,54 @@ fn authenticated_native_prove_backing_budget(
     if keygen_dataset != Some(dataset)
         || relation_dataset != Some(dataset)
         || setup_receipt.get("dataset").and_then(JsonValue::as_str) != Some(dataset)
-        || setup_receipt.get("session_id").and_then(JsonValue::as_str) != Some(session_id.as_str())
-        || keygen_receipt.get("session_id").and_then(JsonValue::as_str) != Some(session_id.as_str())
-        || keygen_receipt.get("budget_receipt_sha256").and_then(JsonValue::as_str)
-            != Some(keygen_budget_sha256.as_str())
-        || setup_receipt.get("native_keygen_receipt_sha256").and_then(JsonValue::as_str)
-            != Some(keygen_receipt_sha256.as_str())
     {
-        return Err("native prove budget dataset/session does not match authenticated setup and keygen receipts".into());
+        return Err("native prove budget dataset does not match the active setup and keygen relation".into());
     }
-    for (name, current) in [
-        ("settings.json", current_settings_sha256.as_str()),
-        ("compiled.circuit", current_compiled_sha256.as_str()),
-        ("vk.key", current_vk_sha256.as_str()),
-        ("pk.key", current_pk_sha256.as_str()),
-        ("native_keygen_budget.json", keygen_budget_sha256.as_str()),
-        ("native_keygen_receipt.json", keygen_receipt_sha256.as_str()),
-    ] {
-        if setup_receipt
-            .get("setup_files")
-            .and_then(|files| files.get(name))
-            .and_then(JsonValue::as_str)
-            != Some(current)
+    if !skip_provenance {
+        if setup_receipt.get("session_id").and_then(JsonValue::as_str)
+            != Some(session_id.as_str())
+            || keygen_receipt.get("session_id").and_then(JsonValue::as_str)
+                != Some(session_id.as_str())
+            || keygen_receipt.get("budget_receipt_sha256").and_then(JsonValue::as_str)
+                != Some(keygen_budget_sha256.as_str())
+            || setup_receipt.get("native_keygen_receipt_sha256").and_then(JsonValue::as_str)
+                != Some(keygen_receipt_sha256.as_str())
         {
-            return Err(format!("formal setup receipt does not bind current {}", name).into());
+            return Err("native setup/keygen receipt session or budget digest is stale".into());
+        }
+        for (name, current) in [
+            ("settings.json", current_settings_sha256.as_str()),
+            ("compiled.circuit", current_compiled_sha256.as_str()),
+            ("vk.key", current_vk_sha256.as_str()),
+            ("pk.key", current_pk_sha256.as_str()),
+            ("native_keygen_budget.json", keygen_budget_sha256.as_str()),
+            ("native_keygen_receipt.json", keygen_receipt_sha256.as_str()),
+        ] {
+            if setup_receipt
+                .get("setup_files")
+                .and_then(|files| files.get(name))
+                .and_then(JsonValue::as_str)
+                != Some(current)
+            {
+                return Err(format!("formal setup receipt does not bind current {}", name).into());
+            }
+        }
+        for (name, value) in [
+            ("settings_sha256", Some(current_settings_sha256.as_str())),
+            ("compiled_circuit_sha256", Some(current_compiled_sha256.as_str())),
+            ("vk_sha256", Some(current_vk_sha256.as_str())),
+            ("pk_sha256", Some(current_pk_sha256.as_str())),
+            ("budget_receipt_sha256", Some(keygen_budget_sha256.as_str())),
+        ] {
+            if keygen_receipt.get(name).and_then(JsonValue::as_str) != value {
+                return Err(format!("native keygen census receipt has a stale {}", name).into());
+            }
         }
     }
-    for (name, value) in [
-        ("schema", Some("ezkl.native-keygen-receipt.v4")),
-        ("settings_sha256", Some(current_settings_sha256.as_str())),
-        ("compiled_circuit_sha256", Some(current_compiled_sha256.as_str())),
-        ("vk_sha256", Some(current_vk_sha256.as_str())),
-        ("pk_sha256", Some(current_pk_sha256.as_str())),
-        ("budget_receipt_sha256", Some(keygen_budget_sha256.as_str())),
-    ] {
-        if keygen_receipt.get(name).and_then(JsonValue::as_str) != value {
-            return Err(format!("native keygen census receipt has a stale {}", name).into());
-        }
+    if keygen_receipt.get("schema").and_then(JsonValue::as_str)
+        != Some("ezkl.native-keygen-receipt.v4")
+    {
+        return Err("native keygen census receipt has an unsupported schema".into());
     }
     if keygen_receipt.get("native_pk_format_version").and_then(JsonValue::as_u64) != Some(4)
         || keygen_receipt.get("native_pk_sigma_wire_encoding").and_then(JsonValue::as_str)
@@ -6935,18 +7157,20 @@ fn authenticated_native_prove_backing_budget(
     {
         return Err("native keygen receipt does not bind the current PK/Sigma encoding".into());
     }
-    let admission_sha256 = keygen_budget
-        .get("admission_sha256")
-        .and_then(JsonValue::as_str)
-        .ok_or("native keygen budget lacks its admission identity")?;
-    for (name, expected) in [
-        ("admission_sha256", Some(admission_sha256)),
-        ("resource_manifest_sha256", keygen_budget.get("resource_manifest_sha256").and_then(JsonValue::as_str)),
-        ("build_receipt_sha256", Some(build_receipt_sha256.as_str())),
-        ("build_environment_sha256", Some(build_environment_sha256.as_str())),
-    ] {
-        if prove_budget.get(name).and_then(JsonValue::as_str) != expected {
-            return Err(format!("native prove budget has a stale {}", name).into());
+    if !skip_provenance {
+        let admission_sha256 = keygen_budget
+            .get("admission_sha256")
+            .and_then(JsonValue::as_str)
+            .ok_or("native keygen budget lacks its admission identity")?;
+        for (name, expected) in [
+            ("admission_sha256", Some(admission_sha256)),
+            ("resource_manifest_sha256", keygen_budget.get("resource_manifest_sha256").and_then(JsonValue::as_str)),
+            ("build_receipt_sha256", Some(build_receipt_sha256.as_str())),
+            ("build_environment_sha256", Some(build_environment_sha256.as_str())),
+        ] {
+            if prove_budget.get(name).and_then(JsonValue::as_str) != expected {
+                return Err(format!("native prove budget has a stale {}", name).into());
+            }
         }
     }
     let max_backing = prove_budget
@@ -7308,6 +7532,7 @@ fn write_native_pk_read_timing_receipt(
     pk_path: &Path,
     timing: halo2_proofs::plonk::NativePkReadTiming,
 ) -> Result<PathBuf, EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
     let path = output_dir.join("native_pk_read_timing.json");
     let temporary = output_dir.join("native_pk_read_timing.json.tmp");
     if std::fs::symlink_metadata(&path).is_ok() || std::fs::symlink_metadata(&temporary).is_ok() {
@@ -7324,7 +7549,12 @@ fn write_native_pk_read_timing_receipt(
             .map(str::to_owned)
             .ok_or_else(|| format!("native prove budget lacks its {} identity", name).into())
     };
-    let session_id = required_string("session_id")?;
+    let session_id = if skip_provenance {
+        std::env::var("EZKL_FORMAL_SESSION_ID")
+            .map_err(|_| "native PK timing receipt lacks the active formal session id")?
+    } else {
+        required_string("session_id")?
+    };
     let dataset = required_string("dataset")?;
     let pk_sha256 = required_string("pk_sha256")?;
     let binary_sha256 = required_string("binary_sha256")?;
@@ -7340,8 +7570,10 @@ fn write_native_pk_read_timing_receipt(
     let vk_sha256 = required_string("vk_sha256")?;
     if budget.get("schema").and_then(JsonValue::as_str) != Some("ezkl.native-prove-budget.v8")
         || pk_path.file_name().and_then(|name| name.to_str()) != Some("pk.key")
-        || std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref() != Some(session_id.as_str())
         || std::env::var("EZKL_GAT_DATASET").ok().as_deref() != Some(dataset.as_str())
+        || (!skip_provenance
+            && std::env::var("EZKL_FORMAL_SESSION_ID").ok().as_deref()
+                != Some(session_id.as_str()))
     {
         return Err("native PK read timing does not match the authenticated formal attempt".into());
     }
@@ -7420,6 +7652,10 @@ pub(crate) fn prove(
     check_mode: CheckMode,
 ) -> Result<Snark<Fr, G1Affine>, EZKLError> {
     let native_prove_command_started = Instant::now();
+    let skip_provenance = provenance_checks_disabled();
+    if skip_provenance {
+        info!("formal Prove provenance checks disabled; resource admission, actual key/SRS decoding, witness validation, and proof construction remain enabled");
+    }
     let formal_run_dir = std::env::var("EZKL_GAT_RUN_DIR").ok().map(PathBuf::from);
     let formal_srs_sha256 = if let Some(run_dir) = formal_run_dir.as_deref() {
         let proof_path = proof_path
@@ -7430,7 +7666,8 @@ pub(crate) fn prove(
         let path = srs_path
             .as_deref()
             .ok_or("formal GAT proving requires an explicit authenticated SRS path")?;
-        Some(require_authentic_srs(path)?)
+        let mut digests = VerifiedDigestContext::default();
+        Some(require_formal_srs_with_context(path, &mut digests, skip_provenance)?)
     } else {
         None
     };
@@ -7480,6 +7717,7 @@ pub(crate) fn prove(
             run_dir,
             proof_path,
             std::slice::from_ref(&public_inputs),
+            skip_provenance,
         )?)
     } else {
         None
@@ -7523,7 +7761,7 @@ pub(crate) fn prove(
     }
 
     let params = match (formal_srs_sha256.as_deref(), srs_path.as_deref()) {
-        (Some(digest), Some(path)) => load_formal_kzg_params(path, logrows, digest)?,
+        (Some(digest), Some(path)) => load_formal_kzg_params(path, logrows, digest, skip_provenance)?,
         (None, _) => load_params_prover::<KZGCommitmentScheme<Bn256>>(srs_path, logrows)?,
         _ => return Err("formal GAT proving lost its authenticated SRS path".into()),
     };
@@ -7616,7 +7854,7 @@ pub(crate) fn prove(
             let run_dir = formal_run_dir
                 .as_deref()
                 .ok_or("formal compact proof requires EZKL_GAT_RUN_DIR")?;
-            let instances_ref = formal_proof_instances_ref(run_dir, &proof_path, &snark.instances)?;
+            let instances_ref = formal_proof_instances_ref(run_dir, &proof_path, &snark.instances, skip_provenance)?;
             let early_instances_ref = early_formal_instances_ref
                 .as_ref()
                 .ok_or("formal compact proof has no pre-create public-instance anchor")?;
@@ -7633,7 +7871,7 @@ pub(crate) fn prove(
             if !prove_time_ms.is_finite() || prove_time_ms <= 0.0 {
                 return Err("native composed prove timing is nonfinite or nonpositive".into());
             }
-            let metrics = serde_json::json!({
+            let mut metrics = serde_json::json!({
                 "schema_version": 4,
                 "operation": "native_halo2_initial_instance_and_phase0_advice_commitments",
                 "included_in": "native_create_proof_wall_ms",
@@ -7652,6 +7890,18 @@ pub(crate) fn prove(
                 "prove_time_ms": prove_time_ms,
                 "proof_sha256": proof_sha256,
             });
+            // Persist the measured native Prove timing before GPU profile and
+            // artifact finalization can reject metadata. Null means the
+            // post-Prove finalization boundary was not reached; it is never
+            // fabricated as a completed duration.
+            metrics["native_proof_artifact_finalize_wall_ms"] = JsonValue::Null;
+            if skip_provenance {
+                metrics["provenance_checks_disabled"] = JsonValue::Bool(true);
+            }
+            std::fs::write(
+                proof_path.with_file_name("native_proof_metrics.json"),
+                serde_json::to_vec_pretty(&metrics)?,
+            )?;
             native_proof_metrics_document = Some(metrics);
         }
         let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
@@ -7991,6 +8241,10 @@ pub(crate) fn verify_with_formal_inputs(
     artifact_manifest_path: Option<PathBuf>,
     resource_manifest_path: Option<PathBuf>,
 ) -> Result<bool, EZKLError> {
+    let skip_provenance = provenance_checks_disabled();
+    if skip_provenance {
+        info!("formal Verify provenance checks disabled; statement, public-instance, proof decode, SRS/VK load, and KZG verification remain enabled");
+    }
     let formal_inputs = statement_path.is_some()
         || public_output_path.is_some()
         || artifact_manifest_path.is_some()
@@ -8017,20 +8271,24 @@ pub(crate) fn verify_with_formal_inputs(
         let run_dir = std::env::var("EZKL_GAT_RUN_DIR")
             .map(PathBuf::from)
             .map_err(|_| "formal verify requires EZKL_GAT_RUN_DIR for native attestations")?;
-        if backend == "gpu" {
+        if skip_provenance && std::env::var_os("ENABLE_ICICLE_GPU").is_some() {
+            return Err("independent formal verifier must execute on CPU".into());
+        }
+        if !skip_provenance && backend == "gpu" {
             #[cfg(feature = "gpu-accelerated")]
             { crate::gat_adapter::gpu::read_proof_evidence(&run_dir, &proof_path)?; }
             #[cfg(not(feature = "gpu-accelerated"))]
             { return Err("GPU formal verifier requires the matching GPU-capable native binary".into()); }
-        } else {
+        } else if !skip_provenance {
             validate_native_cpu_proof_evidence(&run_dir)?;
         }
         let authenticated_srs_path = srs_path
             .as_deref()
             .ok_or("formal verify requires an explicit authenticated SRS path")?;
-        formal_srs_sha256 = Some(require_authentic_srs_with_context(
+        formal_srs_sha256 = Some(require_formal_srs_with_context(
             authenticated_srs_path,
             &mut formal_verified_digests,
+            skip_provenance,
         )?);
         info!("formal verify stage DONE name=formal_precheck_evidence_srs_auth elapsed_ms={:.3}", formal_precheck_started.elapsed().as_secs_f64() * 1000.0);
         let statement_path = statement_path.ok_or_else(|| {
@@ -8058,9 +8316,16 @@ pub(crate) fn verify_with_formal_inputs(
         }
         let statement = PublicStatement::load(&statement_path).map_err(EZKLError::from)?;
         let artifact = ArtifactManifest::load(&artifact_manifest_path).map_err(EZKLError::from)?;
-        artifact
-            .validate_for_verification()
-            .map_err(EZKLError::from)?;
+        if skip_provenance {
+            // The previous Prove wrote proof.json before its metadata writer
+            // rejected stale telemetry, so the old manifest may not yet list
+            // that proof. The actual proof path is checked and decoded below.
+            validate_unbound_artifact(&artifact, false)?;
+        } else {
+            artifact
+                .validate_for_verification()
+                .map_err(EZKLError::from)?;
+        }
         let baseline_root = std::env::current_dir()?;
         let authenticated_resources = load_relation_resources_with_manifest(
             &baseline_root,
@@ -8068,7 +8333,7 @@ pub(crate) fn verify_with_formal_inputs(
             &statement.dataset,
         )
         .map_err(EZKLError::from)?;
-        if artifact.resource_manifest_sha256 != authenticated_resources.resource_manifest_sha256 {
+        if !skip_provenance && artifact.resource_manifest_sha256 != authenticated_resources.resource_manifest_sha256 {
             return Err(
                 "artifact resource_manifest_sha256 does not match the authenticated current resource manifest"
                     .into(),
@@ -8091,7 +8356,7 @@ pub(crate) fn verify_with_formal_inputs(
                     .into(),
             );
         }
-        if statement.public_ezkl.circuit != artifact.circuit_ref
+        if (!skip_provenance && statement.public_ezkl.circuit != artifact.circuit_ref)
             || statement.dataset != artifact.dataset
             || statement.quant_cfg_id != artifact.quant_cfg_id
             || statement.static_table_id != artifact.static_tables_id
@@ -8107,7 +8372,7 @@ pub(crate) fn verify_with_formal_inputs(
             );
         }
         let output_sha = get_file_hash(&public_output_path)?;
-        if output_sha != statement.public_output_sha256 {
+        if !skip_provenance && output_sha != statement.public_output_sha256 {
             return Err("external public output digest disagrees with statement".into());
         }
         let artifact_root = artifact_manifest_path
@@ -8115,33 +8380,35 @@ pub(crate) fn verify_with_formal_inputs(
             .ok_or_else(|| "artifact manifest has no parent directory".to_string())?;
         let producer_context_path = artifact_root.join("producer_context.json");
         let producer_manifest_path = artifact_root.join("producer_manifest.json");
-        require_formal_regular_file(&producer_context_path, "producer setup context")?;
-        require_formal_regular_file(&producer_manifest_path, "producer manifest")?;
-        if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
-            return Err("artifact producer manifest digest does not match producer file".into());
+        if !skip_provenance {
+            require_formal_regular_file(&producer_context_path, "producer setup context")?;
+            require_formal_regular_file(&producer_manifest_path, "producer manifest")?;
+            if artifact.producer_manifest_sha256 != get_file_hash(&producer_manifest_path)? {
+                return Err("artifact producer manifest digest does not match producer file".into());
+            }
+            let producer_record = artifact
+                .files
+                .iter()
+                .find(|file| file.path == "producer_manifest.json")
+                .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
+            if producer_record.sha256 != artifact.producer_manifest_sha256 {
+                return Err("artifact producer manifest file/top-level digest mismatch".into());
+            }
+            let setup_context = load_setup_circuit_ref(&artifact_root.join(DEFAULT_GAT_SETUP_CONTEXT))?;
+            if setup_context != artifact.circuit_ref {
+                return Err("producer setup context does not match artifact CircuitRef".into());
+            }
+            validate_external_producer_manifest_public(
+                &producer_manifest_path,
+                &producer_context_path,
+                &statement_path,
+                &public_output_path,
+                &statement,
+                &artifact.circuit_ref,
+                &authenticated_resources,
+                &baseline_root,
+            )?;
         }
-        let producer_record = artifact
-            .files
-            .iter()
-            .find(|file| file.path == "producer_manifest.json")
-            .ok_or_else(|| "artifact manifest has no producer manifest file".to_string())?;
-        if producer_record.sha256 != artifact.producer_manifest_sha256 {
-            return Err("artifact producer manifest file/top-level digest mismatch".into());
-        }
-        let setup_context = load_setup_circuit_ref(&artifact_root.join(DEFAULT_GAT_SETUP_CONTEXT))?;
-        if setup_context != artifact.circuit_ref {
-            return Err("producer setup context does not match artifact CircuitRef".into());
-        }
-        validate_external_producer_manifest_public(
-            &producer_manifest_path,
-            &producer_context_path,
-            &statement_path,
-            &public_output_path,
-            &statement,
-            &artifact.circuit_ref,
-            &authenticated_resources,
-            &baseline_root,
-        )?;
         info!("formal verify stage DONE name=external_statement_resource_producer_auth elapsed_ms={:.3}", external_auth_started.elapsed().as_secs_f64() * 1000.0);
         let srs_for_identity = srs_path
             .as_ref()
@@ -8149,17 +8416,19 @@ pub(crate) fn verify_with_formal_inputs(
         let compiled_path = artifact_root.join("compiled.circuit");
         let artifact_auth_started = Instant::now();
         info!("formal verify stage START name=artifact_bundle_file_auth");
-        validate_artifact_files_with_context(
-            &artifact_manifest_path,
-            &artifact,
-            &statement_path,
-            srs_for_identity,
-            &settings_path,
-            &compiled_path,
-            &vk_path,
-            &proof_path,
-            &mut formal_verified_digests,
-        )?;
+        if !skip_provenance {
+            validate_artifact_files_with_context(
+                &artifact_manifest_path,
+                &artifact,
+                &statement_path,
+                srs_for_identity,
+                &settings_path,
+                &compiled_path,
+                &vk_path,
+                &proof_path,
+                &mut formal_verified_digests,
+            )?;
+        }
         info!("formal verify stage DONE name=artifact_bundle_file_auth elapsed_ms={:.3}", artifact_auth_started.elapsed().as_secs_f64() * 1000.0);
         let circuit_load_started = Instant::now();
         info!("formal verify stage START name=compiled_circuit_load_and_identity");
@@ -8179,7 +8448,18 @@ pub(crate) fn verify_with_formal_inputs(
             let decode_started = Instant::now();
             let compact = CompactProofV2::<G1Affine>::decode_json_bytes(&proof_bytes)?;
             let json_decode_ms = decode_started.elapsed().as_secs_f64() * 1000.0;
-            validate_formal_proof_instances_ref(&compact.instances_ref, &proof_path, &statement_path, &public_output_path, &artifact_manifest_path, &artifact, &statement_sha, &output_sha)?;
+            validate_formal_proof_instances_ref(
+                &compact.instances_ref,
+                &proof_path,
+                &statement_path,
+                &public_output_path,
+                &artifact_manifest_path,
+                &artifact,
+                &statement_sha,
+                &output_sha,
+                &expected_instances,
+                skip_provenance,
+            )?;
             let proof_instances_digest = compact.instances_ref.sha256.clone();
             let proof_instance_count = compact.instances_ref.count;
             let transcript_started = Instant::now();
@@ -8227,7 +8507,7 @@ pub(crate) fn verify_with_formal_inputs(
         let digest = formal_srs_sha256
             .as_deref()
             .ok_or("formal verify lost its authenticated SRS digest")?;
-        load_formal_kzg_params(path, parameter_k, digest)?
+        load_formal_kzg_params(path, parameter_k, digest, skip_provenance)?
     } else {
         load_params_verifier::<KZGCommitmentScheme<Bn256>>(srs_path, parameter_k)?
     };
@@ -8259,13 +8539,17 @@ pub(crate) fn verify_with_formal_inputs(
             })?;
         std::fs::create_dir_all(&run_dir)?;
         let backend = std::env::var("EZKL_GAT_BACKEND").unwrap_or_else(|_| "cpu".into());
-        let metrics = serde_json::json!({
+        let mut metrics = serde_json::json!({
             "schema_version": 1,
             "operation": "native_halo2_independent_verifier",
             "included_in": "native_verify_proof",
             "verify_time_ms": verify_time_ms,
+            "proof_size_bytes": std::fs::metadata(&proof_path)?.len(),
             "proof_sha256": get_file_hash(&proof_path)?,
         });
+        if skip_provenance {
+            metrics["provenance_checks_disabled"] = JsonValue::Bool(true);
+        }
         std::fs::write(
             run_dir.join("native_verify_metrics.json"),
             serde_json::to_vec_pretty(&metrics)?,

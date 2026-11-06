@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import signal
@@ -27,10 +28,21 @@ from formal_common import (
     print_error,
     selected_datasets_for_session,
 )
+from compatible_resume import (
+    validate_capacity_admission_v2_controller_candidate,
+    validate_failed_capacity_admission_resume_gate,
+    validate_failed_configured_admission_resume_gate,
+    validate_failed_admission_preflight_resume_gate,
+    validate_failed_preflight_resume_gate,
+)
 from process_guardian import process_start_ticks
 
 _SCHEMA = "ezkl.formal-controller.v1"
 _SCRIPT = Path(__file__).resolve()
+_COMPAT_SESSION_ID = "d3dc1ccb1cfa4a78829c306b835f300e"
+_COMPAT_OUTPUT_ROOT = "runs/formal_ppi_ogbn_20261029_001"
+_COMPAT_MATRIX = f"{_COMPAT_OUTPUT_ROOT}/formal_matrix.json"
+_COMPAT_SELECTED_DATASETS = ("ppi", "ogbn_arxiv")
 
 
 def _now() -> str:
@@ -58,6 +70,150 @@ def _safe_local(value: str, label: str) -> Path:
         if cursor.is_symlink():
             abort(f"{label} path must not contain a symlink: {cursor}")
     return local_path(value, label)
+
+
+def _compatible_source_review_reference(value: object, *, require_file: bool) -> str | None:
+    """Return a canonical runs/check_logs reference for the approved review JSON."""
+    if not isinstance(value, str) or not value:
+        return None
+    if not require_file:
+        candidate = Path(value)
+        if (
+            candidate.is_absolute()
+            or ".." in candidate.parts
+            or candidate.as_posix() != value
+            or not value.startswith("runs/check_logs/")
+        ):
+            return None
+        return value
+    selected = Path(value)
+    if selected.is_absolute():
+        try:
+            value = selected.relative_to(ROOT).as_posix()
+        except ValueError:
+            return None
+    if Path(value).is_absolute() or ".." in Path(value).parts:
+        return None
+    try:
+        review_path = _safe_local(value, "compatible source review")
+        relative = review_path.relative_to(ROOT).as_posix()
+    except (ContractError, ValueError):
+        return None
+    if not relative.startswith("runs/check_logs/"):
+        return None
+    if require_file:
+        if review_path.is_symlink() or not review_path.is_file():
+            return None
+        try:
+            review_path.resolve(strict=True).relative_to((ROOT / "runs" / "check_logs").resolve(strict=True))
+        except (OSError, ValueError):
+            return None
+    return relative
+
+
+def _compatible_resume_options(
+    args: argparse.Namespace,
+    *,
+    resume: bool,
+    session_id: str,
+    output_root: Path,
+    matrix: Path,
+    selected_datasets: tuple[str, ...],
+    requested_datasets: tuple[str, ...] | None,
+    session: dict[str, Any] | None,
+) -> tuple[bool, str | None]:
+    """Validate and normalize the one supported compatible detached-resume request."""
+    prove_only = getattr(args, "compatible_prove_only", False)
+    source_review_value = getattr(args, "compatible_source_review", None)
+    if not isinstance(prove_only, bool):
+        abort("--compatible-prove-only controller value must be boolean")
+    if prove_only != (source_review_value is not None):
+        abort("--compatible-prove-only and --compatible-source-review must be supplied together")
+    if not prove_only:
+        return False, None
+    if not resume:
+        abort("compatible prove-only is available only through resume")
+    if requested_datasets is None or selected_datasets != _COMPAT_SELECTED_DATASETS:
+        abort("compatible prove-only requires an explicit --datasets ppi ogbn_arxiv selection")
+    if (
+        session_id != _COMPAT_SESSION_ID
+        or output_root.relative_to(ROOT).as_posix() != _COMPAT_OUTPUT_ROOT
+        or matrix.relative_to(ROOT).as_posix() != _COMPAT_MATRIX
+        or not isinstance(session, dict)
+        or session.get("matrix") != _COMPAT_MATRIX
+        or session.get("status") not in {"INTERRUPTED", "FAILED"}
+    ):
+        abort("compatible prove-only is bound to the exact unfinished baseline session, output root, and matrix")
+    review_reference = _compatible_source_review_reference(source_review_value, require_file=True)
+    if review_reference is None:
+        abort("compatible source review must be a regular non-symlink file below runs/check_logs")
+    completed = session.get("completed_cells")
+    completed_ppi = False
+    if completed not in (None, {}):
+        checkpoint = completed.get("ppi") if isinstance(completed, dict) else None
+        if (
+            not isinstance(completed, dict)
+            or set(completed) != {"ppi"}
+            or not isinstance(checkpoint, dict)
+            or set(checkpoint) != {
+                "schema", "dataset", "session_id", "status", "result_sha256", "proof_sha256", "checkpointed_at_utc",
+            }
+            or checkpoint.get("schema") != "ezkl.formal-cell-checkpoint.v1"
+            or checkpoint.get("dataset") != "ppi"
+            or checkpoint.get("session_id") != session_id
+            or checkpoint.get("status") != "VERIFY_OK"
+            or any(
+                not isinstance(checkpoint.get(name), str)
+                or len(checkpoint[name]) != 64
+                or any(character not in "0123456789abcdef" for character in checkpoint[name])
+                for name in ("result_sha256", "proof_sha256")
+            )
+            or not isinstance(checkpoint.get("checkpointed_at_utc"), str)
+            or not checkpoint["checkpointed_at_utc"]
+        ):
+            abort("compatible OGBN continuation requires exactly one authenticated-shape PPI VERIFY_OK checkpoint")
+        request = session.get("compatible_resume_request")
+        try:
+            requested_review_sha256 = hashlib.sha256(_safe_local(review_reference, "compatible source review").read_bytes()).hexdigest()
+        except OSError as exc:
+            abort(f"completed-PPI continuation source review cannot be read: {exc}")
+        if (
+            not isinstance(request, dict)
+            or request.get("session_id") != session_id
+            or request.get("selected_datasets") != list(_COMPAT_SELECTED_DATASETS)
+            or request.get("source_review_path") != review_reference
+            or request.get("source_review_sha256") != requested_review_sha256
+        ):
+            abort("completed-PPI continuation must retain the exact compatible request and source-review bytes")
+        completed_ppi = True
+    ogbn_resume_stages = {
+        "selected_dataset_native_admission_preflight",
+        "selected_dataset_native_capacity_preflight",
+        "ogbn_arxiv_configured_admission",
+        "ogbn_arxiv_capacity_admission",
+        "ogbn_arxiv_setup",
+        "ogbn_arxiv_witness_prove_independent_verify",
+    }
+    if session.get("status") == "FAILED":
+        if completed_ppi:
+            if session.get("stage") not in ogbn_resume_stages:
+                abort("completed-PPI continuation is limited to pending OGBN-Arxiv stages")
+        elif session.get("stage") == "native_build_identity":
+            validate_failed_preflight_resume_gate(session)
+        elif session.get("stage") == "selected_dataset_native_capacity_preflight":
+            validate_failed_admission_preflight_resume_gate(session)
+        elif session.get("stage") == "ppi_configured_admission":
+            validate_failed_configured_admission_resume_gate(session)
+        elif session.get("stage") == "ppi_capacity_admission":
+            if not validate_capacity_admission_v2_controller_candidate(
+                _session_path(output_root, session_id), session, ROOT / review_reference,
+            ):
+                validate_failed_capacity_admission_resume_gate(session)
+        else:
+            abort("compatible prove-only resume is blocked after the approved preflight failure boundary")
+    elif completed_ppi and session.get("stage") not in ogbn_resume_stages | {"ppi_witness_prove_independent_verify"}:
+        abort("interrupted completed-PPI continuation is limited to its Verify boundary or pending OGBN-Arxiv stages")
+    return True, review_reference
 
 
 def _safe_mkdir(path: Path, label: str) -> None:
@@ -203,7 +359,11 @@ def _session_path(output_root: Path, session_id: str) -> Path:
 def _child_command(
     *, output_root: Path, matrix: Path, binary: Path, session_id: str | None, resume: bool, capacity_only: bool,
     selected_datasets: tuple[str, ...] = DATASETS,
+    compatible_prove_only: bool = False,
+    compatible_source_review: str | None = None,
 ) -> list[str]:
+    if compatible_prove_only != (compatible_source_review is not None) or (compatible_prove_only and not resume):
+        abort("compatible child flags require a paired compatible resume request")
     command = [
         sys.executable,
         str((ROOT / "scripts/run_formal_matrix.py").resolve()),
@@ -218,6 +378,9 @@ def _child_command(
         command.append("--capacity-preflight-only")
     if resume:
         command.extend(("--resume-session", str(session_id)))
+        if compatible_prove_only:
+            command.append("--compatible-prove-only")
+            command.extend(("--compatible-source-review", str(compatible_source_review)))
     elif session_id is not None:
         command.extend(("--_session-id", session_id))
     return command
@@ -241,6 +404,29 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         selected_datasets = normalize_selected_datasets(metadata.get("selected_datasets"))
     except ContractError:
         return None
+    compatible_field_present = "compatible_prove_only" in metadata
+    review_field_present = "compatible_source_review" in metadata
+    compatible_prove_only = metadata.get("compatible_prove_only", False)
+    compatible_source_review = metadata.get("compatible_source_review")
+    if (
+        compatible_field_present != review_field_present
+        or not isinstance(compatible_prove_only, bool)
+        or (compatible_prove_only != (compatible_source_review is not None))
+    ):
+        return None
+    if compatible_prove_only:
+        review_reference = _compatible_source_review_reference(compatible_source_review, require_file=False)
+        if (
+            mode != "resume"
+            or session_id != _COMPAT_SESSION_ID
+            or output_root != _COMPAT_OUTPUT_ROOT
+            or matrix != _COMPAT_MATRIX
+            or selected_datasets != _COMPAT_SELECTED_DATASETS
+            or metadata.get("selected_datasets") != list(_COMPAT_SELECTED_DATASETS)
+            or review_reference is None
+            or review_reference != compatible_source_review
+        ):
+            return None
     wrapper = [
         sys.executable,
         str((ROOT / "scripts/run_formal_matrix.py").resolve()),
@@ -255,6 +441,9 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         wrapper.append("--capacity-preflight-only")
     if mode == "resume":
         wrapper.extend(("--resume-session", session_id))
+        if compatible_prove_only:
+            wrapper.append("--compatible-prove-only")
+            wrapper.extend(("--compatible-source-review", str(compatible_source_review)))
     else:
         wrapper.extend(("--_session-id", session_id))
     if metadata.get("child_command") != wrapper:
@@ -274,6 +463,9 @@ def _formal_owner_command_variants(metadata: dict[str, Any], session_id: str) ->
         formal_owner.append("--capacity-preflight-only")
     if mode == "resume":
         formal_owner.extend(("--resume-session", session_id))
+        if compatible_prove_only:
+            formal_owner.append("--compatible-prove-only")
+            formal_owner.extend(("--compatible-source-review", str(compatible_source_review)))
     else:
         formal_owner.extend(("--_session-id", session_id))
     return wrapper, formal_owner
@@ -337,6 +529,7 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
         if getattr(args, "datasets", None) is not None
         else None
     )
+    resume_session: dict[str, Any] | None = None
     if resume:
         session_id = args.session_id
         session_path = _session_path(output_root, session_id)
@@ -346,6 +539,7 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
             session = json.loads(session_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             abort(f"cannot read exact resume session: {exc}")
+        resume_session = session if isinstance(session, dict) else None
         if (
             not isinstance(session, dict)
             or session.get("baseline") != "ezkl"
@@ -361,6 +555,17 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
     else:
         session_id = uuid.uuid4().hex
         selected_datasets = requested_datasets or DATASETS
+
+    compatible_prove_only, compatible_source_review = _compatible_resume_options(
+        args,
+        resume=resume,
+        session_id=session_id,
+        output_root=output_root,
+        matrix=matrix,
+        selected_datasets=selected_datasets,
+        requested_datasets=requested_datasets,
+        session=resume_session,
+    )
 
     metadata_path = _metadata_path(output_root, session_id)
     log_path = output_root / ".sessions" / session_id / "logs" / "formal_session.log"
@@ -380,6 +585,8 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
         resume=resume,
         capacity_only=bool(getattr(args, "capacity_preflight_only", False)),
         selected_datasets=selected_datasets,
+        compatible_prove_only=compatible_prove_only,
+        compatible_source_review=compatible_source_review,
     )
     supervisor_args = [
         sys.executable,
@@ -422,6 +629,9 @@ def _launch(args: argparse.Namespace, *, resume: bool) -> int:
         "started_at_utc": _now(),
         "launch_history": history,
     }
+    if compatible_prove_only:
+        metadata["compatible_prove_only"] = True
+        metadata["compatible_source_review"] = compatible_source_review
     _atomic_json(metadata_path, metadata)
     log = log_path.open("a", encoding="utf-8")
     log.write(f"\n--- {_now()} detached formal controller launch session={session_id} mode={metadata['mode']} ---\n")
@@ -778,6 +988,8 @@ def parser() -> argparse.ArgumentParser:
     resume.add_argument("--matrix", default="results/formal_matrix.json")
     resume.add_argument("--binary", default="target/gpu/release/ezkl")
     resume.add_argument("--datasets", nargs="+", choices=DATASETS, default=None, help="must match this session; omitted inherits its immutable selection")
+    resume.add_argument("--compatible-prove-only", action="store_true", help="use the one approved prove-only compatible resume path")
+    resume.add_argument("--compatible-source-review", help="exact source review JSON bound to the compatible resume")
     status = actions.add_parser("status", help="inspect one exact detached session")
     status.add_argument("--session-id", required=True)
     status.add_argument("--output-root", default="runs/formal")

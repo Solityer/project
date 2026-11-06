@@ -842,6 +842,34 @@ void check_tiny_sorted_lookup(const std::vector<std::uint32_t>& query_keys,
     };
     require_provider_state("before outer commitments");
 
+    const SegmentedTensorProvider valid_table_keys = providers.table_keys;
+    const auto require_table_order_rejected = [&](std::vector<FrWire> candidate,
+                                                   const char *label) {
+        SegmentedTensorProvider candidate_provider;
+        const std::string setup_message = std::string(label) + " provider setup failed";
+        require(SegmentedTensorProvider::from_values(candidate, 2U,
+                                                     candidate_provider, &error),
+                setup_message.c_str());
+        providers.table_keys = std::move(candidate_provider);
+        std::string validation_error;
+        const bool accepted = providers.valid(descriptor, &validation_error);
+        providers.table_keys = valid_table_keys;
+        const std::string rejection_message =
+            std::string("sorted-lookup consumer accepted ") + label +
+            " table keys: " + validation_error;
+        require(!accepted && validation_error.find(
+                    "sorted-lookup table key sequence is not canonical sorted order") !=
+                    std::string::npos,
+                rejection_message.c_str());
+    };
+    auto duplicate_table_keys = values.at("table_keys");
+    duplicate_table_keys[1U] = duplicate_table_keys[0U];
+    require_table_order_rejected(std::move(duplicate_table_keys), "duplicate");
+    auto reversed_table_keys = values.at("table_keys");
+    std::swap(reversed_table_keys[0U], reversed_table_keys[1U]);
+    require_table_order_rejected(std::move(reversed_table_keys), "reversed");
+    require_provider_state("after invalid table order probes");
+
     std::vector<zkdl::AuthenticatedSortedLookupCommitmentRef> refs;
     std::vector<zkdl::CpuG1Point> outer_commitments;
     std::vector<FrWire> outer_blinders;

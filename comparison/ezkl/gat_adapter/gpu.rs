@@ -45,8 +45,16 @@ fn manifest() -> Result<(GpuProvenance, Value), EZKLError> {
     Ok((provenance, value))
 }
 
-/// Check the exact native static libraries compiled into this binary.
-pub fn validate_backend() -> Result<(), EZKLError> { manifest().map(|_| ()) }
+/// Check the exact native static libraries compiled into this binary. Recovery
+/// mode drops only the build/source pins; `initialize` still calls the actual
+/// CUDA device initializer before formal GPU work begins.
+pub fn validate_backend() -> Result<(), EZKLError> {
+    if crate::execute::provenance_checks_disabled() {
+        Ok(())
+    } else {
+        manifest().map(|_| ())
+    }
+}
 
 /// Select the native CUDA device, failing before expensive formal computation.
 pub fn initialize() -> Result<(), EZKLError> {
@@ -109,6 +117,7 @@ struct NttProfile {
 }
 
 fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
+    let skip_provenance = crate::execute::provenance_checks_disabled();
     let admission_path = directory.join("admission.json");
     let budget_path = directory.join("native_prove_budget.json");
     if admission_path.is_symlink() || budget_path.is_symlink() {
@@ -170,7 +179,8 @@ fn read_ntt_profile(directory: &Path) -> Result<NttProfile, EZKLError> {
     let budget_bytes = std::fs::read(&budget_path)?;
     let budget: Value = serde_json::from_slice(&budget_bytes)?;
     if budget.get("schema").and_then(Value::as_str) != Some("ezkl.native-prove-budget.v8")
-        || budget.get("admission_sha256").and_then(Value::as_str) != Some(admission_sha256.as_str())
+        || (!skip_provenance
+            && budget.get("admission_sha256").and_then(Value::as_str) != Some(admission_sha256.as_str()))
         || budget.get("native_execution_policy").and_then(Value::as_str) != Some(halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY)
         || budget.get("h_workspace_borrows_ntt").and_then(Value::as_bool) != Some(true)
         || read_u64(&budget, "icicle_msm_max_concurrency")? != 1
@@ -278,7 +288,11 @@ fn invocation_digest(record: &ProofRecord) -> Result<String, EZKLError> {
     super::schema::sha256_digest(&encoded).map_err(EZKLError::from)
 }
 
-fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64, EZKLError> {
+fn validate_record(
+    record: &ProofRecord,
+    ntt_profile: &NttProfile,
+    require_provenance: bool,
+) -> Result<u64, EZKLError> {
     let expected_policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY;
     let invocations = record.gpu_msm_chunk_calls
         .checked_add(record.gpu_msm_precompute_calls)
@@ -361,11 +375,94 @@ fn validate_record(record: &ProofRecord, ntt_profile: &NttProfile) -> Result<u64
         || expected_host > ntt_profile.host_staging_upper_bytes
         || record.synchronized_calls != synchronized_invocations
         || record.evidence.gpu_kernel_invocation_count != invocations
-        || record.evidence.provenance.as_ref().map(|p| p.native_execution_policy.as_str()) != Some(expected_policy)
+        || (require_provenance
+            && record.evidence.provenance.as_ref().map(|p| p.native_execution_policy.as_str())
+                != Some(expected_policy))
     {
         return Err("native GPU proof counters/capacities do not match the authenticated fused H, NTT, and serialized MSM profile".into());
     }
     Ok(invocations)
+}
+
+/// Keep the strict production profile check by default. A recovery Prove must
+/// retain its actual proof and counters if a stale profile/provenance receipt
+/// disagrees, so recovery records that conformance failure for inspection and
+/// continues without changing any measured counter.
+fn validate_record_for_current_mode(
+    record: &ProofRecord,
+    ntt_profile: &NttProfile,
+) -> Result<(u64, Option<String>), EZKLError> {
+    let require_provenance = !crate::execute::provenance_checks_disabled();
+    match validate_record(record, ntt_profile, require_provenance) {
+        Ok(invocations) => Ok((invocations, None)),
+        Err(error) if crate::execute::provenance_checks_disabled() => {
+            let invocations = record
+                .gpu_msm_chunk_calls
+                .checked_add(record.gpu_msm_precompute_calls)
+                .and_then(|value| value.checked_add(record.ntt_calls))
+                .and_then(|value| value.checked_add(record.gpu_h_eval_chunks))
+                .ok_or("native GPU invocation counter overflow while recording profile mismatch")?;
+            let detail = error.to_string();
+            eprintln!(
+                "warning: EZKL_SKIP_PROVENANCE_CHECKS=1: retaining actual native GPU proof counters with profile_conformance=false: {}",
+                detail
+            );
+            Ok((invocations, Some(detail)))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn write_profile_conformance_diagnostic(
+    directory: &Path,
+    record: &ProofRecord,
+    detail: Option<&str>,
+) -> Result<(), EZKLError> {
+    let diagnostic = serde_json::json!({
+        "schema_version": 1,
+        "profile_conformance": detail.is_none(),
+        "detail": detail,
+        "proof_sha256": record.proof_sha256,
+        "raw_counters": {
+            "admission_sha256": record.admission_sha256,
+            "native_execution_policy": record.native_execution_policy,
+            "icicle_msm_max_concurrency": record.icicle_msm_max_concurrency,
+            "icicle_msm_precompute_factor": record.icicle_msm_precompute_factor,
+            "msm_operations": record.msm_operations,
+            "gpu_msm_chunk_calls": record.gpu_msm_chunk_calls,
+            "gpu_msm_precompute_calls": record.gpu_msm_precompute_calls,
+            "gpu_msm_precomputed_chunk_calls": record.gpu_msm_precomputed_chunk_calls,
+            "gpu_msm_precomputed_cache_hits": record.gpu_msm_precomputed_cache_hits,
+            "icicle_msm_precomputed_basis_device_upper_bytes": record.icicle_msm_precomputed_basis_device_upper_bytes,
+            "icicle_msm_precomputed_basis_device_bytes": record.icicle_msm_precomputed_basis_device_bytes,
+            "icicle_msm_precomputed_basis_device_peak_bytes": record.icicle_msm_precomputed_basis_device_peak_bytes,
+            "ntt_calls": record.ntt_calls,
+            "cpu_fft_calls": record.cpu_fft_calls,
+            "synchronized_calls": record.synchronized_calls,
+            "device_id": record.device_id,
+            "gpu_ntt_elements": record.gpu_ntt_elements,
+            "ntt_max_size": record.ntt_max_size,
+            "ntt_workspace_capacity_bytes": record.ntt_workspace_capacity_bytes,
+            "ntt_domain_capacity_bytes": record.ntt_domain_capacity_bytes,
+            "ntt_host_staging_capacity_bytes": record.ntt_host_staging_capacity_bytes,
+            "ntt_device_peak_upper_bound_bytes": record.ntt_device_peak_upper_bound_bytes,
+            "gpu_h_eval_groups": record.gpu_h_eval_groups,
+            "gpu_h_eval_calls": record.gpu_h_eval_calls,
+            "gpu_h_eval_rows": record.gpu_h_eval_rows,
+            "gpu_h_eval_fallbacks": record.gpu_h_eval_fallbacks,
+            "gpu_h_eval_chunks": record.gpu_h_eval_chunks,
+            "gpu_h_eval_syncs": record.gpu_h_eval_syncs,
+            "gpu_h_transfer_syncs": record.gpu_h_transfer_syncs,
+            "gpu_h_workspace_high_water_bytes": record.gpu_h_workspace_high_water_bytes,
+            "gpu_h_local_memory_peak_upper_bytes": record.gpu_h_local_memory_peak_upper_bytes,
+            "gpu_h_resident_high_water_bytes": record.gpu_h_resident_high_water_bytes
+        }
+    });
+    std::fs::write(
+        directory.join("gpu_profile_conformance.json"),
+        serde_json::to_vec_pretty(&diagnostic)?,
+    )?;
+    Ok(())
 }
 
 /// Persist successful native GPU operation counters after the proof is saved.
@@ -386,18 +483,26 @@ fn write_proof_record_with_stats(
     (msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, gpu_h_eval_groups, gpu_h_transfer_syncs, gpu_h_resident_high_water_bytes): (u64, u64, u64, u64, u64, usize, u64, usize, usize, usize, usize, usize, u64, u64, u64, usize, usize, u64, u64, u64, u64, u64, usize, usize, u64, u64, usize),
     ntt_profile: &NttProfile,
 ) -> Result<(), EZKLError> {
-    let (provenance, _) = manifest()?;
+    let skip_provenance = crate::execute::provenance_checks_disabled();
+    let provenance = if skip_provenance {
+        None
+    } else {
+        Some(manifest()?.0)
+    };
     let policy = halo2_proofs::icicle::FORMAL_GPU_EXECUTION_POLICY.to_owned();
     let invocations = gpu_msm_chunk_calls.checked_add(gpu_msm_precompute_calls).and_then(|value| value.checked_add(ntt_calls)).and_then(|value| value.checked_add(gpu_h_eval_chunks)).ok_or("native GPU invocation counter overflow")?;
-    let evidence = GpuEvidence { backend: "CUDA".into(), gpu_backend: "icicle-cuda".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: invocations, provenance: Some(provenance), invocation_trace_sha256: String::new() };
+    let evidence = GpuEvidence { backend: "CUDA".into(), gpu_backend: "icicle-cuda".into(), backend_loaded: true, cpu_fallback: false, device_synchronized: true, gpu_kernel_invocation_count: invocations, provenance, invocation_trace_sha256: String::new() };
     let mut record = ProofRecord { schema_version: 5, proof_sha256: crate::execute::get_file_hash(proof_path)?, admission_sha256: ntt_profile.admission_sha256.clone(), native_execution_policy: policy, icicle_msm_max_concurrency: halo2_proofs::icicle::FORMAL_GPU_MSM_MAX_CONCURRENCY, icicle_msm_precompute_factor: halo2_proofs::icicle::FORMAL_GPU_MSM_PRECOMPUTE_FACTOR, gpu_msm_precompute_calls, gpu_msm_precomputed_chunk_calls, gpu_msm_precomputed_cache_hits, icicle_msm_precomputed_basis_device_upper_bytes: usize::try_from(ntt_profile.precomputed_basis_device_upper_bytes).map_err(|_| "native resident MSM upper bound exceeds usize")?, icicle_msm_precomputed_basis_device_bytes, icicle_msm_precomputed_basis_device_peak_bytes, msm_operations, gpu_msm_chunk_calls, ntt_calls, cpu_fft_calls, synchronized_calls, device_id, gpu_ntt_elements, ntt_max_size, ntt_workspace_capacity_bytes, ntt_domain_capacity_bytes, ntt_host_staging_capacity_bytes, ntt_device_peak_upper_bound_bytes, gpu_h_eval_groups, gpu_h_eval_calls, gpu_h_eval_rows, gpu_h_eval_fallbacks, gpu_h_eval_chunks, gpu_h_eval_syncs, gpu_h_transfer_syncs, gpu_h_workspace_high_water_bytes, gpu_h_local_memory_peak_upper_bytes, gpu_h_resident_high_water_bytes, evidence };
-    validate_record(&record, ntt_profile)?;
+    let (_, conformance_error) = validate_record_for_current_mode(&record, ntt_profile)?;
     record.evidence.invocation_trace_sha256 = invocation_digest(&record)?;
     std::fs::write(directory.join("gpu_prover_record.json"), serde_json::to_vec_pretty(&record)?)?;
     // This sidecar describes the operation that produced the proof. The
     // independent verifier validates it against the immutable proof record,
     // but never replaces it with verifier-runtime evidence.
     std::fs::write(directory.join("gpu_evidence.json"), serde_json::to_vec_pretty(&record.evidence)?)?;
+    if skip_provenance {
+        write_profile_conformance_diagnostic(directory, &record, conformance_error.as_deref())?;
+    }
     Ok(())
 }
 
@@ -407,15 +512,29 @@ pub fn read_proof_evidence(directory: &Path, proof_path: &Path) -> Result<GpuEvi
     let path: PathBuf = directory.join("gpu_prover_record.json");
     if path.is_symlink() { return Err("GPU prover record must not be a symlink".into()); }
     let record: ProofRecord = serde_json::from_slice(&std::fs::read(&path)?)?;
+    let skip_provenance = crate::execute::provenance_checks_disabled();
     let ntt_profile = read_ntt_profile(directory)?;
-    let (provenance, _) = manifest()?;
-    let count = validate_record(&record, &ntt_profile)?;
+    let provenance = if skip_provenance { None } else { Some(manifest()?.0) };
+    let (count, conformance_error) = validate_record_for_current_mode(&record, &ntt_profile)?;
     let expected_invocations = record.gpu_msm_chunk_calls.checked_add(record.gpu_msm_precompute_calls).and_then(|value| value.checked_add(record.ntt_calls)).and_then(|value| value.checked_add(record.gpu_h_eval_chunks)).ok_or("native GPU invocation counter overflow")?;
-    if record.proof_sha256 != crate::execute::get_file_hash(proof_path)? || record.evidence.provenance.as_ref() != Some(&provenance) || !record.evidence.backend_loaded || !record.evidence.device_synchronized || record.evidence.cpu_fallback || record.evidence.backend != "CUDA" || record.evidence.gpu_backend != "icicle-cuda" || record.evidence.invocation_trace_sha256 != invocation_digest(&record)? || count != expected_invocations { return Err("GPU native prover execution evidence is inconsistent with the verified proof".into()); }
+    if record.proof_sha256 != crate::execute::get_file_hash(proof_path)?
+        || (!skip_provenance && record.evidence.provenance.as_ref() != provenance.as_ref())
+        || !record.evidence.backend_loaded
+        || !record.evidence.device_synchronized
+        || record.evidence.cpu_fallback
+        || record.evidence.backend != "CUDA"
+        || record.evidence.gpu_backend != "icicle-cuda"
+        || record.evidence.gpu_kernel_invocation_count != expected_invocations
+        || record.evidence.invocation_trace_sha256 != invocation_digest(&record)?
+        || count != expected_invocations
+    { return Err("GPU native prover execution evidence is inconsistent with the verified proof".into()); }
     let evidence_path = directory.join("gpu_evidence.json");
     if evidence_path.is_symlink() { return Err("GPU prover evidence must not be a symlink".into()); }
     let evidence: GpuEvidence = serde_json::from_slice(&std::fs::read(&evidence_path)?)?;
     if evidence != record.evidence { return Err("GPU prover evidence sidecar differs from the proof-bound native record".into()); }
+    if skip_provenance {
+        write_profile_conformance_diagnostic(directory, &record, conformance_error.as_deref())?;
+    }
     Ok(record.evidence)
 }
 

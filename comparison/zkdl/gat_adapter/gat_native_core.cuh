@@ -11,6 +11,15 @@
 
 namespace zkdl_gat {
 
+namespace sorted_lookup_detail {
+
+inline bool key_order_violation(const zkdl::FrWire &key,
+                                const zkdl::FrWire &previous_key) noexcept {
+    return zkdl::fr_compare(key, previous_key) <= 0;
+}
+
+}  // namespace sorted_lookup_detail
+
 struct NativeRelationWitness {
     std::vector<relation::TensorWitness> tensors;
     struct TensorShape {

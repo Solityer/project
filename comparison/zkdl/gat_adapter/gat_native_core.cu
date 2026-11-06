@@ -3072,8 +3072,10 @@ bool sorted_lookup_public_table_providers(const StaticTables &tables, const Oper
     for (std::size_t row = 0U; row < table.size(); ++row) {
         FrWire key{};
         if (!key_at(row, key, error)) return false;
-        if (row != 0U && key <= previous_key) {
-            if (error) *error = "BLOCKED: authenticated sorted-lookup table keys are not unique/sorted";
+        if (row != 0U && sorted_lookup_detail::key_order_violation(key, previous_key)) {
+            if (error) *error = "BLOCKED: authenticated sorted-lookup table keys are not unique/sorted operation=" +
+                                query.operation_id + " table=" + query.table_ref + " rows=" +
+                                std::to_string(row - 1U) + "," + std::to_string(row);
             return false;
         }
         previous_key = key;
