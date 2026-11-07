@@ -1,9 +1,0 @@
-[zkGPT][native-lasso-family] stage=booleanity begin family=a Q=2 T=4
-[zkGPT][native-lasso-family] stage=booleanity complete family=a Q=2 T=4 elapsed_ms=85.5348
-[zkGPT][native-lasso-family] stage=booleanity begin family=padding Q=32 T=2
-[zkGPT][native-lasso-family] stage=booleanity complete family=padding Q=32 T=2 elapsed_ms=199.155
-[zkGPT][native-lasso-family] stage=booleanity begin family=range_all Q=32 T=2
-[zkGPT][native-lasso-family] stage=booleanity complete family=range_all Q=32 T=2 elapsed_ms=196.293
-native Lasso range/all accepted a non-binary L_qry value or failed outside its table/query binding: native Lasso selected query differs from L_qry provider
-Command exited with non-zero status 23
-elapsed_s=1.61 exit=23

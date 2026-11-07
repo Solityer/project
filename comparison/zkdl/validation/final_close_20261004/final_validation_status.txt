@@ -1,8 +1,0 @@
-formal_preflight_retry: exit 0; formal_input_preflight=PASS datasets=5 backend=cpu
-PPI: graphs=295 raw_edge_rows=818716 raw_edge_ownership_checks=818716 raw_self_loops=25084 self_loops_added=31860 duplicate_edges_removed=25084 normalized_edges=850576 node_ptr_count=296 edge_ptr_count=296 csr_destinations_checked=56944 destination_groups_checked=56944 edge_blocks_checked=295. duplicate_edges_removed is the normalizer's full dedup count (includes any original loop rows removed); self-loop quantities are separately reported.
-OGBN-Arxiv: nodes=169343 features=128 classes=40 graphs=1 raw_edge_rows=1166243 raw_edge_ownership_checks=1166243 normalized_edges=1335586; max_family_domain=134217728; csr_destinations_checked=169343.
-All 5 preflight rows: sorted_lookup query_count=52; per-row query rows, domain/scratch totals and max are in formal_preflight_summary.jsonl.
-width/resource parser negative harness: NVCC compile exit 0, run exit 0. Covers checked u32, suffix u32 boundary, segmented domain cap, checked MatMul product, nested serialized byte count > remaining, SRS count/48-byte cap and uint64 count, truncated frame payload, and bounded resource read.
-field negative checks: exit 0; timing AST production block accepts equal finite nonnegative fields and rejects 21 missing/nonfinite/negative/malformed/mismatch cases; degree_bound_id is checked separately from ledger_id, and a wrong degree ID is rejected by the identity contract.
-run_tooling_tests.sh: py_compile and bash -n completed; two pre-existing test fixture incompatibilities remain recorded in tooling_tests.stdout/stderr. Not a five-dataset preflight or native build blocker.
-No SRS/setup/proving/full dataset command was executed.

@@ -1,9 +1,0 @@
-Internal ctest changing into directory: /home/pzh/project/comparison/zkGPT/build/cpu-tests
-Test project /home/pzh/project/comparison/zkGPT/build/cpu-tests
-    Start 7: native_masked_hyrax_smoke
-1/1 Test #7: native_masked_hyrax_smoke ........   Passed    9.18 sec
-
-100% tests passed, 0 tests failed out of 1
-
-Total Test time (real) =   9.19 sec
-ELAPSED_S=9.21

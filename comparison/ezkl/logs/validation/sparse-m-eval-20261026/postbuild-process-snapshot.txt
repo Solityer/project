@@ -1,2 +1,0 @@
-3774319 3774315   35090  0.0  0.0 Ssl  python3 /home/pzh/project/comparison/zkdl/scripts/formal_runner.py
-3876683 3876681    1975  191  2.4 Ssl  /home/pzh/project/comparison/zkdl/gat_runner prove --config /home/pzh/project/comparison/zkdl/configs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0_ppi.cfg --backend cpu --gpu-offload-stage hyrax_ipa_fold --run-dir /home/pzh/project/comparison/zkdl/runs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0/ppi

@@ -1,8 +1,0 @@
-Internal ctest changing into directory: /home/pzh/project/comparison/zkGPT/build/cpu-tests
-Test project /home/pzh/project/comparison/zkGPT/build/cpu-tests
-    Start 4: gat_proof_plan_smoke
-1/1 Test #4: gat_proof_plan_smoke .............   Passed    2.03 sec
-
-100% tests passed, 0 tests failed out of 1
-
-Total Test time (real) =   2.03 sec

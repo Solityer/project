@@ -1,7 +1,0 @@
-COMMAND=PYTHONPATH=tests python3 -m unittest test_ezkl_compact_v2_contract.CompactNativeProofContractTest.test_five_dataset_ntt_plans_and_integrated_memory_envelopes
-.
-----------------------------------------------------------------------
-Ran 1 test in 0.001s
-
-OK
-EXIT_CODE=0

@@ -1,4 +1,0 @@
-3774319 3774315 Ssl  python3         python3 /home/pzh/project/comparison/zkdl/scripts/formal_runner.py
-3809019 3809017 Rsl  gat_runner      /home/pzh/project/comparison/zkdl/gat_runner prove --config /home/pzh/project/comparison/zkdl/configs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0_pubmed.cfg --backend cpu --gpu-offload-stage hyrax_ipa_fold --run-dir /home/pzh/project/comparison/zkdl/runs/formal_bf5eccabd8cc4e47bdbf2a20e03f05e0/pubmed
-3846391 3593773 Ss   bash            /bin/bash -lc ps -eo pid,ppid,stat,comm,args --sort=pid | rg 'ezkl|formal_runner|gat_runner' | tee logs/validation/lookup-coset-retention-20261026/prebuild-process-snapshot.txt
-3846401 3846391 S    rg              rg ezkl|formal_runner|gat_runner

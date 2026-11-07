@@ -1,3 +1,0 @@
-/usr/bin/time: cannot run build/cpu-tests/gat_adapter_smoke: No such file or directory
-Command exited with non-zero status 127
-elapsed_s=0.00 exit=127

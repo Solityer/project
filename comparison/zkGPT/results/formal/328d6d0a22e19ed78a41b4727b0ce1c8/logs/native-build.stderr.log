@@ -1,6 +1,0 @@
-bint_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/bint64.o
-base_obj=/home/pzh/project/comparison/zkGPT/build/cpu/3rd/mcl/base64.o
-/home/pzh/project/comparison/zkGPT/src/hyrax.cpp: In function ‘std::pair<double, double> hyrax::open(mcl::Fr*, mcl::Fr*, mcl::Fr, mcl::G1&, mcl::G1*, mcl::Fr*, mcl::Fr*, mcl::G1*, int)’:
-/home/pzh/project/comparison/zkGPT/src/hyrax.cpp:609:91: note: parameter passing for argument of type ‘std::pair<double, double>’ when C++17 is enabled changed to match C++14 in GCC 10.1
-  609 | pair<double, double> open(Fr *w, Fr *r, Fr eval, G1 &G, G1 *g, Fr *L, Fr *R, G1 *tk, int l)
-      |                                                                                           ^

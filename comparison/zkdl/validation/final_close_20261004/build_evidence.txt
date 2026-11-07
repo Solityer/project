@@ -1,8 +1,0 @@
-Official bounded build
-command: timeout 600s make baseline-local-build
-result: exit 0 (completed after the runner power_of_two compile fix)
-current target freshness: make -q baseline-local-build exit 0; gat_runner and gat_resource_setup targets are current against Makefile prerequisites
-formal runner command from Makefile: nvcc -arch=sm_121 -std=c++17 -DZKDL_USE_BLST_G1_CODEC -I/usr/local/cuda/include -L/usr/local/cuda/lib64 -lcudart -lcrypto -I. -Igat_adapter gat_adapter/gat_runner.cu gat_adapter/gat_native_bridge.cu gat_adapter/gat_native_core.cu third_party/blst/libblst.a -o gat_runner
-runner sha256 is recorded in source_binary_sha256.txt
-resource setup source is unchanged; existing gat_resource_setup binary sha256 is recorded in source_binary_sha256.txt. The setup executable was not run.
-The successful make stdout was displayed by the execution session and was not redirected to a raw log file; this evidence file records the command/result and matched source/binary identities.
