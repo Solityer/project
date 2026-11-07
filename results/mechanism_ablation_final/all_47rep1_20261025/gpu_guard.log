@@ -1,5 +1,0 @@
-2026-10-25T15:26:32+00:00 GUARD_MONITOR runner_pid=3594239 start_ticks=38498443 uid=1002 exe=/usr/bin/python3.12 cwd=/home/pzh/project cmdline=python3 scripts/run_mechanism_ablation.py continue --parent-session results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5 --device 0
-2026-10-25T15:27:36+00:00 CONTINUOUS_GUARD_BEGIN runner_pid=3594239 start_ticks=38498443 gpu_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
-2026-10-25T18:34:17+00:00 EXTERNAL_GPU_CANDIDATE app={'uuid': 'GPU-3cde57ba-ae43-4452-bd59-7b156b36db71', 'pid': 3760640, 'name': '[No data]', 'memory': '210'} identity=None ancestry=[]
-2026-10-25T18:34:45+00:00 GUARD_RESUME runner_pid=3594239 start_ticks=38498443 gpu_uuid=GPU-3cde57ba-ae43-4452-bd59-7b156b36db71
-2026-10-25T18:45:43+00:00 RUNNER_EXITED exact runner 3594239/38498443; guard stops

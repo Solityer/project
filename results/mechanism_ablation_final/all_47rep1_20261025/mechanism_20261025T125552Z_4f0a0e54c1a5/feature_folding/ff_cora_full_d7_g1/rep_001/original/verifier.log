@@ -1,9 +1,0 @@
-stage=independent-cpu-verifier
-start_utc=2026-10-25T12:58:24Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism verify --proof /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_cora_full_d7_g1/rep_001/original/proof.bin --statement /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_cora_full_d7_g1/rep_001/original/public_statement.json --srs /home/pzh/project/artifacts/srs/cora_formal_srs --result-json /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/feature_folding/ff_cora_full_d7_g1/rep_001/original/verifier_result.json
-VERIFY_OK proof_sha256=517c858d477085ada8cecb236b50cf0f5e360a06b3b924d4a5a608140e70adf0 statement_sha256=4cdf105d68141512acb452277f029dae328923037e13b976bf8bf45e20edd7ad verify_time_ms=34.3283
-end_utc=2026-10-25T12:58:26Z
-process_pid=3490589
-return_code=0
-timed_out=false
-wall_time_seconds=2.869267

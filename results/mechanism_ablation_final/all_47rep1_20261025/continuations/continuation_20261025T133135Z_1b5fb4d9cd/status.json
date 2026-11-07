@@ -1,8 +1,0 @@
-{
-  "accepted_cell_count": 51,
-  "expected_cell_count": 94,
-  "failure_reason": "runner exited during final closure on the SRS manifest key mismatch; observed end identities match startup",
-  "session_id": "continuation_20261025T133135Z_1b5fb4d9cd",
-  "status": "incomplete",
-  "updated_utc": "2026-10-25T13:51:32Z"
-}
