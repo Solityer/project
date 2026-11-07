@@ -1,7 +1,0 @@
-EXCLUDED_AND_REPAIR_NOTES
-
-- The initial sparse oracle attempt failed because its 33-support dense-fallback fixture placed a zero-count winner row outside active rows; the old materializer correctly rejected it. The failure is preserved in sparse_m_commit_matches_legacy_for_kzg_and_ipa.log. A pre-contract-fix retry passed after making that fixture row valid, but that retry is not final equivalence evidence.
-- Independent review then found that the new sparse evaluator could skip validation of zero-count winner metadata on early-return cases, while the legacy materializer validates every codebook row. The production helper was repaired to validate all winner rows before early returns, use dense fallback for zero-row/nonzero-row overlap, and the numerical oracle now uses real `materialize_coeff(Multiplicity)` plus Horner. Only sparse_m_commit_matches_legacy_for_kzg_and_ipa.post-contract-fix.log is final oracle evidence.
-- The general capacity unittest was not run because an unrelated Setup expectation is stale. The retained bounded fixture script directly checks the production evaluation peak formula and unchanged prepare/commit task bounds.
-- No formal datasets, CUDA kernels, SRS loads, or PK hashing were run; no user processes were stopped or modified.
-- One earlier read-only `git diff --check` was mistakenly run in the prior working turn. It made no repository writes, resets, checkouts, or other Git state changes. No Git command was used in this turn.

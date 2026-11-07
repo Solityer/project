@@ -1,6 +1,0 @@
-Collecting pyflakes==3.4.0
-  Downloading pyflakes-3.4.0-py2.py3-none-any.whl.metadata (3.5 kB)
-Downloading pyflakes-3.4.0-py2.py3-none-any.whl (63 kB)
-   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 63.6/63.6 kB 213.0 kB/s eta 0:00:00
-Installing collected packages: pyflakes
-Successfully installed pyflakes-3.4.0

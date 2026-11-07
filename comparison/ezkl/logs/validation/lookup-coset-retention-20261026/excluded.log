@@ -1,8 +1,0 @@
-Excluded from this validation:
-- Formal dataset experiments and full dataset preprocessing.
-- SRS generation/loading and proving-key hash work.
-- Formal Setup, Prove, or Verify sessions.
-- CUDA kernel execution; the official build reused the authenticated native backend and performed CLI/source identity checks only.
-- Any stopping or modification of the active zkDL processes shown in the read-only process snapshots.
-
-Only the two named CPU checks and the single official GPU release build recorded in closeout.md were executed.

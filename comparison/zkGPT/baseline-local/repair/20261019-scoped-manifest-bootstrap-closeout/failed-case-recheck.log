@@ -1,7 +1,0 @@
-ZKGPT_FORMAL_CELL_FAILED dataset=ppi error=ChainError: simulated PPI failure
-ZKGPT_FORMAL_SUBSET_FAILED session_id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa subset_validation=results/formal/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/subset_validation.json attempted=2
-.
-----------------------------------------------------------------------
-Ran 1 test in 0.058s
-
-OK

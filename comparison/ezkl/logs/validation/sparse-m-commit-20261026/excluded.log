@@ -1,6 +1,0 @@
-EXCLUDED_AND_LIMITATIONS
-- No EZKL formal dataset cells or full-dataset preprocessing were run; no SRS or PK-hash was read; no proof/verifier experiment or CUDA kernel was launched.
-- The broad native-capacity unittest was attempted once and remains blocked by its unrelated preexisting setup_persisted_mapped_bytes expectation (9216 expected, 45892 actual). It is not reported as passing. The same production function and same fixture were narrowly checked for the changed prepare=3248 / commit=512 budgets and passed.
-- One initial CPU Rust compile used the vendor rust-toolchain shim (nightly-2024-07-18) against cached pinned-nightly artifacts and failed E0514. The failing log is retained; explicit nightly-2025-12-01 RUSTUP_TOOLCHAIN/RUSTC/RUSTDOC resolved the environment mismatch and the exact oracle passed once.
-- The first read-only postbuild identity attempt lacked selected-device environment and stopped after source/binary checks. Its log is retained. The corrected check supplied the official selected-device identity; pre/post physical GPU snapshots independently report the same GB10 UUID and the remaining identity checks passed.
-- User zkDL runner/verify processes remained active in read-only snapshots and were never stopped or changed.
