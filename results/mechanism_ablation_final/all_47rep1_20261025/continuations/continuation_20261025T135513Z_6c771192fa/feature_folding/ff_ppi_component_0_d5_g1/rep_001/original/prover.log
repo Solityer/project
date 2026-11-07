@@ -1,9 +1,0 @@
-stage=real-mechanism-prover
-start_utc=2026-10-25T14:15:59Z
-command=/home/pzh/project/build_cuda/gatzk_mechanism run --mechanism feature_folding --variant original --nodes 1546 --edges 17699 --width 5 --graphs 1 --seed 0 --backend cuda --device 0 --real-input /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_component_0/real_input.bin --real-input-metadata /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/mechanism_20261025T125552Z_4f0a0e54c1a5/real_inputs/ppi_component_0/metadata.json --srs /home/pzh/project/artifacts/srs/ppi_formal_srs --witness-seed-file '<private-seed-file>' --proof-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T135513Z_6c771192fa/feature_folding/ff_ppi_component_0_d5_g1/rep_001/original/proof.bin --statement-out /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T135513Z_6c771192fa/feature_folding/ff_ppi_component_0_d5_g1/rep_001/original/public_statement.json --result-json /home/pzh/project/results/mechanism_ablation_final/all_47rep1_20261025/continuations/continuation_20261025T135513Z_6c771192fa/feature_folding/ff_ppi_component_0_d5_g1/rep_001/original/prover_result.json
-MECHANISM_PROOF_WRITTEN mechanism=feature_folding variant=original backend=cuda actual_cuda=true commitment_time_ms=3913.01 prove_time_ms=21911.1 proof_size_bytes=4383 proof_sha256=a91e3f9f2e12dc1abb5821f17747be73f5fbeab86773797f598cbcb57436062f
-end_utc=2026-10-25T14:18:05Z
-process_pid=3546651
-return_code=0
-timed_out=false
-wall_time_seconds=126.296482

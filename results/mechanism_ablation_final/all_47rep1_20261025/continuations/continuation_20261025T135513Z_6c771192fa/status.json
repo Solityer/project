@@ -1,8 +1,0 @@
-{
-  "accepted_cell_count": 64,
-  "expected_cell_count": 94,
-  "failure_reason": "selected CUDA device already has external compute processes; refusing to share the formal experiment GPU: [{\"gpu_uuid\": \"GPU-3cde57ba-ae43-4452-bd59-7b156b36db71\", \"pid\": \"3589626\", \"process_name\": \"/usr/bin/python3\", \"used_memory_mib\": \"170\"}]",
-  "session_id": "continuation_20261025T135513Z_6c771192fa",
-  "status": "incomplete",
-  "updated_utc": "2026-10-25T14:55:04Z"
-}
